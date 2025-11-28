@@ -1,34 +1,31 @@
-version: '3.8'
-
 services:
   telegram-backup:
-    build: .
+    image: drumsergio/telegram-backup-automation:latest
     container_name: telegram-backup
     restart: unless-stopped
-    
+
     environment:
       # Required: Get from https://my.telegram.org/apps
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE}
-      
+
       # Schedule (cron format)
       SCHEDULE: ${SCHEDULE:-0 */6 * * *}
-      
+
       # Backup options
       BACKUP_PATH: /data/backups
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       CHAT_TYPES: ${CHAT_TYPES:-private,groups,channels}
-      
+
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SESSION_NAME: ${SESSION_NAME:-telegram_backup}
-    
+
     volumes:
       # Persistent data storage
       - ./data:/data
-    
     # Optional: Resource limits
     # deploy:
     #   resources:
