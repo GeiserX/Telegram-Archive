@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from telethon import TelegramClient
-from config import Config, setup_logging
+from .config import Config, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ async def setup_authentication():
     """Interactive authentication setup."""
     try:
         # Load configuration
+        from .config import Config, setup_logging
         config = Config()
         setup_logging(config)
         

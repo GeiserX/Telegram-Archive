@@ -15,11 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config.py .
-COPY database.py .
-COPY telegram_backup.py .
-COPY scheduler.py .
-COPY export_backup.py .
+COPY src/ ./src/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 telegram && \
@@ -31,10 +27,11 @@ USER telegram
 
 # Set default environment variables
 ENV BACKUP_PATH=/data/backups \
-    LOG_LEVEL=INFO
+    LOG_LEVEL=INFO \
+    PYTHONPATH=/app
 
 # Volume for persistent data
 VOLUME ["/data"]
 
 # Run scheduler
-CMD ["python", "-u", "scheduler.py"]
+CMD ["python", "-m", "src.scheduler"]

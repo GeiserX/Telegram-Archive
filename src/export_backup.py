@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from config import Config, setup_logging
-from database import Database
+from .config import Config, setup_logging
+from .database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,7 @@ def main():
     
     try:
         # Load configuration
+        from .config import Config, setup_logging
         config = Config()
         setup_logging(config)
         

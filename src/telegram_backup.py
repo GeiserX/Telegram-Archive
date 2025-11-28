@@ -14,15 +14,12 @@ from telethon import TelegramClient
 from telethon.tl.types import (
     User, Chat, Channel, Message,
     MessageMediaPhoto, MessageMediaDocument,
-    MessageMediaVideo, MessageMediaAudio,
-    MessageMediaVoice, MessageMediaContact,
+    MessageMediaContact,
     MessageMediaGeo, MessageMediaPoll
 )
-from telethon.tl.functions.messages import GetDialogsRequest
-from telethon.tl.types import InputPeerEmpty
 
-from config import Config
-from database import Database
+from .config import Config
+from .database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +48,19 @@ class TelegramBackup:
             self.config.api_hash
         )
         
-        await self.client.start(phone=self.config.phone)
+        # Connect without starting interactive flow
+        await self.client.connect()
         
-        if await self.client.is_user_authorized():
-            me = await self.client.get_me()
-            logger.info(f"Connected as {me.first_name} ({me.phone})")
-        else:
-            raise RuntimeError("Failed to authorize. Please run setup_auth.py first.")
+        # Check authorization status
+        if not await self.client.is_user_authorized():
+            logger.error("❌ Session not authorized!")
+            logger.error("Please run the authentication setup first:")
+            logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
+            logger.error("  Local:  python -m src.setup_auth")
+            raise RuntimeError("Session not authorized. Please run authentication setup.")
+            
+        me = await self.client.get_me()
+        logger.info(f"Connected as {me.first_name} ({me.phone})")
     
     async def disconnect(self):
         """Disconnect from Telegram."""
@@ -133,26 +136,8 @@ class TelegramBackup:
         Returns:
             List of dialog objects
         """
-        dialogs = []
-        last_date = None
-        chunk_size = 200
-        
-        while True:
-            result = await self.client(GetDialogsRequest(
-                offset_date=last_date,
-                offset_id=0,
-                offset_peer=InputPeerEmpty(),
-                limit=chunk_size,
-                hash=0
-            ))
-            
-            dialogs.extend(result.dialogs)
-            
-            if not result.messages:
-                break
-            
-            last_date = result.messages[-1].date
-        
+        # Use the simpler get_dialogs method which handles pagination automatically
+        dialogs = await self.client.get_dialogs()
         return dialogs
     
     async def _backup_dialog(self, dialog) -> int:
@@ -337,13 +322,17 @@ class TelegramBackup:
         if isinstance(media, MessageMediaPhoto):
             return 'photo'
         elif isinstance(media, MessageMediaDocument):
+            # Check document attributes to determine specific type
+            if hasattr(media, 'document') and media.document:
+                for attr in media.document.attributes:
+                    attr_type = type(attr).__name__
+                    if 'Video' in attr_type:
+                        return 'video'
+                    elif 'Audio' in attr_type:
+                        return 'audio'
+                    elif 'Voice' in attr_type:
+                        return 'voice'
             return 'document'
-        elif isinstance(media, MessageMediaVideo):
-            return 'video'
-        elif isinstance(media, MessageMediaAudio):
-            return 'audio'
-        elif isinstance(media, MessageMediaVoice):
-            return 'voice'
         elif isinstance(media, MessageMediaContact):
             return 'contact'
         elif isinstance(media, MessageMediaGeo):
@@ -444,7 +433,7 @@ async def run_backup(config: Config):
 if __name__ == '__main__':
     # Test backup
     import asyncio
-    from config import Config, setup_logging
+    from .config import Config, setup_logging
     
     config = Config()
     setup_logging(config)

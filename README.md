@@ -50,19 +50,24 @@ You need to obtain API credentials from Telegram:
    ```
 
 4. **Run authentication setup** (one-time only)
-   ```bash
-   # Create data directory
-   mkdir -p data/backups
    
-   # Run setup in Docker
-   docker run --rm -it \
-     --env-file .env \
-     -v $(pwd)/data:/data \
-     $(docker build -q .) \
-     python setup_auth.py
+   This step is **required** to generate the session file. It runs interactively to ask for your Telegram verification code (and 2FA password if enabled).
+
+   **Windows:**
+   ```batch
+   init_auth.bat
    ```
-   
-   Follow the prompts to enter your verification code.
+
+   **Linux/Mac:**
+   ```bash
+   chmod +x init_auth.sh
+   ./init_auth.sh
+   ```
+
+   **Manual Docker Command (if not using scripts):**
+   ```bash
+   docker-compose run --rm telegram-backup python -m src.setup_auth
+   ```
 
 5. **Start the backup service**
    ```bash
@@ -89,12 +94,36 @@ You need to obtain API credentials from Telegram:
 
 3. **Run authentication setup**
    ```bash
-   python setup_auth.py
+   python -m src.setup_auth
    ```
 
 4. **Start scheduler**
    ```bash
-   python scheduler.py
+   python -m src.scheduler
+   ```
+
+## Docker Image Only (No Repository)
+   
+If you don't want to clone the repository and just want to run the container:
+
+1. **Create a directory** for your data (e.g., `telegram-backup`)
+2. **Create a `.env` file** inside it (see Configuration section)
+3. **Run authentication setup**:
+   ```bash
+   docker run --rm -it \
+     --env-file .env \
+     -v $(pwd)/data:/data \
+     drumsergio/telegram-backup-automation:latest \
+     python -m src.setup_auth
+   ```
+4. **Run the backup service**:
+   ```bash
+   docker run -d \
+     --name telegram-backup \
+     --restart unless-stopped \
+     --env-file .env \
+     -v $(pwd)/data:/data \
+     drumsergio/telegram-backup-automation:latest
    ```
 
 ## Configuration
@@ -151,37 +180,37 @@ Examples:
 
 ```bash
 # Docker
-docker-compose exec telegram-backup python export_backup.py stats
+docker-compose exec telegram-backup python -m src.export_backup stats
 
 # Local
-python export_backup.py stats
+python -m src.export_backup stats
 ```
 
 ### List Backed Up Chats
 
 ```bash
 # Docker
-docker-compose exec telegram-backup python export_backup.py list-chats
+docker-compose exec telegram-backup python -m src.export_backup list-chats
 
 # Local
-python export_backup.py list-chats
+python -m src.export_backup list-chats
 ```
 
 ### Export Messages to JSON
 
 Export all messages:
 ```bash
-python export_backup.py export -o backup.json
+python -m src.export_backup export -o backup.json
 ```
 
 Export specific chat:
 ```bash
-python export_backup.py export -o chat_backup.json -c 123456789
+python -m src.export_backup export -o chat_backup.json -c 123456789
 ```
 
 Export date range (point-in-time recovery):
 ```bash
-python export_backup.py export -o recovery.json \
+python -m src.export_backup export -o recovery.json \
   -s 2024-01-01 \
   -e 2024-12-31
 ```
@@ -190,10 +219,10 @@ python export_backup.py export -o recovery.json \
 
 ```bash
 # Docker
-docker-compose exec telegram-backup python telegram_backup.py
+docker-compose exec telegram-backup python -m src.telegram_backup
 
 # Local
-python telegram_backup.py
+python -m src.telegram_backup
 ```
 
 ## Data Storage
@@ -237,7 +266,7 @@ Example: 10,000 messages with 1,000 photos ≈ 20 MB text + 1-2 GB media
 
 1. Export messages from desired date range:
    ```bash
-   python export_backup.py export -o recovery.json \
+   python -m src.export_backup export -o recovery.json \
      -s 2024-06-01 -e 2024-06-30
    ```
 
@@ -337,8 +366,8 @@ You can import the modules in your own scripts:
 
 ```python
 import asyncio
-from config import Config, setup_logging
-from telegram_backup import run_backup
+from src.config import Config, setup_logging
+from src.telegram_backup import run_backup
 
 async def custom_backup():
     config = Config()
@@ -353,7 +382,8 @@ asyncio.run(custom_backup())
 Access backup data programmatically:
 
 ```python
-from database import Database
+from src.database import Database
+from datetime import datetime
 
 db = Database('data/backups/telegram_backup.db')
 

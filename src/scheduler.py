@@ -10,8 +10,8 @@ import sys
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import Config, setup_logging
-from telegram_backup import run_backup
+from .config import Config, setup_logging
+from .telegram_backup import run_backup
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,6 @@ class BackupScheduler:
             )
             
             logger.info(f"Backup scheduled with cron: {self.config.schedule}")
-            logger.info(f"Next run: {self.scheduler.get_job('telegram_backup').next_run_time}")
             
             # Start scheduler
             self.scheduler.start()
@@ -127,6 +126,7 @@ async def main():
     """Main entry point for the scheduler."""
     try:
         # Load configuration
+        from .config import Config, setup_logging
         config = Config()
         setup_logging(config)
         
