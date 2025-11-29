@@ -226,6 +226,41 @@ class Database:
         ))
         self.conn.commit()
     
+    def insert_messages_batch(self, messages_data: List[Dict[str, Any]]):
+        """
+        Insert multiple message records in a single transaction.
+        
+        Args:
+            messages_data: List of dictionaries with message information
+        """
+        if not messages_data:
+            return
+            
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO messages (
+                id, chat_id, sender_id, date, text, reply_to_msg_id,
+                forward_from_id, edit_date, media_type, media_id, 
+                media_path, raw_data
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', [
+            (
+                m['id'],
+                m['chat_id'],
+                m.get('sender_id'),
+                m['date'],
+                m.get('text'),
+                m.get('reply_to_msg_id'),
+                m.get('forward_from_id'),
+                m.get('edit_date'),
+                m.get('media_type'),
+                m.get('media_id'),
+                m.get('media_path'),
+                json.dumps(m.get('raw_data', {}))
+            ) for m in messages_data
+        ])
+        self.conn.commit()
+    
     def insert_media(self, media_data: Dict[str, Any]):
         """
         Insert a media file record.
