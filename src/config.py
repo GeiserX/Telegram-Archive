@@ -32,6 +32,9 @@ class Config:
         self.download_media = os.getenv('DOWNLOAD_MEDIA', 'true').lower() == 'true'
         self.max_media_size_mb = int(os.getenv('MAX_MEDIA_SIZE_MB', '100'))
         
+        # Batch processing configuration
+        self.batch_size = int(os.getenv('BATCH_SIZE', '100'))
+        
         # Chat type filters
         chat_types_str = os.getenv('CHAT_TYPES', 'private,groups,channels')
         self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',')]

@@ -164,7 +164,7 @@ class TelegramBackup:
         # Fetch new messages
         messages = []
         batch_data = []
-        batch_size = 50
+        batch_size = self.config.batch_size
         total_processed = 0
         
         async for message in self.client.iter_messages(
