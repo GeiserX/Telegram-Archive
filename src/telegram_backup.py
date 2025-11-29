@@ -197,6 +197,31 @@ class TelegramBackup:
         
         return len(messages)
     
+    def _extract_forward_from_id(self, message: Message) -> Optional[int]:
+        """
+        Extract forward sender ID safely handling different Peer types.
+        
+        Args:
+            message: Message object
+            
+        Returns:
+            ID of the forward sender or None
+        """
+        if not message.fwd_from or not message.fwd_from.from_id:
+            return None
+        
+        peer = message.fwd_from.from_id
+        
+        # Handle different Peer types
+        if hasattr(peer, 'user_id'):
+            return peer.user_id
+        if hasattr(peer, 'channel_id'):
+            return peer.channel_id
+        if hasattr(peer, 'chat_id'):
+            return peer.chat_id
+            
+        return None
+
     async def _process_message(self, message: Message, chat_id: int) -> Dict:
         """
         Process and save a single message.
@@ -219,7 +244,7 @@ class TelegramBackup:
             'date': message.date,
             'text': message.text or '',
             'reply_to_msg_id': message.reply_to_msg_id,
-            'forward_from_id': message.fwd_from.from_id.user_id if message.fwd_from else None,
+            'forward_from_id': self._extract_forward_from_id(message),
             'edit_date': message.edit_date,
             'media_type': None,
             'media_id': None,
