@@ -19,6 +19,8 @@ services:
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       CHAT_TYPES: ${CHAT_TYPES:-private,groups,channels}
+      INCLUDE_CHAT_IDS: ${INCLUDE_CHAT_IDS:-}
+      EXCLUDE_CHAT_IDS: ${EXCLUDE_CHAT_IDS:-}
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

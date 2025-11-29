@@ -287,6 +287,35 @@ python -m src.export_backup export -o recovery.json \
   -e 2024-12-31
 ```
 
+### Advanced Filtering
+
+You can use granular filtering to include or exclude specific chats by their ID.
+
+**Environment Variables:**
+- `INCLUDE_CHAT_IDS`: Comma-separated list of chat IDs to **whitelist**. If set, ONLY these chats will be backed up.
+- `EXCLUDE_CHAT_IDS`: Comma-separated list of chat IDs to **blacklist**. These chats will be skipped.
+
+**Examples:**
+
+1. **Backup only specific chats (Whitelist):**
+   ```env
+   INCLUDE_CHAT_IDS=123456789,987654321
+   ```
+
+2. **Backup everything EXCEPT specific chats (Blacklist):**
+   ```env
+   CHAT_TYPES=private,groups,channels
+   EXCLUDE_CHAT_IDS=111111111,222222222
+   ```
+
+3. **Backup all groups EXCEPT one:**
+   ```env
+   CHAT_TYPES=groups
+   EXCLUDE_CHAT_IDS=123456789
+   ```
+
+> **Note:** If `INCLUDE_CHAT_IDS` is set, it takes precedence over everything else (whitelist mode).
+
 ### Manual Backup Run
 
 ```bash

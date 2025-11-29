@@ -37,6 +37,19 @@ class Config:
         self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',')]
         self._validate_chat_types()
         
+        # Granular chat ID filters (optional)
+        # INCLUDE_CHAT_IDS: Only backup these specific chat IDs (whitelist)
+        # EXCLUDE_CHAT_IDS: Exclude these specific chat IDs (blacklist)
+        include_ids_str = os.getenv('INCLUDE_CHAT_IDS', '')
+        self.include_chat_ids = set()
+        if include_ids_str.strip():
+            self.include_chat_ids = {int(id.strip()) for id in include_ids_str.split(',') if id.strip()}
+        
+        exclude_ids_str = os.getenv('EXCLUDE_CHAT_IDS', '')
+        self.exclude_chat_ids = set()
+        if exclude_ids_str.strip():
+            self.exclude_chat_ids = {int(id.strip()) for id in exclude_ids_str.split(',') if id.strip()}
+        
         # Session configuration
         self.session_name = os.getenv('SESSION_NAME', 'telegram_backup')
         
@@ -133,6 +146,36 @@ class Config:
         if is_channel and 'channels' in self.chat_types:
             return True
         return False
+    
+    def should_backup_chat(self, chat_id: int, is_user: bool, is_group: bool, is_channel: bool) -> bool:
+        """
+        Determine if a chat should be backed up based on its ID and type.
+        
+        Filtering logic:
+        1. If INCLUDE_CHAT_IDS is set, ONLY those chat IDs are backed up (whitelist mode)
+        2. If chat_id is in EXCLUDE_CHAT_IDS, it's excluded (blacklist)
+        3. If both are set, INCLUDE takes precedence (whitelist wins)
+        4. Chat type filters (private/groups/channels) are applied after ID filters
+        
+        Args:
+            chat_id: Telegram chat ID
+            is_user: True if chat is a private conversation
+            is_group: True if chat is a group
+            is_channel: True if chat is a channel
+            
+        Returns:
+            True if chat should be backed up, False otherwise
+        """
+        # Whitelist mode: if include list is specified, ONLY backup chats in that list
+        if self.include_chat_ids:
+            return chat_id in self.include_chat_ids
+        
+        # Blacklist mode: if chat_id is in exclude list, skip it
+        if chat_id in self.exclude_chat_ids:
+            return False
+        
+        # Apply chat type filters (backward compatible with old behavior)
+        return self.should_backup_chat_type(is_user, is_group, is_channel)
     
     def get_max_media_size_bytes(self) -> int:
         """Get maximum media file size in bytes."""

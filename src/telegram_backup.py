@@ -81,10 +81,11 @@ class TelegramBackup:
             dialogs = await self._get_dialogs()
             logger.info(f"Found {len(dialogs)} total dialogs")
             
-            # Filter dialogs based on chat type configuration
+            # Filter dialogs based on chat type and ID filters
             filtered_dialogs = []
             for dialog in dialogs:
                 entity = dialog.entity
+                chat_id = entity.id
                 
                 is_user = isinstance(entity, User) and not entity.bot
                 is_group = isinstance(entity, Chat) or (
@@ -92,7 +93,7 @@ class TelegramBackup:
                 )
                 is_channel = isinstance(entity, Channel) and not entity.megagroup
                 
-                if self.config.should_backup_chat_type(is_user, is_group, is_channel):
+                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
                     filtered_dialogs.append(dialog)
             
             logger.info(f"Backing up {len(filtered_dialogs)} dialogs after filtering")
