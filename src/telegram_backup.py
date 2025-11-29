@@ -163,20 +163,33 @@ class TelegramBackup:
         
         # Fetch new messages
         messages = []
+        batch_data = []
+        batch_size = 50
+        total_processed = 0
+        
         async for message in self.client.iter_messages(
             entity,
             min_id=last_message_id,
             reverse=True
         ):
             messages.append(message)
+            
+            # Process message
+            msg_data = await self._process_message(message, chat_id)
+            batch_data.append(msg_data)
+            
+            # Batch insert every 50 messages
+            if len(batch_data) >= batch_size:
+                self.db.insert_messages_batch(batch_data)
+                total_processed += len(batch_data)
+                logger.info(f"  → Processed {total_processed} messages...")
+                batch_data = []
         
-        if not messages:
-            return 0
-        
-        # Process messages
-        for message in messages:
-            await self._process_message(message, chat_id)
-        
+        # Insert remaining messages
+        if batch_data:
+            self.db.insert_messages_batch(batch_data)
+            total_processed += len(batch_data)
+            
         # Update sync status
         if messages:
             max_message_id = max(msg.id for msg in messages)
@@ -184,7 +197,7 @@ class TelegramBackup:
         
         return len(messages)
     
-    async def _process_message(self, message: Message, chat_id: int):
+    async def _process_message(self, message: Message, chat_id: int) -> Dict:
         """
         Process and save a single message.
         
@@ -222,8 +235,8 @@ class TelegramBackup:
                 message_data['media_id'] = media_info['id']
                 message_data['media_path'] = media_info.get('file_path')
         
-        # Save message
-        self.db.insert_message(message_data)
+        # Return message data for batch processing
+        return message_data
     
     async def _process_media(self, message: Message, chat_id: int) -> Optional[dict]:
         """
