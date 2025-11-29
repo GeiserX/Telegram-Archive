@@ -56,3 +56,5 @@ Thumbs.db
 # Logs
 *.log
 logs/
+docker_logs.txt
+error.log
