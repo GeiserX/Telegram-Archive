@@ -287,34 +287,50 @@ python -m src.export_backup export -o recovery.json \
   -e 2024-12-31
 ```
 
+
 ### Advanced Filtering
 
-You can use granular filtering to include or exclude specific chats by their ID.
+You can use granular filtering to include or exclude specific chats by their ID, either globally or per chat type.
+
+**Priority Order (Highest to Lowest):**
+1. **Global Exclude** (`GLOBAL_EXCLUDE_CHAT_IDS`)
+2. **Type-Specific Exclude** (e.g., `PRIVATE_EXCLUDE_CHAT_IDS`)
+3. **Global Include** (`GLOBAL_INCLUDE_CHAT_IDS`)
+4. **Type-Specific Include** (e.g., `GROUPS_INCLUDE_CHAT_IDS`)
+5. **Chat Type Filter** (`CHAT_TYPES`)
 
 **Environment Variables:**
-- `INCLUDE_CHAT_IDS`: Comma-separated list of chat IDs to **whitelist**. If set, ONLY these chats will be backed up.
-- `EXCLUDE_CHAT_IDS`: Comma-separated list of chat IDs to **blacklist**. These chats will be skipped.
+
+*   **Global Filters:**
+    *   `GLOBAL_INCLUDE_CHAT_IDS`: Whitelist specific chats regardless of type.
+    *   `GLOBAL_EXCLUDE_CHAT_IDS`: Blacklist specific chats regardless of type.
+
+*   **Per-Type Filters:**
+    *   `PRIVATE_INCLUDE_CHAT_IDS` / `PRIVATE_EXCLUDE_CHAT_IDS`
+    *   `GROUPS_INCLUDE_CHAT_IDS` / `GROUPS_EXCLUDE_CHAT_IDS`
+    *   `CHANNELS_INCLUDE_CHAT_IDS` / `CHANNELS_EXCLUDE_CHAT_IDS`
 
 **Examples:**
 
-1. **Backup only specific chats (Whitelist):**
-   ```env
-   INCLUDE_CHAT_IDS=123456789,987654321
-   ```
+1.  **Backup all private chats EXCEPT one user:**
+    ```env
+    CHAT_TYPES=private
+    PRIVATE_EXCLUDE_CHAT_IDS=123456789
+    ```
 
-2. **Backup everything EXCEPT specific chats (Blacklist):**
-   ```env
-   CHAT_TYPES=private,groups,channels
-   EXCLUDE_CHAT_IDS=111111111,222222222
-   ```
+2.  **Backup only specific channels (Whitelist):**
+    ```env
+    CHAT_TYPES=
+    CHANNELS_INCLUDE_CHAT_IDS=100123456789,100987654321
+    ```
 
-3. **Backup all groups EXCEPT one:**
-   ```env
-   CHAT_TYPES=groups
-   EXCLUDE_CHAT_IDS=123456789
-   ```
+3.  **Backup all groups but force include one specific channel:**
+    ```env
+    CHAT_TYPES=groups
+    CHANNELS_INCLUDE_CHAT_IDS=100123456789
+    ```
 
-> **Note:** If `INCLUDE_CHAT_IDS` is set, it takes precedence over everything else (whitelist mode).
+> **Note:** `INCLUDE_CHAT_IDS` and `EXCLUDE_CHAT_IDS` are still supported for backward compatibility and map to the Global filters.
 
 ### Manual Backup Run
 

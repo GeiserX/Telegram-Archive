@@ -40,18 +40,24 @@ class Config:
         self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',')]
         self._validate_chat_types()
         
-        # Granular chat ID filters (optional)
-        # INCLUDE_CHAT_IDS: Only backup these specific chat IDs (whitelist)
-        # EXCLUDE_CHAT_IDS: Exclude these specific chat IDs (blacklist)
-        include_ids_str = os.getenv('INCLUDE_CHAT_IDS', '')
-        self.include_chat_ids = set()
-        if include_ids_str.strip():
-            self.include_chat_ids = {int(id.strip()) for id in include_ids_str.split(',') if id.strip()}
+        # Granular chat ID filters
+        # Global filters (backward compatibility with old names)
+        self.global_include_ids = self._parse_id_list(
+            os.getenv('GLOBAL_INCLUDE_CHAT_IDS') or os.getenv('INCLUDE_CHAT_IDS', '')
+        )
+        self.global_exclude_ids = self._parse_id_list(
+            os.getenv('GLOBAL_EXCLUDE_CHAT_IDS') or os.getenv('EXCLUDE_CHAT_IDS', '')
+        )
         
-        exclude_ids_str = os.getenv('EXCLUDE_CHAT_IDS', '')
-        self.exclude_chat_ids = set()
-        if exclude_ids_str.strip():
-            self.exclude_chat_ids = {int(id.strip()) for id in exclude_ids_str.split(',') if id.strip()}
+        # Per-type filters
+        self.private_include_ids = self._parse_id_list(os.getenv('PRIVATE_INCLUDE_CHAT_IDS', ''))
+        self.private_exclude_ids = self._parse_id_list(os.getenv('PRIVATE_EXCLUDE_CHAT_IDS', ''))
+        
+        self.groups_include_ids = self._parse_id_list(os.getenv('GROUPS_INCLUDE_CHAT_IDS', ''))
+        self.groups_exclude_ids = self._parse_id_list(os.getenv('GROUPS_EXCLUDE_CHAT_IDS', ''))
+        
+        self.channels_include_ids = self._parse_id_list(os.getenv('CHANNELS_INCLUDE_CHAT_IDS', ''))
+        self.channels_exclude_ids = self._parse_id_list(os.getenv('CHANNELS_EXCLUDE_CHAT_IDS', ''))
         
         # Session configuration
         self.session_name = os.getenv('SESSION_NAME', 'telegram_backup')
@@ -78,6 +84,12 @@ class Config:
         logger.debug(f"Download media: {self.download_media}")
         logger.debug(f"Chat types: {self.chat_types}")
         logger.debug(f"Schedule: {self.schedule}")
+    
+    def _parse_id_list(self, id_str: str) -> set:
+        """Parse comma-separated ID string into a set of integers."""
+        if not id_str or not id_str.strip():
+            return set()
+        return {int(id.strip()) for id in id_str.split(',') if id.strip()}
     
     def _get_required_env(self, key: str, value_type: type):
         """
@@ -154,11 +166,12 @@ class Config:
         """
         Determine if a chat should be backed up based on its ID and type.
         
-        Filtering logic:
-        1. If INCLUDE_CHAT_IDS is set, ONLY those chat IDs are backed up (whitelist mode)
-        2. If chat_id is in EXCLUDE_CHAT_IDS, it's excluded (blacklist)
-        3. If both are set, INCLUDE takes precedence (whitelist wins)
-        4. Chat type filters (private/groups/channels) are applied after ID filters
+        Filtering logic (Priority Order):
+        1. Global Exclude (Blacklist) -> Skip
+        2. Type-Specific Exclude -> Skip
+        3. Global Include (Whitelist) -> Backup
+        4. Type-Specific Include -> Backup
+        5. Chat Type Filter (CHAT_TYPES) -> Backup if matches
         
         Args:
             chat_id: Telegram chat ID
@@ -169,15 +182,31 @@ class Config:
         Returns:
             True if chat should be backed up, False otherwise
         """
-        # Whitelist mode: if include list is specified, ONLY backup chats in that list
-        if self.include_chat_ids:
-            return chat_id in self.include_chat_ids
-        
-        # Blacklist mode: if chat_id is in exclude list, skip it
-        if chat_id in self.exclude_chat_ids:
+        # 1. Global Exclude
+        if chat_id in self.global_exclude_ids:
             return False
-        
-        # Apply chat type filters (backward compatible with old behavior)
+            
+        # 2. Type-Specific Exclude
+        if is_user and chat_id in self.private_exclude_ids:
+            return False
+        if is_group and chat_id in self.groups_exclude_ids:
+            return False
+        if is_channel and chat_id in self.channels_exclude_ids:
+            return False
+            
+        # 3. Global Include
+        if chat_id in self.global_include_ids:
+            return True
+            
+        # 4. Type-Specific Include
+        if is_user and chat_id in self.private_include_ids:
+            return True
+        if is_group and chat_id in self.groups_include_ids:
+            return True
+        if is_channel and chat_id in self.channels_include_ids:
+            return True
+            
+        # 5. Chat Type Filter
         return self.should_backup_chat_type(is_user, is_group, is_channel)
     
     def get_max_media_size_bytes(self) -> int:
