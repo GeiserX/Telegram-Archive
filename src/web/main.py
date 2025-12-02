@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
@@ -33,18 +32,17 @@ app.add_middleware(
 config = Config()
 db = Database(config.database_path)
 
-# Setup templates
+# Setup paths
 templates_dir = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(templates_dir))
 
 # Mount media directory
 if os.path.exists(config.media_path):
     app.mount("/media", StaticFiles(directory=config.media_path), name="media")
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
+async def read_root():
     """Serve the main application page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return FileResponse(templates_dir / "index.html")
 
 @app.get("/api/chats")
 def get_chats():
