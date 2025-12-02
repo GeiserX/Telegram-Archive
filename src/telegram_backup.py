@@ -35,6 +35,7 @@ class TelegramBackup:
             config: Configuration object
         """
         self.config = config
+        self.config.validate_credentials()
         self.db = Database(config.database_path)
         self.client: Optional[TelegramClient] = None
         
