@@ -216,6 +216,29 @@ The viewer is included as a separate service in `docker-compose.yml`.
 
 > **Note**: The viewer is read-only and runs in a separate container for safety. It reads from the same SQLite database and media folder.
 
+## Migrating Media Files (v0.3.1+)
+
+If you're upgrading from a version before v0.3.1, you need to migrate your existing media files to the new naming convention that prevents filename conflicts.
+
+### Migration Steps:
+
+1.  **Dry run** (preview changes without modifying files):
+    ```bash
+    docker-compose exec telegram-backup python -m src.migrate_media --dry-run
+    ```
+
+2.  **Apply migration**:
+    ```bash
+    docker-compose exec telegram-backup python -m src.migrate_media
+    ```
+
+3.  **Restart containers** to use the new filenames:
+    ```bash
+    docker-compose restart
+    ```
+
+> **What changed?** Files are now named `{message_id}_{original_filename}` instead of just `{original_filename}`, ensuring uniqueness and preventing overwrites.
+
 ## Configuration
 
 All configuration is done via environment variables in the `.env` file:

@@ -382,17 +382,26 @@ class TelegramBackup:
         return None
     
     def _get_media_filename(self, message: Message, media_type: str) -> str:
-        """Generate a filename for media."""
+        """
+        Generate a unique filename for media.
+        Format: {message_id}_{original_filename} or {message_id}_{timestamp}.{ext}
+        """
         # Try to get original filename
+        original_name = None
         if hasattr(message.media, 'document'):
             for attr in message.media.document.attributes:
                 if hasattr(attr, 'file_name'):
-                    return attr.file_name
+                    original_name = attr.file_name
+                    break
         
-        # Generate filename based on message ID and type
+        if original_name:
+            # Prefix original filename with message_id for uniqueness
+            return f"{message.id}_{original_name}"
+        
+        # Generate filename based on timestamp and message ID
         timestamp = message.date.strftime('%Y%m%d_%H%M%S')
         extension = self._get_media_extension(media_type)
-        return f"{timestamp}_{message.id}.{extension}"
+        return f"{message.id}_{timestamp}.{extension}"
     
     def _get_media_extension(self, media_type: str) -> str:
         """Get file extension for media type."""
