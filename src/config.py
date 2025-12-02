@@ -19,10 +19,18 @@ class Config:
     
     def __init__(self):
         """Initialize configuration from environment variables."""
-        # Required Telegram API credentials
-        self.api_id = self._get_required_env('TELEGRAM_API_ID', int)
-        self.api_hash = self._get_required_env('TELEGRAM_API_HASH', str)
-        self.phone = self._get_required_env('TELEGRAM_PHONE', str)
+        # Telegram API credentials (optional for viewer, required for backup)
+        self.api_id = int(os.getenv('TELEGRAM_API_ID')) if os.getenv('TELEGRAM_API_ID') else None
+        self.api_hash = os.getenv('TELEGRAM_API_HASH')
+        self.phone = os.getenv('TELEGRAM_PHONE')
+        
+    def validate_credentials(self):
+        """Ensure Telegram credentials are present."""
+        if not all([self.api_id, self.api_hash, self.phone]):
+            raise ValueError(
+                "Missing required Telegram credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE). "
+                "Please set them in your .env file."
+            )
         
         # Backup schedule (cron format)
         self.schedule = os.getenv('SCHEDULE', '0 */6 * * *')

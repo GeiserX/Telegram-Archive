@@ -20,6 +20,7 @@ async def setup_authentication():
         # Load configuration
         from .config import Config, setup_logging
         config = Config()
+        config.validate_credentials()
         setup_logging(config)
         
         logger.info("=" * 60)
