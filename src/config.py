@@ -24,14 +24,7 @@ class Config:
         self.api_hash = os.getenv('TELEGRAM_API_HASH')
         self.phone = os.getenv('TELEGRAM_PHONE')
         
-    def validate_credentials(self):
-        """Ensure Telegram credentials are present."""
-        if not all([self.api_id, self.api_hash, self.phone]):
-            raise ValueError(
-                "Missing required Telegram credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE). "
-                "Please set them in your .env file."
-            )
-        
+
         # Backup schedule (cron format)
         self.schedule = os.getenv('SCHEDULE', '0 */6 * * *')
         
@@ -220,6 +213,14 @@ class Config:
     def get_max_media_size_bytes(self) -> int:
         """Get maximum media file size in bytes."""
         return self.max_media_size_mb * 1024 * 1024
+
+    def validate_credentials(self):
+        """Ensure Telegram credentials are present."""
+        if not all([self.api_id, self.api_hash, self.phone]):
+            raise ValueError(
+                "Missing required Telegram credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE). "
+                "Please set them in your .env file."
+            )
 
 
 def setup_logging(config: Config):
