@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" class="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,26 +10,69 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #1e293b; }
-        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
-        
-        .message-bubble {
-            max-width: 75%;
-            position: relative;
+        body {
+            font-family: 'Inter', sans-serif;
         }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+
+        /* Message Bubbles */
+        .message-bubble {
+            max-width: 65%;
+            position: relative;
+            word-wrap: break-word;
+        }
+
         .message-own {
             background-color: #2b5278;
             margin-left: auto;
             border-radius: 12px 12px 0 12px;
         }
+
         .message-other {
             background-color: #182533;
             margin-right: auto;
             border-radius: 12px 12px 12px 0;
+        }
+
+        /* Date Separator */
+        .date-separator {
+            text-align: center;
+            margin: 20px 0 10px 0;
+        }
+
+        .date-separator span {
+            background-color: #334155;
+            padding: 6px 16px;
+            border-radius: 16px;
+            font-size: 0.75rem;
+            color: #94a3b8;
+        }
+
+        /* Clickable Links */
+        .message-text a {
+            color: #60a5fa;
+            text-decoration: underline;
+        }
+
+        .message-text a:hover {
+            color: #93c5fd;
         }
     </style>
     <script>
@@ -38,12 +82,14 @@
                 extend: {
                     colors: {
                         tg: {
-                            bg: '#0f172a', // Slate 900
-                            sidebar: '#1e293b', // Slate 800
-                            hover: '#334155', // Slate 700
-                            active: '#2b5278', // Blueish
-                            text: '#e2e8f0', // Slate 200
-                            muted: '#94a3b8', // Slate 400
+                            bg: '#0f172a',
+                            sidebar: '#1e293b',
+                            hover: '#334155',
+                            active: '#2b5278',
+                            text: '#e2e8f0',
+                            muted: '#94a3b8',
+                            own: '#2b5278',
+                            other: '#182533',
                         }
                     }
                 }
@@ -51,50 +97,49 @@
         }
     </script>
 </head>
+
 <body class="bg-tg-bg text-tg-text h-screen overflow-hidden flex">
     <div id="app" class="flex w-full h-full">
-        
+
         <!-- Sidebar -->
         <div class="w-1/4 min-w-[300px] bg-tg-sidebar flex flex-col border-r border-gray-700">
             <!-- Header -->
             <div class="p-4 border-b border-gray-700">
                 <h1 class="text-xl font-bold mb-4">Telegram Archive</h1>
                 <div class="relative">
-                    <input 
-                        v-model="searchQuery" 
-                        type="text" 
-                        placeholder="Search chats..." 
-                        class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                    <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    <input v-model="searchQuery" type="text" placeholder="Search chats..."
+                        class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                     </svg>
                 </div>
             </div>
 
             <!-- Chat List -->
             <div class="flex-1 overflow-y-auto">
-                <div 
-                    v-for="chat in filteredChats" 
-                    :key="chat.id"
-                    @click="selectChat(chat)"
+                <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
                     class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
-                    :class="{'bg-tg-active': selectedChat?.id === chat.id}"
-                >
-                    <!-- Avatar Placeholder -->
-                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0">
-                        {{ getInitials(chat.title || chat.first_name || 'Unknown') }}
+                    :class="{'bg-tg-active': selectedChat?.id === chat.id}">
+                    <!-- Avatar -->
+                    <div
+                        class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0">
+                        {{ getInitials(chat) }}
                     </div>
-                    
+
                     <div class="flex-1 min-w-0">
                         <div class="flex justify-between items-baseline">
                             <h3 class="font-semibold truncate text-white">
-                                {{ chat.title || (chat.first_name + ' ' + (chat.last_name || '')).trim() || 'Unknown' }}
+                                {{ getChatName(chat) }}
                             </h3>
-                            <span class="text-xs text-tg-muted">{{ formatDate(chat.updated_at) }}</span>
+                            <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
                         </div>
                         <p class="text-sm text-tg-muted truncate">
-                            {{ chat.type }} • {{ chat.participants_count || 0 }} participants
+                            {{ chat.type }}
+                            <span v-if="chat.type !== 'private' && chat.participants_count">
+                                • {{ chat.participants_count }} participants
+                            </span>
                         </p>
                     </div>
                 </div>
@@ -106,7 +151,9 @@
             <div v-if="!selectedChat" class="flex-1 flex items-center justify-center text-tg-muted flex-col">
                 <div class="bg-tg-sidebar p-6 rounded-full mb-4">
                     <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z">
+                        </path>
                     </svg>
                 </div>
                 <p>Select a chat to view history</p>
@@ -114,81 +161,105 @@
 
             <template v-else>
                 <!-- Chat Header -->
-                <div class="p-4 bg-tg-sidebar border-b border-gray-700 flex items-center gap-4 shadow-md z-10">
-                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white">
-                        {{ getInitials(selectedChat.title || selectedChat.first_name || 'U') }}
+                <div
+                    class="p-4 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
+                    <div class="flex items-center gap-4">
+                        <div
+                            class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white">
+                            {{ getInitials(selectedChat) }}
+                        </div>
+                        <div>
+                            <h2 class="font-bold text-lg">{{ getChatName(selectedChat) }}</h2>
+                            <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+                        </div>
                     </div>
-                    <div>
-                        <h2 class="font-bold text-lg">
-                            {{ selectedChat.title || (selectedChat.first_name + ' ' + (selectedChat.last_name || '')).trim() }}
-                        </h2>
-                        <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+
+                    <!-- Search Bar -->
+                    <div class="relative w-64">
+                        <input v-model="messageSearchQuery" @input="searchMessages" type="text"
+                            placeholder="Search in chat..."
+                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
+                            viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
                     </div>
                 </div>
 
                 <!-- Messages -->
-                <div 
-                    ref="messagesContainer"
-                    class="flex-1 overflow-y-auto p-4 space-y-2 flex flex-col-reverse"
-                    @scroll="handleScroll"
-                >
-                    <div 
-                        v-for="msg in messages" 
-                        :key="msg.id" 
-                        class="message-bubble p-3 text-sm shadow-sm"
-                        :class="isOwnMessage(msg) ? 'message-own text-white' : 'message-other text-gray-200'"
-                    >
-                        <!-- Sender Name (if group) -->
-                        <div v-if="!isOwnMessage(msg) && (selectedChat.type === 'group' || selectedChat.type === 'channel')" class="text-xs font-bold text-blue-400 mb-1">
-                            {{ msg.first_name || msg.username || 'User ' + msg.sender_id }}
-                        </div>
-
-                        <!-- Reply Context -->
-                        <div v-if="msg.reply_to_msg_id" class="border-l-2 border-white/30 pl-2 mb-2 text-xs opacity-70 cursor-pointer">
-                            Reply to message {{ msg.reply_to_msg_id }}
-                        </div>
-
-                        <!-- Media -->
-                        <div v-if="msg.media_path" class="mb-2">
-                            <img 
-                                v-if="msg.media_type === 'photo'" 
-                                :src="'/media/' + msg.chat_id + '/' + msg.media_path.split('/').pop()" 
-                                class="rounded-lg max-h-64 object-cover cursor-pointer hover:opacity-90 transition"
-                                @click="openMedia(msg)"
-                            >
-                            <video 
-                                v-else-if="msg.media_type === 'video'" 
-                                controls 
-                                class="rounded-lg max-h-64 w-full"
-                            >
-                                <source :src="'/media/' + msg.chat_id + '/' + msg.media_path.split('/').pop()" type="video/mp4">
-                            </video>
-                            <div v-else class="flex items-center gap-2 bg-black/20 p-2 rounded">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                <span>{{ msg.media_type }} file</span>
-                            </div>
-                        </div>
-
-                        <!-- Text -->
-                        <div class="whitespace-pre-wrap break-words">{{ msg.text }}</div>
-
-                        <!-- Metadata -->
-                        <div class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
-                            <span v-if="msg.edit_date">edited</span>
-                            {{ formatTime(msg.date) }}
-                        </div>
-                    </div>
-                    
-                    <div v-if="loading" class="text-center py-4 text-tg-muted">
+                <div ref="messagesContainer" class="flex-1 overflow-y-auto p-4 space-y-1" @scroll="handleScroll">
+                    <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                         Loading messages...
                     </div>
+
+                    <template v-for="(msg, index) in sortedMessages" :key="msg.id">
+                        <!-- Date Separator -->
+                        <div v-if="showDateSeparator(index)" class="date-separator">
+                            <span>{{ formatDateFull(msg.date) }}</span>
+                        </div>
+
+                        <!-- Message -->
+                        <div class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <div class="message-bubble p-3 text-sm shadow-sm"
+                                :class="isOwnMessage(msg) ? 'message-own text-white' : 'message-other text-gray-200'">
+                                <!-- Sender Name (if group and first in sequence) -->
+                                <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
+                                    class="text-xs font-bold text-blue-400 mb-1">
+                                    {{ getSenderName(msg) }}
+                                </div>
+
+                                <!-- Reply Context -->
+                                <div v-if="msg.reply_to_msg_id"
+                                    class="border-l-2 border-white/30 pl-2 mb-2 text-xs opacity-70">
+                                    Reply to message {{ msg.reply_to_msg_id }}
+                                </div>
+
+                                <!-- Media -->
+                                <div v-if="msg.media_path" class="mb-2">
+                                    <img v-if="msg.media_type === 'photo'" :src="getMediaUrl(msg)"
+                                        class="rounded-lg max-h-64 object-cover cursor-pointer hover:opacity-90 transition"
+                                        @click="openMedia(msg)" @error="handleImageError($event, msg)">
+                                    <video v-else-if="msg.media_type === 'video'" controls
+                                        class="rounded-lg max-h-64 w-full">
+                                        <source :src="getMediaUrl(msg)" type="video/mp4">
+                                    </video>
+                                    <a v-else :href="getMediaUrl(msg)" download
+                                        class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
+                                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
+                                            </path>
+                                        </svg>
+                                        <span>{{ msg.media_type }} file</span>
+                                    </a>
+                                </div>
+
+                                <!-- Text with clickable links -->
+                                <div class="whitespace-pre-wrap break-words message-text"
+                                    v-html="linkifyText(msg.text)"></div>
+
+                                <!-- Metadata -->
+                                <div class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
+                                    <span v-if="msg.edit_date">edited</span>
+                                    {{ formatTime(msg.date) }}
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div v-if="loading && messages.length > 0" class="text-center py-2 text-tg-muted text-sm">
+                        Loading more...
+                    </div>
+
+                    <div ref="scrollAnchor"></div>
                 </div>
             </template>
         </div>
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted, watch } = Vue
+        const { createApp, ref, computed, onMounted, watch, nextTick } = Vue
 
         createApp({
             setup() {
@@ -196,10 +267,12 @@
                 const messages = ref([])
                 const selectedChat = ref(null)
                 const searchQuery = ref('')
+                const messageSearchQuery = ref('')
                 const loading = ref(false)
                 const page = ref(0)
                 const hasMore = ref(true)
                 const messagesContainer = ref(null)
+                const scrollAnchor = ref(null)
 
                 // Fetch chats on mount
                 onMounted(async () => {
@@ -214,11 +287,20 @@
                 const filteredChats = computed(() => {
                     if (!searchQuery.value) return chats.value
                     const q = searchQuery.value.toLowerCase()
-                    return chats.value.filter(c => 
+                    return chats.value.filter(c =>
                         (c.title && c.title.toLowerCase().includes(q)) ||
                         (c.first_name && c.first_name.toLowerCase().includes(q)) ||
                         (c.username && c.username.toLowerCase().includes(q))
                     )
+                })
+
+                const sortedMessages = computed(() => {
+                    // Messages come DESC from API, reverse to show oldest first (chronological)
+                    return [...messages.value].reverse()
+                })
+
+                const isGroup = computed(() => {
+                    return selectedChat.value && (selectedChat.value.type === 'group' || selectedChat.value.type === 'channel')
                 })
 
                 const selectChat = async (chat) => {
@@ -226,24 +308,32 @@
                     messages.value = []
                     page.value = 0
                     hasMore.value = true
+                    messageSearchQuery.value = ''
                     await loadMessages()
+                    await nextTick()
+                    scrollToBottom()
                 }
 
                 const loadMessages = async () => {
                     if (loading.value || !hasMore.value || !selectedChat.value) return
-                    
+
                     loading.value = true
                     try {
                         const limit = 50
                         const offset = page.value * limit
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`)
+                        let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
+
+                        if (messageSearchQuery.value) {
+                            url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
+                        }
+
+                        const res = await fetch(url)
                         const newMessages = await res.json()
-                        
+
                         if (newMessages.length < limit) {
                             hasMore.value = false
                         }
-                        
-                        // Append messages (since we use flex-col-reverse, we append to end of array which is top of view)
+
                         messages.value = [...messages.value, ...newMessages]
                         page.value++
                     } catch (e) {
@@ -253,53 +343,116 @@
                     }
                 }
 
+                const searchMessages = async () => {
+                    messages.value = []
+                    page.value = 0
+                    hasMore.value = true
+                    await loadMessages()
+                }
+
                 const handleScroll = (e) => {
                     const { scrollTop, scrollHeight, clientHeight } = e.target
-                    // In flex-col-reverse, scrollTop is negative or 0 at bottom? 
-                    // Actually, standard scroll behavior applies to the container.
-                    // If we are at the "top" (visually), scrollTop is 0?
-                    // Let's check if we are near the top of the scrollable area (which is visually the top/past)
-                    
-                    // Actually, simpler logic: if user scrolls to top, load more older messages
-                    // But wait, I used flex-col-reverse. So the "bottom" of the HTML element is the "top" of the visual list?
-                    // No, flex-col-reverse just renders children in reverse order.
-                    // The container scrollbar works normally.
-                    
-                    // Let's just use a "Load More" button for now if scroll is tricky, or check scroll position.
-                    // Infinite scroll logic:
-                    if (Math.abs(scrollTop) < 50) { // Near top
-                       // loadMessages()
+                    // Load more when scrolling near top (for older messages)
+                    if (scrollTop < 100 && !loading.value && hasMore.value) {
+                        const previousHeight = scrollHeight
+                        loadMessages().then(() => {
+                            // Maintain scroll position
+                            nextTick(() => {
+                                const newHeight = messagesContainer.value.scrollHeight
+                                messagesContainer.value.scrollTop = scrollTop + (newHeight - previousHeight)
+                            })
+                        })
                     }
                 }
-                
-                // Infinite scroll using Intersection Observer on a sentinel element would be better
-                // For MVP, let's just load 50. I'll add a "Load More" button at the top if needed.
-                // Actually, let's just load 100 initially.
 
-                const isOwnMessage = (msg) => {
-                    // We need to know "my" ID. For now, assume outgoing messages have no sender_id or specific logic?
-                    // In Telethon, outgoing messages have `out=True`. We didn't save that in DB explicitly?
-                    // We saved sender_id. We need to know who "me" is.
-                    // For now, let's guess based on if sender_id matches the session user ID (which we don't have here easily).
-                    // Or we can just check if it's NOT the other person in a private chat.
-                    return false // Placeholder
+                const scrollToBottom = () => {
+                    if (messagesContainer.value) {
+                        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+                    }
                 }
 
-                const getInitials = (name) => {
+                const isOwnMessage = (msg) => {
+                    // In private chat: if sender_id is NOT the chat_id, it's me
+                    if (selectedChat.value.type === 'private') {
+                        return msg.sender_id !== selectedChat.value.id
+                    }
+                    // In groups/channels: we can't easily know without "me" ID
+                    return false
+                }
+
+                const getSenderName = (msg) => {
+                    if (msg.first_name || msg.last_name) {
+                        return `${msg.first_name || ''} ${msg.last_name || ''}`.trim()
+                    }
+                    if (msg.username) return msg.username
+                    if (msg.sender_id) return `User ${msg.sender_id}`
+                    return 'Deleted Account'
+                }
+
+                const showSenderName = (index) => {
+                    if (index === 0) return true
+                    const prevMsg = sortedMessages.value[index - 1]
+                    const currMsg = sortedMessages.value[index]
+                    return prevMsg.sender_id !== currMsg.sender_id
+                }
+
+                const showDateSeparator = (index) => {
+                    if (index === 0) return true
+                    const prevMsg = sortedMessages.value[index - 1]
+                    const currMsg = sortedMessages.value[index]
+                    return moment(prevMsg.date).format('YYYY-MM-DD') !== moment(currMsg.date).format('YYYY-MM-DD')
+                }
+
+                const getChatName = (chat) => {
+                    if (chat.title) return chat.title
+                    const firstName = chat.first_name || ''
+                    const lastName = chat.last_name || ''
+                    const name = `${firstName} ${lastName}`.trim()
+                    return name || chat.username || 'Deleted Account'
+                }
+
+                const getInitials = (chat) => {
+                    const name = getChatName(chat)
                     return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()
                 }
 
                 const formatDate = (dateStr) => {
                     if (!dateStr) return ''
-                    return moment(dateStr).format('MMM D')
+                    const date = moment(dateStr)
+                    if (date.isSame(moment(), 'day')) return 'Today'
+                    if (date.isSame(moment().subtract(1, 'day'), 'day')) return 'Yesterday'
+                    return date.format('MMM D')
+                }
+
+                const formatDateFull = (dateStr) => {
+                    return moment(dateStr).format('MMMM D, YYYY')
                 }
 
                 const formatTime = (dateStr) => {
                     return moment(dateStr).format('HH:mm')
                 }
-                
+
+                const getMediaUrl = (msg) => {
+                    if (!msg.media_path) return ''
+                    // Extract filename from path
+                    const filename = msg.media_path.split(/[/\\]/).pop()
+                    return `/media/${msg.chat_id}/${filename}`
+                }
+
+                const handleImageError = (event, msg) => {
+                    console.error('Failed to load image:', getMediaUrl(msg))
+                    event.target.style.display = 'none'
+                }
+
                 const openMedia = (msg) => {
-                    window.open(`/media/${msg.chat_id}/${msg.media_path.split('/').pop()}`, '_blank')
+                    window.open(getMediaUrl(msg), '_blank')
+                }
+
+                const linkifyText = (text) => {
+                    if (!text) return ''
+                    // Basic URL regex
+                    const urlRegex = /(https?:\/\/[^\s]+)/g
+                    return text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>')
                 }
 
                 return {
@@ -307,19 +460,33 @@
                     filteredChats,
                     selectedChat,
                     messages,
+                    sortedMessages,
                     searchQuery,
+                    messageSearchQuery,
                     loading,
+                    isGroup,
                     selectChat,
+                    searchMessages,
                     isOwnMessage,
+                    getSenderName,
+                    showSenderName,
+                    showDateSeparator,
+                    getChatName,
                     getInitials,
                     formatDate,
+                    formatDateFull,
                     formatTime,
+                    getMediaUrl,
+                    handleImageError,
                     openMedia,
+                    linkifyText,
                     messagesContainer,
+                    scrollAnchor,
                     handleScroll
                 }
             }
         }).mount('#app')
     </script>
 </body>
+
 </html>

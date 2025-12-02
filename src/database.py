@@ -404,6 +404,25 @@ class Database:
             'total_size_mb': round(total_size / (1024 * 1024), 2)
         }
     
+    def get_all_chats(self):
+        """
+        Get all chats with their last message date.
+        
+        Returns:
+            List of chat dictionaries sorted by last message date (newest first)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                c.*,
+                MAX(m.date) as last_message_date
+            FROM chats c
+            LEFT JOIN messages m ON c.id = m.chat_id
+            GROUP BY c.id
+            ORDER BY last_message_date DESC NULLS LAST
+        ''')
+        return [dict(row) for row in cursor.fetchall()]
+    
     def close(self):
         """Close database connection."""
         self.conn.close()
