@@ -83,9 +83,9 @@ class TelegramBackup:
             logger.info(f"Found {len(dialogs)} total dialogs")
 
             # Filter dialogs based on chat type and ID filters
-            # Also delete excluded chats from database
+            # Also delete explicitly excluded chats from database
             filtered_dialogs = []
-            excluded_chat_ids = set()
+            explicitly_excluded_chat_ids = set()
             
             for dialog in dialogs:
                 entity = dialog.entity
@@ -97,16 +97,25 @@ class TelegramBackup:
                 )
                 is_channel = isinstance(entity, Channel) and not entity.megagroup
 
-                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                # Check if chat is explicitly in an exclude list (not just filtered out)
+                is_explicitly_excluded = (
+                    chat_id in self.config.global_exclude_ids or
+                    (is_user and chat_id in self.config.private_exclude_ids) or
+                    (is_group and chat_id in self.config.groups_exclude_ids) or
+                    (is_channel and chat_id in self.config.channels_exclude_ids)
+                )
+
+                if is_explicitly_excluded:
+                    # Chat is explicitly excluded - mark for deletion
+                    explicitly_excluded_chat_ids.add(chat_id)
+                elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                    # Chat should be backed up
                     filtered_dialogs.append(dialog)
-                else:
-                    # Chat is excluded - mark for deletion
-                    excluded_chat_ids.add(chat_id)
             
-            # Delete excluded chats from database
-            if excluded_chat_ids:
-                logger.info(f"Deleting {len(excluded_chat_ids)} excluded chats from database...")
-                for chat_id in excluded_chat_ids:
+            # Delete only explicitly excluded chats from database
+            if explicitly_excluded_chat_ids:
+                logger.info(f"Deleting {len(explicitly_excluded_chat_ids)} explicitly excluded chats from database...")
+                for chat_id in explicitly_excluded_chat_ids:
                     try:
                         self.db.delete_chat_and_related_data(chat_id)
                     except Exception as e:
@@ -135,8 +144,9 @@ class TelegramBackup:
             total_messages = 0
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
+                chat_id = entity.id
                 chat_name = self._get_chat_name(entity)
-                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up: {chat_name}")
+                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up: {chat_name} (ID: {chat_id})")
 
                 try:
                     message_count = await self._backup_dialog(dialog)
