@@ -35,8 +35,8 @@ config = Config()
 db = Database(config.database_path)
 
 # Simple viewer authentication using env vars
-VIEWER_USERNAME = os.getenv("VIEWER_USERNAME")
-VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD")
+VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
+VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
 AUTH_COOKIE_NAME = "viewer_auth"
 AUTH_TOKEN = None
@@ -45,7 +45,7 @@ if AUTH_ENABLED:
     AUTH_TOKEN = hashlib.sha256(
         f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode("utf-8")
     ).hexdigest()
-    logger.info("Viewer authentication is ENABLED")
+    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME})")
 else:
     logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
 
@@ -90,10 +90,11 @@ def login(payload: dict, request: Request):
         # If auth is disabled, always "succeed"
         return JSONResponse({"success": True, "auth_required": False})
 
-    username = str(payload.get("username", ""))
-    password = str(payload.get("password", ""))
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
 
     if username != VIEWER_USERNAME or password != VIEWER_PASSWORD:
+        logger.warning(f"Login failed for user '{username}'. Expected len: {len(VIEWER_USERNAME)}, Got len: {len(username)}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     response = JSONResponse({"success": True, "auth_required": True})
