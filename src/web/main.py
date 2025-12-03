@@ -102,6 +102,7 @@ def login(payload: dict, request: Request):
         AUTH_TOKEN,
         httponly=True,
         samesite="lax",
+        max_age=30 * 24 * 60 * 60,  # 30 days
     )
     return response
 
