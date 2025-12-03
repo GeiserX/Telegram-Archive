@@ -210,9 +210,10 @@
                                 </div>
 
                                 <!-- Reply Context -->
-                                <div v-if="msg.reply_to_msg_id"
-                                    class="border-l-2 border-white/30 pl-2 mb-2 text-xs opacity-70">
-                                    Reply to message {{ msg.reply_to_msg_id }}
+                                <div v-if="msg.reply_to_msg_id" @click="scrollToMessage(msg.reply_to_msg_id)"
+                                    class="border-l-2 border-blue-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2 cursor-pointer hover:bg-black/30 transition">
+                                    <div class="font-semibold text-blue-400 mb-0.5">Reply to</div>
+                                    <div class="truncate opacity-70">{{ msg.reply_to_text || 'Message' }}</div>
                                 </div>
 
                                 <!-- Media -->
@@ -455,6 +456,27 @@
                     return text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>')
                 }
 
+                const scrollToMessage = (msgId) => {
+                    // Find message element by ID and scroll to it
+                    const msgIndex = sortedMessages.value.findIndex(m => m.id === msgId)
+                    if (msgIndex !== -1) {
+                        nextTick(() => {
+                            const container = messagesContainer.value
+                            const msgElements = container.querySelectorAll('.message-bubble')
+                            if (msgElements[msgIndex]) {
+                                msgElements[msgIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                // Highlight briefly
+                                msgElements[msgIndex].style.backgroundColor = '#1e40af'
+                                setTimeout(() => {
+                                    msgElements[msgIndex].style.backgroundColor = ''
+                                }, 1000)
+                            }
+                        })
+                    } else {
+                        console.log('Message not loaded yet')
+                    }
+                }
+
                 return {
                     chats,
                     filteredChats,
@@ -480,6 +502,7 @@
                     handleImageError,
                     openMedia,
                     linkifyText,
+                    scrollToMessage,
                     messagesContainer,
                     scrollAnchor,
                     handleScroll
