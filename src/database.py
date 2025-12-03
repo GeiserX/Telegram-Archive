@@ -60,6 +60,7 @@ class Database:
                 date TIMESTAMP NOT NULL,
                 text TEXT,
                 reply_to_msg_id INTEGER,
+                reply_to_text TEXT,
                 forward_from_id INTEGER,
                 edit_date TIMESTAMP,
                 media_type TEXT,
@@ -206,10 +207,10 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO messages (
-                id, chat_id, sender_id, date, text, reply_to_msg_id,
+                id, chat_id, sender_id, date, text, reply_to_msg_id, reply_to_text,
                 forward_from_id, edit_date, media_type, media_id, 
                 media_path, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             message_data['id'],
             message_data['chat_id'],
@@ -217,12 +218,13 @@ class Database:
             message_data['date'],
             message_data.get('text'),
             message_data.get('reply_to_msg_id'),
+            message_data.get('reply_to_text'),
             message_data.get('forward_from_id'),
             message_data.get('edit_date'),
             message_data.get('media_type'),
             message_data.get('media_id'),
             message_data.get('media_path'),
-            json.dumps(message_data.get('raw_data', {}))
+           json.dumps(message_data.get('raw_data', {}))
         ))
         self.conn.commit()
     
@@ -239,10 +241,10 @@ class Database:
         cursor = self.conn.cursor()
         cursor.executemany('''
             INSERT OR REPLACE INTO messages (
-                id, chat_id, sender_id, date, text, reply_to_msg_id,
+                id, chat_id, sender_id, date, text, reply_to_msg_id, reply_to_text,
                 forward_from_id, edit_date, media_type, media_id, 
                 media_path, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', [
             (
                 m['id'],
@@ -251,6 +253,7 @@ class Database:
                 m['date'],
                 m.get('text'),
                 m.get('reply_to_msg_id'),
+                m.get('reply_to_text'),
                 m.get('forward_from_id'),
                 m.get('edit_date'),
                 m.get('media_type'),
