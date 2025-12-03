@@ -245,6 +245,7 @@ class TelegramBackup:
             'date': message.date,
             'text': message.text or '',
             'reply_to_msg_id': message.reply_to_msg_id,
+            'reply_to_text': None,
             'forward_from_id': self._extract_forward_from_id(message),
             'edit_date': message.edit_date,
             'media_type': None,
@@ -252,6 +253,14 @@ class TelegramBackup:
             'media_path': None,
             'raw_data': {}
         }
+        
+        # Get reply text if this is a reply
+        if message.reply_to_msg_id and message.reply_to:
+            reply_msg = message.reply_to
+            if hasattr(reply_msg, 'message'):
+                # Truncate to first 100 chars like Telegram does
+                reply_text = (reply_msg.message or '')[:100]
+                message_data['reply_to_text'] = reply_text
         
         # Handle media
         if message.media and self.config.download_media:
@@ -312,8 +321,8 @@ class TelegramBackup:
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
             os.makedirs(chat_media_dir, exist_ok=True)
             
-            # Generate filename
-            file_name = self._get_media_filename(message, media_type)
+            # Generate filename using file_id for automatic deduplication
+            file_name = self._get_media_filename(message, media_type, telegram_file_id)
             file_path = os.path.join(chat_media_dir, file_name)
             
             # Download if not already exists
@@ -388,12 +397,20 @@ class TelegramBackup:
             return 'poll'
         return None
     
-    def _get_media_filename(self, message: Message, media_type: str) -> str:
+    def _get_media_filename(self, message: Message, media_type: str, telegram_file_id: str = None) -> str:
         """
-        Generate a unique filename for media.
-        Format: {message_id}_{original_filename} or {message_id}_{timestamp}.{ext}
+        Generate a unique filename using Telegram's file_id.
+        This automatically deduplicates identical files.
+        Format: {file_id}.{ext}
         """
-        # Try to get original filename
+        # Use file_id as base filename for automatic deduplication
+        if telegram_file_id:
+            extension = self._get_media_extension(media_type)
+            # Sanitize file_id for use as filename (remove special chars)
+            safe_id = str(telegram_file_id).replace('/', '_').replace('\\', '_')
+            return f"{safe_id}.{extension}"
+        
+        # Fallback: Try to get original filename
         original_name = None
         if hasattr(message.media, 'document'):
             for attr in message.media.document.attributes:
@@ -402,10 +419,10 @@ class TelegramBackup:
                     break
         
         if original_name:
-            # Prefix original filename with message_id for uniqueness
+            # Use message_id prefix for uniqueness (fallback case)
             return f"{message.id}_{original_name}"
         
-        # Generate filename based on timestamp and message ID
+        # Last resort: timestamp-based
         timestamp = message.date.strftime('%Y%m%d_%H%M%S')
         extension = self._get_media_extension(media_type)
         return f"{message.id}_{timestamp}.{extension}"
