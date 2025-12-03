@@ -155,12 +155,7 @@ class TelegramBackup:
 
                     # Optimization: after initial full run, if the most recently
                     # active chat has no new messages, we assume the rest don't either.
-                    if has_synced_before and i == 1 and message_count == 0:
-                        logger.info(
-                            "Most recent chat has no new messages; "
-                            "skipping remaining chats for this run."
-                        )
-                        break
+
                 except Exception as e:
                     logger.error(f"  → Error backing up {chat_name}: {e}", exc_info=True)
             
