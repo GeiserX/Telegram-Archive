@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
+import glob
 from typing import Optional, List
 from pathlib import Path
 import hashlib
@@ -60,7 +61,7 @@ def require_auth(auth_cookie: str | None = Cookie(default=None)):
 # Setup paths
 templates_dir = Path(__file__).parent / "templates"
 
-# Mount media directory
+# Mount media directory (includes avatars)
 if os.path.exists(config.media_path):
     app.mount("/media", StaticFiles(directory=config.media_path), name="media")
 
@@ -116,10 +117,46 @@ def logout():
     return response
 
 
+def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
+    """
+    Find the most recent avatar file for a chat or user.
+    
+    Returns the path relative to media_path, or None if no avatar found.
+    """
+    if chat_type == 'private':
+        avatar_dir = os.path.join(config.media_path, "avatars", "users")
+    else:
+        avatar_dir = os.path.join(config.media_path, "avatars", "chats")
+    
+    if not os.path.exists(avatar_dir):
+        return None
+    
+    # Look for files matching {chat_id}_*.jpg
+    pattern = os.path.join(avatar_dir, f"{chat_id}_*.jpg")
+    matches = glob.glob(pattern)
+    
+    if not matches:
+        return None
+    
+    # Return the most recent file (by modification time)
+    most_recent = max(matches, key=os.path.getmtime)
+    # Return path relative to media_path for URL construction
+    rel_path = os.path.relpath(most_recent, config.media_path)
+    return rel_path.replace('\\', '/')  # Normalize for URLs
+
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 def get_chats():
-    """Get all chats with metadata."""
+    """Get all chats with metadata, including avatar URLs."""
     chats = db.get_all_chats()
+    
+    # Add avatar URLs to each chat
+    for chat in chats:
+        avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
+        if avatar_path:
+            chat['avatar_url'] = f"/media/{avatar_path}"
+        else:
+            chat['avatar_url'] = None
+    
     return chats
 
 @app.get("/api/chats/{chat_id}/messages", dependencies=[Depends(require_auth)])

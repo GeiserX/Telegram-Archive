@@ -426,6 +426,48 @@ class Database:
         ''')
         return [dict(row) for row in cursor.fetchall()]
     
+    def delete_chat_and_related_data(self, chat_id: int):
+        """
+        Delete a chat and all related data from the database.
+        
+        This includes:
+        - Chat record
+        - All messages in the chat
+        - All media references for messages in the chat
+        - Sync status for the chat
+        
+        Args:
+            chat_id: Chat ID to delete
+        """
+        cursor = self.conn.cursor()
+        
+        # Delete media records for messages in this chat
+        cursor.execute('''
+            DELETE FROM media 
+            WHERE chat_id = ?
+        ''', (chat_id,))
+        
+        # Delete messages
+        cursor.execute('''
+            DELETE FROM messages 
+            WHERE chat_id = ?
+        ''', (chat_id,))
+        
+        # Delete sync status
+        cursor.execute('''
+            DELETE FROM sync_status 
+            WHERE chat_id = ?
+        ''', (chat_id,))
+        
+        # Delete chat
+        cursor.execute('''
+            DELETE FROM chats 
+            WHERE id = ?
+        ''', (chat_id,))
+        
+        self.conn.commit()
+        logger.info(f"Deleted chat {chat_id} and all related data from database")
+    
     def close(self):
         """Close database connection."""
         self.conn.close()

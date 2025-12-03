@@ -144,8 +144,12 @@
                     :class="{'bg-tg-active': selectedChat?.id === chat.id}">
                     <!-- Avatar -->
                     <div
-                        class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden">
-                        <template v-if="isDeletedChat(chat)">
+                        class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
+                        <img v-if="chat.avatar_url" :src="chat.avatar_url" 
+                            class="w-full h-full object-cover"
+                            @error="chat.avatar_url = null"
+                            :alt="getChatName(chat)">
+                        <template v-else-if="isDeletedChat(chat)">
                             <!-- Deleted account icon -->
                             <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -196,8 +200,12 @@
                     class="p-4 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
                     <div class="flex items-center gap-4">
                         <div
-                            class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden">
-                            <template v-if="isDeletedChat(selectedChat)">
+                            class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden relative">
+                            <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url" 
+                                class="w-full h-full object-cover"
+                                @error="selectedChat.avatar_url = null"
+                                :alt="getChatName(selectedChat)">
+                            <template v-else-if="isDeletedChat(selectedChat)">
                                 <svg class="w-6 h-6 opacity-80" fill="none" stroke="currentColor"
                                     viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -375,10 +383,18 @@
                                 await loadChats()
                             }
                         } else {
-                            console.error('Failed to get auth status')
+                            // If status endpoint fails, assume no auth required
+                            console.warn('Failed to get auth status, assuming no auth required')
+                            authRequired.value = false
+                            isAuthenticated.value = true
+                            await loadChats()
                         }
                     } catch (e) {
+                        // On error, assume no auth required to allow access
                         console.error('Auth status error', e)
+                        authRequired.value = false
+                        isAuthenticated.value = true
+                        await loadChats()
                     } finally {
                         loadingAuth.value = false
                     }
