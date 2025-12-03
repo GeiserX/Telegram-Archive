@@ -217,22 +217,50 @@
                                 </div>
 
                                 <!-- Media -->
-                                <div v-if="msg.media_path" class="mb-2">
+                                <div v-if="msg.media_path" class="mb-2 space-y-1">
+                                    <!-- Photos sent as photos -->
                                     <img v-if="msg.media_type === 'photo'" :src="getMediaUrl(msg)"
                                         class="rounded-lg max-h-64 object-cover cursor-pointer hover:opacity-90 transition"
                                         @click="openMedia(msg)" @error="handleImageError($event, msg)">
+
+                                    <!-- Videos -->
                                     <video v-else-if="msg.media_type === 'video'" controls
                                         class="rounded-lg max-h-64 w-full">
                                         <source :src="getMediaUrl(msg)" type="video/mp4">
                                     </video>
+
+                                    <!-- Documents that are actually images: show inline preview + filename -->
+                                    <div v-else-if="msg.media_type === 'document' && isImageDocument(msg)"
+                                        class="space-y-1">
+                                        <img :src="getMediaUrl(msg)"
+                                            class="rounded-lg max-h-48 object-cover cursor-pointer hover:opacity-90 transition"
+                                            @click="openMedia(msg)" @error="handleImageError($event, msg)">
+                                        <div class="flex items-center justify-between text-[11px] opacity-80">
+                                            <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
+                                            <a :href="getMediaUrl(msg)" download
+                                                class="text-blue-400 hover:text-blue-300 whitespace-nowrap">
+                                                Download
+                                            </a>
+                                        </div>
+                                    </div>
+
+                                    <!-- Other documents / files -->
                                     <a v-else :href="getMediaUrl(msg)" download
                                         class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
-                                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
+                                            viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
                                             </path>
                                         </svg>
-                                        <span>{{ msg.media_type }} file</span>
+                                        <div class="flex flex-col text-xs">
+                                            <span class="font-medium truncate">
+                                                {{ getDocumentDisplayName(msg) }}
+                                            </span>
+                                            <span class="text-[10px] text-tg-muted" v-if="msg.media_type">
+                                                {{ msg.media_type }} file
+                                            </span>
+                                        </div>
                                     </a>
                                 </div>
 
@@ -440,6 +468,35 @@
                     return `/media/${msg.chat_id}/${filename}`
                 }
 
+                const getDocumentDisplayName = (msg) => {
+                    // Prefer file name from media table when available
+                    let name = msg.media_file_name || ''
+
+                    // Fallback to filename from path
+                    if (!name && msg.media_path) {
+                        name = msg.media_path.split(/[/\\]/).pop()
+                    }
+
+                    if (!name) {
+                        return 'document'
+                    }
+
+                    // Old backups may prefix message_id (e.g. 12345_original.png) – strip that prefix
+                    const withoutPrefix = name.replace(/^[0-9]+_/, '')
+                    return withoutPrefix || name
+                }
+
+                const isImageDocument = (msg) => {
+                    const name = (msg.media_file_name || msg.media_path || '').toString().toLowerCase()
+                    const byExtension = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].some(ext => name.endsWith(ext))
+
+                    // As a secondary hint, use mime type if available
+                    const mime = (msg.media_mime_type || '').toLowerCase()
+                    const byMime = mime.startsWith('image/')
+
+                    return byExtension || byMime
+                }
+
                 const handleImageError = (event, msg) => {
                     console.error('Failed to load image:', getMediaUrl(msg))
                     event.target.style.display = 'none'
@@ -499,6 +556,8 @@
                     formatDateFull,
                     formatTime,
                     getMediaUrl,
+                    getDocumentDisplayName,
+                    isImageDocument,
                     handleImageError,
                     openMedia,
                     linkifyText,

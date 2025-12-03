@@ -52,40 +52,44 @@ def get_chats():
 
 @app.get("/api/chats/{chat_id}/messages")
 def get_messages(
-    chat_id: int, 
-    limit: int = 50, 
+    chat_id: int,
+    limit: int = 50,
     offset: int = 0,
-    search: Optional[str] = None
+    search: Optional[str] = None,
 ):
-    """Get messages for a specific chat."""
-    # We need to implement pagination in database.py or do it here
-    # For now, let's add a method to database.py for paginated messages
-    
-    # This is a temporary direct query until we update database.py
+    """
+    Get messages for a specific chat.
+
+    We join with the media table so the web UI can show better previews
+    (e.g. original filenames for documents and thumbnails for image documents).
+    """
     cursor = db.conn.cursor()
-    
+
     query = """
-        SELECT m.*, u.first_name, u.last_name, u.username 
+        SELECT 
+            m.*,
+            u.first_name,
+            u.last_name,
+            u.username,
+            md.file_name AS media_file_name,
+            md.mime_type AS media_mime_type
         FROM messages m
         LEFT JOIN users u ON m.sender_id = u.id
+        LEFT JOIN media md ON md.id = m.media_id
         WHERE m.chat_id = ?
     """
-    params = [chat_id]
-    
+    params: List[object] = [chat_id]
+
     if search:
         query += " AND m.text LIKE ?"
         params.append(f"%{search}%")
-        
+
     query += " ORDER BY m.date DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
-    
+
     cursor.execute(query, params)
     messages = [dict(row) for row in cursor.fetchall()]
-    
-    # Reverse to show oldest first in the view (if we were doing infinite scroll up)
-    # But for initial load usually we want latest. 
-    # Let's keep DESC for API and let frontend handle display order.
-    
+
     return messages
 
 @app.get("/api/stats")
