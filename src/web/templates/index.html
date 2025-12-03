@@ -9,6 +9,7 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -95,9 +96,7 @@
                 <!-- Telegram Logo -->
                 <div class="flex justify-center mb-6">
                     <div class="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg">
-                        <svg class="w-12 h-12 text-blue-500" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15.056-.216.06-.094.14-.16.237-.16.09 0 .18.033.246.093l.955.9c.067.063.14.13.02.22-.12.09-.268.2-.38.26-.13.07-.26.14-.374.22-.16.11-.32.22-.14.44.18.22.64.85.96 1.16.31.31.54.65.78.65.24 0 .49-.15.67-.31.36-.32.64-.71.9-1.15.39-.69.68-1.36.68-1.36.03-.19.05-.38.05-.57 0-.19-.02-.38-.05-.57-.02-.08-.05-.16-.1-.24-.05-.08-.1-.15-.15-.22-.05-.07-.1-.13-.15-.18-.05-.05-.1-.09-.15-.12-.05-.03-.1-.05-.15-.07-.05-.02-.1-.03-.15-.04-.05-.01-.1-.01-.15-.01z"/>
-                        </svg>
+                        <i class="fab fa-telegram-plane text-5xl text-blue-500"></i>
                     </div>
                 </div>
                 
@@ -371,20 +370,32 @@
 
                 const loadChats = async () => {
                     try {
-                        const res = await fetch('/api/chats')
+                        const res = await fetch('/api/chats', {
+                            credentials: 'include'
+                        })
                         if (!res.ok) {
+                            if (res.status === 401) {
+                                // Auth expired, reset auth state
+                                isAuthenticated.value = false
+                                return
+                            }
                             throw new Error('Failed to fetch chats')
                         }
                         chats.value = await res.json()
                     } catch (e) {
                         console.error("Failed to fetch chats", e)
+                        if (e.message.includes('401') || e.message.includes('Unauthorized')) {
+                            isAuthenticated.value = false
+                        }
                     }
                 }
 
                 // Auth check on mount
                 onMounted(async () => {
                     try {
-                        const res = await fetch('/api/auth/status')
+                        const res = await fetch('/api/auth/status', {
+                            credentials: 'include'
+                        })
                         if (res.ok) {
                             const data = await res.json()
                             authRequired.value = !!data.auth_required
@@ -418,6 +429,7 @@
                         const res = await fetch('/api/login', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
                             body: JSON.stringify(loginForm.value),
                         })
 
@@ -487,7 +499,9 @@
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                         }
 
-                        const res = await fetch(url)
+                        const res = await fetch(url, {
+                            credentials: 'include'
+                        })
                         const newMessages = await res.json()
 
                         if (newMessages.length < limit) {
