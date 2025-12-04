@@ -151,17 +151,25 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 def get_chats():
     """Get all chats with metadata, including avatar URLs."""
-    chats = db.get_all_chats()
-    
-    # Add avatar URLs to each chat
-    for chat in chats:
-        avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
-        if avatar_path:
-            chat['avatar_url'] = f"/media/{avatar_path}"
-        else:
-            chat['avatar_url'] = None
-    
-    return chats
+    try:
+        chats = db.get_all_chats()
+        
+        # Add avatar URLs to each chat
+        for chat in chats:
+            try:
+                avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
+                if avatar_path:
+                    chat['avatar_url'] = f"/media/{avatar_path}"
+                else:
+                    chat['avatar_url'] = None
+            except Exception as e:
+                logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
+                chat['avatar_url'] = None
+        
+        return chats
+    except Exception as e:
+        logger.error(f"Error fetching chats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/chats/{chat_id}/messages", dependencies=[Depends(require_auth)])
 def get_messages(
