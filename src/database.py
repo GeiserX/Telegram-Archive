@@ -98,39 +98,45 @@ class Database:
             )
         ''')
         
-        # Media files table
+        # Media table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS media (
-                id TEXT PRIMARY KEY,
-                message_id INTEGER,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER,
-                type TEXT NOT NULL,
+                message_id INTEGER,
+                file_id TEXT,
+                file_unique_id TEXT,
                 file_name TEXT,
-                file_path TEXT,
                 file_size INTEGER,
                 mime_type TEXT,
-                width INTEGER,
-                height INTEGER,
-                duration INTEGER,
+                file_path TEXT,
                 downloaded INTEGER DEFAULT 0,
-                download_date TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (message_id, chat_id) REFERENCES messages(id, chat_id)
+                FOREIGN KEY (chat_id) REFERENCES chats(id),
+                FOREIGN KEY (message_id) REFERENCES messages(id)
             )
         ''')
         
-        # Sync status table (track backup progress)
+        # Sync status table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sync_status (
                 chat_id INTEGER PRIMARY KEY,
-                last_message_id INTEGER NOT NULL,
-                last_sync_date TIMESTAMP NOT NULL,
-                message_count INTEGER DEFAULT 0,
+                last_message_id INTEGER DEFAULT 0,
+                last_sync_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                messages_count INTEGER DEFAULT 0,
                 FOREIGN KEY (chat_id) REFERENCES chats(id)
             )
         ''')
         
-        # Create indexes for better query performance
+        # Metadata table (key-value store for app settings/state)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Create indexes
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id)')
@@ -138,6 +144,36 @@ class Database:
         
         self.conn.commit()
         logger.debug("Database schema created/verified")
+
+    def set_metadata(self, key: str, value: str):
+        """Set a metadata key-value pair."""
+        cursor = self.conn.cursor()
+        cursor.execute('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', (key, value))
+        self.conn.commit()
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        """Get a metadata value by key."""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT value FROM metadata WHERE key = ?', (key,))
+        row = cursor.fetchone()
+        return row['value'] if row else None
+
+    def backfill_is_outgoing(self, owner_id: int):
+        """
+        Backfill is_outgoing flag for messages sent by the owner.
+        
+        Args:
+            owner_id: The user ID of the account owner
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            UPDATE messages 
+            SET is_outgoing = 1 
+            WHERE sender_id = ? AND (is_outgoing = 0 OR is_outgoing IS NULL)
+        ''', (owner_id,))
+        if cursor.rowcount > 0:
+            logger.info(f"Backfilled is_outgoing=1 for {cursor.rowcount} messages from owner {owner_id}")
+            self.conn.commit()
     
     def upsert_chat(self, chat_data: Dict[str, Any]) -> int:
         """
@@ -254,8 +290,8 @@ class Database:
             INSERT OR REPLACE INTO messages (
                 id, chat_id, sender_id, date, text, reply_to_msg_id, reply_to_text,
                 forward_from_id, edit_date, media_type, media_id, 
-                media_path, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                media_path, raw_data, is_outgoing
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', [
             (
                 m['id'],
@@ -270,7 +306,8 @@ class Database:
                 m.get('media_type'),
                 m.get('media_id'),
                 m.get('media_path'),
-                json.dumps(m.get('raw_data', {}))
+                json.dumps(m.get('raw_data', {})),
+                m.get('is_outgoing', 0)
             ) for m in messages_data
         ])
         self.conn.commit()

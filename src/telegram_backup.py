@@ -76,9 +76,23 @@ class TelegramBackup:
         """
         try:
             logger.info("Starting backup process...")
+            
+            # Connect to Telegram
+            logger.info("Connecting to Telegram...")
+            await self.client.start(phone=self.config.phone)
+            
+            # Get current user info
+            me = await self.client.get_me()
+            logger.info(f"Logged in as {me.first_name} ({me.id})")
+            
+            # Store owner ID and backfill is_outgoing for existing messages
+            self.db.set_metadata('owner_id', str(me.id))
+            self.db.backfill_is_outgoing(me.id)
+
             start_time = datetime.now()
             
             # Get all dialogs (chats)
+            logger.info("Fetching dialog list...")
             dialogs = await self._get_dialogs()
             logger.info(f"Found {len(dialogs)} total dialogs")
 
@@ -373,7 +387,9 @@ class TelegramBackup:
             'media_type': None,
             'media_id': None,
             'media_path': None,
-            'raw_data': {}
+            'media_path': None,
+            'raw_data': {},
+            'is_outgoing': 1 if message.out else 0
         }
         
         # Get reply text if this is a reply

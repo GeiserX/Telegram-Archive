@@ -13,6 +13,9 @@ Automated Telegram data backup system with Docker support. Performs incremental 
 📁 **Media Support** - Download photos, videos, documents with size limits  
 🗄️ **SQLite Storage** - Efficient database with full-text search capability
 
+> [!WARNING]
+> **Breaking Change in v2.0.0**: The database schema has changed to support correct message color coding in group chats. You **MUST** delete your existing `telegram_backup.db` file before upgrading to v2.0.0. Your downloaded media files are safe and will be preserved.
+
 ## How It Works
 
 ### Incremental Backups (Delta-Based)

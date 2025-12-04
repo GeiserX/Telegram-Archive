@@ -575,11 +575,16 @@
                 }
 
                 const isOwnMessage = (msg) => {
-                    // In private chat: if sender_id is NOT the chat_id, it's me
+                    // Check explicit flag first (available in v2.0+)
+                    if (msg.is_outgoing !== undefined && msg.is_outgoing !== null) {
+                        return msg.is_outgoing === 1
+                    }
+
+                    // Fallback for private chats (legacy)
                     if (selectedChat.value.type === 'private') {
                         return msg.sender_id !== selectedChat.value.id
                     }
-                    // In groups/channels: we can't easily know without "me" ID
+                    // In groups/channels: we can't easily know without "me" ID or is_outgoing flag
                     return false
                 }
 
