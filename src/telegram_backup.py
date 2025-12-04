@@ -249,8 +249,76 @@ class TelegramBackup:
         if messages:
             max_message_id = max(msg.id for msg in messages)
             self.db.update_sync_status(chat_id, max_message_id, len(messages))
+            
+        # Sync deletions and edits if enabled (expensive!)
+        if self.config.sync_deletions_edits:
+            await self._sync_deletions_and_edits(chat_id, entity)
         
         return len(messages)
+
+    async def _sync_deletions_and_edits(self, chat_id: int, entity):
+        """
+        Sync deletions and edits for existing messages in the database.
+        
+        Args:
+            chat_id: Chat ID to sync
+            entity: Telegram entity
+        """
+        logger.info(f"  → Syncing deletions and edits for chat {chat_id}...")
+        
+        # Get all local message IDs and their edit dates
+        local_messages = self.db.get_messages_sync_data(chat_id)
+        if not local_messages:
+            return
+            
+        local_ids = list(local_messages.keys())
+        total_checked = 0
+        total_deleted = 0
+        total_updated = 0
+        
+        # Process in batches
+        batch_size = 100
+        for i in range(0, len(local_ids), batch_size):
+            batch_ids = local_ids[i:i + batch_size]
+            
+            try:
+                # Fetch current state from Telegram
+                remote_messages = await self.client.get_messages(entity, ids=batch_ids)
+                
+                for msg_id, remote_msg in zip(batch_ids, remote_messages):
+                    # Check for deletion
+                    if remote_msg is None:
+                        self.db.delete_message(chat_id, msg_id)
+                        total_deleted += 1
+                        continue
+                    
+                    # Check for edits
+                    # We compare string representations of edit_date
+                    remote_edit_date = remote_msg.edit_date
+                    local_edit_date_str = local_messages[msg_id]
+                    
+                    should_update = False
+                    
+                    if remote_edit_date:
+                        # If remote has edit_date, check if it differs from local
+                        # This handles cases where local is None or different
+                        if str(remote_edit_date) != str(local_edit_date_str):
+                             should_update = True
+                    
+                    if should_update:
+                        # Update text and edit_date
+                        self.db.update_message_text(chat_id, msg_id, remote_msg.message, remote_msg.edit_date)
+                        total_updated += 1
+                        
+            except Exception as e:
+                logger.error(f"Error syncing batch for chat {chat_id}: {e}")
+            
+            total_checked += len(batch_ids)
+            if total_checked % 1000 == 0:
+                logger.info(f"  → Checked {total_checked}/{len(local_ids)} messages for sync...")
+                
+        if total_deleted > 0 or total_updated > 0:
+            logger.info(f"  → Sync result: {total_deleted} deleted, {total_updated} updated")
     
     def _extract_forward_from_id(self, message: Message) -> Optional[int]:
         """

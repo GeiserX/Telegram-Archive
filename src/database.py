@@ -418,6 +418,64 @@ class Database:
             'total_size_mb': round(total_size / (1024 * 1024), 2)
         }
     
+    def get_messages_sync_data(self, chat_id: int) -> Dict[int, Optional[str]]:
+        """
+        Get message IDs and their edit dates for a chat (for sync checking).
+        
+        Args:
+            chat_id: Chat ID to get data for
+            
+        Returns:
+            Dictionary mapping message ID to edit_date (or None)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT id, edit_date FROM messages WHERE chat_id = ?', (chat_id,))
+        return {row['id']: row['edit_date'] for row in cursor.fetchall()}
+    
+    def delete_message(self, chat_id: int, message_id: int):
+        """
+        Delete a specific message from the database.
+        
+        Args:
+            chat_id: Chat ID containing the message
+            message_id: Message ID to delete
+        """
+        cursor = self.conn.cursor()
+        
+        # Delete associated media
+        cursor.execute('''
+            DELETE FROM media 
+            WHERE chat_id = ? AND message_id = ?
+        ''', (chat_id, message_id))
+        
+        # Delete the message
+        cursor.execute('''
+            DELETE FROM messages 
+            WHERE chat_id = ? AND id = ?
+        ''', (chat_id, message_id))
+        
+        self.conn.commit()
+        logger.debug(f"Deleted message {message_id} from chat {chat_id}")
+    
+    def update_message_text(self, chat_id: int, message_id: int, new_text: str, edit_date: str):
+        """
+        Update a message's text (for syncing edits).
+        
+        Args:
+            chat_id: Chat ID containing the message
+            message_id: Message ID to update
+            new_text: New message text
+            edit_date: Timestamp of the edit
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            UPDATE messages 
+            SET text = ?, edit_date = ?
+            WHERE chat_id = ? AND id = ?
+        ''', (new_text, edit_date, chat_id, message_id))
+        self.conn.commit()
+        logger.debug(f"Updated message {message_id} in chat {chat_id}")
+    
     def get_all_chats(self):
         """Get all chats with their last message date.
 

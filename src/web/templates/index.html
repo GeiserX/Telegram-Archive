@@ -282,7 +282,7 @@
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
-                                        class="text-xs font-bold text-blue-400 mb-1">
+                                        class="text-xs font-bold mb-1" :style="{ color: getSenderNameColor(msg) }">
                                         {{ getSenderName(msg) }}
                                     </div>
 
@@ -637,24 +637,34 @@
                         hash = hash & hash // Convert to 32-bit integer
                     }
 
-                    // Generate hue from hash for diverse colors
+                    // Generate hue from hash for diverse name colors
                     const hue = Math.abs(hash) % 360
+                    return hue
+                }
 
-                    // Check if this is own message
+                // Get background color for message bubble
+                const getMessageBackground = (msg) => {
                     const isOwn = isOwnMessage(msg)
 
-                    // Own messages: darker, more opaque (lower lightness, higher alpha)
-                    // Others: lighter, softer (higher lightness, lower alpha)
-                    const saturation = isOwn ? 50 : 40
-                    const lightness = isOwn ? 25 : 30
-                    const alpha = isOwn ? 0.95 : 0.85
+                    if (isOwn) {
+                        // Own messages: Strong blue background
+                        return 'hsla(210, 60%, 28%, 0.95)'
+                    } else {
+                        // Others: Unified softer gray background
+                        return 'hsla(220, 20%, 25%, 0.80)'
+                    }
+                }
 
-                    return `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`
+                // Get color for sender name (unique per person)
+                const getSenderNameColor = (msg) => {
+                    const hue = getSenderColor(msg)
+                    // Bright, vibrant color for name
+                    return `hsl(${hue}, 70%, 65%)`
                 }
 
                 const getSenderStyle = (msg) => {
                     return {
-                        backgroundColor: getSenderColor(msg),
+                        backgroundColor: getMessageBackground(msg),
                     }
                 }
 
@@ -787,6 +797,7 @@
                     performLogin,
                     // Colors / avatars
                     getSenderStyle,
+                    getSenderNameColor,
                     isDeletedChat,
                     // Error states
                     chatsError,

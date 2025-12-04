@@ -80,11 +80,17 @@ class Config:
         # Ensure directories exist
         self._ensure_directories()
         
+        # Sync options for exact Telegram mirroring (WARNING: expensive operation)
+        # When enabled, checks all backed up messages for deletions/edits on Telegram
+        self.sync_deletions_edits = os.getenv('SYNC_DELETIONS_EDITS', 'false').lower() == 'true'
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")
         logger.debug(f"Chat types: {self.chat_types}")
         logger.debug(f"Schedule: {self.schedule}")
+        if self.sync_deletions_edits:
+            logger.warning("SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)")
     
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""
