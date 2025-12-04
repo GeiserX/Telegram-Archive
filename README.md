@@ -7,7 +7,8 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 ✨ **Incremental Backups** - Only downloads new messages since last backup  
 📅 **Scheduled Execution** - Configurable cron schedule  
 🐳 **Docker Ready** - Easy deployment with Docker Compose  
-🌐 **Web Viewer** - Browse chats with Telegram-like UI  
+🌐 **Web Viewer** - Browse chats with Telegram-like UI (mobile-friendly)  
+🔐 **Restricted Viewer** - Share specific chats via `DISPLAY_CHAT_IDS`  
 🎵 **Voice/Audio Player** - Play audio messages in browser  
 📤 **Chat Export** - Export chat history to JSON  
 🎬 **GIF Autoplay** - Animated GIFs play when visible  
@@ -48,26 +49,7 @@ Features:
 - Voice note player
 - Chat search
 - Export to JSON
-
-### Restricted Viewer Mode
-
-Share specific chats publicly using `DISPLAY_CHAT_IDS`:
-
-```yaml
-# docker-compose.yml
-telegram-channel-viewer:
-  image: drumsergio/telegram-backup-automation:latest
-  command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
-  environment:
-    BACKUP_PATH: /data/backups
-    DISPLAY_CHAT_IDS: 224091347,123456789  # Only show these chats
-    VIEWER_USERNAME: viewer
-    VIEWER_PASSWORD: secure_password
-  volumes:
-    - ./data:/data
-  ports:
-    - "8001:8000"
-```
+- Mobile-friendly layout
 
 ## Configuration
 
@@ -89,22 +71,19 @@ telegram-channel-viewer:
 | `DOWNLOAD_MEDIA` | `true` | Download media files |
 | `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
 | `CHAT_TYPES` | `private,groups,channels` | Types to backup |
+| `LOG_LEVEL` | `INFO` | Logging level |
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
-| `SYNC_DELETIONS_EDITS` | `false` | Sync deletions/edits (expensive) |
-
-### Chat Filtering
-
-Filter specific chats using include/exclude lists:
-
-```env
-# Exclude specific chats globally
-GLOBAL_EXCLUDE_CHAT_IDS=123456789,987654321
-
-# Include only specific channels
-CHANNELS_INCLUDE_CHAT_IDS=100123456789
-```
+| `SYNC_DELETIONS_EDITS` | `false` | Sync deletions/edits from Telegram |
+| `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
+| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
+| `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private chats |
+| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist private chats |
+| `GROUPS_INCLUDE_CHAT_IDS` | - | Whitelist group chats |
+| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist group chats |
+| `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels |
+| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels |
 
 ## CLI Commands
 
@@ -144,16 +123,15 @@ data/
 |---------|----------|
 | "Failed to authorize" | Run `./init_auth.sh` again |
 | "Permission denied" | `chmod -R 755 data/` |
-| Container restarting | Check `docker-compose logs` |
-| No new messages | Normal if already synced |
 
 ## Limitations
 
 - Secret chats not supported (API limitation)
-- Edit history not tracked (only latest version)
+- Edit history not tracked (only latest version stored; enable `SYNC_DELETIONS_EDITS` to update edits)
 - Deleted messages before first backup cannot be recovered
-- Large files over `MAX_MEDIA_SIZE_MB` are skipped
 
 ## License
 
-MIT. Built with [Telethon](https://github.com/LonamiWebs/Telethon).
+GPL-3.0. See [LICENSE](LICENSE) for details.
+
+Built with [Telethon](https://github.com/LonamiWebs/Telethon).
