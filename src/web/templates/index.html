@@ -34,12 +34,39 @@
         }
 
         /* Message Bubbles */
-        /* Message Bubbles */
         .message-bubble {
-            position: relative;
+            display: inline-block;
+            max-width: calc(100vw - 32px);
+            /* 32px = padding lateral del contenedor */
+            width: auto;
             word-wrap: break-word;
+            overflow-wrap: anywhere;
             border-radius: 12px;
         }
+
+        @media (min-width: 768px) {
+            .message-bubble {
+                max-width: 600px;
+            }
+        }
+
+        body,
+        #app,
+        .flex-1 {
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+
+        .message-bubble img,
+        .message-bubble video,
+        .message-bubble audio,
+        .message-bubble a,
+        .message-bubble .media-wrapper {
+            max-width: 100%;
+            width: 100%;
+            height: auto;
+        }
+
 
         /* Date Separator */
         .date-separator {
@@ -300,7 +327,7 @@
 
                             <!-- Message -->
                             <div class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
-                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100 max-w-[85%] md:max-w-[65%]"
+                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
