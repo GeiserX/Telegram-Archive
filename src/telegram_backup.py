@@ -570,67 +570,66 @@ class TelegramBackup:
             return 'poll'
         return None
     
-        def _get_media_filename(self, message: Message, media_type: str, telegram_file_id: str = None) -> str:
-            """
-            Generate a unique filename using Telegram's file_id.
-            Properly handles files sent "as documents" by checking mime_type and original filename.
-            """
-            import mimetypes
+    def _get_media_filename(self, message: Message, media_type: str, telegram_file_id: str = None) -> str:
+        """
+        Generate a unique filename using Telegram's file_id.
+        Properly handles files sent "as documents" by checking mime_type and original filename.
+        """
+        import mimetypes
 
-            # First, try to get original filename from document attributes
-            original_name = None
-            mime_type = None
+        # First, try to get original filename from document attributes
+        original_name = None
+        mime_type = None
 
-            if hasattr(message.media, 'document') and message.media.document:
-                doc = message.media.document
-                mime_type = getattr(doc, 'mime_type', None)
+        if hasattr(message.media, 'document') and message.media.document:
+            doc = message.media.document
+            mime_type = getattr(doc, 'mime_type', None)
 
-                for attr in doc.attributes:
-                    if hasattr(attr, 'file_name') and attr.file_name:
-                        original_name = attr.file_name
-                        break
+            for attr in doc.attributes:
+                if hasattr(attr, 'file_name') and attr.file_name:
+                    original_name = attr.file_name
+                    break
 
-            # If we have original filename, use it (with file_id prefix for uniqueness)
-            if original_name and telegram_file_id:
-                safe_id = str(telegram_file_id).replace('/', '_').replace('\\', '_')
-                return f"{safe_id}_{original_name}"
+        # If we have original filename, use it (with file_id prefix for uniqueness)
+        if original_name and telegram_file_id:
+            safe_id = str(telegram_file_id).replace('/', '_').replace('\\', '_')
+            return f"{safe_id}_{original_name}"
 
-            # Determine extension from mime_type, then fall back to media_type
-            extension = None
+        # Determine extension from mime_type, then fall back to media_type
+        extension = None
 
-            if mime_type:
-                # Use mimetypes to get proper extension from mime_type
-                ext = mimetypes.guess_extension(mime_type)
-                if ext:
-                    extension = ext.lstrip('.')
-                    # Fix common mimetypes oddities
-                    if extension == 'jpe':
-                        extension = 'jpg'
+        if mime_type:
+            # Use mimetypes to get proper extension from mime_type
+            ext = mimetypes.guess_extension(mime_type)
+            if ext:
+                extension = ext.lstrip('.')
+                # Fix common mimetypes oddities
+                if extension == 'jpe':
+                    extension = 'jpg'
 
-            # Fall back to media_type-based extension
-            if not extension:
-                extension = self._get_media_extension(media_type)
+        # Fall back to media_type-based extension
+        if not extension:
+            extension = self._get_media_extension(media_type)
 
-            # Build filename
-            if telegram_file_id:
-                safe_id = str(telegram_file_id).replace('/', '_').replace('\\', '_')
-                return f"{safe_id}.{extension}"
+        # Build filename
+        if telegram_file_id:
+            safe_id = str(telegram_file_id).replace('/', '_').replace('\\', '_')
+            return f"{safe_id}.{extension}"
 
-            # Last resort: timestamp-based
-            timestamp = message.date.strftime('%Y%m%d_%H%M%S')
-            return f"{message.id}_{timestamp}.{extension}"
+        # Last resort: timestamp-based
+        timestamp = message.date.strftime('%Y%m%d_%H%M%S')
+        return f"{message.id}_{timestamp}.{extension}"
 
-
-        def _get_media_extension(self, media_type: str) -> str:
-            """Get file extension for media type (fallback only)."""
-            extensions = {
-                'photo': 'jpg',
-                'video': 'mp4',
-                'audio': 'mp3',
-                'voice': 'ogg',
-                'document': 'bin'  # Only used if mime_type detection fails
-            }
-            return extensions.get(media_type, 'bin')
+    def _get_media_extension(self, media_type: str) -> str:
+        """Get file extension for media type (fallback only)."""
+        extensions = {
+            'photo': 'jpg',
+            'video': 'mp4',
+            'audio': 'mp3',
+            'voice': 'ogg',
+            'document': 'bin'  # Only used if mime_type detection fails
+        }
+        return extensions.get(media_type, 'bin')
 
     
     def _extract_chat_data(self, entity) -> dict:
