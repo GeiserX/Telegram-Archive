@@ -26,6 +26,12 @@ The system uses **incremental backups** to minimize storage and bandwidth usage:
 - **Future backups**: Only downloads new messages since last sync
 - **Space efficiency**: After initial backup, incremental backups are typically very small
 
+**Sync Deletions and Edits (Optional):**
+- Can be enabled via `SYNC_DELETIONS_EDITS=true`
+- **Mirrors Telegram**: Checks all previously backed-up messages for deletions or edits
+- **Updates Database**: Removes deleted messages and updates edited text/dates
+- ⚠️ **Performance Warning**: This is an expensive operation as it must check every single message against Telegram's servers. Use with caution on large accounts.
+
 **Media Files:**
 - Checks if file already exists before downloading (automatic deduplication)
 - Stores each media file once, even if referenced by multiple messages
