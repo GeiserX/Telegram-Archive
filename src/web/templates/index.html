@@ -251,16 +251,28 @@
                             </div>
                         </div>
 
-                        <!-- Search Bar -->
-                        <div class="relative w-64">
-                            <input v-model="messageSearchQuery" @input="searchMessages" type="text"
-                                placeholder="Search in chat..."
-                                class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
-                                viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
+                        <div class="flex items-center gap-2">
+                            <!-- Search Bar -->
+                            <div class="relative w-64">
+                                <input v-model="messageSearchQuery" @input="searchMessages" type="text"
+                                    placeholder="Search in chat..."
+                                    class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                            </div>
+
+                            <!-- Export Button -->
+                            <button @click="exportChat"
+                                class="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition"
+                                title="Export Chat to JSON">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                </svg>
+                            </button>
                         </div>
                     </div>
 
@@ -299,6 +311,14 @@
                                         <img v-if="msg.media_type === 'photo'" :src="getMediaUrl(msg)"
                                             class="rounded-lg max-h-64 object-cover cursor-pointer hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
+
+                                        <!-- Audio / Voice Notes -->
+                                        <div v-else-if="isAudioFile(msg)"
+                                            class="w-full max-w-xs bg-black/20 p-2 rounded-lg">
+                                            <audio controls class="w-full h-8" :src="getMediaUrl(msg)"></audio>
+                                            <div class="text-[10px] opacity-70 mt-1 truncate px-1">{{
+                                                getDocumentDisplayName(msg) }}</div>
+                                        </div>
 
                                         <!-- Videos -->
                                         <video v-else-if="msg.media_type === 'video'" controls
@@ -603,6 +623,18 @@
                     return name === 'Deleted Account'
                 }
 
+                const isAudioFile = (msg) => {
+                    if (msg.media_type === 'audio' || msg.media_type === 'voice') return true
+                    const filename = getDocumentDisplayName(msg).toLowerCase()
+                    return filename.endsWith('.ogg') || filename.endsWith('.mp3') || filename.endsWith('.wav')
+                }
+
+                const exportChat = () => {
+                    if (!selectedChat.value) return
+                    const url = `/api/chats/${selectedChat.value.id}/export`
+                    window.open(url, '_blank')
+                }
+
                 const showSenderName = (index) => {
                     if (index === 0) return true
                     const prevMsg = sortedMessages.value[index - 1]
@@ -804,6 +836,8 @@
                     getSenderStyle,
                     getSenderNameColor,
                     isDeletedChat,
+                    isAudioFile,
+                    exportChat,
                     // Error states
                     chatsError,
                     loadChats,

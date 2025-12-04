@@ -11,6 +11,8 @@ Automated Telegram data backup system with Docker support. Performs incremental 
 📊 **Flexible Filtering** - Choose private chats, groups, and/or channels  
 💾 **Point-in-time Recovery** - Export data from any specific date range  
 📁 **Media Support** - Download photos, videos, documents with size limits  
+🎵 **Voice Note Player** - Play audio messages directly in the web viewer  
+📤 **Chat Export** - Export chat history to JSON format  
 🗄️ **SQLite Storage** - Efficient database with full-text search capability
 
 

@@ -49,6 +49,22 @@ class TelegramBackup:
             self.config.api_hash
         )
         
+        # Fix for database locked errors: Enable WAL mode for session DB
+        # This is critical for concurrency when the viewer is also running
+        try:
+            if hasattr(self.client.session, '_conn'):
+                # Ensure connection is open
+                if self.client.session._conn is None:
+                    # Trigger connection if lazy loaded (though usually it's open)
+                    pass 
+                
+                if self.client.session._conn:
+                    self.client.session._conn.execute("PRAGMA journal_mode=WAL")
+                    self.client.session._conn.execute("PRAGMA busy_timeout=30000")
+                    logger.info("Enabled WAL mode for Telethon session database")
+        except Exception as e:
+            logger.warning(f"Could not enable WAL mode for session DB: {e}")
+        
         # Connect without starting interactive flow
         await self.client.connect()
         

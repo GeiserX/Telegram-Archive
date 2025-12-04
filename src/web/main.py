@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Query, Depends, Cookie
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -10,6 +10,7 @@ import sqlite3
 from typing import Optional, List
 from pathlib import Path
 import hashlib
+import json
 
 from ..config import Config
 from ..database import Database
@@ -235,3 +236,65 @@ def get_messages(
 def get_stats():
     """Get backup statistics."""
     return db.get_statistics()
+
+@app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
+def export_chat(chat_id: int):
+    """Export chat history to JSON."""
+    cursor = db.conn.cursor()
+    
+    # Get chat info for filename
+    cursor.execute("SELECT * FROM chats WHERE id = ?", (chat_id,))
+    chat = cursor.fetchone()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+        
+    chat_name = chat['title'] or chat['username'] or str(chat_id)
+    # Sanitize filename
+    safe_name = "".join(c for c in chat_name if c.isalnum() or c in (' ', '-', '_')).strip()
+    filename = f"{safe_name}_export.json"
+    
+    # Get messages
+    cursor.execute("""
+        SELECT 
+            m.id, m.date, m.text, m.is_outgoing,
+            u.first_name, u.last_name, u.username,
+            m.reply_to_msg_id
+        FROM messages m
+        LEFT JOIN users u ON m.sender_id = u.id
+        WHERE m.chat_id = ?
+        ORDER BY m.date ASC
+    """, (chat_id,))
+    
+    def iter_json():
+        yield '[\n'
+        first = True
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+            for row in rows:
+                if not first:
+                    yield ',\n'
+                first = False
+                
+                msg = dict(row)
+                # Format for export
+                export_msg = {
+                    'id': msg['id'],
+                    'date': msg['date'],
+                    'sender': {
+                        'name': f"{msg['first_name'] or ''} {msg['last_name'] or ''}".strip() or msg['username'] or "Unknown",
+                        'username': msg['username']
+                    },
+                    'text': msg['text'],
+                    'is_outgoing': bool(msg['is_outgoing']),
+                    'reply_to': msg['reply_to_msg_id']
+                }
+                yield json.dumps(export_msg)
+        yield '\n]'
+
+    return StreamingResponse(
+        iter_json(),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
