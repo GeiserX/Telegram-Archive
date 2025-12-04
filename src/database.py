@@ -19,18 +19,26 @@ logger = logging.getLogger(__name__)
 class Database:
     """SQLite database manager for Telegram backup data."""
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, timeout: float = 30.0):
         """
         Initialize database connection and create schema if needed.
         
         Args:
             db_path: Path to SQLite database file
+            timeout: Connection timeout in seconds (default 30s)
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # timeout: wait up to N seconds if database is locked
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=timeout)
         self.conn.row_factory = sqlite3.Row  # Enable column access by name
+        
+        # Enable WAL mode for better concurrent read/write performance
+        # WAL allows readers to proceed while a writer is active
+        self.conn.execute('PRAGMA journal_mode=WAL')
+        self.conn.execute('PRAGMA busy_timeout=30000')  # 30 second busy timeout
+        
         self._create_schema()
-        logger.info(f"Database initialized at {db_path}")
+        logger.info(f"Database initialized at {db_path} (WAL mode enabled)")
     
     def _create_schema(self):
         """Create database schema if it doesn't exist."""
@@ -411,21 +419,21 @@ class Database:
         }
     
     def get_all_chats(self):
-        """
-        Get all chats with their last message date.
-        
+        """Get all chats with their last message date.
+
         Returns:
-            List of chat dictionaries sorted by last message date (newest first)
+            List of chat dictionaries sorted by last message date (newest first),
+            with chats that have no messages listed last.
         """
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT 
                 c.*,
-                MAX(m.date) as last_message_date
+                MAX(m.date) AS last_message_date
             FROM chats c
             LEFT JOIN messages m ON c.id = m.chat_id
             GROUP BY c.id
-            ORDER BY last_message_date DESC NULLS LAST
+            ORDER BY (last_message_date IS NULL) ASC, last_message_date DESC
         ''')
         return [dict(row) for row in cursor.fetchall()]
     

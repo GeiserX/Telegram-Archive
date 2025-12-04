@@ -150,6 +150,20 @@
                     </div>
                 </div>
 
+                <!-- Database Busy Error Banner -->
+                <div v-if="chatsError" class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
+                    <div class="flex items-center gap-2 text-amber-200 text-sm">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span>{{ chatsError }}</span>
+                        <button @click="loadChats()" class="ml-auto text-amber-300 hover:text-white text-xs underline">
+                            Retry
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Chat List -->
                 <div class="flex-1 overflow-y-auto">
                     <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
@@ -372,6 +386,7 @@
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
+                const chatsError = ref('')  // Error message when database is busy
 
                 const loadChats = async () => {
                     try {
@@ -384,13 +399,22 @@
                                 isAuthenticated.value = false
                                 return
                             }
+                            if (res.status === 503) {
+                                // Database busy (backup in progress)
+                                const data = await res.json().catch(() => ({}))
+                                chatsError.value = data.detail || 'Database is busy (backup in progress). Please wait a moment and refresh.'
+                                return
+                            }
                             throw new Error('Failed to fetch chats')
                         }
+                        chatsError.value = ''
                         chats.value = await res.json()
                     } catch (e) {
                         console.error("Failed to fetch chats", e)
                         if (e.message.includes('401') || e.message.includes('Unauthorized')) {
                             isAuthenticated.value = false
+                        } else {
+                            chatsError.value = 'Failed to load chats. Please try again.'
                         }
                     }
                 }
@@ -764,6 +788,9 @@
                     // Colors / avatars
                     getSenderStyle,
                     isDeletedChat,
+                    // Error states
+                    chatsError,
+                    loadChats,
                 }
             }
         }).mount('#app')

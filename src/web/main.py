@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
 import glob
+import time
+import sqlite3
 from typing import Optional, List
 from pathlib import Path
 import hashlib
@@ -151,25 +153,41 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 def get_chats():
     """Get all chats with metadata, including avatar URLs."""
-    try:
-        chats = db.get_all_chats()
-        
-        # Add avatar URLs to each chat
-        for chat in chats:
-            try:
-                avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
-                if avatar_path:
-                    chat['avatar_url'] = f"/media/{avatar_path}"
-                else:
+    max_retries = 3
+    retry_delay = 1.0  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            chats = db.get_all_chats()
+            
+            # Add avatar URLs to each chat
+            for chat in chats:
+                try:
+                    avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
+                    if avatar_path:
+                        chat['avatar_url'] = f"/media/{avatar_path}"
+                    else:
+                        chat['avatar_url'] = None
+                except Exception as e:
+                    logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
                     chat['avatar_url'] = None
-            except Exception as e:
-                logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
-                chat['avatar_url'] = None
-        
-        return chats
-    except Exception as e:
-        logger.error(f"Error fetching chats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            
+            return chats
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                logger.warning(f"Database locked, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+                continue
+            # Last attempt or different error
+            logger.error(f"Database locked after {max_retries} attempts")
+            raise HTTPException(
+                status_code=503,
+                detail="Database is currently busy (backup in progress). Please try again in a few moments."
+            )
+        except Exception as e:
+            logger.error(f"Error fetching chats: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/chats/{chat_id}/messages", dependencies=[Depends(require_auth)])
 def get_messages(
