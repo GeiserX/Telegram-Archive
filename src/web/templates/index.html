@@ -320,11 +320,26 @@
                                                 getDocumentDisplayName(msg) }}</div>
                                         </div>
 
+                                        <!-- GIFs / Animations - autoplay when visible -->
+                                        <video v-else-if="msg.media_type === 'animation'" :data-src="getMediaUrl(msg)"
+                                            class="rounded-lg max-h-64 w-auto gif-video" loop muted playsinline
+                                            @click="openMedia(msg)">
+                                        </video>
+
                                         <!-- Videos -->
                                         <video v-else-if="msg.media_type === 'video'" controls
                                             class="rounded-lg max-h-64 w-full">
                                             <source :src="getMediaUrl(msg)" type="video/mp4">
                                         </video>
+
+                                        <!-- Stickers (static/animated) -->
+                                        <div v-else-if="msg.media_type === 'sticker'" class="max-w-[200px]">
+                                            <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
+                                                :src="getMediaUrl(msg)" class="max-h-48 object-contain">
+                                            <div v-else class="text-xs text-tg-muted p-2 bg-black/20 rounded">
+                                                🎭 Animated Sticker
+                                            </div>
+                                        </div>
 
                                         <!-- Documents that are actually images: show inline preview + filename -->
                                         <div v-else-if="msg.media_type === 'document' && isImageDocument(msg)"
@@ -408,6 +423,9 @@
                 const loginError = ref('')
                 const chatsError = ref('')  // Error message when database is busy
 
+                // Intersection Observer for GIF autoplay
+                let gifObserver = null
+
                 const loadChats = async () => {
                     try {
                         const res = await fetch('/api/chats', {
@@ -470,6 +488,39 @@
                         loadingAuth.value = false
                     }
                 })
+
+                // Setup Intersection Observer for GIF autoplay
+                const setupGifObserver = () => {
+                    if (gifObserver) {
+                        gifObserver.disconnect()
+                    }
+
+                    gifObserver = new IntersectionObserver((entries) => {
+                        entries.forEach(entry => {
+                            const video = entry.target
+                            if (entry.isIntersecting) {
+                                // Load and play when visible
+                                if (!video.src && video.dataset.src) {
+                                    video.src = video.dataset.src
+                                }
+                                video.play().catch(() => { })
+                            } else {
+                                // Pause when not visible
+                                video.pause()
+                            }
+                        })
+                    }, { threshold: 0.1 })
+                }
+
+                // Watch for messages changes to observe new GIFs
+                watch(messages, () => {
+                    nextTick(() => {
+                        if (!gifObserver) setupGifObserver()
+                        document.querySelectorAll('.gif-video').forEach(video => {
+                            gifObserver.observe(video)
+                        })
+                    })
+                }, { deep: true })
 
                 const performLogin = async () => {
                     loginError.value = ''
