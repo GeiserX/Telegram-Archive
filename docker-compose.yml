@@ -70,6 +70,24 @@ services:
       - ./data:/data
     networks:
       - telegram-network
+  # Example: Restricted Channel Viewer (optional)
+  # Use this to share specific channels publicly with authentication
+  # telegram-channel-viewer:
+  #   build: .
+  #   container_name: telegram-channel-viewer
+  #   command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8001:8000"
+  #   environment:
+  #     BACKUP_PATH: /data/backups
+  #     DISPLAY_CHAT_IDS: 224091347,123456789  # Comma-separated chat IDs
+  #     VIEWER_USERNAME: public_viewer
+  #     VIEWER_PASSWORD: secure_password_here
+  #   volumes:
+  #     - ./data:/data
+  #   networks:
+  #     - telegram-network
 
 networks:
   telegram-network:

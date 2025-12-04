@@ -98,6 +98,10 @@ class Config:
         # When enabled, checks all backed up messages for deletions/edits on Telegram
         self.sync_deletions_edits = os.getenv('SYNC_DELETIONS_EDITS', 'false').lower() == 'true'
         
+        # Display chat IDs - restrict viewer to specific chats only
+        # Useful for sharing public channel viewers without exposing other chats
+        self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")
@@ -105,6 +109,8 @@ class Config:
         logger.debug(f"Schedule: {self.schedule}")
         if self.sync_deletions_edits:
             logger.warning("SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)")
+        if self.display_chat_ids:
+            logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
     
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""

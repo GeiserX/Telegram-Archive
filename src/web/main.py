@@ -161,6 +161,10 @@ def get_chats():
         try:
             chats = db.get_all_chats()
             
+            # Filter to display chats if configured
+            if config.display_chat_ids:
+                chats = [c for c in chats if c['id'] in config.display_chat_ids]
+            
             # Add avatar URLs to each chat
             for chat in chats:
                 try:
@@ -203,6 +207,10 @@ def get_messages(
     We join with the media table so the web UI can show better previews
     (e.g. original filenames for documents and thumbnails for image documents).
     """
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
     cursor = db.conn.cursor()
 
     query = """
@@ -230,6 +238,18 @@ def get_messages(
     cursor.execute(query, params)
     messages = [dict(row) for row in cursor.fetchall()]
 
+    # Populate reply_to_text from database if missing
+    for msg in messages:
+        if msg.get('reply_to_msg_id') and not msg.get('reply_to_text'):
+            cursor.execute(
+                "SELECT text FROM messages WHERE chat_id = ? AND id = ?",
+                (chat_id, msg['reply_to_msg_id'])
+            )
+            reply_row = cursor.fetchone()
+            if reply_row and reply_row['text']:
+                # Truncate to 100 chars like Telegram does
+                msg['reply_to_text'] = reply_row['text'][:100]
+
     return messages
 
 @app.get("/api/stats", dependencies=[Depends(require_auth)])
@@ -240,6 +260,10 @@ def get_stats():
 @app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
 def export_chat(chat_id: int):
     """Export chat history to JSON."""
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
     cursor = db.conn.cursor()
     
     # Get chat info for filename

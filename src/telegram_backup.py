@@ -569,14 +569,23 @@ class TelegramBackup:
         elif isinstance(media, MessageMediaDocument):
             # Check document attributes to determine specific type
             if hasattr(media, 'document') and media.document:
+                is_animated = False
                 for attr in media.document.attributes:
                     attr_type = type(attr).__name__
+                    if 'Animated' in attr_type:
+                        is_animated = True
                     if 'Video' in attr_type:
-                        return 'video'
+                        # If animated, it's a GIF
+                        return 'animation' if is_animated else 'video'
                     elif 'Audio' in attr_type:
                         return 'audio'
                     elif 'Voice' in attr_type:
                         return 'voice'
+                    elif 'Sticker' in attr_type:
+                        return 'sticker'
+                # If animated but no video attribute, still an animation
+                if is_animated:
+                    return 'animation'
             return 'document'
         elif isinstance(media, MessageMediaContact):
             return 'contact'
