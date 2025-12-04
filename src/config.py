@@ -74,7 +74,21 @@ class Config:
         self.session_dir = os.getenv('SESSION_DIR', os.path.join(backup_parent, 'session'))
         self.session_path = os.path.join(self.session_dir, f'{self.session_name}.session')
         
-        self.database_path = os.path.join(self.backup_path, 'telegram_backup.db')
+        self.session_path = os.path.join(self.session_dir, f'{self.session_name}.session')
+        
+        # Database path configuration
+        # Default: inside backup_path
+        # Can be overridden by DATABASE_PATH (full path) or DATABASE_DIR (directory)
+        db_path_env = os.getenv('DATABASE_PATH')
+        db_dir_env = os.getenv('DATABASE_DIR')
+        
+        if db_path_env:
+            self.database_path = db_path_env
+        elif db_dir_env:
+            self.database_path = os.path.join(db_dir_env, 'telegram_backup.db')
+        else:
+            self.database_path = os.path.join(self.backup_path, 'telegram_backup.db')
+            
         self.media_path = os.path.join(self.backup_path, 'media')
         
         # Ensure directories exist
@@ -146,6 +160,11 @@ class Config:
         """Create necessary directories if they don't exist."""
         os.makedirs(self.backup_path, exist_ok=True)
         os.makedirs(self.session_dir, exist_ok=True)
+        
+        # Ensure database directory exists
+        db_dir = os.path.dirname(self.database_path)
+        os.makedirs(db_dir, exist_ok=True)
+        
         if self.download_media:
             os.makedirs(self.media_path, exist_ok=True)
     

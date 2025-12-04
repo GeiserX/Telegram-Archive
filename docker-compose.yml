@@ -16,6 +16,7 @@ services:
 
       # Backup Configuration
       BACKUP_PATH: /data/backups
+      # DATABASE_DIR: /data/database # Optional: Store DB separately from media
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       BATCH_SIZE: ${BATCH_SIZE:-100}
