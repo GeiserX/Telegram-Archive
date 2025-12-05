@@ -578,9 +578,10 @@ class TelegramBackup:
                         # If animated, it's a GIF
                         return 'animation' if is_animated else 'video'
                     elif 'Audio' in attr_type:
+                        # Voice notes have .voice=True on DocumentAttributeAudio
+                        if hasattr(attr, 'voice') and attr.voice:
+                            return 'voice'
                         return 'audio'
-                    elif 'Voice' in attr_type:
-                        return 'voice'
                     elif 'Sticker' in attr_type:
                         return 'sticker'
                 # If animated but no video attribute, still an animation

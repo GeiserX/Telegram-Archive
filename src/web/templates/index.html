@@ -351,9 +351,9 @@
 
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
-                                            class="w-full max-w-xs bg-black/20 p-2 rounded-lg">
-                                            <audio controls class="w-full h-8" :src="getMediaUrl(msg)"></audio>
-                                            <div class="text-[10px] opacity-70 mt-1 truncate px-1">{{
+                                            class="w-full min-w-[200px] max-w-md bg-black/20 p-3 rounded-lg">
+                                            <audio controls class="w-full h-10" :src="getMediaUrl(msg)"></audio>
+                                            <div class="text-[11px] opacity-70 mt-1.5 truncate px-1">{{
                                                 getDocumentDisplayName(msg) }}</div>
                                         </div>
 
@@ -712,9 +712,16 @@
                 }
 
                 const isAudioFile = (msg) => {
+                    // Check explicit media types from backend
                     if (msg.media_type === 'audio' || msg.media_type === 'voice') return true
+                    // Check mime type (for older backups)
+                    const mimeType = (msg.media_mime_type || '').toLowerCase()
+                    if (mimeType.startsWith('audio/')) return true
+                    // Check file extension as last resort
                     const filename = getDocumentDisplayName(msg).toLowerCase()
-                    return filename.endsWith('.ogg') || filename.endsWith('.mp3') || filename.endsWith('.wav')
+                    return filename.endsWith('.ogg') || filename.endsWith('.mp3') ||
+                        filename.endsWith('.wav') || filename.endsWith('.m4a') ||
+                        filename.endsWith('.opus') || filename.endsWith('.flac')
                 }
 
                 const exportChat = () => {
