@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="200"/>
+</div>
+
 # Telegram Archive
 
 Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.

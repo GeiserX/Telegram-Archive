@@ -63,6 +63,11 @@ def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKI
 
 # Setup paths
 templates_dir = Path(__file__).parent / "templates"
+static_dir = Path(__file__).parent / "static"
+
+# Mount static directory
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # Mount media directory (includes avatars)
 if os.path.exists(config.media_path):

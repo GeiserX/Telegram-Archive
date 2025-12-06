@@ -1,35 +1,48 @@
 import unittest
 import os
-from unittest.mock import patch
+import tempfile
+import shutil
+from unittest.mock import patch, MagicMock
 from src.config import Config
 
 class TestConfig(unittest.TestCase):
     def setUp(self):
-        # Clear relevant env vars
-        self.env_patcher = patch.dict(os.environ, {}, clear=True)
+        # Create a temp directory for safe file operations
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Clear relevant env vars but set safe defaults for paths
+        self.env_patcher = patch.dict(os.environ, {
+            'BACKUP_PATH': self.temp_dir,
+            'DATABASE_DIR': self.temp_dir
+        }, clear=True)
         self.env_patcher.start()
 
     def tearDown(self):
         self.env_patcher.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_init_defaults(self):
         """Test configuration defaults when no env vars are set."""
         # We need to set at least one chat type or it raises ValueError
-        with patch.dict(os.environ, {'CHAT_TYPES': 'private'}):
-            config = Config()
-            
-            # Check if __init__ completed successfully (attributes exist)
-            self.assertTrue(hasattr(config, 'log_level'))
-            self.assertTrue(hasattr(config, 'backup_path'))
-            self.assertTrue(hasattr(config, 'schedule'))
-            
-            # Check default values
-            self.assertIsNone(config.api_id)
-            self.assertIsNone(config.api_hash)
-            self.assertIsNone(config.phone)
+        # We also need to unset BACKUP_PATH/DATABASE_DIR to test defaults, 
+        # BUT we must mock makedirs to avoid PermissionError on /data
+        with patch('os.makedirs'):
+            with patch.dict(os.environ, {'CHAT_TYPES': 'private'}, clear=True):
+                config = Config()
+                
+                # Check if __init__ completed successfully (attributes exist)
+                self.assertTrue(hasattr(config, 'log_level'))
+                self.assertTrue(hasattr(config, 'backup_path'))
+                self.assertTrue(hasattr(config, 'schedule'))
+                
+                # Check default values
+                self.assertIsNone(config.api_id)
+                self.assertIsNone(config.api_hash)
+                self.assertIsNone(config.phone)
 
     def test_validate_credentials_missing(self):
         """Test validation fails when credentials are missing."""
+        # Config init will try to create dirs, so we rely on setUp's temp paths
         with patch.dict(os.environ, {'CHAT_TYPES': 'private'}):
             config = Config()
             with self.assertRaises(ValueError):
@@ -53,9 +66,18 @@ class TestConfig(unittest.TestCase):
 class TestDisplayChatIds(unittest.TestCase):
     """Test DISPLAY_CHAT_IDS configuration for viewer restriction."""
 
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+    
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
     def test_display_chat_ids_empty(self):
         """Display chat IDs defaults to empty set when not configured."""
-        env_vars = {'CHAT_TYPES': 'private'}
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'BACKUP_PATH': self.temp_dir
+        }
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertEqual(config.display_chat_ids, set())
@@ -64,7 +86,8 @@ class TestDisplayChatIds(unittest.TestCase):
         """Can configure single chat ID for display."""
         env_vars = {
             'CHAT_TYPES': 'private',
-            'DISPLAY_CHAT_IDS': '123456789'
+            'DISPLAY_CHAT_IDS': '123456789',
+            'BACKUP_PATH': self.temp_dir
         }
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
@@ -74,7 +97,8 @@ class TestDisplayChatIds(unittest.TestCase):
         """Can configure multiple chat IDs for display."""
         env_vars = {
             'CHAT_TYPES': 'private',
-            'DISPLAY_CHAT_IDS': '123456789,987654321,-100555'
+            'DISPLAY_CHAT_IDS': '123456789,987654321,-100555',
+            'BACKUP_PATH': self.temp_dir
         }
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
@@ -86,13 +110,17 @@ class TestDatabaseDir(unittest.TestCase):
 
     def test_database_dir_default(self):
         """Database path defaults to backup path when not configured."""
+        # For this test we want to assert it DEFAULTS to /data/backups (or whatever default is)
+        # So we must NOT set BACKUP_PATH in env, but we MUST mock makedirs to prevent error
+        
         env_vars = {
-            'CHAT_TYPES': 'private',
-            'BACKUP_PATH': '/data/backups'
+            'CHAT_TYPES': 'private'
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            config = Config()
-            self.assertTrue(config.database_path.startswith('/data/backups'))
+        with patch('os.makedirs') as mock_makedirs:
+            with patch.dict(os.environ, env_vars, clear=True):
+                config = Config()
+                # Verify it picked up the default
+                self.assertTrue(config.database_path.startswith('/data/backups'))
 
     def test_database_dir_custom(self):
         """Can configure custom database directory."""
@@ -101,9 +129,10 @@ class TestDatabaseDir(unittest.TestCase):
             'BACKUP_PATH': '/data/backups',
             'DATABASE_DIR': '/data/ssd'
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            config = Config()
-            self.assertTrue(config.database_path.startswith('/data/ssd'))
+        with patch('os.makedirs') as mock_makedirs:
+            with patch.dict(os.environ, env_vars, clear=True):
+                config = Config()
+                self.assertTrue(config.database_path.startswith('/data/ssd'))
 
 
 if __name__ == '__main__':
