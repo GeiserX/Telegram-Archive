@@ -1,4 +1,4 @@
-# Telegram Backup Automation
+# Telegram Archive
 
 Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.
 
@@ -41,7 +41,7 @@ docker-compose up -d
 
 ## Web Viewer
 
-Browse your backups at **http://localhost:8000**
+Browse your backups (saved locally) at **http://localhost:8000**
 
 Features:
 - Telegram-like dark UI
@@ -67,7 +67,7 @@ Features:
 |----------|---------|-------------|
 | `SCHEDULE` | `0 */6 * * *` | Cron schedule (every 6 hours) |
 | `BACKUP_PATH` | `/data/backups` | Backup storage path |
-| `DATABASE_DIR` | Same as backup | Database location (e.g., SSD) |
+| `DATABASE_DIR` | Same as backup | Database location |
 | `DOWNLOAD_MEDIA` | `true` | Download media files |
 | `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
 | `CHAT_TYPES` | `private,groups,channels` | Types to backup |

@@ -50,5 +50,61 @@ class TestConfig(unittest.TestCase):
             except ValueError:
                 self.fail("validate_credentials() raised ValueError unexpectedly!")
 
+class TestDisplayChatIds(unittest.TestCase):
+    """Test DISPLAY_CHAT_IDS configuration for viewer restriction."""
+
+    def test_display_chat_ids_empty(self):
+        """Display chat IDs defaults to empty set when not configured."""
+        env_vars = {'CHAT_TYPES': 'private'}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.display_chat_ids, set())
+
+    def test_display_chat_ids_single(self):
+        """Can configure single chat ID for display."""
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'DISPLAY_CHAT_IDS': '123456789'
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.display_chat_ids, {123456789})
+
+    def test_display_chat_ids_multiple(self):
+        """Can configure multiple chat IDs for display."""
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'DISPLAY_CHAT_IDS': '123456789,987654321,-100555'
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.display_chat_ids, {123456789, 987654321, -100555})
+
+
+class TestDatabaseDir(unittest.TestCase):
+    """Test DATABASE_DIR configuration for storage location."""
+
+    def test_database_dir_default(self):
+        """Database path defaults to backup path when not configured."""
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'BACKUP_PATH': '/data/backups'
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.database_path.startswith('/data/backups'))
+
+    def test_database_dir_custom(self):
+        """Can configure custom database directory."""
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'BACKUP_PATH': '/data/backups',
+            'DATABASE_DIR': '/data/ssd'
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.database_path.startswith('/data/ssd'))
+
+
 if __name__ == '__main__':
     unittest.main()
