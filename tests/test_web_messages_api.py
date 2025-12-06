@@ -1,12 +1,29 @@
 import unittest
-from unittest.mock import Mock, patch
+import os
+import tempfile
+from unittest.mock import Mock, patch, MagicMock
 
 from src.database import Database
-from src.web.main import get_messages, db as web_db
 
 
 class TestWebMessagesAPI(unittest.TestCase):
     def setUp(self):
+        # Create a temp directory for Config to use
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Patch environment variables before importing web.main to prevent /data creation
+        env_patcher = patch.dict(os.environ, {
+            'CHAT_TYPES': 'private',
+            'BACKUP_PATH': self.temp_dir,
+            'DATABASE_DIR': self.temp_dir,
+        }, clear=False)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+        
+        # Now import after env is patched
+        from src.web.main import get_messages
+        self.get_messages = get_messages
+        
         # Use an in-memory database for isolation
         self.db = Database(":memory:")
 
@@ -73,7 +90,7 @@ class TestWebMessagesAPI(unittest.TestCase):
 
     def test_get_messages_includes_media_metadata(self):
         """get_messages should return media_file_name and media_mime_type for messages with media."""
-        messages = get_messages(chat_id=1, limit=10, offset=0, search=None)
+        messages = self.get_messages(chat_id=1, limit=10, offset=0, search=None)
         self.assertEqual(len(messages), 1)
 
         msg = messages[0]

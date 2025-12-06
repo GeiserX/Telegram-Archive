@@ -1,33 +1,65 @@
-"""
-Tests for web viewer authentication.
-"""
 import os
 import pytest
+import importlib
+import tempfile
+import hashlib
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
+# We need to control how src.web.main is imported
+import sys
 
 @pytest.fixture
-def auth_env(monkeypatch):
-    """Set up authentication environment variables."""
+def mock_env_and_config():
+    """Setup safe environment and mock Config for web.main import."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Patch environment to prevent Config from creating real directories
+        env_vars = {
+            'CHAT_TYPES': 'private',
+            'BACKUP_PATH': temp_dir,
+            'DATABASE_DIR': temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            yield
+            
+        # Cleanup: close database connection if it exists to allow temp dir removal
+        if 'src.web.main' in sys.modules:
+            try:
+                if hasattr(sys.modules['src.web.main'], 'db'):
+                    sys.modules['src.web.main'].db.close()
+            except:
+                pass
+
+@pytest.fixture
+def client_with_auth(mock_env_and_config, monkeypatch):
+    """Create a test client with authentication enabled."""
     monkeypatch.setenv("VIEWER_USERNAME", "testuser")
     monkeypatch.setenv("VIEWER_PASSWORD", "testpass123")
+    
+    # We must reload the module to pick up the new env vars for AUTH_ENABLED logic
+    if 'src.web.main' in sys.modules:
+        import src.web.main
+        importlib.reload(src.web.main)
+    else:
+        import src.web.main
+        
+    return TestClient(src.web.main.app)
 
 
 @pytest.fixture
-def client_with_auth(auth_env):
-    """Create a test client with authentication enabled."""
-    # Import after setting env vars
-    from src.web.main import app
-    return TestClient(app)
-
-
-@pytest.fixture
-def client_no_auth(monkeypatch):
+def client_no_auth(mock_env_and_config, monkeypatch):
     """Create a test client with authentication disabled."""
     monkeypatch.delenv("VIEWER_USERNAME", raising=False)
     monkeypatch.delenv("VIEWER_PASSWORD", raising=False)
-    from src.web.main import app
-    return TestClient(app)
+    
+    # Reload to ensure AUTH_ENABLED is False
+    if 'src.web.main' in sys.modules:
+        import src.web.main
+        importlib.reload(src.web.main)
+    else:
+        import src.web.main
+        
+    return TestClient(src.web.main.app)
 
 
 def test_auth_status_when_disabled(client_no_auth):
