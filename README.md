@@ -19,6 +19,19 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 📁 **Media Support** - Photos, videos, documents, stickers  
 🔒 **Secure** - Optional authentication, runs as non-root  
 
+## 📸 Screenshots
+
+<details>
+<summary>Click to view Desktop and Mobile screenshots</summary>
+
+### Desktop
+![Desktop View](assets/Telegram-Archive-1.png)
+
+### Mobile
+<img src="assets/Telegram-Archive-2.png" width="300" alt="Mobile View">
+
+</details>
+
 ## Quick Start
 
 ### 1. Get Telegram API Credentials
