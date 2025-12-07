@@ -1,5 +1,14 @@
 # Release Notes
 
+## v2.2.7
+### Features
+- **Automated GitHub Releases:** New workflow automatically creates GitHub Releases for new tags.
+
+### Fixes
+- **Zero Storage Statistics:** Fixed an issue where media file sizes were reported as 0MB. Added self-correction logic to `telegram_backup.py` and a repair script `scripts/fix_media_sizes.py` for existing databases.
+
+---
+
 ## v2.2.6
 ### Features
 - **Configurable Database Timeout:** Added `DATABASE_TIMEOUT` environment variable (default: 30.0s). Increase this value to prevent "database is locked" errors on slow filesystems (e.g., Unraid/FUSE).
