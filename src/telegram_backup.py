@@ -531,8 +531,8 @@ class TelegramBackup:
         elif hasattr(media, 'document'):
             telegram_file_id = str(getattr(media.document, 'id', None))
         
-        # Check file size
-        file_size = getattr(media, 'size', 0) or 0
+        # Check file size (estimated)
+        file_size = self._get_media_size(media)
         max_size = self.config.get_max_media_size_bytes()
         
         if file_size > max_size:
@@ -561,6 +561,10 @@ class TelegramBackup:
                 await self.client.download_media(message, file_path)
                 logger.debug(f"Downloaded media: {file_name}")
             
+            # Update file_size with actual size from disk
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+
             # Extract media metadata
             media_data = {
                 'id': media_id,
@@ -604,6 +608,24 @@ class TelegramBackup:
                 'downloaded': False
             }
     
+    def _get_media_size(self, media) -> int:
+        """Get estimated size of media object in bytes."""
+        # Document (Video, Audio, File)
+        if hasattr(media, 'document') and media.document:
+            return getattr(media.document, 'size', 0)
+        
+        # Photo (find largest size)
+        if hasattr(media, 'photo') and media.photo:
+            sizes = getattr(media.photo, 'sizes', [])
+            if sizes:
+                # Return size of the last one (usually the largest)
+                # Some Size types have 'size' field, others don't (like PhotoCachedSize)
+                largest = sizes[-1]
+                return getattr(largest, 'size', 0)
+        
+        # Fallback to direct attribute
+        return getattr(media, 'size', 0)
+
     def _get_media_type(self, media) -> Optional[str]:
         """Get media type as string."""
         if isinstance(media, MessageMediaPhoto):
