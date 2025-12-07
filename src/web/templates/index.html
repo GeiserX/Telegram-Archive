@@ -343,6 +343,45 @@
                                         <div class="truncate opacity-70">{{ msg.reply_to_text || 'Message' }}</div>
                                     </div>
 
+                                    <!-- Polls -->
+                                    <div v-if="msg.media_type === 'poll' && msg.raw_data && msg.raw_data.poll"
+                                        class="mb-2 w-full max-w-sm bg-black/20 rounded-lg p-3">
+                                        <div class="font-bold text-sm mb-3">{{ msg.raw_data.poll.question }}</div>
+
+                                        <div class="space-y-2">
+                                            <div v-for="answer in msg.raw_data.poll.answers" :key="answer.option"
+                                                class="relative group">
+                                                <!-- Use a wrapper for the bar to show visual progress behind text -->
+                                                <div
+                                                    class="relative w-full border border-white/10 rounded-md overflow-hidden bg-white/5">
+                                                    <!-- Progress Bar -->
+                                                    <div v-if="getPollPercentage(msg, answer) > 0"
+                                                        class="absolute left-0 top-0 bottom-0 bg-blue-500/30 transition-all duration-500"
+                                                        :style="{ width: getPollPercentage(msg, answer) + '%' }">
+                                                    </div>
+
+                                                    <!-- Text and Percentage -->
+                                                    <div
+                                                        class="relative z-10 flex justify-between items-center px-3 py-2">
+                                                        <span class="text-sm truncate mr-2">{{ answer.text }}</span>
+                                                        <span v-if="msg.raw_data.poll.results"
+                                                            class="text-xs font-bold shrink-0">
+                                                            {{ getPollPercentage(msg, answer) }}%
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div
+                                            class="mt-3 flex justify-between items-center text-[10px] opacity-60 uppercase tracking-wider font-semibold">
+                                            <span>{{ msg.raw_data.poll.quiz ? 'Quiz' : 'Poll' }}</span>
+                                            <span v-if="msg.raw_data.poll.results">
+                                                {{ msg.raw_data.poll.results.total_voters }} votes
+                                            </span>
+                                        </div>
+                                    </div>
+
                                     <!-- Media -->
                                     <div v-if="msg.media_path" class="mb-2 space-y-1">
                                         <!-- Photos sent as photos -->
@@ -795,6 +834,16 @@
                     return `hsl(${hue}, 70%, 65%)`
                 }
 
+                const getPollPercentage = (msg, answer) => {
+                    const results = msg.raw_data?.poll?.results
+                    if (!results || !results.total_voters) return 0
+
+                    const res = results.results?.find(r => r.option === answer.option)
+                    if (!res) return 0
+
+                    return Math.round((res.voters / results.total_voters) * 100)
+                }
+
                 const getSenderStyle = (msg) => {
                     return {
                         backgroundColor: getMessageBackground(msg),
@@ -931,6 +980,7 @@
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
+                    getPollPercentage,
                     isDeletedChat,
                     isAudioFile,
                     exportChat,

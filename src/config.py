@@ -35,6 +35,11 @@ class Config:
         
         # Batch processing configuration
         self.batch_size = int(os.getenv('BATCH_SIZE', '100'))
+
+        # Database Configuration
+        # Timeout for SQLite operations (seconds). 
+        # Increase this if you experience "database is locked" errors (e.g., on Unraid/slow disks).
+        self.database_timeout = float(os.getenv('DATABASE_TIMEOUT', '30.0'))
         
         # Chat type filters
         chat_types_str = os.getenv('CHAT_TYPES', 'private,groups,channels')

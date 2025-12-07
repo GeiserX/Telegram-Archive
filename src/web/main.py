@@ -35,7 +35,7 @@ app.add_middleware(
 
 # Initialize config and database
 config = Config()
-db = Database(config.database_path)
+db = Database(config.database_path, timeout=config.database_timeout)
 
 # Simple viewer authentication using env vars
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
@@ -243,8 +243,15 @@ def get_messages(
     cursor.execute(query, params)
     messages = [dict(row) for row in cursor.fetchall()]
 
-    # Populate reply_to_text from database if missing
+    # Populate reply_to_text from database if missing and parse raw_data
     for msg in messages:
+        # Parse raw_data if it exists (it's stored as a JSON string)
+        if msg.get('raw_data'):
+            try:
+                msg['raw_data'] = json.loads(msg['raw_data'])
+            except:
+                msg['raw_data'] = {}
+
         if msg.get('reply_to_msg_id') and not msg.get('reply_to_text'):
             cursor.execute(
                 "SELECT text FROM messages WHERE chat_id = ? AND id = ?",

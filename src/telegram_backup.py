@@ -6,6 +6,7 @@ Handles Telegram client connection, message fetching, and incremental backup log
 import os
 import logging
 import hashlib
+import base64
 from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
@@ -36,7 +37,7 @@ class TelegramBackup:
         """
         self.config = config
         self.config.validate_credentials()
-        self.db = Database(config.database_path)
+        self.db = Database(config.database_path, timeout=config.database_timeout)
         self.client: Optional[TelegramClient] = None
         
         logger.info("TelegramBackup initialized")
@@ -417,12 +418,53 @@ class TelegramBackup:
                 message_data['reply_to_text'] = reply_text
         
         # Handle media
-        if message.media and self.config.download_media:
-            media_info = await self._process_media(message, chat_id)
-            if media_info:
-                message_data['media_type'] = media_info['type']
-                message_data['media_id'] = media_info['id']
-                message_data['media_path'] = media_info.get('file_path')
+        if message.media:
+            # Handle Polls specially (store structure in raw_data, do not download)
+            if isinstance(message.media, MessageMediaPoll):
+                message_data['media_type'] = 'poll'
+                poll = message.media.poll
+                results = message.media.results
+                
+                # Parse results if available
+                results_data = None
+                if results:
+                    try:
+                        results_list = []
+                        if results.results:
+                            for r in results.results:
+                                results_list.append({
+                                    'option': base64.b64encode(r.option).decode('ascii'),
+                                    'voters': r.voters,
+                                    'correct': r.correct
+                                })
+                        results_data = {
+                            'total_voters': results.total_voters,
+                            'results': results_list
+                        }
+                    except Exception as e:
+                        logger.warning(f"Error parsing poll results: {e}")
+
+                # Store poll structure
+                message_data['raw_data']['poll'] = {
+                    'id': getattr(poll, 'id', None),
+                    'question': getattr(poll, 'question', ''),
+                    'answers': [{
+                        'text': getattr(a, 'text', ''), 
+                        'option': base64.b64encode(a.option).decode('ascii')
+                    } for a in poll.answers],
+                    'closed': poll.closed,
+                    'public_voters': poll.public_voters,
+                    'multiple_choice': poll.multiple_choice,
+                    'quiz': poll.quiz,
+                    'results': results_data
+                }
+
+            elif self.config.download_media:
+                media_info = await self._process_media(message, chat_id)
+                if media_info:
+                    message_data['media_type'] = media_info['type']
+                    message_data['media_id'] = media_info['id']
+                    message_data['media_path'] = media_info.get('file_path')
         
         # Return message data for batch processing
         return message_data

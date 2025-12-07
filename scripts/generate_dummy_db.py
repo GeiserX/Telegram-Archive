@@ -134,6 +134,36 @@ def generate_dummy_db(db_path="data/backups/telegram_backup.db"):
         'media_path': 'changelog.pdf'
     })
 
+    # Poll Message
+    messages.append({
+        'id': 502, 'chat_id': chat_id, 'sender_id': None, 
+        'date': base_time + timedelta(days=2, hours=5),
+        'text': '', 'media_type': 'poll',
+        'is_outgoing': 0,
+        'raw_data': {
+            'poll': {
+                'question': 'What feature should we build next? 🚀',
+                'answers': [
+                    {'text': 'Voice Calls', 'option': 'MA=='},
+                    {'text': 'Video Calls', 'option': 'MQ=='},
+                    {'text': 'Screen Sharing', 'option': 'Mg=='}
+                ],
+                'closed': False,
+                'public_voters': True,
+                'multiple_choice': True,
+                'quiz': False,
+                'results': {
+                    'total_voters': 42,
+                    'results': [
+                        {'option': 'MA==', 'voters': 12},
+                        {'option': 'MQ==', 'voters': 25},
+                        {'option': 'Mg==', 'voters': 5}
+                    ]
+                }
+            }
+        }
+    })
+
     # Insert all messages
     db.insert_messages_batch(messages)
     
