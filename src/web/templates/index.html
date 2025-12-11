@@ -233,6 +233,9 @@
                                     • ID: {{ chat.id }}
                                 </span>
                             </p>
+                            <p v-if="chat.last_crawled" class="text-xs text-tg-muted/60 mt-0.5">
+                                Last crawled: {{ formatDate(chat.last_crawled) }} {{ formatTime(chat.last_crawled) }}
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -285,7 +288,12 @@
                             </div>
                             <div>
                                 <h2 class="font-bold text-lg">{{ getChatName(selectedChat) }}</h2>
-                                <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+                                <p class="text-xs text-tg-muted">
+                                    {{ selectedChat.type }}
+                                    <span v-if="selectedChat.last_crawled" class="ml-2">
+                                        • Last crawled: {{ formatDate(selectedChat.last_crawled) }} {{ formatTime(selectedChat.last_crawled) }}
+                                    </span>
+                                </p>
                             </div>
                         </div>
 
@@ -392,9 +400,41 @@
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-[200px] max-w-md bg-black/20 p-3 rounded-lg">
-                                            <audio controls class="w-full h-10" :src="getMediaUrl(msg)"></audio>
-                                            <div class="text-[11px] opacity-70 mt-1.5 truncate px-1">{{
-                                                getDocumentDisplayName(msg) }}</div>
+                                            <div class="flex items-center gap-2 mb-2">
+                                                <button @click="toggleAudioPlayback(msg.id)" 
+                                                    class="w-8 h-8 flex items-center justify-center rounded-full bg-blue-500 hover:bg-blue-600 text-white transition"
+                                                    :title="isAudioPlaying(msg.id) ? 'Pause' : 'Play'">
+                                                    <i v-if="isAudioPlaying(msg.id)" class="fas fa-pause text-xs"></i>
+                                                    <i v-else class="fas fa-play text-xs"></i>
+                                                </button>
+                                                <div class="flex-1">
+                                                    <div class="flex items-center gap-2 mb-1">
+                                                        <input type="range" 
+                                                            :id="'audio-seek-' + msg.id"
+                                                            min="0" 
+                                                            :max="getAudioDuration(msg.id) || 0" 
+                                                            :value="getAudioCurrentTime(msg.id) || 0"
+                                                            @input="seekAudio(msg.id, $event.target.value)"
+                                                            @mousedown="pauseAudioForSeek(msg.id)"
+                                                            @mouseup="resumeAudioAfterSeek(msg.id)"
+                                                            class="flex-1 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                                            style="background: linear-gradient(to right, #3b82f6 0%, #3b82f6 var(--progress, 0%), #475569 var(--progress, 0%), #475569 100%);">
+                                                        <span class="text-xs text-tg-muted min-w-[40px] text-right">
+                                                            {{ formatAudioTime(getAudioCurrentTime(msg.id)) }} / {{ formatAudioTime(getAudioDuration(msg.id)) }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="text-[11px] opacity-70 truncate px-1">{{
+                                                        getDocumentDisplayName(msg) }}</div>
+                                                </div>
+                                            </div>
+                                            <audio 
+                                                :data-msg-id="msg.id"
+                                                :src="getMediaUrl(msg)"
+                                                @loadedmetadata="onAudioLoaded(msg.id, $event)"
+                                                @timeupdate="onAudioTimeUpdate(msg.id, $event)"
+                                                @ended="onAudioEnded(msg.id)"
+                                                preload="metadata">
+                                            </audio>
                                         </div>
 
                                         <!-- GIFs / Animations - autoplay when visible -->
@@ -939,6 +979,113 @@
                     }
                 }
 
+                // Audio player state
+                const audioState = ref({})
+                const audioSeeking = ref({})
+
+                const getAudioElement = (msgId) => {
+                    return document.querySelector(`audio[data-msg-id="${msgId}"]`)
+                }
+
+                const toggleAudioPlayback = (msgId) => {
+                    const audio = getAudioElement(msgId)
+                    if (!audio) return
+
+                    if (audio.paused) {
+                        // Pause all other audio players
+                        document.querySelectorAll('audio').forEach(a => {
+                            if (a !== audio && !a.paused) {
+                                a.pause()
+                                const otherMsgId = a.getAttribute('data-msg-id')
+                                if (otherMsgId) {
+                                    audioState.value[otherMsgId] = { playing: false }
+                                }
+                            }
+                        })
+                        audio.play().catch(e => console.error('Audio play error:', e))
+                        audioState.value[msgId] = { playing: true }
+                    } else {
+                        audio.pause()
+                        audioState.value[msgId] = { playing: false }
+                    }
+                }
+
+                const isAudioPlaying = (msgId) => {
+                    return audioState.value[msgId]?.playing || false
+                }
+
+                const getAudioDuration = (msgId) => {
+                    const audio = getAudioElement(msgId)
+                    if (!audio || !audio.duration) return 0
+                    return Math.floor(audio.duration)
+                }
+
+                const getAudioCurrentTime = (msgId) => {
+                    if (audioSeeking.value[msgId] !== undefined) {
+                        return audioSeeking.value[msgId]
+                    }
+                    const audio = getAudioElement(msgId)
+                    if (!audio) return 0
+                    return Math.floor(audio.currentTime)
+                }
+
+                const seekAudio = (msgId, value) => {
+                    const audio = getAudioElement(msgId)
+                    if (!audio) return
+                    audioSeeking.value[msgId] = parseInt(value)
+                    audio.currentTime = parseInt(value)
+                }
+
+                const pauseAudioForSeek = (msgId) => {
+                    const audio = getAudioElement(msgId)
+                    if (!audio) return
+                    audioSeeking.value[msgId] = audio.currentTime
+                    if (!audio.paused) {
+                        audio.pause()
+                        audioState.value[msgId] = { playing: false, wasPlaying: true }
+                    }
+                }
+
+                const resumeAudioAfterSeek = (msgId) => {
+                    const audio = getAudioElement(msgId)
+                    if (!audio) return
+                    delete audioSeeking.value[msgId]
+                    if (audioState.value[msgId]?.wasPlaying) {
+                        audio.play().catch(e => console.error('Audio play error:', e))
+                        audioState.value[msgId] = { playing: true }
+                    }
+                }
+
+                const onAudioLoaded = (msgId, event) => {
+                    const audio = event.target
+                    if (!audioState.value[msgId]) {
+                        audioState.value[msgId] = { playing: false }
+                    }
+                }
+
+                const onAudioTimeUpdate = (msgId, event) => {
+                    if (audioSeeking.value[msgId] === undefined) {
+                        // Update progress bar
+                        const audio = event.target
+                        const progress = (audio.currentTime / audio.duration) * 100
+                        const seekInput = document.getElementById(`audio-seek-${msgId}`)
+                        if (seekInput) {
+                            seekInput.style.setProperty('--progress', `${progress}%`)
+                        }
+                    }
+                }
+
+                const onAudioEnded = (msgId) => {
+                    audioState.value[msgId] = { playing: false }
+                }
+
+                const formatAudioTime = (seconds) => {
+                    if (!seconds && seconds !== 0) return '0:00'
+                    const mins = Math.floor(seconds / 60)
+                    const secs = Math.floor(seconds % 60)
+                    return `${mins}:${secs.toString().padStart(2, '0')}`
+                }
+
                 return {
                     chats,
                     filteredChats,
@@ -987,6 +1134,18 @@
                     // Error states
                     chatsError,
                     loadChats,
+                    // Audio player
+                    toggleAudioPlayback,
+                    isAudioPlaying,
+                    getAudioDuration,
+                    getAudioCurrentTime,
+                    seekAudio,
+                    pauseAudioForSeek,
+                    resumeAudioAfterSeek,
+                    onAudioLoaded,
+                    onAudioTimeUpdate,
+                    onAudioEnded,
+                    formatAudioTime,
                 }
             }
         }).mount('#app')

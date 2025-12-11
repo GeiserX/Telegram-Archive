@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.2.8
+### Features
+- **Last Crawled Timestamp:** Each chat now displays when it was last crawled/backed up in the viewer sidebar.
+- **Enhanced Audio Player:** Improved audio player with proper seek bar, time display, and play/pause controls. Works with all audio formats including .ogg, .mp3, .wav, .m4a, .opus, and .flac.
+
+### Fixes
+- Fixed audio playback issues - audio files now have a proper seek bar for selecting specific timestamps.
+- Audio player now works correctly on mobile devices with touch-friendly controls.
+
+---
+
 ## v2.2.7
 ### Features
 - **Automated GitHub Releases:** New workflow automatically creates GitHub Releases for new tags.
