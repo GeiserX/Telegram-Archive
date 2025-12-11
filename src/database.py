@@ -517,7 +517,7 @@ class Database:
         logger.debug(f"Updated message {message_id} in chat {chat_id}")
     
     def get_all_chats(self):
-        """Get all chats with their last message date.
+        """Get all chats with their last message date and last crawl date.
 
         Returns:
             List of chat dictionaries sorted by last message date (newest first),
@@ -527,9 +527,11 @@ class Database:
         cursor.execute('''
             SELECT 
                 c.*,
-                MAX(m.date) AS last_message_date
+                MAX(m.date) AS last_message_date,
+                ss.last_sync_date AS last_crawled
             FROM chats c
             LEFT JOIN messages m ON c.id = m.chat_id
+            LEFT JOIN sync_status ss ON c.id = ss.chat_id
             GROUP BY c.id
             ORDER BY (last_message_date IS NULL) ASC, last_message_date DESC
         ''')
