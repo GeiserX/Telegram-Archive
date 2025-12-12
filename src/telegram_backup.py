@@ -109,6 +109,10 @@ class TelegramBackup:
 
             start_time = datetime.now()
             
+            # Store last backup time in UTC at the START of backup (not when it finishes)
+            last_backup_time = datetime.utcnow().isoformat() + 'Z'
+            self.db.set_metadata('last_backup_time', last_backup_time)
+            
             # Get all dialogs (chats)
             logger.info("Fetching dialog list...")
             dialogs = await self._get_dialogs()
@@ -195,9 +199,7 @@ class TelegramBackup:
             duration = (datetime.now() - start_time).total_seconds()
             stats = self.db.get_statistics()
             
-            # Store last backup time in UTC
-            last_backup_time = datetime.utcnow().isoformat() + 'Z'
-            self.db.set_metadata('last_backup_time', last_backup_time)
+            # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
             
             logger.info("=" * 60)
             logger.info("Backup completed successfully!")
