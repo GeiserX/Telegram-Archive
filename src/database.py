@@ -519,6 +519,7 @@ class Database:
         
         # Get last backup time - prefer metadata, fallback to most recent sync_date
         last_backup_time = self.get_metadata('last_backup_time')
+        timezone_source = 'metadata'  # Track where the time came from
         
         # If no metadata, get the most recent sync_date from sync_status
         if not last_backup_time:
@@ -526,6 +527,7 @@ class Database:
             row = cursor.fetchone()
             if row and row['last_sync']:
                 last_backup_time = row['last_sync']
+                timezone_source = 'sync_status'  # This is in server local time, not UTC
         
         stats = {
             'chats': chat_count,
@@ -536,6 +538,7 @@ class Database:
         
         if last_backup_time:
             stats['last_backup_time'] = last_backup_time
+            stats['last_backup_time_source'] = timezone_source  # 'metadata' (UTC) or 'sync_status' (server local)
         
         return stats
     

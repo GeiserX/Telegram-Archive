@@ -185,7 +185,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
-                            <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone) }}</span>
+                            <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
                         </div>
                     </div>
                 </div>
@@ -522,6 +522,7 @@
                 const loginError = ref('')
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
+                const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
                 const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
 
                 // Intersection Observer for GIF autoplay
@@ -575,12 +576,14 @@
                             // Always try to get last backup time - from metadata or sync_status
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
-                                console.log('Last backup time set to:', lastBackupTime.value)
+                                lastBackupTimeSource.value = stats.last_backup_time_source || 'metadata'
+                                console.log('Last backup time set to:', lastBackupTime.value, 'from:', lastBackupTimeSource.value)
                             } else {
                                 // If no last_backup_time, try to get from sync_status directly
                                 console.log('No last_backup_time in stats, checking sync_status...')
                                 // The backend should already handle this, but if it doesn't, we'll show "Never"
                                 lastBackupTime.value = null
+                                lastBackupTimeSource.value = 'metadata'
                             }
                         } else {
                             console.error('Failed to fetch stats, status:', res.status)
@@ -935,7 +938,7 @@
                     return emoji || '👍'
                 }
 
-                const formatLastBackupTime = (timeStr, tz) => {
+                const formatLastBackupTime = (timeStr, tz, timeSource) => {
                     if (!timeStr) {
                         return 'Never'
                     }
@@ -947,14 +950,22 @@
                         // Try parsing as UTC first (if it ends with Z or is ISO format)
                         let parsedMoment
                         if (timeStr.endsWith('Z') || (timeStr.includes('T') && timeStr.includes('Z'))) {
-                            // UTC ISO format
+                            // UTC ISO format (from metadata)
                             parsedMoment = moment.utc(timeStr).tz(timezone)
                         } else if (timeStr.includes('T')) {
                             // ISO format without Z - assume UTC
                             parsedMoment = moment.utc(timeStr).tz(timezone)
                         } else {
-                            // SQLite timestamp format - parse and convert to timezone
-                            parsedMoment = moment(timeStr).tz(timezone)
+                            // SQLite timestamp format
+                            // If from sync_status, it's already in server timezone (which should match VIEWER_TIMEZONE)
+                            // If from metadata but old format, treat as UTC
+                            if (timeSource === 'sync_status') {
+                                // Already in server timezone, just parse it in that timezone
+                                parsedMoment = moment.tz(timeStr, 'YYYY-MM-DD HH:mm:ss', timezone)
+                            } else {
+                                // Unknown source, try parsing as UTC then converting
+                                parsedMoment = moment.utc(timeStr).tz(timezone)
+                            }
                         }
                         
                         if (!parsedMoment.isValid()) {
@@ -1106,6 +1117,7 @@
                     loadChats,
                     // Stats
                     lastBackupTime,
+                    lastBackupTimeSource,
                     viewerTimezone,
                 }
             }
