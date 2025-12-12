@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.2.10
+### Features
+- **Configurable Timezone for Last Backup Time:** Added `VIEWER_TIMEZONE` environment variable to configure the timezone for displaying last backup time. Defaults to `Europe/Madrid` if not specified. Can be set in docker-compose.yml.
+
+### Fixes
+- **Last Backup Time Always Visible:** Last backup time now always displays in the viewer sidebar (shows "Never" if no backup has occurred). Previously could be hidden if metadata wasn't available.
+- **Improved Timezone Handling:** Better timezone conversion using moment-timezone library. Falls back to Europe/Madrid if browser timezone is unavailable or invalid.
+- **Robust Date Parsing:** Improved date parsing to handle both UTC ISO format and SQLite timestamp formats reliably.
+
+---
+
 ## v2.2.9
 ### Features
 - **Timezone-Aware Last Backup Time:** Last backup time is now displayed in the viewer sidebar and automatically converts to the browser's local timezone. Shows relative times (e.g., "Today at 14:30" or "Yesterday at 10:15") for better user experience.

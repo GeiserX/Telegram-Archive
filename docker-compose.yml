@@ -66,6 +66,8 @@ services:
       # When both are set, the UI will prompt for credentials
       VIEWER_USERNAME: ${VIEWER_USERNAME:-}
       VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
+      # Timezone for displaying last backup time (defaults to Europe/Madrid)
+      VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
     volumes:
       - ./data:/data
     networks:
