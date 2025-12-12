@@ -107,6 +107,10 @@ class Config:
         # Useful for sharing public channel viewers without exposing other chats
         self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
         
+        # Timezone configuration for viewer display
+        # Defaults to Europe/Madrid if not specified
+        self.viewer_timezone = os.getenv('VIEWER_TIMEZONE', 'Europe/Madrid')
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")

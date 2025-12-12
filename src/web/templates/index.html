@@ -9,6 +9,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -178,13 +179,13 @@
                         </svg>
                     </div>
                     <!-- Last Backup Time -->
-                    <div v-if="lastBackupTime" class="text-xs text-tg-muted">
+                    <div class="text-xs text-tg-muted">
                         <div class="flex items-center gap-1.5">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
-                            <span>Last backup: {{ formatLastBackupTime(lastBackupTime) }}</span>
+                            <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone) }}</span>
                         </div>
                     </div>
                 </div>
@@ -510,6 +511,7 @@
                 const loginError = ref('')
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
+                const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
 
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
@@ -553,11 +555,21 @@
                         if (res.ok) {
                             const stats = await res.json()
                             console.log('Stats loaded:', stats)
+                            
+                            // Update timezone from config
+                            if (stats.timezone) {
+                                viewerTimezone.value = stats.timezone
+                            }
+                            
+                            // Always try to get last backup time - from metadata or sync_status
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
                                 console.log('Last backup time set to:', lastBackupTime.value)
                             } else {
-                                console.log('No last_backup_time in stats')
+                                // If no last_backup_time, try to get from sync_status directly
+                                console.log('No last_backup_time in stats, checking sync_status...')
+                                // The backend should already handle this, but if it doesn't, we'll show "Never"
+                                lastBackupTime.value = null
                             }
                         } else {
                             console.error('Failed to fetch stats, status:', res.status)
@@ -902,35 +914,49 @@
                     return moment(dateStr).format('HH:mm')
                 }
 
-                const formatLastBackupTime = (timeStr) => {
-                    if (!timeStr) return ''
+                const formatLastBackupTime = (timeStr, tz) => {
+                    if (!timeStr) {
+                        return 'Never'
+                    }
+                    
                     try {
+                        // Ensure timezone is valid, fallback to Europe/Madrid
+                        const timezone = tz && moment.tz.zone(tz) ? tz : 'Europe/Madrid'
+                        
                         // Try parsing as UTC first (if it ends with Z or is ISO format)
                         let parsedMoment
-                        if (timeStr.endsWith('Z') || timeStr.includes('T')) {
-                            parsedMoment = moment.utc(timeStr).local()
+                        if (timeStr.endsWith('Z') || (timeStr.includes('T') && timeStr.includes('Z'))) {
+                            // UTC ISO format
+                            parsedMoment = moment.utc(timeStr).tz(timezone)
+                        } else if (timeStr.includes('T')) {
+                            // ISO format without Z - assume UTC
+                            parsedMoment = moment.utc(timeStr).tz(timezone)
                         } else {
-                            // Otherwise parse as local time (SQLite timestamps)
-                            parsedMoment = moment(timeStr)
+                            // SQLite timestamp format - parse and convert to timezone
+                            parsedMoment = moment(timeStr).tz(timezone)
                         }
                         
                         if (!parsedMoment.isValid()) {
-                            return ''
+                            console.error('Invalid date format:', timeStr)
+                            return 'Unknown'
                         }
                         
+                        // Get current time in the same timezone for comparison
+                        const now = moment.tz(timezone)
+                        
                         // Check if it's today
-                        if (parsedMoment.isSame(moment(), 'day')) {
+                        if (parsedMoment.isSame(now, 'day')) {
                             return `Today at ${parsedMoment.format('HH:mm')}`
                         }
                         // Check if it's yesterday
-                        if (parsedMoment.isSame(moment().subtract(1, 'day'), 'day')) {
+                        if (parsedMoment.isSame(now.clone().subtract(1, 'day'), 'day')) {
                             return `Yesterday at ${parsedMoment.format('HH:mm')}`
                         }
                         // Otherwise show date and time
                         return parsedMoment.format('MMM D, YYYY [at] HH:mm')
                     } catch (e) {
-                        console.error('Error formatting last backup time:', e, timeStr)
-                        return ''
+                        console.error('Error formatting last backup time:', e, timeStr, tz)
+                        return 'Error'
                     }
                 }
 
@@ -1058,6 +1084,7 @@
                     loadChats,
                     // Stats
                     lastBackupTime,
+                    viewerTimezone,
                 }
             }
         }).mount('#app')

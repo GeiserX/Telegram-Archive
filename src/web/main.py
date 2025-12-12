@@ -267,7 +267,10 @@ def get_messages(
 @app.get("/api/stats", dependencies=[Depends(require_auth)])
 def get_stats():
     """Get backup statistics."""
-    return db.get_statistics()
+    stats = db.get_statistics()
+    # Add timezone configuration
+    stats['timezone'] = config.viewer_timezone
+    return stats
 
 @app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
 def export_chat(chat_id: int):
