@@ -1,5 +1,19 @@
 # Release Notes
 
+## v2.2.16
+### Fixes
+- **Timezone Data Bundle & Default TZ:** Load `moment-timezone-with-data-1970-2030.min.js` (full timezone data bundle) and set the default timezone from `VIEWER_TIMEZONE` so conversions work reliably (e.g., Europe/Madrid). This fixes the "Moment Timezone has no data for Europe/Madrid" error.
+- **Vue Production Build:** Use the Vue production build (`vue.global.prod.js`) to avoid dev-mode warnings in production.
+
+---
+
+## v2.2.15
+### Fixes
+- **Timezone Display Fix (moment-timezone data):** Switched to `moment-timezone-with-data` to ensure timezone definitions (e.g., Europe/Madrid) are available. This fixes missing timezone data errors and ensures correct conversion from UTC to configured timezone.
+- **Vue Production Build:** Switched to `vue.global.prod.js` to avoid development build warnings in production.
+
+---
+
 ## v2.2.14
 ### Fixes
 - **Timezone Display Fix (Critical):** Fixed moment-timezone library to include timezone data. The previous version loaded `moment-timezone.min.js` which doesn't include timezone definitions. Now uses `moment-timezone-with-data.min.js` which includes all timezone data needed for proper conversion.
