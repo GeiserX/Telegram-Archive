@@ -4,11 +4,13 @@
 ### Fixes
 - **JSON Serialization Fix for Polls:** Fixed `TypeError: Object of type TextWithEntities is not JSON serializable` error when backing up messages with polls. Poll questions and answer text fields that are `TextWithEntities` objects are now properly converted to strings before JSON serialization.
 - **Robust JSON Serialization:** Added `_serialize_raw_data()` helper method that safely handles non-serializable objects in `raw_data` by recursively converting them to strings, preventing future serialization errors.
+- **Last Backup Time Records Start Time:** Changed `last_backup_time` to record when the backup process starts (after authentication) rather than when it finishes. This provides a more accurate representation of when the backup began, especially for long-running backups.
 
 ### Technical Details
 - Added `_text_with_entities_to_string()` helper to convert `TextWithEntities` objects to plain strings
 - Updated poll processing to convert `poll.question` and answer `text` fields from `TextWithEntities` to strings
 - Added fallback serialization that converts any non-serializable objects to strings with proper error handling
+- `last_backup_time` is now set immediately after authentication and before dialog fetching begins
 
 ---
 
