@@ -4,11 +4,15 @@
 ### Features
 - **Message Reactions Support:** Added full support for storing and displaying message reactions (emoji reactions) in the viewer. Reactions are automatically captured during backup and displayed below each message with emoji and count, styled similar to Telegram.
 
+### Fixes
+- **Timezone Display Fix:** Fixed timezone conversion issue where last backup time from `sync_status` table (server local time) was being double-converted. Now correctly handles both UTC timestamps from metadata and local timestamps from sync_status.
+
 ### Technical Details
 - New `reactions` table added to database schema (automatically created for both new and existing users)
 - Reactions are extracted from Telegram messages including user information when available
 - Supports both regular emoji reactions and custom emoji reactions (animated stickers)
 - Reactions are displayed in the web viewer with proper styling and counts
+- Timezone conversion now tracks time source to avoid double conversion
 
 ---
 
