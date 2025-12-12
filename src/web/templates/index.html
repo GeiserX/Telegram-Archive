@@ -552,9 +552,15 @@
                         })
                         if (res.ok) {
                             const stats = await res.json()
+                            console.log('Stats loaded:', stats)
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
+                                console.log('Last backup time set to:', lastBackupTime.value)
+                            } else {
+                                console.log('No last_backup_time in stats')
                             }
+                        } else {
+                            console.error('Failed to fetch stats, status:', res.status)
                         }
                     } catch (e) {
                         console.error("Failed to fetch stats", e)
@@ -896,22 +902,36 @@
                     return moment(dateStr).format('HH:mm')
                 }
 
-                const formatLastBackupTime = (utcTimeStr) => {
-                    if (!utcTimeStr) return ''
-                    // Parse UTC time and convert to browser's local timezone
-                    const utcMoment = moment.utc(utcTimeStr)
-                    const localMoment = utcMoment.local()
-                    
-                    // Check if it's today
-                    if (localMoment.isSame(moment(), 'day')) {
-                        return `Today at ${localMoment.format('HH:mm')}`
+                const formatLastBackupTime = (timeStr) => {
+                    if (!timeStr) return ''
+                    try {
+                        // Try parsing as UTC first (if it ends with Z or is ISO format)
+                        let parsedMoment
+                        if (timeStr.endsWith('Z') || timeStr.includes('T')) {
+                            parsedMoment = moment.utc(timeStr).local()
+                        } else {
+                            // Otherwise parse as local time (SQLite timestamps)
+                            parsedMoment = moment(timeStr)
+                        }
+                        
+                        if (!parsedMoment.isValid()) {
+                            return ''
+                        }
+                        
+                        // Check if it's today
+                        if (parsedMoment.isSame(moment(), 'day')) {
+                            return `Today at ${parsedMoment.format('HH:mm')}`
+                        }
+                        // Check if it's yesterday
+                        if (parsedMoment.isSame(moment().subtract(1, 'day'), 'day')) {
+                            return `Yesterday at ${parsedMoment.format('HH:mm')}`
+                        }
+                        // Otherwise show date and time
+                        return parsedMoment.format('MMM D, YYYY [at] HH:mm')
+                    } catch (e) {
+                        console.error('Error formatting last backup time:', e, timeStr)
+                        return ''
                     }
-                    // Check if it's yesterday
-                    if (localMoment.isSame(moment().subtract(1, 'day'), 'day')) {
-                        return `Yesterday at ${localMoment.format('HH:mm')}`
-                    }
-                    // Otherwise show date and time
-                    return localMoment.format('MMM D, YYYY [at] HH:mm')
                 }
 
                 const getMediaUrl = (msg) => {

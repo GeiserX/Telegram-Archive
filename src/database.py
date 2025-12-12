@@ -451,8 +451,15 @@ class Database:
         cursor.execute('SELECT SUM(file_size) as total FROM media WHERE downloaded = 1')
         total_size = cursor.fetchone()['total'] or 0
         
-        # Get last backup time from metadata
+        # Get last backup time - prefer metadata, fallback to most recent sync_date
         last_backup_time = self.get_metadata('last_backup_time')
+        
+        # If no metadata, get the most recent sync_date from sync_status
+        if not last_backup_time:
+            cursor.execute('SELECT MAX(last_sync_date) as last_sync FROM sync_status')
+            row = cursor.fetchone()
+            if row and row['last_sync']:
+                last_backup_time = row['last_sync']
         
         stats = {
             'chats': chat_count,
