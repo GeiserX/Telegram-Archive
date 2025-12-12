@@ -279,6 +279,10 @@ def get_messages(
                 reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
         
         msg['reactions'] = list(reactions_by_emoji.values())
+        
+        # Debug logging for reactions
+        if msg['reactions']:
+            logger.debug(f"Message {msg['id']} has {len(msg['reactions'])} reaction types")
 
     return messages
 

@@ -403,7 +403,9 @@
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-[200px] max-w-md bg-black/20 p-3 rounded-lg">
-                                            <audio controls class="w-full h-10" :src="getMediaUrl(msg)"></audio>
+                                            <audio controls preload="metadata" class="w-full h-10" :src="getMediaUrl(msg)">
+                                                Your browser does not support the audio element.
+                                            </audio>
                                             <div class="text-[11px] opacity-70 mt-1.5 truncate px-1">{{
                                                 getDocumentDisplayName(msg) }}</div>
                                         </div>
@@ -947,23 +949,28 @@
                         // Ensure timezone is valid, fallback to Europe/Madrid
                         const timezone = tz && moment.tz.zone(tz) ? tz : 'Europe/Madrid'
                         
-                        // Try parsing as UTC first (if it ends with Z or is ISO format)
+                        // Always convert to the configured timezone
+                        // Metadata stores UTC (with Z), sync_status might be UTC or server local
+                        // To be safe, we'll try to detect and convert appropriately
                         let parsedMoment
                         if (timeStr.endsWith('Z') || (timeStr.includes('T') && timeStr.includes('Z'))) {
-                            // UTC ISO format (from metadata)
+                            // UTC ISO format (from metadata) - definitely UTC
                             parsedMoment = moment.utc(timeStr).tz(timezone)
                         } else if (timeStr.includes('T')) {
-                            // ISO format without Z - assume UTC
+                            // ISO format without Z - assume UTC and convert
                             parsedMoment = moment.utc(timeStr).tz(timezone)
                         } else {
-                            // SQLite timestamp format
-                            // If from sync_status, it's already in server timezone (which should match VIEWER_TIMEZONE)
-                            // If from metadata but old format, treat as UTC
+                            // SQLite timestamp format (YYYY-MM-DD HH:mm:ss)
+                            // The issue: SQLite CURRENT_TIMESTAMP might be UTC or server local
+                            // Best approach: Always treat as UTC if from sync_status (Docker containers often run in UTC)
+                            // Then convert to configured timezone
                             if (timeSource === 'sync_status') {
-                                // Already in server timezone, just parse it in that timezone
-                                parsedMoment = moment.tz(timeStr, 'YYYY-MM-DD HH:mm:ss', timezone)
+                                // Treat as UTC and convert to configured timezone
+                                // This handles both cases: if it's actually UTC, it's correct
+                                // If it's server local but server is in UTC, it's also correct
+                                parsedMoment = moment.utc(timeStr).tz(timezone)
                             } else {
-                                // Unknown source, try parsing as UTC then converting
+                                // Unknown source, treat as UTC
                                 parsedMoment = moment.utc(timeStr).tz(timezone)
                             }
                         }

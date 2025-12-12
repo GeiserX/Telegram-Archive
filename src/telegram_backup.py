@@ -562,6 +562,9 @@ class TelegramBackup:
                             'count': reaction.count,
                             'user_ids': user_ids
                         })
+                    
+                    if reactions_data:
+                        logger.debug(f"Extracted {len(reactions_data)} reactions for message {message.id}")
             except Exception as e:
                 logger.warning(f"Error extracting reactions for message {message.id}: {e}")
                 import traceback

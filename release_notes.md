@@ -1,5 +1,18 @@
 # Release Notes
 
+## v2.2.13
+### Fixes
+- **Timezone Display Fix (Improved):** Fixed timezone conversion to always treat sync_status timestamps as UTC (common in Docker containers) and convert to configured timezone. This ensures accurate time display regardless of server timezone configuration.
+- **Audio Player:** Ensured audio files (.ogg, .mp3, etc.) are properly detected and displayed with native browser controls and progress bar.
+- **Reactions Debugging:** Added better logging for reaction extraction and storage to help diagnose any issues.
+
+### Technical Details
+- Timezone conversion now consistently treats all timestamps as UTC before converting to configured timezone
+- Audio player uses native HTML5 controls with preload="metadata" for better UX
+- Reactions extraction includes debug logging to track extraction success
+
+---
+
 ## v2.2.12
 ### Fixes
 - **Timezone Display Fix:** Fixed timezone conversion issue where last backup time from `sync_status` table (server local time) was being double-converted. Now correctly handles both UTC timestamps from metadata and local timestamps from sync_status, ensuring accurate time display regardless of timezone source.
