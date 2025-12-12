@@ -1,5 +1,11 @@
 # Release Notes
 
+## v2.2.14
+### Fixes
+- **Timezone Display Fix (Critical):** Fixed moment-timezone library to include timezone data. The previous version loaded `moment-timezone.min.js` which doesn't include timezone definitions. Now uses `moment-timezone-with-data.min.js` which includes all timezone data needed for proper conversion.
+
+---
+
 ## v2.2.13
 ### Fixes
 - **Timezone Display Fix (Improved):** Fixed timezone conversion to always treat sync_status timestamps as UTC (common in Docker containers) and convert to configured timezone. This ensures accurate time display regardless of server timezone configuration.
