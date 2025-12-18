@@ -295,6 +295,9 @@ def get_message_by_date(chat_id: int, date: str = Query(..., description="Date i
     """
     Find the first message on or after a specific date for navigation.
     Used by the date picker to jump to a specific date.
+    
+    Returns message with full user info (first_name, last_name, username) by joining
+    with the users table, matching the format returned by the regular messages endpoint.
     """
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
@@ -307,42 +310,83 @@ def get_message_by_date(chat_id: int, date: str = Query(..., description="Date i
         # Set to start of day (00:00:00)
         target_date = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        message = db.find_message_by_date(chat_id, target_date)
+        cursor = db.conn.cursor()
         
-        if not message:
-            # If no message found on that date, try to find the nearest message
-            # First try before the date
-            cursor = db.conn.cursor()
-            cursor.execute('''
-                SELECT * FROM messages 
-                WHERE chat_id = ? AND date < ?
-                ORDER BY date DESC
-                LIMIT 1
-            ''', (chat_id, target_date))
+        # Base query with JOINs matching get_messages() format
+        base_select = """
+            SELECT 
+                m.*,
+                u.first_name,
+                u.last_name,
+                u.username,
+                md.file_name AS media_file_name,
+                md.mime_type AS media_mime_type
+            FROM messages m
+            LEFT JOIN users u ON m.sender_id = u.id
+            LEFT JOIN media md ON md.id = m.media_id
+        """
+        
+        # Try to find first message on or after the target date
+        cursor.execute(
+            base_select + " WHERE m.chat_id = ? AND m.date >= ? ORDER BY m.date ASC LIMIT 1",
+            (chat_id, target_date)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            # If no message found on that date, try to find the nearest message before the date
+            cursor.execute(
+                base_select + " WHERE m.chat_id = ? AND m.date < ? ORDER BY m.date DESC LIMIT 1",
+                (chat_id, target_date)
+            )
             row = cursor.fetchone()
-            if row:
-                message = dict(row)
-            else:
-                # If still no message, try the first message in the chat
-                cursor.execute('''
-                    SELECT * FROM messages 
-                    WHERE chat_id = ?
-                    ORDER BY date ASC
-                    LIMIT 1
-                ''', (chat_id,))
-                row = cursor.fetchone()
-                if row:
-                    message = dict(row)
         
-        if not message:
+        if not row:
+            # If still no message, try the first message in the chat
+            cursor.execute(
+                base_select + " WHERE m.chat_id = ? ORDER BY m.date ASC LIMIT 1",
+                (chat_id,)
+            )
+            row = cursor.fetchone()
+        
+        if not row:
             raise HTTPException(status_code=404, detail="No messages found for this date")
         
-        # Parse raw_data if it exists
+        message = dict(row)
+        
+        # Parse raw_data if it exists (matching get_messages() format)
         if message.get('raw_data'):
             try:
                 message['raw_data'] = json.loads(message['raw_data'])
             except:
                 message['raw_data'] = {}
+        
+        # Populate reply_to_text if missing (matching get_messages() format)
+        if message.get('reply_to_msg_id') and not message.get('reply_to_text'):
+            cursor.execute(
+                "SELECT text FROM messages WHERE chat_id = ? AND id = ?",
+                (chat_id, message['reply_to_msg_id'])
+            )
+            reply_row = cursor.fetchone()
+            if reply_row and reply_row['text']:
+                message['reply_to_text'] = reply_row['text'][:100]
+        
+        # Get reactions for this message (matching get_messages() format)
+        reactions = db.get_reactions(message['id'], chat_id)
+        reactions_by_emoji = {}
+        for reaction in reactions:
+            emoji = reaction['emoji']
+            if emoji not in reactions_by_emoji:
+                reactions_by_emoji[emoji] = {
+                    'emoji': emoji,
+                    'count': 0,
+                    'user_ids': []
+                }
+            reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
+            if reaction.get('user_id'):
+                reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
+        
+        message['reactions'] = list(reactions_by_emoji.values())
         
         return message
     except ValueError:
