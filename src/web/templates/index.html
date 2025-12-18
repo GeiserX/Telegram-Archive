@@ -804,8 +804,11 @@
                 })
 
                 const sortedMessages = computed(() => {
-                    // Messages come DESC from API, reverse to show oldest first (chronological)
-                    return [...messages.value].reverse()
+                    // Sort messages by date (oldest first) for chronological display
+                    // Note: Can't just reverse since jumpToDate may add messages out of order
+                    return [...messages.value].sort((a, b) => 
+                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                    )
                 })
 
                 const isGroup = computed(() => {
@@ -1237,10 +1240,10 @@
                             // a specific date, we'll add the message to our list and scroll to it
                             // The message will be properly positioned when we load more messages
                             
-                            // Capture oldest loaded message BEFORE adding the new message
-                            // (otherwise sortedMessages will include the new message and the comparison will fail)
-                            const oldestLoadedBeforeJump = sortedMessages.value.length > 0 
-                                ? moment(sortedMessages.value[0].date) 
+                            // Capture oldest loaded message date BEFORE adding the new message
+                            // Store as ISO string to avoid any reactivity issues with moment objects
+                            const oldestLoadedDateBeforeJump = sortedMessages.value.length > 0 
+                                ? sortedMessages.value[0].date 
                                 : null
                             
                             // Add the message to the list (it will be sorted correctly by date)
@@ -1253,18 +1256,42 @@
                             if (sortedIndex !== -1) {
                                 scrollToMessage(message.id)
                                 
-                                // Load surrounding messages to provide context
-                                // This will happen naturally as user scrolls, but we can trigger a load
-                                // if the message is near the top or bottom of loaded messages
-                                setTimeout(async () => {
-                                    // Check if we need to load more messages around this date
-                                    const targetMoment = moment(message.date)
-                                    
-                                    // If target is older than what we had loaded, load more older messages
-                                    if (oldestLoadedBeforeJump && targetMoment.isBefore(oldestLoadedBeforeJump) && hasMore.value) {
-                                        await loadMessages()
+                                // Load surrounding messages to fill the gap between jumped message
+                                // and previously loaded messages. loadMessages() uses pagination,
+                                // so we need to keep loading until the gap is filled.
+                                const targetDate = moment(message.date)
+                                
+                                // Only fill gap if target is older than what we had loaded
+                                if (oldestLoadedDateBeforeJump && targetDate.isBefore(moment(oldestLoadedDateBeforeJump))) {
+                                    // Load messages in background to fill the gap
+                                    const fillGap = async () => {
+                                        // Keep loading until pagination catches up to the target date
+                                        let iterations = 0
+                                        const maxIterations = 20 // Safety limit
+                                        
+                                        while (hasMore.value && iterations < maxIterations) {
+                                            // Get the current oldest message from sortedMessages
+                                            // (excluding the jumped message itself)
+                                            const sorted = sortedMessages.value
+                                            const oldestFromPagination = sorted.find(m => m.id !== message.id)
+                                            
+                                            // If no other messages or oldest is still newer than target, load more
+                                            if (!oldestFromPagination || 
+                                                moment(oldestFromPagination.date).isAfter(targetDate)) {
+                                                await loadMessages()
+                                                iterations++
+                                                // Small delay between requests
+                                                await new Promise(resolve => setTimeout(resolve, 50))
+                                            } else {
+                                                // Gap is filled - pagination has reached or passed target date
+                                                break
+                                            }
+                                        }
                                     }
-                                }, 500)
+                                    
+                                    // Start filling gap after a short delay
+                                    setTimeout(fillGap, 200)
+                                }
                             }
                         }
                     } catch (e) {
