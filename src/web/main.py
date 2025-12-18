@@ -158,8 +158,9 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
     matches = glob.glob(pattern)
     
     if matches:
-        # Return path relative to media directory
-        avatar_file = os.path.basename(matches[0])
+        # Return the most recently modified avatar (newest profile photo)
+        newest_avatar = max(matches, key=os.path.getmtime)
+        avatar_file = os.path.basename(newest_avatar)
         return f"avatars/{avatar_folder}/{avatar_file}"
     
     return None
