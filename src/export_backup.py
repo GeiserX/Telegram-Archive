@@ -196,19 +196,20 @@ async def async_main():
         
         exporter = await BackupExporter.create(config)
         
-        if args.command == 'export':
-            await exporter.export_to_json(
-                args.output,
-                args.chat_id,
-                args.start_date,
-                args.end_date
-            )
-        elif args.command == 'list-chats':
-            await exporter.list_chats()
-        elif args.command == 'stats':
-            await exporter.show_statistics()
-        
-        await exporter.close()
+        try:
+            if args.command == 'export':
+                await exporter.export_to_json(
+                    args.output,
+                    args.chat_id,
+                    args.start_date,
+                    args.end_date
+                )
+            elif args.command == 'list-chats':
+                await exporter.list_chats()
+            elif args.command == 'stats':
+                await exporter.show_statistics()
+        finally:
+            await exporter.close()
         
     except Exception as e:
         logger.error(f"Export failed: {e}", exc_info=True)
