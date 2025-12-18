@@ -16,11 +16,23 @@ services:
 
       # Backup Configuration
       BACKUP_PATH: /data/backups
-      # DATABASE_DIR: /data/database # Optional: Store DB separately from media
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       BATCH_SIZE: ${BATCH_SIZE:-100}
       CHAT_TYPES: ${CHAT_TYPES:-private,groups,channels}
+
+      # Database Configuration (v3.0+)
+      # Option 1: DATABASE_URL (takes priority)
+      DATABASE_URL: ${DATABASE_URL:-}
+      # Option 2: Individual settings
+      DB_TYPE: ${DB_TYPE:-sqlite}
+      DB_PATH: ${DB_PATH:-data/telegram_backup.db}
+      # PostgreSQL settings (when DB_TYPE=postgresql or using DATABASE_URL)
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-telegram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
 
       # Granular Filtering
       GLOBAL_INCLUDE_CHAT_IDS: ${GLOBAL_INCLUDE_CHAT_IDS:-}
@@ -43,6 +55,10 @@ services:
       - ./data:/data
     networks:
       - telegram-network
+    # Uncomment to use PostgreSQL
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
     # Optional: Resource limits
     # deploy:
     #   resources:
@@ -63,15 +79,27 @@ services:
     environment:
       BACKUP_PATH: /data/backups
       # Optional basic auth for the viewer (recommended)
-      # When both are set, the UI will prompt for credentials
       VIEWER_USERNAME: ${VIEWER_USERNAME:-}
       VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
-      # Timezone for displaying last backup time (defaults to Europe/Madrid)
+      # Timezone for displaying last backup time
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
+      # Database Configuration (must match telegram-backup service)
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_TYPE: ${DB_TYPE:-sqlite}
+      DB_PATH: ${DB_PATH:-data/telegram_backup.db}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-telegram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
     volumes:
       - ./data:/data
     networks:
       - telegram-network
+    # Uncomment to use PostgreSQL
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
@@ -91,6 +119,34 @@ services:
   #   networks:
   #     - telegram-network
 
+  # ================================
+  # PostgreSQL Database (Optional)
+  # ================================
+  # Uncomment to use PostgreSQL instead of SQLite
+  # Also set DB_TYPE=postgresql in your .env file
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: telegram-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER:-telegram}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  #     POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - telegram-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telegram} -d ${POSTGRES_DB:-telegram_backup}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
 networks:
   telegram-network:
     driver: bridge
+
+# Uncomment for PostgreSQL persistent storage
+# volumes:
+#   postgres_data:
