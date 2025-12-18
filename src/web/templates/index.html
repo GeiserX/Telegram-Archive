@@ -12,6 +12,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Flatpickr for date picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -82,6 +85,60 @@
             border-radius: 16px;
             font-size: 0.75rem;
             color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-block;
+        }
+
+        .date-separator span:hover {
+            background-color: #475569;
+            color: #cbd5e1;
+        }
+
+        /* Flatpickr dark theme customization */
+        .flatpickr-calendar {
+            background: #1e293b !important;
+            border: 1px solid #475569 !important;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
+        }
+
+        .flatpickr-months {
+            background: #334155 !important;
+            border-bottom: 1px solid #475569 !important;
+        }
+
+        .flatpickr-month {
+            color: #e2e8f0 !important;
+        }
+
+        .flatpickr-weekdays {
+            background: #334155 !important;
+        }
+
+        .flatpickr-weekday {
+            color: #94a3b8 !important;
+        }
+
+        .flatpickr-day {
+            color: #e2e8f0 !important;
+        }
+
+        .flatpickr-day:hover {
+            background: #475569 !important;
+            border-color: #475569 !important;
+        }
+
+        .flatpickr-day.selected {
+            background: #3b82f6 !important;
+            border-color: #3b82f6 !important;
+        }
+
+        .flatpickr-day.today {
+            border-color: #60a5fa !important;
+        }
+
+        .flatpickr-day.today:hover {
+            background: #475569 !important;
         }
 
         /* Clickable Links */
@@ -334,7 +391,7 @@
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Date Separator -->
                             <div v-if="showDateSeparator(index)" class="date-separator">
-                                <span>{{ formatDateFull(msg.date) }}</span>
+                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
                             </div>
 
                             <!-- Message -->
@@ -500,6 +557,38 @@
                 </template>
             </div>
         </div>
+
+        <!-- Date Picker Modal -->
+        <div v-if="showDatePickerModal" 
+            class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            @click.self="closeDatePicker">
+            <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-xl font-bold text-white">Jump to Date</h3>
+                    <button @click="closeDatePicker" 
+                        class="text-gray-400 hover:text-white transition p-1">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="mb-4">
+                    <input ref="datePickerInput" type="text" 
+                        class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Select a date">
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button @click="closeDatePicker"
+                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        Cancel
+                    </button>
+                    <button @click="jumpToDate"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                        Jump
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -526,6 +615,10 @@
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
                 const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
+                const showDatePickerModal = ref(false)
+                const datePickerInput = ref(null)
+                const selectedDate = ref(null)
+                let flatpickrInstance = null
 
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
@@ -1075,6 +1168,109 @@
                     }
                 }
 
+                const openDatePicker = (initialDate) => {
+                    if (!selectedChat.value) return
+                    
+                    selectedDate.value = initialDate ? moment(initialDate).format('YYYY-MM-DD') : null
+                    showDatePickerModal.value = true
+                    
+                    nextTick(() => {
+                        if (datePickerInput.value && !flatpickrInstance) {
+                            flatpickrInstance = flatpickr(datePickerInput.value, {
+                                dateFormat: 'Y-m-d',
+                                defaultDate: selectedDate.value || new Date(),
+                                maxDate: 'today',
+                                theme: 'dark',
+                                onChange: (selectedDates, dateStr) => {
+                                    selectedDate.value = dateStr
+                                }
+                            })
+                        } else if (flatpickrInstance && selectedDate.value) {
+                            flatpickrInstance.setDate(selectedDate.value, false)
+                        }
+                    })
+                }
+
+                const closeDatePicker = () => {
+                    showDatePickerModal.value = false
+                    if (flatpickrInstance) {
+                        flatpickrInstance.destroy()
+                        flatpickrInstance = null
+                    }
+                    selectedDate.value = null
+                }
+
+                const jumpToDate = async () => {
+                    if (!selectedChat.value || !selectedDate.value) return
+                    
+                    try {
+                        // Fetch message for the selected date
+                        const res = await fetch(
+                            `/api/chats/${selectedChat.value.id}/messages/by-date?date=${selectedDate.value}`,
+                            { credentials: 'include' }
+                        )
+                        
+                        if (!res.ok) {
+                            if (res.status === 404) {
+                                alert('No messages found for this date')
+                                return
+                            }
+                            throw new Error('Failed to find message')
+                        }
+                        
+                        const message = await res.json()
+                        closeDatePicker()
+                        
+                        // Check if message is already loaded
+                        const existingIndex = sortedMessages.value.findIndex(m => m.id === message.id)
+                        
+                        if (existingIndex !== -1) {
+                            // Message already loaded, just scroll to it
+                            await nextTick()
+                            scrollToMessage(message.id)
+                        } else {
+                            // Message not loaded, we need to load it
+                            // Since messages are loaded in DESC order (newest first), and we're looking for
+                            // a specific date, we'll add the message to our list and scroll to it
+                            // The message will be properly positioned when we load more messages
+                            
+                            // Add the message to the list (it will be sorted correctly by date)
+                            messages.value.push(message)
+                            
+                            await nextTick()
+                            
+                            // Find it in sorted messages and scroll
+                            const sortedIndex = sortedMessages.value.findIndex(m => m.id === message.id)
+                            if (sortedIndex !== -1) {
+                                scrollToMessage(message.id)
+                                
+                                // Load surrounding messages to provide context
+                                // This will happen naturally as user scrolls, but we can trigger a load
+                                // if the message is near the top or bottom of loaded messages
+                                setTimeout(async () => {
+                                    // Check if we need to load more messages around this date
+                                    const targetMoment = moment(message.date)
+                                    const oldestLoaded = sortedMessages.value.length > 0 
+                                        ? moment(sortedMessages.value[0].date) 
+                                        : null
+                                    const newestLoaded = sortedMessages.value.length > 0 
+                                        ? moment(sortedMessages.value[sortedMessages.value.length - 1].date) 
+                                        : null
+                                    
+                                    // If target is near the edges, load more messages
+                                    if (oldestLoaded && targetMoment.isBefore(oldestLoaded) && hasMore.value) {
+                                        // Target is older than what we have, load more older messages
+                                        await loadMessages()
+                                    }
+                                }, 500)
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error jumping to date:', e)
+                        alert('Failed to jump to date. Please try again.')
+                    }
+                }
+
                 return {
                     chats,
                     filteredChats,
@@ -1129,6 +1325,12 @@
                     lastBackupTime,
                     lastBackupTimeSource,
                     viewerTimezone,
+                    // Date picker
+                    showDatePickerModal,
+                    datePickerInput,
+                    openDatePicker,
+                    closeDatePicker,
+                    jumpToDate,
                 }
             }
         }).mount('#app')
