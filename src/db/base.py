@@ -6,6 +6,7 @@ Supports both SQLite and PostgreSQL with proper configuration for each.
 
 import os
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
 from urllib.parse import urlparse
 
@@ -155,6 +156,7 @@ class DatabaseManager:
             return self.database_url.replace(parsed.password, '***')
         return self.database_url
     
+    @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """
         Get an async database session.
