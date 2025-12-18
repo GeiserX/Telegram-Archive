@@ -290,6 +290,135 @@ def get_stats():
     stats['timezone'] = config.viewer_timezone
     return stats
 
+@app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])
+def get_message_by_date(
+    chat_id: int, 
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    timezone: str = Query(None, description="Timezone for date interpretation (e.g., 'Europe/Madrid')")
+):
+    """
+    Find the first message on or after a specific date for navigation.
+    Used by the date picker to jump to a specific date.
+    
+    The timezone parameter is important for correct date matching: the frontend displays
+    dates in the viewer's timezone, so a message with UTC timestamp "2024-12-14 23:30:00"
+    displays as "December 15" in UTC+1. The query must account for this by converting
+    the selected date from the user's timezone to UTC before querying.
+    
+    Returns message with full user info (first_name, last_name, username) by joining
+    with the users table, matching the format returned by the regular messages endpoint.
+    """
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        # Use provided timezone, fall back to config, then UTC
+        tz_str = timezone or config.viewer_timezone or 'UTC'
+        try:
+            user_tz = ZoneInfo(tz_str)
+        except Exception:
+            logger.warning(f"Invalid timezone '{tz_str}', falling back to UTC")
+            user_tz = ZoneInfo('UTC')
+        
+        # Parse date string (YYYY-MM-DD) as a date in the user's timezone
+        naive_date = datetime.strptime(date, "%Y-%m-%d")
+        # Create timezone-aware datetime at start of day in user's timezone
+        local_start_of_day = naive_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=user_tz)
+        # Convert to UTC for database query (database stores UTC timestamps)
+        target_date = local_start_of_day.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+        
+        cursor = db.conn.cursor()
+        
+        # Base query with JOINs matching get_messages() format
+        base_select = """
+            SELECT 
+                m.*,
+                u.first_name,
+                u.last_name,
+                u.username,
+                md.file_name AS media_file_name,
+                md.mime_type AS media_mime_type
+            FROM messages m
+            LEFT JOIN users u ON m.sender_id = u.id
+            LEFT JOIN media md ON md.id = m.media_id
+        """
+        
+        # Try to find first message on or after the target date
+        cursor.execute(
+            base_select + " WHERE m.chat_id = ? AND m.date >= ? ORDER BY m.date ASC LIMIT 1",
+            (chat_id, target_date)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            # If no message found on that date, try to find the nearest message before the date
+            cursor.execute(
+                base_select + " WHERE m.chat_id = ? AND m.date < ? ORDER BY m.date DESC LIMIT 1",
+                (chat_id, target_date)
+            )
+            row = cursor.fetchone()
+        
+        if not row:
+            # If still no message, try the first message in the chat
+            cursor.execute(
+                base_select + " WHERE m.chat_id = ? ORDER BY m.date ASC LIMIT 1",
+                (chat_id,)
+            )
+            row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="No messages found for this date")
+        
+        message = dict(row)
+        
+        # Parse raw_data if it exists (matching get_messages() format)
+        if message.get('raw_data'):
+            try:
+                message['raw_data'] = json.loads(message['raw_data'])
+            except:
+                message['raw_data'] = {}
+        
+        # Populate reply_to_text if missing (matching get_messages() format)
+        if message.get('reply_to_msg_id') and not message.get('reply_to_text'):
+            cursor.execute(
+                "SELECT text FROM messages WHERE chat_id = ? AND id = ?",
+                (chat_id, message['reply_to_msg_id'])
+            )
+            reply_row = cursor.fetchone()
+            if reply_row and reply_row['text']:
+                message['reply_to_text'] = reply_row['text'][:100]
+        
+        # Get reactions for this message (matching get_messages() format)
+        reactions = db.get_reactions(message['id'], chat_id)
+        reactions_by_emoji = {}
+        for reaction in reactions:
+            emoji = reaction['emoji']
+            if emoji not in reactions_by_emoji:
+                reactions_by_emoji[emoji] = {
+                    'emoji': emoji,
+                    'count': 0,
+                    'user_ids': []
+                }
+            reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
+            if reaction.get('user_id'):
+                reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
+        
+        message['reactions'] = list(reactions_by_emoji.values())
+        
+        return message
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error finding message by date: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
 def export_chat(chat_id: int):
     """Export chat history to JSON."""
