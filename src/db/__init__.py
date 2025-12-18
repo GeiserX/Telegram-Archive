@@ -34,6 +34,7 @@ from typing import Optional
 from .models import Base, Chat, Message, User, Media, Reaction, SyncStatus, Metadata
 from .base import DatabaseManager, init_database, close_database, get_db_manager
 from .adapter import DatabaseAdapter
+from .migrate import migrate_sqlite_to_postgres, verify_migration
 
 __all__ = [
     # Models
@@ -53,6 +54,9 @@ __all__ = [
     # Adapter
     'DatabaseAdapter',
     'get_adapter',
+    # Migration
+    'migrate_sqlite_to_postgres',
+    'verify_migration',
 ]
 
 # Global adapter instance
