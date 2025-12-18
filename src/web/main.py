@@ -291,10 +291,19 @@ def get_stats():
     return stats
 
 @app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])
-def get_message_by_date(chat_id: int, date: str = Query(..., description="Date in YYYY-MM-DD format")):
+def get_message_by_date(
+    chat_id: int, 
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    timezone: str = Query(None, description="Timezone for date interpretation (e.g., 'Europe/Madrid')")
+):
     """
     Find the first message on or after a specific date for navigation.
     Used by the date picker to jump to a specific date.
+    
+    The timezone parameter is important for correct date matching: the frontend displays
+    dates in the viewer's timezone, so a message with UTC timestamp "2024-12-14 23:30:00"
+    displays as "December 15" in UTC+1. The query must account for this by converting
+    the selected date from the user's timezone to UTC before querying.
     
     Returns message with full user info (first_name, last_name, username) by joining
     with the users table, matching the format returned by the regular messages endpoint.
@@ -305,10 +314,22 @@ def get_message_by_date(chat_id: int, date: str = Query(..., description="Date i
     
     try:
         from datetime import datetime
-        # Parse date string (YYYY-MM-DD)
-        target_date = datetime.strptime(date, "%Y-%m-%d")
-        # Set to start of day (00:00:00)
-        target_date = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        from zoneinfo import ZoneInfo
+        
+        # Use provided timezone, fall back to config, then UTC
+        tz_str = timezone or config.viewer_timezone or 'UTC'
+        try:
+            user_tz = ZoneInfo(tz_str)
+        except Exception:
+            logger.warning(f"Invalid timezone '{tz_str}', falling back to UTC")
+            user_tz = ZoneInfo('UTC')
+        
+        # Parse date string (YYYY-MM-DD) as a date in the user's timezone
+        naive_date = datetime.strptime(date, "%Y-%m-%d")
+        # Create timezone-aware datetime at start of day in user's timezone
+        local_start_of_day = naive_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=user_tz)
+        # Convert to UTC for database query (database stores UTC timestamps)
+        target_date = local_start_of_day.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
         
         cursor = db.conn.cursor()
         

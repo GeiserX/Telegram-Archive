@@ -1218,8 +1218,10 @@
                     
                     try {
                         // Fetch message for the selected date
+                        // Pass timezone so backend can convert the displayed date to correct UTC bounds
+                        const tz = encodeURIComponent(viewerTimezone.value)
                         const res = await fetch(
-                            `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDate.value}`,
+                            `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDate.value}&timezone=${tz}`,
                             { credentials: 'include' }
                         )
                         
