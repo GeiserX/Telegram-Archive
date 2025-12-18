@@ -1225,6 +1225,7 @@
                         
                         if (!res.ok) {
                             if (res.status === 404) {
+                                closeDatePicker()
                                 alert('No messages found for this date')
                                 return
                             }
@@ -1313,6 +1314,7 @@
                         }
                     } catch (e) {
                         console.error('Error jumping to date:', e)
+                        closeDatePicker()
                         alert('Failed to jump to date. Please try again.')
                     }
                 }
