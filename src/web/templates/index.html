@@ -848,10 +848,14 @@
                             hasMore.value = false
                         }
 
-                        // Filter out duplicates (e.g., from jumpToDate adding a message directly)
-                        const existingIds = new Set(messages.value.map(m => m.id))
-                        const uniqueNewMessages = newMessages.filter(m => !existingIds.has(m.id))
-                        messages.value = [...messages.value, ...uniqueNewMessages]
+                        // Merge new messages, preferring complete messages from pagination over
+                        // incomplete jumpToDate messages (which lack user info, reactions, etc.)
+                        const existingById = new Map(messages.value.map(m => [m.id, m]))
+                        for (const newMsg of newMessages) {
+                            // Prefer new messages (from pagination with joins) over existing ones
+                            existingById.set(newMsg.id, newMsg)
+                        }
+                        messages.value = Array.from(existingById.values())
                         page.value++
                     } catch (e) {
                         console.error("Failed to load messages", e)
@@ -1209,10 +1213,13 @@
                 const jumpToDate = async () => {
                     if (!selectedChat.value || !selectedDate.value) return
                     
+                    // Capture chat ID to detect if user switches chats during async operations
+                    const chatIdAtStart = selectedChat.value.id
+                    
                     try {
                         // Fetch message for the selected date
                         const res = await fetch(
-                            `/api/chats/${selectedChat.value.id}/messages/by-date?date=${selectedDate.value}`,
+                            `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDate.value}`,
                             { credentials: 'include' }
                         )
                         
@@ -1226,6 +1233,11 @@
                         
                         const message = await res.json()
                         closeDatePicker()
+                        
+                        // Abort if user switched chats while waiting for response
+                        if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
+                            return
+                        }
                         
                         // Check if message is already loaded
                         const existingIndex = sortedMessages.value.findIndex(m => m.id === message.id)
@@ -1270,6 +1282,11 @@
                                         const maxIterations = 20 // Safety limit
                                         
                                         while (hasMore.value && iterations < maxIterations) {
+                                            // Abort if user switched to a different chat
+                                            if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
+                                                return
+                                            }
+                                            
                                             // Get the current oldest message from sortedMessages
                                             // (excluding the jumped message itself)
                                             const sorted = sortedMessages.value
