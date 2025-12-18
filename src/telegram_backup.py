@@ -21,7 +21,7 @@ from telethon.tl.types import (
 )
 
 from .config import Config
-from .database import Database
+from .db import DatabaseAdapter, create_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +29,34 @@ logger = logging.getLogger(__name__)
 class TelegramBackup:
     """Main class for managing Telegram backups."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, db: DatabaseAdapter):
         """
         Initialize Telegram backup manager.
         
         Args:
             config: Configuration object
+            db: Async database adapter (must be initialized before passing)
         """
         self.config = config
         self.config.validate_credentials()
-        self.db = Database(config.database_path, timeout=config.database_timeout)
+        self.db = db
         self.client: Optional[TelegramClient] = None
         
         logger.info("TelegramBackup initialized")
+    
+    @classmethod
+    async def create(cls, config: Config) -> "TelegramBackup":
+        """
+        Factory method to create TelegramBackup with initialized database.
+        
+        Args:
+            config: Configuration object
+            
+        Returns:
+            Initialized TelegramBackup instance
+        """
+        db = await create_adapter()
+        return cls(config, db)
     
     async def connect(self):
         """Connect to Telegram and authenticate."""
@@ -104,14 +119,14 @@ class TelegramBackup:
             logger.info(f"Logged in as {me.first_name} ({me.id})")
             
             # Store owner ID and backfill is_outgoing for existing messages
-            self.db.set_metadata('owner_id', str(me.id))
-            self.db.backfill_is_outgoing(me.id)
+            await self.db.set_metadata('owner_id', str(me.id))
+            await self.db.backfill_is_outgoing(me.id)
 
             start_time = datetime.now()
             
             # Store last backup time in UTC at the START of backup (not when it finishes)
             last_backup_time = datetime.utcnow().isoformat() + 'Z'
-            self.db.set_metadata('last_backup_time', last_backup_time)
+            await self.db.set_metadata('last_backup_time', last_backup_time)
             
             # Get all dialogs (chats)
             logger.info("Fetching dialog list...")
@@ -153,7 +168,7 @@ class TelegramBackup:
                 logger.info(f"Deleting {len(explicitly_excluded_chat_ids)} explicitly excluded chats from database...")
                 for chat_id in explicitly_excluded_chat_ids:
                     try:
-                        self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
+                        await self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
                     except Exception as e:
                         logger.error(f"Error deleting chat {chat_id}: {e}", exc_info=True)
 
@@ -171,10 +186,11 @@ class TelegramBackup:
 
             # Detect whether we've already completed at least one full backup run
             # (i.e. some chats have a non-zero last_message_id recorded)
-            has_synced_before = any(
-                self.db.get_last_message_id(dialog.entity.id) > 0
-                for dialog in filtered_dialogs
-            )
+            has_synced_before = False
+            for dialog in filtered_dialogs:
+                if await self.db.get_last_message_id(dialog.entity.id) > 0:
+                    has_synced_before = True
+                    break
 
             # Backup each dialog
             total_messages = 0
@@ -197,7 +213,7 @@ class TelegramBackup:
             
             # Log statistics
             duration = (datetime.now() - start_time).total_seconds()
-            stats = self.db.get_statistics()
+            stats = await self.db.get_statistics()
             
             # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
             
@@ -241,7 +257,7 @@ class TelegramBackup:
 
         # Save chat information
         chat_data = self._extract_chat_data(entity)
-        self.db.upsert_chat(chat_data)
+        await self.db.upsert_chat(chat_data)
 
         # Ensure profile photos for users and groups/channels are backed up.
         # This runs on every dialog backup but only downloads new files when
@@ -252,7 +268,7 @@ class TelegramBackup:
             logger.error(f"Error downloading profile photo for {chat_id}: {e}", exc_info=True)
         
         # Get last synced message ID for incremental backup
-        last_message_id = self.db.get_last_message_id(chat_id)
+        last_message_id = await self.db.get_last_message_id(chat_id)
         
         # Fetch new messages
         messages = []
@@ -273,7 +289,7 @@ class TelegramBackup:
             
             # Batch insert every 50 messages
             if len(batch_data) >= batch_size:
-                self.db.insert_messages_batch(batch_data)
+                await self.db.insert_messages_batch(batch_data)
                 # Store reactions for this batch
                 for msg in batch_data:
                     if msg.get('reactions'):
@@ -305,14 +321,14 @@ class TelegramBackup:
                                     'count': reaction.get('count', 1)
                                 })
                         if reactions_list:
-                            self.db.insert_reactions(msg['id'], chat_id, reactions_list)
+                            await self.db.insert_reactions(msg['id'], chat_id, reactions_list)
                 total_processed += len(batch_data)
                 logger.info(f"  → Processed {total_processed} messages...")
                 batch_data = []
         
         # Insert remaining messages
         if batch_data:
-            self.db.insert_messages_batch(batch_data)
+            await self.db.insert_messages_batch(batch_data)
             # Store reactions for remaining messages
             for msg in batch_data:
                 if msg.get('reactions'):
@@ -339,13 +355,13 @@ class TelegramBackup:
                                 'count': reaction.get('count', 1)
                             })
                     if reactions_list:
-                        self.db.insert_reactions(msg['id'], chat_id, reactions_list)
+                        await self.db.insert_reactions(msg['id'], chat_id, reactions_list)
             total_processed += len(batch_data)
             
         # Update sync status
         if messages:
             max_message_id = max(msg.id for msg in messages)
-            self.db.update_sync_status(chat_id, max_message_id, len(messages))
+            await self.db.update_sync_status(chat_id, max_message_id, len(messages))
             
         # Sync deletions and edits if enabled (expensive!)
         if self.config.sync_deletions_edits:
@@ -364,7 +380,7 @@ class TelegramBackup:
         logger.info(f"  → Syncing deletions and edits for chat {chat_id}...")
         
         # Get all local message IDs and their edit dates
-        local_messages = self.db.get_messages_sync_data(chat_id)
+        local_messages = await self.db.get_messages_sync_data(chat_id)
         if not local_messages:
             return
             
@@ -385,7 +401,7 @@ class TelegramBackup:
                 for msg_id, remote_msg in zip(batch_ids, remote_messages):
                     # Check for deletion
                     if remote_msg is None:
-                        self.db.delete_message(chat_id, msg_id)
+                        await self.db.delete_message(chat_id, msg_id)
                         total_deleted += 1
                         continue
                     
@@ -404,7 +420,7 @@ class TelegramBackup:
                     
                     if should_update:
                         # Update text and edit_date
-                        self.db.update_message_text(chat_id, msg_id, remote_msg.message, remote_msg.edit_date)
+                        await self.db.update_message_text(chat_id, msg_id, remote_msg.message, remote_msg.edit_date)
                         total_updated += 1
                         
             except Exception as e:
@@ -474,7 +490,7 @@ class TelegramBackup:
         if message.sender:
             sender_data = self._extract_user_data(message.sender)
             if sender_data:
-                self.db.upsert_user(sender_data)
+                await self.db.upsert_user(sender_data)
         
         # Extract message data
         message_data = {
@@ -726,7 +742,7 @@ class TelegramBackup:
                         media_data['duration'] = attr.duration
             
             # Save to database
-            self.db.insert_media(media_data)
+            await self.db.insert_media(media_data)
             
             return media_data
             
@@ -906,17 +922,17 @@ class TelegramBackup:
 async def run_backup(config: Config):
     """
     Run a single backup operation.
-    
+
     Args:
         config: Configuration object
     """
-    backup = TelegramBackup(config)
+    backup = await TelegramBackup.create(config)
     try:
         await backup.connect()
         await backup.backup_all()
     finally:
         await backup.disconnect()
-        backup.db.close()
+        await backup.db.close()
 
 
 if __name__ == '__main__':
