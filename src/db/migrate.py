@@ -27,7 +27,7 @@ async def migrate_sqlite_to_postgres(
     
     Args:
         sqlite_path: Path to SQLite database file. 
-                    Defaults to DB_PATH env var or /data/backups/telegram_backup.db
+                    Defaults to DB_PATH env var or data/telegram_backup.db
         postgres_url: PostgreSQL connection URL.
                      Defaults to building from POSTGRES_* env vars
         batch_size: Number of records to migrate per batch
@@ -44,7 +44,7 @@ async def migrate_sqlite_to_postgres(
     """
     # Resolve SQLite path
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
+        sqlite_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
     
     if not os.path.exists(sqlite_path):
         raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
@@ -166,7 +166,7 @@ async def verify_migration(
         Dict with table names and counts from both databases
     """
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
+        sqlite_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
     
     if postgres_url is None:
         host = os.getenv('POSTGRES_HOST', 'localhost')
