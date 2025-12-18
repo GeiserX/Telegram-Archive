@@ -290,6 +290,68 @@ def get_stats():
     stats['timezone'] = config.viewer_timezone
     return stats
 
+@app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])
+def get_message_by_date(chat_id: int, date: str = Query(..., description="Date in YYYY-MM-DD format")):
+    """
+    Find the first message on or after a specific date for navigation.
+    Used by the date picker to jump to a specific date.
+    """
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        from datetime import datetime
+        # Parse date string (YYYY-MM-DD)
+        target_date = datetime.strptime(date, "%Y-%m-%d")
+        # Set to start of day (00:00:00)
+        target_date = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        message = db.find_message_by_date(chat_id, target_date)
+        
+        if not message:
+            # If no message found on that date, try to find the nearest message
+            # First try before the date
+            cursor = db.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM messages 
+                WHERE chat_id = ? AND date < ?
+                ORDER BY date DESC
+                LIMIT 1
+            ''', (chat_id, target_date))
+            row = cursor.fetchone()
+            if row:
+                message = dict(row)
+            else:
+                # If still no message, try the first message in the chat
+                cursor.execute('''
+                    SELECT * FROM messages 
+                    WHERE chat_id = ?
+                    ORDER BY date ASC
+                    LIMIT 1
+                ''', (chat_id,))
+                row = cursor.fetchone()
+                if row:
+                    message = dict(row)
+        
+        if not message:
+            raise HTTPException(status_code=404, detail="No messages found for this date")
+        
+        # Parse raw_data if it exists
+        if message.get('raw_data'):
+            try:
+                message['raw_data'] = json.loads(message['raw_data'])
+            except:
+                message['raw_data'] = {}
+        
+        return message
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    except Exception as e:
+        logger.error(f"Error finding message by date: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
 def export_chat(chat_id: int):
     """Export chat history to JSON."""

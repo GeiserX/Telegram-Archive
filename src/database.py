@@ -592,6 +592,29 @@ class Database:
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
     
+    def find_message_by_date(self, chat_id: int, target_date: datetime) -> Optional[Dict[str, Any]]:
+        """
+        Find the first message on or after a specific date for a chat.
+        Used for date picker navigation.
+        
+        Args:
+            chat_id: Chat ID to search in
+            target_date: Target date to find message for
+            
+        Returns:
+            Message dictionary or None if no message found
+        """
+        cursor = self.conn.cursor()
+        # Find first message on or after the target date
+        cursor.execute('''
+            SELECT * FROM messages 
+            WHERE chat_id = ? AND date >= ?
+            ORDER BY date ASC
+            LIMIT 1
+        ''', (chat_id, target_date))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get backup statistics.
