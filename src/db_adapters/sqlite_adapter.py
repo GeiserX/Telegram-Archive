@@ -7,10 +7,11 @@ while using SQLAlchemy for database abstraction.
 """
 
 import logging
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import create_engine, text as sql_text
+from sqlalchemy import create_engine, text as sql_text, func
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -187,6 +188,10 @@ class SQLiteAdapter(DatabaseAdapter):
                         msg["date"] = datetime.fromisoformat(msg["date"])
                     if "edit_date" in msg and isinstance(msg["edit_date"], str):
                         msg["edit_date"] = datetime.fromisoformat(msg["edit_date"])
+
+                    # Convert raw_data dict to JSON string if present
+                    if "raw_data" in msg and isinstance(msg["raw_data"], dict):
+                        msg["raw_data"] = json.dumps(msg["raw_data"])
 
                     message_objects.append(Message(**msg))
 

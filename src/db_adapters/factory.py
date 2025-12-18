@@ -25,8 +25,8 @@ def create_database_adapter(config) -> DatabaseAdapter:
         DatabaseAdapter: Instance of the appropriate adapter
 
     Supported db_type values:
-        - "sqlite": Original sqlite3 implementation (from src.database)
-        - "sqlite-alchemy": SQLite through SQLAlchemy adapter
+        - "sqlite": SQLite through SQLAlchemy adapter (default)
+        - "sqlite-alchemy": SQLite through SQLAlchemy adapter (alias for sqlite)
         - "postgres-alchemy": PostgreSQL through SQLAlchemy adapter
 
     Example:
@@ -37,14 +37,7 @@ def create_database_adapter(config) -> DatabaseAdapter:
 
     logger.info(f"Creating database adapter for type: {db_type}")
 
-    if db_type == "sqlite":
-        # This should be handled by the main application logic
-        # to use the original src.database.Database class
-        raise ValueError(
-            "For db_type='sqlite', use the original src.database.Database class. "
-            "Set db_type='sqlite-alchemy' to use the SQLAlchemy SQLite adapter."
-        )
-    elif db_type == "sqlite-alchemy":
+    if db_type in ("sqlite", "sqlite-alchemy"):
         return SQLiteAdapter(
             database_path=config.database_path,
             timeout=config.database_timeout
@@ -70,7 +63,7 @@ def create_database_adapter(config) -> DatabaseAdapter:
             pool_size=pool_size
         )
     else:
-        raise ValueError(f"Unsupported database type: {db_type}")
+        raise ValueError(f"Unsupported database type: {db_type}. Use 'sqlite' or 'sqlite-alchemy' for SQLite, or 'postgres-alchemy' for PostgreSQL.")
 
 
 def is_sqlalchemy_adapter(db_type: str) -> bool:
@@ -83,4 +76,4 @@ def is_sqlalchemy_adapter(db_type: str) -> bool:
     Returns:
         True if using SQLAlchemy adapters, False otherwise
     """
-    return db_type.lower() in ("sqlite-alchemy", "postgres-alchemy")
+    return db_type.lower() in ("sqlite", "sqlite-alchemy", "postgres-alchemy")

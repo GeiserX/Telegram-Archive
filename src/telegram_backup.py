@@ -21,9 +21,7 @@ from telethon.tl.types import (
 )
 
 from .config import Config
-from .database import Database
 from .db_adapters.factory import create_database_adapter
-from .db_adapters.factory import is_sqlalchemy_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +39,9 @@ class TelegramBackup:
         self.config = config
         self.config.validate_credentials()
 
-        # Choose database implementation based on db_type
-        if is_sqlalchemy_adapter(config.db_type):
-            logger.info(f"Using SQLAlchemy adapter for {config.db_type}")
-            self.db = create_database_adapter(config)
-        else:
-            logger.info(f"Using original SQLite implementation")
-            self.db = Database(config.database_path, timeout=config.database_timeout)
+        # Always use SQLAlchemy adapter
+        logger.info(f"Using SQLAlchemy adapter for {config.db_type}")
+        self.db = create_database_adapter(config)
 
         self.client: Optional[TelegramClient] = None
 
@@ -218,7 +212,7 @@ class TelegramBackup:
             
             # Log statistics
             duration = (datetime.now() - start_time).total_seconds()
-            stats = self.db.get_statistics()
+            stats = self.db.get_stats()
             
             # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
             
@@ -294,7 +288,7 @@ class TelegramBackup:
             
             # Batch insert every 50 messages
             if len(batch_data) >= batch_size:
-                self.db.insert_messages_batch(batch_data)
+                self.db.insert_messages(batch_data)
                 # Store reactions for this batch
                 for msg in batch_data:
                     if msg.get('reactions'):
@@ -333,7 +327,7 @@ class TelegramBackup:
         
         # Insert remaining messages
         if batch_data:
-            self.db.insert_messages_batch(batch_data)
+            self.db.insert_messages(batch_data)
             # Store reactions for remaining messages
             for msg in batch_data:
                 if msg.get('reactions'):

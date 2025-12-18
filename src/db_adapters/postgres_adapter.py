@@ -7,6 +7,7 @@ optimizations and features.
 """
 
 import logging
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -211,6 +212,10 @@ class PostgreSQLAdapter(DatabaseAdapter):
                     if "edit_date" in msg and isinstance(msg["edit_date"], str):
                         msg["edit_date"] = datetime.fromisoformat(msg["edit_date"])
 
+                    # Convert raw_data dict to JSON string if present
+                    if "raw_data" in msg and isinstance(msg["raw_data"], dict):
+                        msg["raw_data"] = json.dumps(msg["raw_data"])
+
                     message_objects.append(Message(**msg))
 
                 # Use bulk_insert_mappings for better performance
@@ -226,7 +231,12 @@ class PostgreSQLAdapter(DatabaseAdapter):
                     search_query: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get messages from a chat with pagination"""
         with self._get_session() as session:
-            query = session.query(Message).filter_by(chat_id=chat_id)
+            # Join with users to get sender info
+            from sqlalchemy import and_
+
+            query = session.query(Message, User).outerjoin(
+                User, Message.sender_id == User.id
+            ).filter(Message.chat_id == chat_id)
 
             if search_query:
                 # Use ILIKE for case-insensitive search in PostgreSQL
@@ -235,11 +245,14 @@ class PostgreSQLAdapter(DatabaseAdapter):
             query = query.order_by(Message.date.desc()).limit(limit).offset(offset)
 
             messages = []
-            for msg in query.all():
+            for msg, user in query.all():
                 messages.append({
                     "id": msg.id,
                     "chat_id": msg.chat_id,
                     "sender_id": msg.sender_id,
+                    "sender_name": user.first_name if user else None,
+                    "sender_last_name": user.last_name if user else None,
+                    "sender_username": user.username if user else None,
                     "date": msg.date,
                     "text": msg.text,
                     "reply_to_msg_id": msg.reply_to_msg_id,

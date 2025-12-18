@@ -13,9 +13,7 @@ import hashlib
 import json
 
 from ..config import Config
-from ..database import Database
 from ..db_adapters.factory import create_database_adapter
-from ..db_adapters.factory import is_sqlalchemy_adapter
 
 # Configure logging
 logging.basicConfig(
@@ -38,15 +36,11 @@ app.add_middleware(
 # Initialize config and database
 config = Config()
 
-# Choose database implementation based on db_type
-if is_sqlalchemy_adapter(config.db_type):
-    logger.info(f"Using SQLAlchemy adapter for {config.db_type}")
-    db = create_database_adapter(config)
-    db.initialize_schema()
-    logger.info("Database schema initialized")
-else:
-    logger.info("Using original SQLite implementation")
-    db = Database(config.database_path, timeout=config.database_timeout)
+# Always use SQLAlchemy adapter
+logger.info(f"Using SQLAlchemy adapter for {config.db_type}")
+db = create_database_adapter(config)
+db.initialize_schema()
+logger.info("Database schema initialized")
 
 logger.info(f"Database initialized at {config.database_path}")
 
@@ -222,83 +216,94 @@ def get_messages(
     """
     Get messages for a specific chat.
 
-    We join with the media table so the web UI can show better previews
-    (e.g. original filenames for documents and thumbnails for image documents).
+    Uses adapter methods for database compatibility.
     """
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    cursor = db.conn.cursor()
 
-    query = """
-        SELECT 
-            m.*,
-            u.first_name,
-            u.last_name,
-            u.username,
-            md.file_name AS media_file_name,
-            md.mime_type AS media_mime_type
-        FROM messages m
-        LEFT JOIN users u ON m.sender_id = u.id
-        LEFT JOIN media md ON md.id = m.media_id
-        WHERE m.chat_id = ?
-    """
-    params: List[object] = [chat_id]
+    # Get messages using adapter method or fallback to Database class
+    if hasattr(db, 'get_messages'):
+        # SQLAlchemy adapter
+        messages = db.get_messages(chat_id, limit=limit, offset=offset, search_query=search)
+    else:
+        # Original Database class - get messages using SQL query
+        messages = []
+        query = """
+            SELECT
+                m.*,
+                u.first_name,
+                u.last_name,
+                u.username,
+                md.file_name AS media_file_name,
+                md.mime_type AS media_mime_type
+            FROM messages m
+            LEFT JOIN users u ON m.sender_id = u.id
+            LEFT JOIN media md ON md.id = m.media_id
+            WHERE m.chat_id = ?
+            ORDER BY m.date DESC
+            LIMIT ? OFFSET ?
+        """
 
-    if search:
-        query += " AND m.text LIKE ?"
-        params.append(f"%{search}%")
+        cursor = db.conn.cursor()
+        params = [chat_id, limit, offset]
+        if search:
+            query = query.replace("WHERE m.chat_id = ?", "WHERE m.chat_id = ? AND m.text LIKE ?")
+            params = [chat_id, f"%{search}%", limit, offset]
 
-    query += " ORDER BY m.date DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+        cursor.execute(query, params)
+        for row in cursor.fetchall():
+            msg = dict(row)
+            # Parse raw_data if it exists
+            if msg.get('raw_data'):
+                try:
+                    msg['raw_data'] = json.loads(msg['raw_data'])
+                except:
+                    msg['raw_data'] = {}
+            messages.append(msg)
 
-    cursor.execute(query, params)
-    messages = [dict(row) for row in cursor.fetchall()]
-
-    # Populate reply_to_text from database if missing and parse raw_data
+    # Enhance messages with additional data (for PostgreSQL adapter)
     for msg in messages:
-        # Parse raw_data if it exists (it's stored as a JSON string)
-        if msg.get('raw_data'):
+        # For PostgreSQL adapter, raw_data is already parsed above
+        # But for SQLAlchemy adapter, we need to parse it here
+        if isinstance(msg.get('raw_data'), str):
             try:
                 msg['raw_data'] = json.loads(msg['raw_data'])
             except:
                 msg['raw_data'] = {}
 
-        if msg.get('reply_to_msg_id') and not msg.get('reply_to_text'):
-            cursor.execute(
-                "SELECT text FROM messages WHERE chat_id = ? AND id = ?",
-                (chat_id, msg['reply_to_msg_id'])
-            )
-            reply_row = cursor.fetchone()
-            if reply_row and reply_row['text']:
-                # Truncate to 100 chars like Telegram does
-                msg['reply_to_text'] = reply_row['text'][:100]
-        
-        # Get reactions for this message
-        reactions = db.get_reactions(msg['id'], chat_id)
-        # Group reactions by emoji and aggregate counts
-        reactions_by_emoji = {}
-        for reaction in reactions:
-            emoji = reaction['emoji']
-            if emoji not in reactions_by_emoji:
-                reactions_by_emoji[emoji] = {
-                    'emoji': emoji,
-                    'count': 0,
-                    'user_ids': []
-                }
-            reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
-            if reaction.get('user_id'):
-                reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
-        
-        msg['reactions'] = list(reactions_by_emoji.values())
+        # Get reactions for this message if adapter supports it
+        if hasattr(db, 'get_reactions'):
+            reactions = db.get_reactions(msg['id'], chat_id)
+            # Group reactions by emoji and aggregate counts
+            reactions_by_emoji = {}
+            for reaction in reactions:
+                emoji = reaction['emoji']
+                if emoji not in reactions_by_emoji:
+                    reactions_by_emoji[emoji] = {
+                        'emoji': emoji,
+                        'count': 0,
+                        'user_ids': []
+                    }
+                reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
+                if reaction.get('user_id'):
+                    reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
+
+            msg['reactions'] = list(reactions_by_emoji.values())
+        else:
+            msg['reactions'] = []
 
     return messages
 
 @app.get("/api/stats", dependencies=[Depends(require_auth)])
 def get_stats():
     """Get backup statistics."""
-    stats = db.get_statistics()
+    if hasattr(db, 'get_stats'):
+        # SQLAlchemy adapter
+        stats = db.get_stats()
+    else:
+        # Fallback for Database class
+        stats = db.get_statistics()
     # Add timezone configuration
     stats['timezone'] = config.viewer_timezone
     return stats
@@ -309,58 +314,45 @@ def export_chat(chat_id: int):
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    cursor = db.conn.cursor()
-    
+
     # Get chat info for filename
-    cursor.execute("SELECT * FROM chats WHERE id = ?", (chat_id,))
-    chat = cursor.fetchone()
+    if hasattr(db, 'get_chat'):
+        chat = db.get_chat(chat_id)
+    else:
+        # Fallback for Database class
+        chat = db.get_chat(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-        
-    chat_name = chat['title'] or chat['username'] or str(chat_id)
+
+    chat_name = chat.get('title') or chat.get('username') or str(chat_id)
     # Sanitize filename
     safe_name = "".join(c for c in chat_name if c.isalnum() or c in (' ', '-', '_')).strip()
     filename = f"{safe_name}_export.json"
-    
-    # Get messages
-    cursor.execute("""
-        SELECT 
-            m.id, m.date, m.text, m.is_outgoing,
-            u.first_name, u.last_name, u.username,
-            m.reply_to_msg_id
-        FROM messages m
-        LEFT JOIN users u ON m.sender_id = u.id
-        WHERE m.chat_id = ?
-        ORDER BY m.date ASC
-    """, (chat_id,))
-    
+
+    # Get all messages for export
+    messages = db.get_messages(chat_id, limit=10000)  # Large limit for export
+
     def iter_json():
         yield '[\n'
         first = True
-        while True:
-            rows = cursor.fetchmany(1000)
-            if not rows:
-                break
-            for row in rows:
-                if not first:
-                    yield ',\n'
-                first = False
-                
-                msg = dict(row)
-                # Format for export
-                export_msg = {
-                    'id': msg['id'],
-                    'date': msg['date'],
-                    'sender': {
-                        'name': f"{msg['first_name'] or ''} {msg['last_name'] or ''}".strip() or msg['username'] or "Unknown",
-                        'username': msg['username']
-                    },
-                    'text': msg['text'],
-                    'is_outgoing': bool(msg['is_outgoing']),
-                    'reply_to': msg['reply_to_msg_id']
-                }
-                yield json.dumps(export_msg)
+        for msg in messages:
+            if not first:
+                yield ',\n'
+            first = False
+
+            # Format for export
+            export_msg = {
+                'id': msg['id'],
+                'date': msg['date'].isoformat() if msg.get('date') else None,
+                'sender': {
+                    'name': f"{msg.get('sender_name', '')} {msg.get('sender_last_name', '')}".strip() or msg.get('sender_username', '') or "Unknown",
+                    'username': msg.get('sender_username', '')
+                },
+                'text': msg['text'],
+                'is_outgoing': bool(msg.get('is_outgoing', False)),
+                'reply_to': msg.get('reply_to_msg_id')
+            }
+            yield json.dumps(export_msg)
         yield '\n]'
 
     return StreamingResponse(

@@ -107,7 +107,7 @@ def test_sqlite_adapter():
 def test_factory():
     print("\n=== Testing Adapter Factory ===")
 
-    from db_adapters.factory import create_database_adapter, is_sqlalchemy_adapter
+    from src.db_adapters.factory import create_database_adapter, is_sqlalchemy_adapter
 
     assert is_sqlalchemy_adapter("sqlite-alchemy") == True
     assert is_sqlalchemy_adapter("postgres-alchemy") == True

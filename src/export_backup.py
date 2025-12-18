@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Config, setup_logging
-from .database import Database
+from .db_adapters.factory import create_database_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class BackupExporter:
             config: Configuration object
         """
         self.config = config
-        self.db = Database(config.database_path)
+        self.db = create_database_adapter(config)
     
     def export_to_json(
         self,
