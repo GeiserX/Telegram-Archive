@@ -737,7 +737,7 @@
                 // Auth check on mount
                 onMounted(async () => {
                     try {
-                        const res = await fetch('/api/auth/status', {
+                        const res = await fetch('/api/auth/check', {
                             credentials: 'include'
                         })
                         if (res.ok) {
