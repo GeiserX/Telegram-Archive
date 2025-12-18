@@ -694,6 +694,242 @@ class DatabaseAdapter:
                     except Exception as e:
                         logger.error(f"Failed to delete avatar {avatar_file}: {e}")
     
+    # ========== Web Viewer Operations ==========
+    
+    async def get_messages_paginated(
+        self,
+        chat_id: int,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get messages with user info and media info for web viewer.
+        
+        Args:
+            chat_id: Chat ID
+            limit: Maximum messages to return
+            offset: Pagination offset
+            search: Optional text search filter
+            
+        Returns:
+            List of message dictionaries with user and media info
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # Build query with joins
+            stmt = (
+                select(
+                    Message,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Media.file_name.label('media_file_name'),
+                    Media.mime_type.label('media_mime_type'),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Media, Message.media_id == Media.id)
+                .where(Message.chat_id == chat_id)
+            )
+            
+            if search:
+                stmt = stmt.where(Message.text.ilike(f'%{search}%'))
+            
+            stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+            
+            result = await session.execute(stmt)
+            messages = []
+            
+            for row in result:
+                msg = self._message_to_dict(row.Message)
+                msg['first_name'] = row.first_name
+                msg['last_name'] = row.last_name
+                msg['username'] = row.username
+                msg['media_file_name'] = row.media_file_name
+                msg['media_mime_type'] = row.media_mime_type
+                
+                # Parse raw_data JSON
+                if msg.get('raw_data'):
+                    try:
+                        msg['raw_data'] = json.loads(msg['raw_data'])
+                    except:
+                        msg['raw_data'] = {}
+                
+                messages.append(msg)
+            
+            # Get reply texts and reactions for each message
+            for msg in messages:
+                if msg.get('reply_to_msg_id') and not msg.get('reply_to_text'):
+                    reply_result = await session.execute(
+                        select(Message.text)
+                        .where(and_(Message.chat_id == chat_id, Message.id == msg['reply_to_msg_id']))
+                    )
+                    reply_text = reply_result.scalar_one_or_none()
+                    if reply_text:
+                        msg['reply_to_text'] = reply_text[:100]
+                
+                # Get reactions
+                reactions = await self.get_reactions(msg['id'], chat_id)
+                reactions_by_emoji = {}
+                for reaction in reactions:
+                    emoji = reaction['emoji']
+                    if emoji not in reactions_by_emoji:
+                        reactions_by_emoji[emoji] = {'emoji': emoji, 'count': 0, 'user_ids': []}
+                    reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
+                    if reaction.get('user_id'):
+                        reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
+                msg['reactions'] = list(reactions_by_emoji.values())
+            
+            return messages
+    
+    async def find_message_by_date_with_joins(
+        self,
+        chat_id: int,
+        target_date: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find message by date with full user/media joins for web viewer.
+        
+        Args:
+            chat_id: Chat ID
+            target_date: Target date to find message for
+            
+        Returns:
+            Message dictionary with user and media info, or None
+        """
+        async with self.db_manager.async_session_factory() as session:
+            base_stmt = (
+                select(
+                    Message,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Media.file_name.label('media_file_name'),
+                    Media.mime_type.label('media_mime_type'),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Media, Message.media_id == Media.id)
+                .where(Message.chat_id == chat_id)
+            )
+            
+            # Try on or after target date
+            stmt = base_stmt.where(Message.date >= target_date).order_by(Message.date.asc()).limit(1)
+            result = await session.execute(stmt)
+            row = result.first()
+            
+            if not row:
+                # Try before target date
+                stmt = base_stmt.where(Message.date < target_date).order_by(Message.date.desc()).limit(1)
+                result = await session.execute(stmt)
+                row = result.first()
+            
+            if not row:
+                # Try first message in chat
+                stmt = base_stmt.order_by(Message.date.asc()).limit(1)
+                result = await session.execute(stmt)
+                row = result.first()
+            
+            if not row:
+                return None
+            
+            msg = self._message_to_dict(row.Message)
+            msg['first_name'] = row.first_name
+            msg['last_name'] = row.last_name
+            msg['username'] = row.username
+            msg['media_file_name'] = row.media_file_name
+            msg['media_mime_type'] = row.media_mime_type
+            
+            # Parse raw_data
+            if msg.get('raw_data'):
+                try:
+                    msg['raw_data'] = json.loads(msg['raw_data'])
+                except:
+                    msg['raw_data'] = {}
+            
+            # Get reply text
+            if msg.get('reply_to_msg_id') and not msg.get('reply_to_text'):
+                reply_result = await session.execute(
+                    select(Message.text)
+                    .where(and_(Message.chat_id == chat_id, Message.id == msg['reply_to_msg_id']))
+                )
+                reply_text = reply_result.scalar_one_or_none()
+                if reply_text:
+                    msg['reply_to_text'] = reply_text[:100]
+            
+            # Get reactions
+            reactions = await self.get_reactions(msg['id'], chat_id)
+            reactions_by_emoji = {}
+            for reaction in reactions:
+                emoji = reaction['emoji']
+                if emoji not in reactions_by_emoji:
+                    reactions_by_emoji[emoji] = {'emoji': emoji, 'count': 0, 'user_ids': []}
+                reactions_by_emoji[emoji]['count'] += reaction.get('count', 1)
+                if reaction.get('user_id'):
+                    reactions_by_emoji[emoji]['user_ids'].append(reaction['user_id'])
+            msg['reactions'] = list(reactions_by_emoji.values())
+            
+            return msg
+    
+    async def get_chat_by_id(self, chat_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single chat by ID."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(Chat).where(Chat.id == chat_id))
+            chat = result.scalar_one_or_none()
+            if not chat:
+                return None
+            return {
+                'id': chat.id,
+                'type': chat.type,
+                'title': chat.title,
+                'username': chat.username,
+                'first_name': chat.first_name,
+                'last_name': chat.last_name,
+                'phone': chat.phone,
+                'description': chat.description,
+                'participants_count': chat.participants_count,
+            }
+    
+    async def get_messages_for_export(self, chat_id: int):
+        """
+        Get messages for export with user info.
+        Returns an async generator for streaming.
+        
+        Args:
+            chat_id: Chat ID to export
+            
+        Yields:
+            Message dictionaries with user info
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(
+                    Message.id,
+                    Message.date,
+                    Message.text,
+                    Message.is_outgoing,
+                    Message.reply_to_msg_id,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .where(Message.chat_id == chat_id)
+                .order_by(Message.date.asc())
+            )
+            
+            result = await session.stream(stmt)
+            async for row in result:
+                yield {
+                    'id': row.id,
+                    'date': row.date.isoformat() if row.date else None,
+                    'sender': {
+                        'name': f"{row.first_name or ''} {row.last_name or ''}".strip() or row.username or "Unknown",
+                        'username': row.username
+                    },
+                    'text': row.text,
+                    'is_outgoing': bool(row.is_outgoing),
+                    'reply_to': row.reply_to_msg_id
+                }
+    
     async def close(self) -> None:
         """Close database connections."""
         await self.db_manager.close()
