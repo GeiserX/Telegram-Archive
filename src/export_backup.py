@@ -1,8 +1,11 @@
 """
 Export backup data for recovery purposes.
 Allows exporting messages from database to JSON format with date filtering.
+
+v3.0: Async database operations with SQLAlchemy.
 """
 
+import asyncio
 import json
 import logging
 import argparse
@@ -11,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Config, setup_logging
-from .database import Database
+from .db import DatabaseAdapter, init_database, close_database
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +22,32 @@ logger = logging.getLogger(__name__)
 class BackupExporter:
     """Export backup data for recovery."""
     
-    def __init__(self, config: Config):
+    def __init__(self, db: DatabaseAdapter):
         """
         Initialize exporter.
         
         Args:
-            config: Configuration object
+            db: Async database adapter
         """
-        self.config = config
-        self.db = Database(config.database_path)
+        self.db = db
     
-    def export_to_json(
+    @classmethod
+    async def create(cls, config: Config) -> "BackupExporter":
+        """
+        Factory method to create BackupExporter with initialized database.
+        
+        Args:
+            config: Configuration object
+            
+        Returns:
+            Initialized BackupExporter instance
+        """
+        await init_database()
+        from .db import get_adapter
+        db = await get_adapter()
+        return cls(db)
+    
+    async def export_to_json(
         self,
         output_file: str,
         chat_id: Optional[int] = None,
@@ -52,10 +70,10 @@ class BackupExporter:
         end_dt = datetime.strptime(end_date, '%Y-%m-%d') if end_date else None
         
         # Get messages
-        messages = self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
+        messages = await self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
         
         # Get chats
-        chats = self.db.get_all_chats()
+        chats = await self.db.get_all_chats()
         chats_dict = {chat['id']: chat for chat in chats}
         
         # Build export data
@@ -84,9 +102,9 @@ class BackupExporter:
         logger.info(f"Exported {len(messages)} messages to {output_file}")
         logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
     
-    def list_chats(self):
+    async def list_chats(self):
         """List all backed up chats."""
-        chats = self.db.get_all_chats()
+        chats = await self.db.get_all_chats()
         
         print("\n" + "=" * 80)
         print("Backed Up Chats")
@@ -98,16 +116,23 @@ class BackupExporter:
             chat_id = chat['id']
             chat_type = chat['type']
             name = chat.get('title') or f"{chat.get('first_name', '')} {chat.get('last_name', '')}".strip()
-            updated = chat['updated_at'][:19] if chat['updated_at'] else 'N/A'
+            updated_at = chat.get('updated_at')
+            if updated_at:
+                if hasattr(updated_at, 'isoformat'):
+                    updated = updated_at.isoformat()[:19]
+                else:
+                    updated = str(updated_at)[:19]
+            else:
+                updated = 'N/A'
             
             print(f"{chat_id:<15} {chat_type:<10} {name:<40} {updated:<20}")
         
         print("=" * 80)
         print(f"Total: {len(chats)} chats\n")
     
-    def show_statistics(self):
+    async def show_statistics(self):
         """Show backup statistics."""
-        stats = self.db.get_statistics()
+        stats = await self.db.get_statistics()
         
         print("\n" + "=" * 60)
         print("Backup Statistics")
@@ -118,13 +143,13 @@ class BackupExporter:
         print(f"Total storage:      {stats['total_size_mb']} MB")
         print("=" * 60 + "\n")
     
-    def close(self):
+    async def close(self):
         """Close database connection."""
-        self.db.close()
+        await close_database()
 
 
-def main():
-    """Main entry point."""
+async def async_main():
+    """Async main entry point."""
     parser = argparse.ArgumentParser(
         description='Export Telegram backup data for recovery'
     )
@@ -162,35 +187,39 @@ def main():
     
     if not args.command:
         parser.print_help()
-        return
+        return 0
     
     try:
         # Load configuration
-        from .config import Config, setup_logging
         config = Config()
         setup_logging(config)
         
-        exporter = BackupExporter(config)
+        exporter = await BackupExporter.create(config)
         
         if args.command == 'export':
-            exporter.export_to_json(
+            await exporter.export_to_json(
                 args.output,
                 args.chat_id,
                 args.start_date,
                 args.end_date
             )
         elif args.command == 'list-chats':
-            exporter.list_chats()
+            await exporter.list_chats()
         elif args.command == 'stats':
-            exporter.show_statistics()
+            await exporter.show_statistics()
         
-        exporter.close()
+        await exporter.close()
         
     except Exception as e:
         logger.error(f"Export failed: {e}", exc_info=True)
         return 1
     
     return 0
+
+
+def main():
+    """Main entry point."""
+    return asyncio.run(async_main())
 
 
 if __name__ == '__main__':
