@@ -1283,6 +1283,7 @@
                                         // Keep loading until pagination catches up to the target date
                                         let iterations = 0
                                         const maxIterations = 20 // Safety limit
+                                        const targetTime = new Date(message.date).getTime()
                                         
                                         while (hasMore.value && iterations < maxIterations) {
                                             // Abort if user switched to a different chat
@@ -1290,22 +1291,39 @@
                                                 return
                                             }
                                             
-                                            // Get the current oldest message from sortedMessages
-                                            // (excluding the jumped message itself)
+                                            // Check if gap is filled by looking at target's position
+                                            // in sorted messages (oldest first)
                                             const sorted = sortedMessages.value
-                                            const oldestFromPagination = sorted.find(m => m.id !== message.id)
+                                            const targetIdx = sorted.findIndex(m => m.id === message.id)
                                             
-                                            // If no other messages or oldest is still newer than target, load more
-                                            if (!oldestFromPagination || 
-                                                moment(oldestFromPagination.date).isAfter(targetDate)) {
-                                                await loadMessages()
-                                                iterations++
-                                                // Small delay between requests
-                                                await new Promise(resolve => setTimeout(resolve, 50))
-                                            } else {
-                                                // Gap is filled - pagination has reached or passed target date
+                                            // Gap is filled when target is no longer the oldest
+                                            // (pagination loaded older messages)
+                                            if (targetIdx > 0) {
                                                 break
                                             }
+                                            
+                                            // Track message IDs before loading to detect new messages
+                                            const idsBefore = new Set(messages.value.map(m => m.id))
+                                            
+                                            await loadMessages()
+                                            iterations++
+                                            
+                                            // Check if any newly loaded message is at or before target date
+                                            // This means pagination has reached the target (gap is filled)
+                                            // without needing to load messages OLDER than the target
+                                            let reachedTarget = false
+                                            for (const m of messages.value) {
+                                                if (!idsBefore.has(m.id) && new Date(m.date).getTime() <= targetTime) {
+                                                    reachedTarget = true
+                                                    break
+                                                }
+                                            }
+                                            if (reachedTarget) {
+                                                break
+                                            }
+                                            
+                                            // Small delay between requests
+                                            await new Promise(resolve => setTimeout(resolve, 50))
                                         }
                                     }
                                     
