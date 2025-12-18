@@ -40,8 +40,14 @@ class DatabaseManager:
         
         Args:
             database_url: Optional database URL. If not provided, reads from environment.
+                          URLs with sync drivers (sqlite://, postgresql://) are automatically
+                          converted to async drivers (sqlite+aiosqlite://, postgresql+asyncpg://).
         """
-        self.database_url = database_url or self._build_database_url()
+        if database_url:
+            # Convert sync URLs to async URLs if needed
+            self.database_url = self._convert_to_async_url(database_url)
+        else:
+            self.database_url = self._build_database_url()
         self.engine: Optional[AsyncEngine] = None
         self.async_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
         self._is_sqlite = self._check_is_sqlite()

@@ -506,7 +506,6 @@ class TelegramBackup:
             'media_type': None,
             'media_id': None,
             'media_path': None,
-            'media_path': None,
             'raw_data': {},
             'is_outgoing': 1 if message.out else 0
         }
