@@ -8,7 +8,7 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -66,8 +66,8 @@ class DatabaseManager:
         if db_type == 'postgresql' or db_type == 'postgres':
             host = os.getenv('POSTGRES_HOST', 'localhost')
             port = os.getenv('POSTGRES_PORT', '5432')
-            user = os.getenv('POSTGRES_USER', 'telegram')
-            password = os.getenv('POSTGRES_PASSWORD', '')
+            user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
+            password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
             database = os.getenv('POSTGRES_DB', 'telegram_backup')
             return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
         

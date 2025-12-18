@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 from logging.config import fileConfig
+from urllib.parse import quote_plus
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -62,8 +63,8 @@ def get_database_url() -> str:
     if db_type in ('postgresql', 'postgres'):
         host = os.getenv('POSTGRES_HOST', 'localhost')
         port = os.getenv('POSTGRES_PORT', '5432')
-        user = os.getenv('POSTGRES_USER', 'telegram')
-        password = os.getenv('POSTGRES_PASSWORD', '')
+        user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
+        password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         database = os.getenv('POSTGRES_DB', 'telegram_backup')
         return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
     
