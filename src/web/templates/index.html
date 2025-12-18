@@ -141,6 +141,36 @@
             background: #475569 !important;
         }
 
+        /* Scroll to Bottom Button */
+        .scroll-to-bottom-btn {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: #334155;
+            border: 1px solid #475569;
+            color: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            z-index: 10;
+        }
+
+        .scroll-to-bottom-btn:hover {
+            background: #475569;
+            transform: scale(1.05);
+        }
+
+        .scroll-to-bottom-btn svg {
+            width: 24px;
+            height: 24px;
+        }
+
         /* Clickable Links */
         .message-text a {
             color: #60a5fa;
@@ -383,7 +413,8 @@
                     </div>
 
                     <!-- Messages -->
-                    <div ref="messagesContainer" class="flex-1 overflow-y-auto p-4 space-y-1" @scroll="handleScroll">
+                    <div class="flex-1 relative overflow-hidden">
+                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 space-y-1" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
@@ -554,6 +585,17 @@
 
                         <div ref="scrollAnchor"></div>
                     </div>
+
+                    <!-- Scroll to Bottom Button -->
+                    <button v-if="showScrollToBottom" 
+                        @click="scrollToLatest"
+                        class="scroll-to-bottom-btn"
+                        title="Scroll to latest messages">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
+                        </svg>
+                    </button>
+                    </div>
                 </template>
             </div>
         </div>
@@ -619,6 +661,7 @@
                 const datePickerInput = ref(null)
                 const selectedDate = ref(null)
                 let flatpickrInstance = null
+                const showScrollToBottom = ref(false)
 
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
@@ -884,12 +927,22 @@
                             })
                         })
                     }
+                    
+                    // Show/hide scroll to bottom button
+                    // Show when scrolled more than 300px from bottom
+                    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+                    showScrollToBottom.value = distanceFromBottom > 300
                 }
 
                 const scrollToBottom = () => {
                     if (messagesContainer.value) {
                         messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
                     }
+                }
+
+                const scrollToLatest = () => {
+                    scrollToBottom()
+                    showScrollToBottom.value = false
                 }
 
                 const isOwnMessage = (msg) => {
@@ -1399,6 +1452,9 @@
                     openDatePicker,
                     closeDatePicker,
                     jumpToDate,
+                    // Scroll to bottom
+                    showScrollToBottom,
+                    scrollToLatest,
                 }
             }
         }).mount('#app')
