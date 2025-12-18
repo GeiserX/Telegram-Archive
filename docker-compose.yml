@@ -1,8 +1,30 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: telegram-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
+      POSTGRES_USER: ${POSTGRES_USER:-telegram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - telegram-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telegram} -d ${POSTGRES_DB:-telegram_backup}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   telegram-backup:
     image: drumsergio/telegram-backup-automation:latest
     container_name: telegram-backup
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     environment:
       # Authentication & Connection
@@ -14,9 +36,16 @@ services:
       # Schedule (cron format)
       SCHEDULE: ${SCHEDULE:-0 */6 * * *}
 
+      # Database Configuration
+      DB_TYPE: ${DB_TYPE:-postgresql}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
+      POSTGRES_USER: ${POSTGRES_USER:-telegram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
       # Backup Configuration
       BACKUP_PATH: /data/backups
-      # DATABASE_DIR: /data/database # Optional: Store DB separately from media
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       BATCH_SIZE: ${BATCH_SIZE:-100}
@@ -58,9 +87,20 @@ services:
     container_name: telegram-viewer
     command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
+      # Database Configuration
+      DB_TYPE: ${DB_TYPE:-postgresql}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
+      POSTGRES_USER: ${POSTGRES_USER:-telegram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
       BACKUP_PATH: /data/backups
       # Optional basic auth for the viewer (recommended)
       # When both are set, the UI will prompt for credentials
@@ -94,3 +134,6 @@ services:
 networks:
   telegram-network:
     driver: bridge
+
+volumes:
+  postgres-data:
