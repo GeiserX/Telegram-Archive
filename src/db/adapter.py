@@ -577,32 +577,38 @@ class DatabaseAdapter:
     
     @retry_on_locked()
     async def update_sync_status(self, chat_id: int, last_message_id: int, message_count: int) -> None:
-        """Update sync status for a chat."""
+        """Update sync status for a chat using atomic upsert."""
         async with self.db_manager.async_session_factory() as session:
-            # Check if exists
-            existing = await session.execute(
-                select(SyncStatus).where(SyncStatus.chat_id == chat_id)
-            )
-            existing_status = existing.scalar_one_or_none()
-            
-            if existing_status:
-                await session.execute(
-                    update(SyncStatus)
-                    .where(SyncStatus.chat_id == chat_id)
-                    .values(
-                        last_message_id=last_message_id,
-                        last_sync_date=datetime.utcnow(),
-                        message_count=SyncStatus.message_count + message_count
-                    )
+            now = datetime.utcnow()
+            values = {
+                'chat_id': chat_id,
+                'last_message_id': last_message_id,
+                'last_sync_date': now,
+                'message_count': message_count
+            }
+
+            if self._is_sqlite:
+                stmt = sqlite_insert(SyncStatus).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['chat_id'],
+                    set_={
+                        'last_message_id': stmt.excluded.last_message_id,
+                        'last_sync_date': stmt.excluded.last_sync_date,
+                        'message_count': SyncStatus.message_count + stmt.excluded.message_count
+                    }
                 )
             else:
-                session.add(SyncStatus(
-                    chat_id=chat_id,
-                    last_message_id=last_message_id,
-                    last_sync_date=datetime.utcnow(),
-                    message_count=message_count
-                ))
-            
+                stmt = pg_insert(SyncStatus).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['chat_id'],
+                    set_={
+                        'last_message_id': stmt.excluded.last_message_id,
+                        'last_sync_date': stmt.excluded.last_sync_date,
+                        'message_count': SyncStatus.message_count + stmt.excluded.message_count
+                    }
+                )
+
+            await session.execute(stmt)
             await session.commit()
     
     # ========== Statistics ==========
