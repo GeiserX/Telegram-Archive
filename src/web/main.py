@@ -347,6 +347,8 @@ def get_message_by_date(chat_id: int, date: str = Query(..., description="Date i
         return message
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error finding message by date: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
