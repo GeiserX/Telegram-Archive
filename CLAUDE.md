@@ -4,17 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Telegram Archive is a Python-based automated backup system for Telegram chats with a web viewer. It performs incremental backups of messages and media on a configurable schedule using Docker, storing everything in SQLite with a FastAPI-based web interface for browsing.
+Telegram Archive is a Python-based automated backup system for Telegram chats with a web viewer. It performs incremental backups of messages and media on a configurable schedule using Docker, storing data in SQLite or PostgreSQL through SQLAlchemy adapters with a FastAPI-based web interface for browsing.
 
 ## Core Architecture
 
 ### Multi-Service Docker Setup
 
-The application runs as two Docker services:
+The application runs as three Docker services:
 1. **telegram-backup**: Scheduled backup worker (runs `src.scheduler`)
 2. **telegram-viewer**: FastAPI web server on port 8000 (runs `src.web.main`)
+3. **postgres**: PostgreSQL 16 server (optional, when using PostgreSQL)
 
-Both services share the same data volume (`./data:/data`) for session files, database, and media.
+Both backup and viewer services share the same data volume (`./data:/data`) for session files, database, and media.
+
+### Database Architecture with SQLAlchemy Adapters
+
+The project uses SQLAlchemy with an adapter pattern to support multiple databases:
+
+**src/db_adapters/adapter.py** - Abstract base interface
+- `DatabaseAdapter` class defines the unified interface
+- Methods for chats, messages, users, media operations
+- Abstract methods for database-specific implementations
+
+**src/db_adapters/sqlite_adapter.py** - SQLite implementation
+- Uses SQLite with SQLAlchemy ORM
+- WAL mode enabled for concurrent access
+- JSON serialization for raw_data fields
+- Connection pooling and retry mechanisms
+
+**src/db_adapters/postgres_adapter.py** - PostgreSQL implementation
+- PostgreSQL 16 with connection pooling
+- Enhanced JSON support with native PostgreSQL JSON types
+- Automatic schema creation and migrations
+- Optimized for production workloads
+
+**src/db_adapters/factory.py** - Adapter factory
+- Creates appropriate adapter based on `DB_TYPE`
+- Supported types: `sqlite` (default), `sqlite-alchemy` (alias), `postgres-alchemy`
+- Unified interface across all database types
 
 ### Main Components
 
@@ -25,13 +52,7 @@ Both services share the same data volume (`./data:/data`) for session files, dat
 - Profile photo tracking with historical copies
 - Optional sync for deletions/edits (`SYNC_DELETIONS_EDITS`)
 - Batch processing for efficiency (default 100 messages per batch)
-
-**src/database.py** - SQLite database layer
-- `Database` class with WAL mode enabled for concurrent read/write
-- Schema: chats, messages, users, media, reactions, sync_status, metadata
-- Retry decorator for handling database locks (`@retry_on_locked`)
-- Batch insert operations for performance
-- Chat deletion with cascade to filesystem media
+- Uses SQLAlchemy adapters for all database operations
 
 **src/scheduler.py** - Cron-based job scheduler
 - Uses APScheduler with AsyncIO
@@ -46,6 +67,7 @@ Both services share the same data volume (`./data:/data`) for session files, dat
 
 **src/config.py** - Environment-based configuration
 - Loads from .env file via python-dotenv
+- Database type selection (`DB_TYPE`) and PostgreSQL configuration
 - Granular chat filtering (global/private/groups/channels include/exclude)
 - Configurable database timeout (default 60s for locked database resilience)
 - Timezone configuration for viewer display
@@ -70,11 +92,15 @@ data/
 
 ### Key Technical Details
 
-**Database Concurrency**
-- WAL mode enabled on both backup and viewer databases
-- `PRAGMA busy_timeout` increased to 60s (60000ms)
-- Retry mechanism with exponential backoff for locked database errors
-- All write operations decorated with `@retry_on_locked(max_retries=5)`
+**Database Architecture**
+- **SQLite**: WAL mode enabled for concurrent read/write access
+- **PostgreSQL**: Native connection pooling and ACID compliance
+- **Unified Interface**: SQLAlchemy adapters provide consistent API across databases
+- **Automatic Schema Creation**: Database schema initialized on first run
+- **Database Concurrency**:
+  - SQLite: `PRAGMA busy_timeout` increased to 60s (60000ms)
+  - PostgreSQL: Connection pooling with configurable pool size
+  - Retry mechanisms for handling transient database errors
 
 **Media Deduplication**
 - Filenames use Telegram's internal `file_id` for automatic deduplication
@@ -83,11 +109,13 @@ data/
 - Profile photos versioned by `photo_id` (historical copies preserved)
 
 **Message Processing**
-- Batch inserts (100 messages default) for efficiency
+- Batch inserts (default `BATCH_SIZE`=100) for efficiency
+- SQLAlchemy ORM batch operations for optimal performance
 - Reactions stored separately with user attribution when available
-- Poll data serialized to JSON in `raw_data` field (not downloaded)
+- Poll data serialized to JSON in `raw_data` field
 - `is_outgoing` flag backfilled using owner_id from metadata
 - Reply text truncated to 100 chars (Telegram-style)
+- Database-agnostic JSON handling (SQLite: JSON strings, PostgreSQL: native JSON)
 
 **Chat Filtering Priority**
 1. Global Exclude → Skip
@@ -97,6 +125,61 @@ data/
 5. CHAT_TYPES filter → Backup if matches
 
 Explicitly excluded chats are deleted from database/filesystem during backup.
+
+## Database Operations
+
+### Database Adapter Selection
+
+The system automatically selects the appropriate database adapter based on `DB_TYPE`:
+
+```python
+from src.db_adapters.factory import create_database_adapter
+
+# SQLite (default)
+DB_TYPE=sqlite  # or sqlite-alchemy
+
+# PostgreSQL
+DB_TYPE=postgres-alchemy
+```
+
+### Adapter Usage Examples
+
+```python
+from src.db_adapters.factory import create_database_adapter
+
+# Create adapter (automatically selected based on config)
+db = create_database_adapter(config)
+
+# Database operations (same interface for all databases)
+db.initialize_schema()
+
+# Chat operations
+chats = db.get_all_chats()
+chat = db.get_chat(12345)
+
+# Message operations
+messages = db.get_messages(chat_id=12345, limit=50)
+db.insert_messages([message_dict1, message_dict2])
+
+# User operations
+users = db.get_all_users()
+
+# Statistics
+stats = db.get_stats()
+```
+
+### Database Migration
+
+**SQLite to PostgreSQL:**
+1. Export data: `python -m src.export_backup export -o backup.json`
+2. Change `DB_TYPE=postgres-alchemy` in `.env`
+3. Set PostgreSQL credentials
+4. Restart services: `docker compose restart`
+
+**Schema Migrations:**
+- Automatic schema creation on first run
+- SQLAlchemy handles schema evolution
+- Both databases use identical schema through models
 
 ## Common Development Commands
 
@@ -121,6 +204,9 @@ docker compose exec telegram-backup python -m src.export_backup list-chats
 
 # Export to JSON
 docker compose exec telegram-backup python -m src.export_backup export -o backup.json
+
+# Test database adapters
+docker compose exec telegram-backup python -c "from src.db_adapters.factory import create_database_adapter; from src.config import Config; print(create_database_adapter(Config()).__class__.__name__)"
 
 # Run tests
 docker compose exec telegram-backup python -m pytest tests/
@@ -207,10 +293,23 @@ When making changes, run the full test suite to ensure nothing breaks.
 - `TELEGRAM_API_HASH` - From my.telegram.org
 - `TELEGRAM_PHONE` - Phone with country code
 
+### Optional (Database)
+- `DB_TYPE` - Database type: `sqlite` (default) or `postgres-alchemy`
+- `DATABASE_TIMEOUT` - Database connection timeout in seconds (default: 60.0)
+- `DATABASE_DIR` - Override database directory
+- `DATABASE_PATH` - Override full database path
+
+**PostgreSQL Settings (when DB_TYPE=postgres-alchemy):**
+- `POSTGRES_HOST` - PostgreSQL server host (default: postgres)
+- `POSTGRES_PORT` - PostgreSQL server port (default: 5432)
+- `POSTGRES_DB` - Database name (default: telegram_backup)
+- `POSTGRES_USER` - Database user (default: telegram)
+- `POSTGRES_PASSWORD` - Database password (required)
+- `POSTGRES_POOL_SIZE` - Connection pool size (default: 5)
+
 ### Optional (Common)
 - `SCHEDULE` - Cron format (default: `0 */6 * * *`)
 - `BACKUP_PATH` - Storage path (default: `/data/backups`)
-- `DATABASE_TIMEOUT` - SQLite timeout in seconds (default: 60.0)
 - `DOWNLOAD_MEDIA` - Download media files (default: true)
 - `MAX_MEDIA_SIZE_MB` - Max media size (default: 100)
 - `BATCH_SIZE` - Messages per batch (default: 100)

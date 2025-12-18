@@ -8,15 +8,16 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 
 ## Features
 
-✨ **Incremental Backups** - Only downloads new messages since last backup  
-📅 **Scheduled Execution** - Configurable cron schedule  
-🐳 **Docker Ready** - Easy deployment with Docker Compose  
-🌐 **Web Viewer** - Browse chats with Telegram-like UI (mobile-friendly)  
-🔐 **Restricted Viewer** - Share specific chats via `DISPLAY_CHAT_IDS`  
-🎵 **Voice/Audio Player** - Play audio messages in browser  
-📤 **Chat Export** - Export chat history to JSON  
-🎬 **GIF Autoplay** - Animated GIFs play when visible  
-📁 **Media Support** - Photos, videos, documents, stickers  
+✨ **Incremental Backups** - Only downloads new messages since last backup
+📅 **Scheduled Execution** - Configurable cron schedule
+🐳 **Docker Ready** - Easy deployment with Docker Compose
+🗄️ **Multiple Database Support** - SQLite and PostgreSQL with SQLAlchemy
+🌐 **Web Viewer** - Browse chats with Telegram-like UI (mobile-friendly)
+🔐 **Restricted Viewer** - Share specific chats via `DISPLAY_CHAT_IDS`
+🎵 **Voice/Audio Player** - Play audio messages in browser
+📤 **Chat Export** - Export chat history to JSON
+🎬 **GIF Autoplay** - Animated GIFs play when visible
+📁 **Media Support** - Photos, videos, documents, stickers
 🔒 **Secure** - Optional authentication, runs as non-root  
 
 ## 📸 Screenshots
@@ -78,21 +79,41 @@ Features:
 | `TELEGRAM_API_HASH` | API Hash from my.telegram.org |
 | `TELEGRAM_PHONE` | Phone with country code (+1234567890) |
 
-### Optional
+### Database Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_TYPE` | `sqlite` | Database type: `sqlite` or `postgres-alchemy` |
+| `DATABASE_TIMEOUT` | `60.0` | Database connection timeout (seconds) |
+| `DATABASE_DIR` | Same as backup | Database directory location |
+| `DATABASE_PATH` | Derived from above | Full database file path |
+
+**PostgreSQL (when DB_TYPE=postgres-alchemy):**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_HOST` | `postgres` | PostgreSQL server host |
+| `POSTGRES_PORT` | `5432` | PostgreSQL server port |
+| `POSTGRES_DB` | `telegram_backup` | Database name |
+| `POSTGRES_USER` | `telegram` | Database user |
+| `POSTGRES_PASSWORD` | *Required* | Database password |
+| `POSTGRES_POOL_SIZE` | `5` | Connection pool size |
+
+### Optional Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCHEDULE` | `0 */6 * * *` | Cron schedule (every 6 hours) |
 | `BACKUP_PATH` | `/data/backups` | Backup storage path |
-| `DATABASE_DIR` | Same as backup | Database location |
 | `DOWNLOAD_MEDIA` | `true` | Download media files |
 | `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
 | `CHAT_TYPES` | `private,groups,channels` | Types to backup |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
+| `VIEWER_TIMEZONE` | `Europe/Madrid` | Display timezone for viewer |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
 | `SYNC_DELETIONS_EDITS` | `false` | Sync deletions/edits from Telegram |
+| `BATCH_SIZE` | `100` | Messages per batch for processing |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
 | `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private chats |
@@ -119,6 +140,50 @@ docker-compose exec telegram-backup python -m src.export_backup export -o backup
 
 # Manual backup run
 docker-compose exec telegram-backup python -m src.telegram_backup
+
+# Test database adapters
+docker-compose exec telegram-backup python -m src.db_adapters.postgres_adapter
+docker-compose exec telegram-backup python -m src.db_adapters.sqlite_adapter
+```
+
+## Database Migration
+
+The project supports both SQLite and PostgreSQL databases through SQLAlchemy adapters.
+
+### Switching between databases:
+
+**SQLite (default):**
+```bash
+# No additional setup required
+# Uses: sqlite (default) or sqlite-alchemy
+DB_TYPE=sqlite
+```
+
+**PostgreSQL:**
+```bash
+# 1. Start PostgreSQL service
+docker-compose up -d postgres
+
+# 2. Set environment variables
+DB_TYPE=postgres-alchemy
+POSTGRES_PASSWORD=your_password
+
+# 3. Restart services
+docker-compose restart telegram-backup telegram-viewer
+```
+
+### Migration from SQLite to PostgreSQL:
+
+```bash
+# 1. Export existing data
+docker-compose exec telegram-backup python -m src.export_backup export -o backup.json
+
+# 2. Switch to PostgreSQL
+# Edit .env: DB_TYPE=postgres-alchemy, set POSTGRES_PASSWORD
+
+# 3. Restart with new database
+docker-compose down
+docker-compose up -d postgres telegram-backup telegram-viewer
 ```
 
 ## Data Storage
