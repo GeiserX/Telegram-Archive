@@ -7,6 +7,7 @@ Provides tools to migrate data between SQLite and PostgreSQL.
 import os
 import logging
 from typing import AsyncGenerator, Dict, Any, List
+from urllib.parse import quote_plus
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,8 +54,8 @@ async def migrate_sqlite_to_postgres(
     if postgres_url is None:
         host = os.getenv('POSTGRES_HOST', 'localhost')
         port = os.getenv('POSTGRES_PORT', '5432')
-        user = os.getenv('POSTGRES_USER', 'telegram')
-        password = os.getenv('POSTGRES_PASSWORD', '')
+        user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
+        password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         db = os.getenv('POSTGRES_DB', 'telegram_backup')
         postgres_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
     
@@ -171,8 +172,8 @@ async def verify_migration(
     if postgres_url is None:
         host = os.getenv('POSTGRES_HOST', 'localhost')
         port = os.getenv('POSTGRES_PORT', '5432')
-        user = os.getenv('POSTGRES_USER', 'telegram')
-        password = os.getenv('POSTGRES_PASSWORD', '')
+        user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
+        password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         db = os.getenv('POSTGRES_DB', 'telegram_backup')
         postgres_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
     
