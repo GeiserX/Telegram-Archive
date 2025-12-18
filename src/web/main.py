@@ -134,6 +134,7 @@ async def login(request: Request):
                 value=AUTH_TOKEN,
                 httponly=True,
                 samesite="lax",
+                max_age=30 * 24 * 60 * 60,  # 30 days
             )
             return response
         raise HTTPException(status_code=401, detail="Invalid credentials")
