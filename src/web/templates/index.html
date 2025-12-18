@@ -845,7 +845,10 @@
                             hasMore.value = false
                         }
 
-                        messages.value = [...messages.value, ...newMessages]
+                        // Filter out duplicates (e.g., from jumpToDate adding a message directly)
+                        const existingIds = new Set(messages.value.map(m => m.id))
+                        const uniqueNewMessages = newMessages.filter(m => !existingIds.has(m.id))
+                        messages.value = [...messages.value, ...uniqueNewMessages]
                         page.value++
                     } catch (e) {
                         console.error("Failed to load messages", e)
@@ -1234,6 +1237,12 @@
                             // a specific date, we'll add the message to our list and scroll to it
                             // The message will be properly positioned when we load more messages
                             
+                            // Capture oldest loaded message BEFORE adding the new message
+                            // (otherwise sortedMessages will include the new message and the comparison will fail)
+                            const oldestLoadedBeforeJump = sortedMessages.value.length > 0 
+                                ? moment(sortedMessages.value[0].date) 
+                                : null
+                            
                             // Add the message to the list (it will be sorted correctly by date)
                             messages.value.push(message)
                             
@@ -1250,16 +1259,9 @@
                                 setTimeout(async () => {
                                     // Check if we need to load more messages around this date
                                     const targetMoment = moment(message.date)
-                                    const oldestLoaded = sortedMessages.value.length > 0 
-                                        ? moment(sortedMessages.value[0].date) 
-                                        : null
-                                    const newestLoaded = sortedMessages.value.length > 0 
-                                        ? moment(sortedMessages.value[sortedMessages.value.length - 1].date) 
-                                        : null
                                     
-                                    // If target is near the edges, load more messages
-                                    if (oldestLoaded && targetMoment.isBefore(oldestLoaded) && hasMore.value) {
-                                        // Target is older than what we have, load more older messages
+                                    // If target is older than what we had loaded, load more older messages
+                                    if (oldestLoadedBeforeJump && targetMoment.isBefore(oldestLoadedBeforeJump) && hasMore.value) {
                                         await loadMessages()
                                     }
                                 }, 500)
