@@ -18,6 +18,7 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 🎬 **GIF Autoplay** - Animated GIFs play when visible  
 📁 **Media Support** - Photos, videos, documents, stickers  
 🔒 **Secure** - Optional authentication, runs as non-root  
+🗄️ **Multiple Databases** - SQLite (default) or PostgreSQL support (v3.0+)  
 
 ## 📸 Screenshots
 
@@ -101,6 +102,48 @@ Features:
 | `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist group chats |
 | `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels |
 | `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels |
+
+### Database Configuration (v3.0+)
+
+Telegram Archive supports both SQLite and PostgreSQL.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | Full database URL (takes priority) |
+| `DB_TYPE` | `sqlite` | Database type: `sqlite` or `postgresql` |
+| `DB_PATH` | `/data/backups/telegram_backup.db` | SQLite database path |
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `POSTGRES_USER` | `telegram` | PostgreSQL username |
+| `POSTGRES_PASSWORD` | - | PostgreSQL password |
+| `POSTGRES_DB` | `telegram_backup` | PostgreSQL database name |
+
+**Using PostgreSQL:**
+
+1. Uncomment the `postgres` service in `docker-compose.yml`
+2. Set `POSTGRES_PASSWORD` in your `.env`
+3. Set `DB_TYPE=postgresql` in your `.env`
+4. Uncomment `depends_on` in backup and viewer services
+5. Run `docker-compose up -d`
+
+## Upgrading from v2.x to v3.0
+
+v3.0 introduces async database operations and PostgreSQL support. **Existing SQLite databases work automatically** - no migration needed.
+
+The upgrade is transparent:
+1. Pull the new image: `docker-compose pull`
+2. Restart: `docker-compose up -d`
+
+Your existing data in `/data/backups/telegram_backup.db` will continue to work.
+
+**Optional: Switch to PostgreSQL**
+
+If you want to migrate from SQLite to PostgreSQL:
+
+1. Stop services: `docker-compose down`
+2. Configure PostgreSQL (see above)
+3. Run migration: `docker-compose run --rm telegram-backup python -c "from src.db import *; import asyncio; asyncio.run(migrate_sqlite_to_postgres())"`
+4. Start services: `docker-compose up -d`
 
 ## CLI Commands
 

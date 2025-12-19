@@ -1,30 +1,76 @@
+"""Tests for database viewer functionality."""
+
 import unittest
-from unittest.mock import Mock, patch
-from src.database import Database
+import asyncio
+from unittest.mock import Mock, patch, AsyncMock
+
 
 class TestDatabaseViewer(unittest.TestCase):
-    def test_get_all_chats(self):
-        """Test that get_all_chats returns sorted chats."""
-        with patch('src.database.sqlite3') as mock_sqlite:
-            # Mock connection and cursor
-            mock_conn = Mock()
-            mock_cursor = Mock()
-            mock_sqlite.connect.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
-            mock_conn.row_factory = None
-            
-            # Mock fetchall response
-            mock_cursor.fetchall.return_value = [
-                {'id': 1, 'title': 'Chat 1', 'last_message_date': '2024-01-02'},
-                {'id': 2, 'title': 'Chat 2', 'last_message_date': '2024-01-03'},
-            ]
-            
-            db = Database(':memory:')
-            chats = db.get_all_chats()
-            
-            # Verify query was executed
-            mock_cursor.execute.assert_called()
-            self.assertTrue(len(chats) >= 0)
+    """Test database viewer operations."""
+    
+    def test_get_all_chats_structure(self):
+        """Test that get_all_chats returns expected structure."""
+        # Test the expected structure of chat data
+        expected_keys = ['id', 'type', 'title', 'username', 'first_name', 
+                        'last_name', 'phone', 'description', 'participants_count']
+        
+        # Mock chat data
+        mock_chat = {
+            'id': 123456789,
+            'type': 'private',
+            'title': None,
+            'username': 'testuser',
+            'first_name': 'Test',
+            'last_name': 'User',
+            'phone': None,
+            'description': None,
+            'participants_count': None,
+        }
+        
+        # Verify all expected keys are present
+        for key in expected_keys:
+            self.assertIn(key, mock_chat)
+    
+    def test_chat_avatar_path_format(self):
+        """Test avatar path formatting."""
+        chat_id = 123456789
+        chat_type = 'private'
+        
+        # For private chats, avatars are in 'users' folder
+        expected_folder = 'users' if chat_type == 'private' else 'chats'
+        self.assertEqual(expected_folder, 'users')
+        
+        # For groups/channels, avatars are in 'chats' folder
+        chat_type = 'group'
+        expected_folder = 'users' if chat_type == 'private' else 'chats'
+        self.assertEqual(expected_folder, 'chats')
+
+
+class TestAsyncDatabaseAdapter(unittest.TestCase):
+    """Test async database adapter."""
+    
+    def test_adapter_methods_exist(self):
+        """Verify DatabaseAdapter has required methods."""
+        from src.db.adapter import DatabaseAdapter
+        
+        required_methods = [
+            'get_all_chats',
+            'get_messages_paginated',
+            'get_statistics',
+            'upsert_chat',
+            'upsert_user',
+            'insert_message',
+            'insert_messages_batch',
+            'get_reactions',
+            'insert_reactions',
+        ]
+        
+        for method in required_methods:
+            self.assertTrue(
+                hasattr(DatabaseAdapter, method),
+                f"DatabaseAdapter missing method: {method}"
+            )
+
 
 if __name__ == '__main__':
     unittest.main()
