@@ -72,8 +72,19 @@ class DatabaseManager:
             return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
         
         # Default: SQLite
-        # Use same default path as v2 for backward compatibility
-        db_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
+        # Check v2 environment variables first for backward compatibility
+        db_path = os.getenv('DATABASE_PATH')  # v2: full path
+        if not db_path:
+            db_dir = os.getenv('DATABASE_DIR')  # v2: directory only
+            if db_dir:
+                db_path = os.path.join(db_dir, 'telegram_backup.db')
+        if not db_path:
+            db_path = os.getenv('DB_PATH')  # v3: new variable
+        if not db_path:
+            # Default path (same as v2 default)
+            backup_path = os.getenv('BACKUP_PATH', '/data/backups')
+            db_path = os.path.join(backup_path, 'telegram_backup.db')
+        
         # Ensure directory exists
         os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
         return f"sqlite+aiosqlite:///{db_path}"
