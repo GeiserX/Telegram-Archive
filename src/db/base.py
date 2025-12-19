@@ -125,9 +125,9 @@ class DatabaseManager:
             expire_on_commit=False,
         )
         
-        # Create tables if they don't exist
+        # Create tables if they don't exist (checkfirst=True skips existing tables)
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
         
         logger.info(f"Database initialized successfully ({self._db_type()})")
     
