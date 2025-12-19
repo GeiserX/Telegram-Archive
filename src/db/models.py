@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
     BigInteger, Integer, String, Text, DateTime, Boolean, 
-    ForeignKey, Index, UniqueConstraint, event, func
+    ForeignKey, ForeignKeyConstraint, Index, UniqueConstraint, event, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -127,11 +127,16 @@ class Reaction(Base):
     message: Mapped["Message"] = relationship(
         "Message",
         back_populates="reactions",
-        foreign_keys=[message_id, chat_id],
-        primaryjoin="and_(Reaction.message_id==Message.id, Reaction.chat_id==Message.chat_id)"
+        primaryjoin="and_(Reaction.message_id==Message.id, Reaction.chat_id==Message.chat_id)",
+        foreign_keys="[Reaction.message_id, Reaction.chat_id]",
     )
     
     __table_args__ = (
+        ForeignKeyConstraint(
+            ['message_id', 'chat_id'],
+            ['messages.id', 'messages.chat_id'],
+            name='fk_reaction_message'
+        ),
         UniqueConstraint('message_id', 'chat_id', 'emoji', 'user_id', name='uq_reaction'),
         Index('idx_reactions_message', 'message_id', 'chat_id'),
     )
