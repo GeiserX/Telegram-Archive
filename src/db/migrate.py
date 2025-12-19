@@ -28,7 +28,7 @@ async def migrate_sqlite_to_postgres(
     
     Args:
         sqlite_path: Path to SQLite database file. 
-                    Defaults to DB_PATH env var or data/telegram_backup.db
+                    Defaults to DB_PATH env var or /data/backups/telegram_backup.db
         postgres_url: PostgreSQL connection URL.
                      Defaults to building from POSTGRES_* env vars
         batch_size: Number of records to migrate per batch
@@ -43,9 +43,9 @@ async def migrate_sqlite_to_postgres(
         result = asyncio.run(migrate_sqlite_to_postgres())
         print(f"Migrated: {result}")
     """
-    # Resolve SQLite path
+    # Resolve SQLite path (use same default as v2 for backward compatibility)
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
+        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
     
     if not os.path.exists(sqlite_path):
         raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
@@ -57,9 +57,9 @@ async def migrate_sqlite_to_postgres(
         user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
         password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         db = os.getenv('POSTGRES_DB', 'telegram_backup')
-        postgres_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+        postgres_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
     
-    sqlite_url = f"sqlite:///{sqlite_path}"
+    sqlite_url = f"sqlite+aiosqlite:///{sqlite_path}"
     
     logger.info(f"Migrating from SQLite ({sqlite_path}) to PostgreSQL")
     
@@ -167,7 +167,7 @@ async def verify_migration(
         Dict with table names and counts from both databases
     """
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
+        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
     
     if postgres_url is None:
         host = os.getenv('POSTGRES_HOST', 'localhost')
@@ -175,9 +175,9 @@ async def verify_migration(
         user = quote_plus(os.getenv('POSTGRES_USER', 'telegram'))
         password = quote_plus(os.getenv('POSTGRES_PASSWORD', ''))
         db = os.getenv('POSTGRES_DB', 'telegram_backup')
-        postgres_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+        postgres_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
     
-    sqlite_url = f"sqlite:///{sqlite_path}"
+    sqlite_url = f"sqlite+aiosqlite:///{sqlite_path}"
     
     source = DatabaseManager(sqlite_url)
     await source.init()

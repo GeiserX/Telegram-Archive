@@ -111,7 +111,7 @@ Telegram Archive supports both SQLite and PostgreSQL.
 |----------|---------|-------------|
 | `DATABASE_URL` | - | Full database URL (takes priority) |
 | `DB_TYPE` | `sqlite` | Database type: `sqlite` or `postgresql` |
-| `DB_PATH` | `data/telegram_backup.db` | SQLite database path |
+| `DB_PATH` | `/data/backups/telegram_backup.db` | SQLite database path |
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port |
 | `POSTGRES_USER` | `telegram` | PostgreSQL username |
@@ -134,7 +134,7 @@ The upgrade is transparent:
 1. Pull the new image: `docker-compose pull`
 2. Restart: `docker-compose up -d`
 
-Your existing data in `data/telegram_backup.db` will continue to work.
+Your existing data in `/data/backups/telegram_backup.db` will continue to work.
 
 **Optional: Switch to PostgreSQL**
 

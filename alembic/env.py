@@ -68,8 +68,8 @@ def get_database_url() -> str:
         database = os.getenv('POSTGRES_DB', 'telegram_backup')
         return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
     
-    # Default: SQLite
-    db_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
+    # Default: SQLite (same path as v2 for backward compatibility)
+    db_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
     return f"sqlite+aiosqlite:///{db_path}"
 
 
