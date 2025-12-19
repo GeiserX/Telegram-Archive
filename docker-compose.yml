@@ -26,7 +26,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       # Option 2: Individual settings
       DB_TYPE: ${DB_TYPE:-sqlite}
-      DB_PATH: ${DB_PATH:-data/telegram_backup.db}
+      DB_PATH: ${DB_PATH:-/data/backups/telegram_backup.db}
       # PostgreSQL settings (when DB_TYPE=postgresql or using DATABASE_URL)
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
@@ -86,7 +86,7 @@ services:
       # Database Configuration (must match telegram-backup service)
       DATABASE_URL: ${DATABASE_URL:-}
       DB_TYPE: ${DB_TYPE:-sqlite}
-      DB_PATH: ${DB_PATH:-data/telegram_backup.db}
+      DB_PATH: ${DB_PATH:-/data/backups/telegram_backup.db}
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_USER: ${POSTGRES_USER:-telegram}

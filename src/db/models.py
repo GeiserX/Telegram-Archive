@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
     BigInteger, Integer, String, Text, DateTime, Boolean, 
-    ForeignKey, Index, UniqueConstraint, event
+    ForeignKey, Index, UniqueConstraint, event, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -33,8 +33,8 @@ class Chat(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     participants_count: Mapped[Optional[int]] = mapped_column(Integer)
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())
     
     # Relationships
     messages: Mapped[List["Message"]] = relationship("Message", back_populates="chat", lazy="dynamic")
@@ -59,7 +59,7 @@ class Message(Base):
     media_id: Mapped[Optional[str]] = mapped_column(String(255))
     media_path: Mapped[Optional[str]] = mapped_column(String(500))
     raw_data: Mapped[Optional[str]] = mapped_column(Text)  # JSON string
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     is_outgoing: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
     
     # Relationships
@@ -83,8 +83,8 @@ class User(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     is_bot: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())
 
 
 class Media(Base):
@@ -104,7 +104,7 @@ class Media(Base):
     duration: Mapped[Optional[int]] = mapped_column(Integer)
     downloaded: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
     download_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     
     __table_args__ = (
         Index('idx_media_message', 'message_id', 'chat_id'),
@@ -121,7 +121,7 @@ class Reaction(Base):
     emoji: Mapped[str] = mapped_column(String(50), nullable=False)
     user_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     count: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     
     # Relationship to message (composite foreign key)
     message: Mapped["Message"] = relationship(
@@ -143,7 +143,7 @@ class SyncStatus(Base):
     
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('chats.id'), primary_key=True)
     last_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
-    last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     
     # Relationship

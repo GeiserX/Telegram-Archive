@@ -17,12 +17,12 @@ Usage:
     # Configuration via environment variables:
     #
     # Option 1: DATABASE_URL (takes priority)
-    #   DATABASE_URL=sqlite:///data/telegram_backup.db
+    #   DATABASE_URL=sqlite:////data/backups/telegram_backup.db
     #   DATABASE_URL=postgresql://user:pass@localhost:5432/telegram_backup
     #
     # Option 2: Separate variables
     #   DB_TYPE=sqlite (default) or postgresql
-    #   DB_PATH=data/telegram_backup.db (for SQLite)
+    #   DB_PATH=/data/backups/telegram_backup.db (for SQLite)
     #   POSTGRES_HOST=localhost
     #   POSTGRES_PORT=5432
     #   POSTGRES_USER=telegram
