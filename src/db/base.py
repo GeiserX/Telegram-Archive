@@ -31,7 +31,7 @@ class DatabaseManager:
     Configuration priority:
     1. DATABASE_URL environment variable (if set)
     2. Individual DB_* environment variables
-    3. Default to SQLite at data/telegram_backup.db
+    3. Default to SQLite at /data/backups/telegram_backup.db
     """
     
     def __init__(self, database_url: Optional[str] = None):
@@ -72,7 +72,8 @@ class DatabaseManager:
             return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
         
         # Default: SQLite
-        db_path = os.getenv('DB_PATH', 'data/telegram_backup.db')
+        # Use same default path as v2 for backward compatibility
+        db_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
         # Ensure directory exists
         os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
         return f"sqlite+aiosqlite:///{db_path}"
