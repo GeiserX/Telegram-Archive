@@ -43,9 +43,18 @@ async def migrate_sqlite_to_postgres(
         result = asyncio.run(migrate_sqlite_to_postgres())
         print(f"Migrated: {result}")
     """
-    # Resolve SQLite path (use same default as v2 for backward compatibility)
+    # Resolve SQLite path - check v2 env vars first for backward compatibility
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
+        sqlite_path = os.getenv('DATABASE_PATH')  # v2: full path
+        if not sqlite_path:
+            db_dir = os.getenv('DATABASE_DIR')  # v2: directory only
+            if db_dir:
+                sqlite_path = os.path.join(db_dir, 'telegram_backup.db')
+        if not sqlite_path:
+            sqlite_path = os.getenv('DB_PATH')  # v3: new variable
+        if not sqlite_path:
+            backup_path = os.getenv('BACKUP_PATH', '/data/backups')
+            sqlite_path = os.path.join(backup_path, 'telegram_backup.db')
     
     if not os.path.exists(sqlite_path):
         raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
@@ -166,8 +175,18 @@ async def verify_migration(
     Returns:
         Dict with table names and counts from both databases
     """
+    # Resolve SQLite path - check v2 env vars first for backward compatibility
     if sqlite_path is None:
-        sqlite_path = os.getenv('DB_PATH', '/data/backups/telegram_backup.db')
+        sqlite_path = os.getenv('DATABASE_PATH')  # v2: full path
+        if not sqlite_path:
+            db_dir = os.getenv('DATABASE_DIR')  # v2: directory only
+            if db_dir:
+                sqlite_path = os.path.join(db_dir, 'telegram_backup.db')
+        if not sqlite_path:
+            sqlite_path = os.getenv('DB_PATH')  # v3: new variable
+        if not sqlite_path:
+            backup_path = os.getenv('BACKUP_PATH', '/data/backups')
+            sqlite_path = os.path.join(backup_path, 'telegram_backup.db')
     
     if postgres_url is None:
         host = os.getenv('POSTGRES_HOST', 'localhost')
