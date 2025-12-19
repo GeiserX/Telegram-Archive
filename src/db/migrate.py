@@ -70,9 +70,9 @@ async def migrate_sqlite_to_postgres(
     target = DatabaseManager(postgres_url)
     await target.init()
     
-    # Create tables in PostgreSQL
+    # Create tables in PostgreSQL (checkfirst=True skips existing tables)
     async with target.engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
     
     counts = {}
     
