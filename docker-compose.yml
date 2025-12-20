@@ -75,7 +75,7 @@ services:
     command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8795:8000"
     environment:
       BACKUP_PATH: /data/backups
       # Optional basic auth for the viewer (recommended)
