@@ -103,3 +103,4 @@ async def close_adapter() -> None:
         await _adapter.close()
         _adapter = None
     await close_database()
+

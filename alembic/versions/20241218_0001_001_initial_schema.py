@@ -150,3 +150,4 @@ def downgrade() -> None:
     op.drop_table('messages')
     op.drop_table('users')
     op.drop_table('chats')
+

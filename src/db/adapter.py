@@ -939,3 +939,4 @@ class DatabaseAdapter:
     async def close(self) -> None:
         """Close database connections."""
         await self.db_manager.close()
+
