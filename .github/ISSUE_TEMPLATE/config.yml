@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation
+    url: https://github.com/GeiserX/Telegram-Archive#readme
+    about: Check the README for setup instructions and configuration options
+  - name: 🗺️ Roadmap
+    url: https://github.com/GeiserX/Telegram-Archive#-roadmap
+    about: See planned features before requesting
+  - name: 🐳 Docker Hub
+    url: https://hub.docker.com/r/drumsergio/telegram-backup-automation
+    about: Get the latest Docker image
