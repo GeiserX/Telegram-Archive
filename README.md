@@ -24,16 +24,31 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 
 Planned features for future releases:
 
-- [ ] **Full-text search** - Search message content across all chats in the web viewer
-- [ ] **Real-time sync mode** - Live message sync instead of scheduled backups
+**Multi-tenancy & Access Control:**
+- [ ] **Multi-tenant architecture** - Single instance serving multiple users, each with their own Telegram accounts and private chats
+- [ ] **Shared channel access** - Allow multiple users to view specific shared channels
+- [ ] **Role-based permissions** - Admin, viewer, and per-chat access controls
+
+**Authentication:**
+- [ ] **OAuth/Social login** - Sign in with Google, GitHub, Discord, etc.
+- [ ] **Magic link authentication** - Passwordless login via email
+- [ ] **OIDC/SAML support** - Enterprise SSO integration
+
+**Viewer Enhancements:**
+- [ ] **Full-text search** - Search message content across all chats
 - [ ] **Reactions display** - Show message reactions in the web viewer
-- [ ] **Multi-account support** - Backup multiple Telegram accounts simultaneously
-- [ ] **Encryption at rest** - Encrypt database and media files
-- [ ] **S3/Cloud storage** - Store backups in AWS S3, MinIO, or other cloud storage
 - [ ] **Chat statistics** - Analytics dashboard with message counts, activity graphs
-- [ ] **Restore to Telegram** - Re-upload backed up messages to Telegram
+
+**Backup Features:**
+- [ ] **Real-time sync mode** - Live message sync instead of scheduled backups
+- [ ] **Multi-account support** - Backup multiple Telegram accounts simultaneously
+- [ ] **S3/Cloud storage** - Store backups in AWS S3, MinIO, or other cloud storage
+- [ ] **Encryption at rest** - Encrypt database and media files
+
+**Integrations:**
 - [ ] **API endpoints** - REST API for external integrations
 - [ ] **Scheduled reports** - Email/webhook notifications with backup summaries
+- [ ] **Export formats** - Export to HTML, PDF, or other archive formats
 
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
