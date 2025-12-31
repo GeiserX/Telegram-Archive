@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-backup-automation:latest
+    image: drumsergio/telegram-archive:latest
     container_name: telegram-backup
     restart: unless-stopped
 
@@ -70,9 +70,8 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    build: .
+    image: drumsergio/telegram-archive-viewer:latest
     container_name: telegram-viewer
-    command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -100,12 +99,12 @@ services:
     # depends_on:
     #   postgres:
     #     condition: service_healthy
+
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   build: .
+  #   image: drumsergio/telegram-archive-viewer:latest
   #   container_name: telegram-channel-viewer
-  #   command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
   #   restart: unless-stopped
   #   ports:
   #     - "8001:8000"
