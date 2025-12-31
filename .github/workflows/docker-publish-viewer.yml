@@ -1,4 +1,4 @@
-name: Docker Publish
+name: Docker Publish Viewer
 
 on:
   push:
@@ -7,15 +7,12 @@ on:
     branches:
       - master
     paths:
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - 'src/**'
-      - '.github/workflows/docker-publish.yml'
-      # Exclude viewer-only changes
-      - '!src/web/**'
-      - '!Dockerfile.viewer'
-      - '!requirements-viewer.txt'
-      - '!.github/workflows/docker-publish-viewer.yml'
+      - 'Dockerfile.viewer'
+      - 'requirements-viewer.txt'
+      - 'src/web/**'
+      - 'src/config.py'
+      - 'src/db/**'
+      - '.github/workflows/docker-publish-viewer.yml'
   workflow_dispatch:
     inputs:
       tag:
@@ -24,7 +21,7 @@ on:
         type: string
 
 env:
-  DOCKER_IMAGE: drumsergio/telegram-archive
+  DOCKER_IMAGE: drumsergio/telegram-archive-viewer
 
 jobs:
   build-and-push:
@@ -65,8 +62,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./Dockerfile.viewer
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
