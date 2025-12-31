@@ -65,6 +65,17 @@ Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Arch
 
 </details>
 
+## Docker Images
+
+Two separate Docker images are available:
+
+| Image | Purpose | Size |
+|-------|---------|------|
+| `drumsergio/telegram-archive` | Backup scheduler (requires Telegram credentials) | ~300MB |
+| `drumsergio/telegram-archive-viewer` | Web viewer only (read-only, no Telegram client) | ~150MB |
+
+> **Migration from v3.0.5**: If you were using `drumsergio/telegram-backup-automation`, switch to `drumsergio/telegram-archive`. If you were using `command: uvicorn...` for the viewer, switch to `drumsergio/telegram-archive-viewer`.
+
 ## Quick Start
 
 ### 1. Get Telegram API Credentials
@@ -77,8 +88,8 @@ Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Arch
 
 ```bash
 # Clone and configure
-git clone https://github.com/GeiserX/telegram-backup-automation
-cd telegram-backup-automation
+git clone https://github.com/GeiserX/Telegram-Archive
+cd Telegram-Archive
 cp .env.example .env
 # Edit .env with your credentials
 
@@ -91,7 +102,27 @@ docker-compose up -d
 
 ## Web Viewer
 
-Browse your backups (saved locally) at **http://localhost:8000**
+The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you browse backups without running the backup scheduler.
+
+```yaml
+# Example: Viewer-only deployment
+services:
+  telegram-viewer:
+    image: drumsergio/telegram-archive-viewer:latest
+    ports:
+      - "8000:8000"
+    environment:
+      BACKUP_PATH: /data/backups
+      DATABASE_DIR: /data/db
+      VIEWER_USERNAME: admin
+      VIEWER_PASSWORD: your-secure-password
+      VIEWER_TIMEZONE: Europe/Madrid
+    volumes:
+      - /path/to/backups:/data/backups:ro
+      - /path/to/db:/data/db:ro
+```
+
+Browse your backups at **http://localhost:8000**
 
 Features:
 - Telegram-like dark UI

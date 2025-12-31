@@ -1,0 +1,39 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements-viewer.txt .
+
+# Install Python dependencies (no gcc needed - viewer has no native extensions)
+RUN pip install --no-cache-dir -r requirements-viewer.txt
+
+# Copy only the necessary application code for the viewer
+COPY src/__init__.py ./src/
+COPY src/config.py ./src/
+COPY src/db/ ./src/db/
+COPY src/web/ ./src/web/
+
+# Create non-root user for security
+RUN useradd -m -u 1000 telegram && \
+    mkdir -p /data/backups && \
+    chown -R telegram:telegram /app /data
+
+# Switch to non-root user
+USER telegram
+
+# Set default environment variables
+ENV BACKUP_PATH=/data/backups \
+    LOG_LEVEL=INFO \
+    PYTHONPATH=/app
+
+# Volume for persistent data (read-only access to backups)
+VOLUME ["/data"]
+
+# Expose web viewer port
+EXPOSE 8000
+
+# Run web viewer
+CMD ["uvicorn", "src.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
