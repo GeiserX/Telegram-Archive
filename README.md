@@ -67,14 +67,14 @@ Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Arch
 
 ## Docker Images
 
-Two separate Docker images are available:
+Two separate Docker images are available (v4.0+):
 
 | Image | Purpose | Size |
 |-------|---------|------|
 | `drumsergio/telegram-archive` | Backup scheduler (requires Telegram credentials) | ~300MB |
-| `drumsergio/telegram-archive-viewer` | Web viewer only (read-only, no Telegram client) | ~150MB |
+| `drumsergio/telegram-archive-viewer` | Web viewer only (no Telegram client) | ~150MB |
 
-> **Migration from v3.0.5**: If you were using `drumsergio/telegram-backup-automation`, switch to `drumsergio/telegram-archive`. If you were using `command: uvicorn...` for the viewer, switch to `drumsergio/telegram-archive-viewer`.
+> 📦 **Upgrading from v3.x?** See [Upgrading from v3.x to v4.0](#upgrading-from-v3x-to-v40) for migration instructions.
 
 ## Quick Start
 
@@ -199,6 +199,55 @@ Telegram Archive supports both SQLite and PostgreSQL.
 3. Set `DB_TYPE=postgresql` in your `.env`
 4. Uncomment `depends_on` in backup and viewer services
 5. Run `docker-compose up -d`
+
+## Upgrading from v3.x to v4.0
+
+> ⚠️ **Breaking Change**: v4.0 introduces separate Docker images with new names.
+
+### What Changed
+
+| v3.x | v4.0 |
+|------|------|
+| `drumsergio/telegram-backup-automation` | `drumsergio/telegram-archive` |
+| Same image with `command: uvicorn...` | `drumsergio/telegram-archive-viewer` |
+
+### Migration Steps
+
+1. **Update your `docker-compose.yml`:**
+
+   ```yaml
+   # Before (v3.x)
+   telegram-backup:
+     image: drumsergio/telegram-backup-automation:latest
+   
+   telegram-viewer:
+     image: drumsergio/telegram-backup-automation:latest
+     command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
+
+   # After (v4.0)
+   telegram-backup:
+     image: drumsergio/telegram-archive:latest
+   
+   telegram-viewer:
+     image: drumsergio/telegram-archive-viewer:latest
+     # No command needed - it's the default
+   ```
+
+2. **Pull new images and restart:**
+   ```bash
+   docker-compose pull
+   docker-compose up -d
+   ```
+
+**Your data is safe** - no database migration needed. The change is only in image names.
+
+### Why the Change?
+
+- **Smaller viewer image** (~150MB vs ~300MB) - no Telegram client needed
+- **Faster CI/CD** - viewer changes don't rebuild the backup image
+- **Cleaner naming** - aligned with repository name
+
+---
 
 ## Upgrading from v2.x to v3.0
 
