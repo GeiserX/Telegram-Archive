@@ -44,7 +44,8 @@ class Config:
         
         # Chat type filters
         chat_types_str = os.getenv('CHAT_TYPES', 'private,groups,channels')
-        self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',')]
+        # Filter out empty strings to allow CHAT_TYPES= (empty) for whitelist-only mode
+        self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',') if ct.strip()]
         self._validate_chat_types()
         
         # Granular chat ID filters
@@ -159,7 +160,11 @@ class Config:
             )
     
     def _validate_chat_types(self):
-        """Validate that chat types are valid options."""
+        """Validate that chat types are valid options.
+        
+        Empty chat_types list is allowed - this enables "whitelist-only" mode
+        where only explicitly included chat IDs are backed up.
+        """
         valid_types = {'private', 'groups', 'channels'}
         invalid_types = set(self.chat_types) - valid_types
         
@@ -168,9 +173,6 @@ class Config:
                 f"Invalid chat types: {invalid_types}. "
                 f"Valid options are: {valid_types}"
             )
-        
-        if not self.chat_types:
-            raise ValueError("At least one chat type must be specified in CHAT_TYPES")
     
     def _ensure_directories(self):
         """Create necessary directories if they don't exist."""
