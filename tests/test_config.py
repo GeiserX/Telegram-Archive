@@ -63,6 +63,57 @@ class TestConfig(unittest.TestCase):
             except ValueError:
                 self.fail("validate_credentials() raised ValueError unexpectedly!")
 
+class TestChatTypes(unittest.TestCase):
+    """Test CHAT_TYPES configuration for filtering."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+    
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_chat_types_empty_for_whitelist_mode(self):
+        """Empty CHAT_TYPES should work for whitelist-only mode (issue #5)."""
+        env_vars = {
+            'CHAT_TYPES': '',  # Empty = whitelist-only mode
+            'GROUPS_INCLUDE_CHAT_IDS': '-1001234567',
+            'BACKUP_PATH': self.temp_dir
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.chat_types, [])
+            self.assertEqual(config.groups_include_ids, {-1001234567})
+            # Should not backup any chat type by default
+            self.assertFalse(config.should_backup_chat_type(is_user=True, is_group=False, is_channel=False))
+            self.assertFalse(config.should_backup_chat_type(is_user=False, is_group=True, is_channel=False))
+            self.assertFalse(config.should_backup_chat_type(is_user=False, is_group=False, is_channel=True))
+
+    def test_chat_types_whitelist_only_backup_included_ids(self):
+        """With empty CHAT_TYPES, should backup explicitly included IDs."""
+        env_vars = {
+            'CHAT_TYPES': '',
+            'GROUPS_INCLUDE_CHAT_IDS': '-1001234567',
+            'BACKUP_PATH': self.temp_dir
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # Should backup the explicitly included group
+            self.assertTrue(config.should_backup_chat(-1001234567, is_user=False, is_group=True, is_channel=False))
+            # Should NOT backup other groups
+            self.assertFalse(config.should_backup_chat(-1009999999, is_user=False, is_group=True, is_channel=False))
+
+    def test_chat_types_invalid_raises_error(self):
+        """Invalid chat types should raise ValueError."""
+        env_vars = {
+            'CHAT_TYPES': 'invalid,types',
+            'BACKUP_PATH': self.temp_dir
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+            self.assertIn('Invalid chat types', str(ctx.exception))
+
+
 class TestDisplayChatIds(unittest.TestCase):
     """Test DISPLAY_CHAT_IDS configuration for viewer restriction."""
 
