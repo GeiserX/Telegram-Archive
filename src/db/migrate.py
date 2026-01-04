@@ -152,7 +152,7 @@ async def _migrate_table(
                 for record in records:
                     # Detach from source session and merge into target
                     src_session.expunge(record)
-                    tgt_session.merge(record)
+                    await tgt_session.merge(record)
                 await tgt_session.commit()
             
             total += len(records)
