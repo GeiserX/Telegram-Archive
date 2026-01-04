@@ -37,3 +37,6 @@ EXPOSE 8000
 # Run web viewer
 CMD ["uvicorn", "src.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
+
+
+
