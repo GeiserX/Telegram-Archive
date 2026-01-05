@@ -26,6 +26,15 @@ from .base import DatabaseManager
 logger = logging.getLogger(__name__)
 
 
+def _strip_tz(dt: Optional[datetime]) -> Optional[datetime]:
+    """Strip timezone info from datetime for PostgreSQL compatibility."""
+    if dt is None:
+        return None
+    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def retry_on_locked(max_retries: int = 5, initial_delay: float = 0.1, max_delay: float = 2.0, backoff_factor: float = 2.0):
     """
     Decorator to retry async database operations on operational errors.
@@ -298,12 +307,12 @@ class DatabaseAdapter:
                 'id': message_data['id'],
                 'chat_id': message_data['chat_id'],
                 'sender_id': message_data.get('sender_id'),
-                'date': message_data['date'],
+                'date': _strip_tz(message_data['date']),
                 'text': message_data.get('text'),
                 'reply_to_msg_id': message_data.get('reply_to_msg_id'),
                 'reply_to_text': message_data.get('reply_to_text'),
                 'forward_from_id': message_data.get('forward_from_id'),
-                'edit_date': message_data.get('edit_date'),
+                'edit_date': _strip_tz(message_data.get('edit_date')),
                 'media_type': message_data.get('media_type'),
                 'media_id': message_data.get('media_id'),
                 'media_path': message_data.get('media_path'),
@@ -339,12 +348,12 @@ class DatabaseAdapter:
                     'id': m['id'],
                     'chat_id': m['chat_id'],
                     'sender_id': m.get('sender_id'),
-                    'date': m['date'],
+                    'date': _strip_tz(m['date']),
                     'text': m.get('text'),
                     'reply_to_msg_id': m.get('reply_to_msg_id'),
                     'reply_to_text': m.get('reply_to_text'),
                     'forward_from_id': m.get('forward_from_id'),
-                    'edit_date': m.get('edit_date'),
+                    'edit_date': _strip_tz(m.get('edit_date')),
                     'media_type': m.get('media_type'),
                     'media_id': m.get('media_id'),
                     'media_path': m.get('media_path'),
