@@ -125,7 +125,7 @@ services:
   # Also set DB_TYPE=postgresql in your .env file
   #
   # postgres:
-  #   image: postgres:16-alpine
+  #   image: postgres:18-alpine
   #   container_name: telegram-postgres
   #   restart: unless-stopped
   #   environment:
@@ -133,7 +133,7 @@ services:
   #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
   #     POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
   #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
+  #     - postgres_data:/var/lib/postgresql
   #   networks:
   #     - telegram-network
   #   healthcheck:
