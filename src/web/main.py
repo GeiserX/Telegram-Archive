@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Database connection closed")
 
 
-app = FastAPI(title="Telegram Backup Viewer", lifespan=lifespan)
+app = FastAPI(title="Telegram Archive", lifespan=lifespan)
 
 # Enable CORS
 app.add_middleware(
