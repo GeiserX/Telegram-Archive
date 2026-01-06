@@ -531,6 +531,50 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
     
+    async def get_media_for_verification(self) -> List[Dict[str, Any]]:
+        """
+        Get all media records that should have files on disk.
+        Used by VERIFY_MEDIA to check for missing/corrupted files.
+        
+        Returns media where downloaded=1 OR file_path is not null.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media)
+                .where(
+                    or_(
+                        Media.downloaded == 1,
+                        Media.file_path.isnot(None)
+                    )
+                )
+                .order_by(Media.chat_id, Media.message_id)
+            )
+            result = await session.execute(stmt)
+            return [
+                {
+                    'id': m.id,
+                    'message_id': m.message_id,
+                    'chat_id': m.chat_id,
+                    'type': m.type,
+                    'file_path': m.file_path,
+                    'file_name': m.file_name,
+                    'file_size': m.file_size,
+                    'downloaded': m.downloaded,
+                }
+                for m in result.scalars()
+            ]
+    
+    async def mark_media_for_redownload(self, media_id: str) -> None:
+        """Mark a media record as needing re-download."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                update(Media)
+                .where(Media.id == media_id)
+                .values(downloaded=0, file_path=None, download_date=None)
+            )
+            await session.execute(stmt)
+            await session.commit()
+    
     # ========== Reaction Operations ==========
     
     @retry_on_locked()

@@ -112,6 +112,11 @@ class Config:
         # When enabled, checks all backed up messages for deletions/edits on Telegram
         self.sync_deletions_edits = os.getenv('SYNC_DELETIONS_EDITS', 'false').lower() == 'true'
         
+        # Media verification mode
+        # When enabled, checks all media files on disk and re-downloads missing/corrupted ones
+        # Useful for recovering from interrupted backups or deleted media files
+        self.verify_media = os.getenv('VERIFY_MEDIA', 'false').lower() == 'true'
+        
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
         self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
@@ -127,6 +132,8 @@ class Config:
         logger.debug(f"Schedule: {self.schedule}")
         if self.sync_deletions_edits:
             logger.warning("SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)")
+        if self.verify_media:
+            logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
     

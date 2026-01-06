@@ -227,6 +227,10 @@ class TelegramBackup:
             logger.info(f"Total storage: {stats['total_size_mb']} MB")
             logger.info("=" * 60)
             
+            # Run media verification if enabled
+            if self.config.verify_media:
+                await self._verify_and_redownload_media()
+            
         except Exception as e:
             logger.error(f"Backup failed: {e}", exc_info=True)
             raise
@@ -241,6 +245,143 @@ class TelegramBackup:
         # Use the simpler get_dialogs method which handles pagination automatically
         dialogs = await self.client.get_dialogs()
         return dialogs
+    
+    async def _verify_and_redownload_media(self) -> None:
+        """
+        Verify all media files on disk and re-download missing/corrupted ones.
+        
+        This method:
+        1. Queries all media records marked as downloaded
+        2. Checks if files exist on disk
+        3. Optionally verifies file size matches DB record
+        4. Re-downloads missing/corrupted files from Telegram
+        
+        Edge cases handled:
+        - File missing on disk: re-download
+        - File is 0 bytes: re-download (interrupted download)
+        - File size mismatch: re-download (corrupted)
+        - Message deleted on Telegram: log warning, skip
+        - Chat inaccessible: log warning, skip chat
+        - Media expired: log warning, skip
+        """
+        logger.info("=" * 60)
+        logger.info("Starting media verification...")
+        
+        media_records = await self.db.get_media_for_verification()
+        logger.info(f"Found {len(media_records)} media records to verify")
+        
+        missing_files = []
+        corrupted_files = []
+        
+        # Phase 1: Check which files need re-downloading
+        for record in media_records:
+            file_path = record.get('file_path')
+            if not file_path:
+                continue
+                
+            # Check if file exists
+            if not os.path.exists(file_path):
+                missing_files.append(record)
+                continue
+            
+            # Check if file is empty (interrupted download)
+            if os.path.getsize(file_path) == 0:
+                corrupted_files.append(record)
+                continue
+            
+            # Check file size matches (if we have the expected size)
+            expected_size = record.get('file_size')
+            if expected_size and expected_size > 0:
+                actual_size = os.path.getsize(file_path)
+                # Allow 1% tolerance for size differences (encoding variations)
+                if abs(actual_size - expected_size) > expected_size * 0.01:
+                    corrupted_files.append(record)
+        
+        total_issues = len(missing_files) + len(corrupted_files)
+        if total_issues == 0:
+            logger.info("✓ All media files verified - no issues found")
+            logger.info("=" * 60)
+            return
+        
+        logger.info(f"Found {len(missing_files)} missing files, {len(corrupted_files)} corrupted files")
+        logger.info("Starting re-download process...")
+        
+        # Phase 2: Re-download missing/corrupted files
+        files_to_redownload = missing_files + corrupted_files
+        
+        # Group by chat_id for efficient fetching
+        by_chat: Dict[int, List[Dict]] = {}
+        for record in files_to_redownload:
+            chat_id = record.get('chat_id')
+            if chat_id:
+                by_chat.setdefault(chat_id, []).append(record)
+        
+        redownloaded = 0
+        failed = 0
+        
+        for chat_id, records in by_chat.items():
+            try:
+                # Get message IDs to fetch
+                message_ids = [r['message_id'] for r in records if r.get('message_id')]
+                if not message_ids:
+                    continue
+                
+                # Fetch messages from Telegram in batch
+                try:
+                    messages = await self.client.get_messages(chat_id, ids=message_ids)
+                except Exception as e:
+                    logger.warning(f"Cannot access chat {chat_id} for media verification: {e}")
+                    failed += len(records)
+                    continue
+                
+                # Create a map of message_id -> message
+                msg_map = {}
+                for msg in messages:
+                    if msg:  # msg can be None if message was deleted
+                        msg_map[msg.id] = msg
+                
+                # Re-download each file
+                for record in records:
+                    msg_id = record.get('message_id')
+                    msg = msg_map.get(msg_id)
+                    
+                    if not msg:
+                        logger.warning(f"Message {msg_id} in chat {chat_id} was deleted - cannot recover media")
+                        failed += 1
+                        continue
+                    
+                    if not msg.media:
+                        logger.warning(f"Message {msg_id} no longer has media - cannot recover")
+                        failed += 1
+                        continue
+                    
+                    try:
+                        # Delete corrupted file if exists
+                        file_path = record.get('file_path')
+                        if file_path and os.path.exists(file_path):
+                            os.remove(file_path)
+                        
+                        # Re-download using existing method
+                        result = await self._process_media(msg, chat_id)
+                        if result and result.get('downloaded'):
+                            redownloaded += 1
+                            logger.debug(f"Re-downloaded media for message {msg_id}")
+                        else:
+                            failed += 1
+                            logger.warning(f"Failed to re-download media for message {msg_id}")
+                    except Exception as e:
+                        failed += 1
+                        logger.error(f"Error re-downloading media for message {msg_id}: {e}")
+                
+            except Exception as e:
+                logger.error(f"Error processing chat {chat_id} for media verification: {e}")
+                failed += len(records)
+        
+        logger.info("=" * 60)
+        logger.info("Media verification completed!")
+        logger.info(f"Re-downloaded: {redownloaded} files")
+        logger.info(f"Failed/Unrecoverable: {failed} files")
+        logger.info("=" * 60)
     
     async def _backup_dialog(self, dialog) -> int:
         """

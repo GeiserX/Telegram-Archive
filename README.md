@@ -157,6 +157,7 @@ Features:
 | `VIEWER_PASSWORD` | - | Web viewer password |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
 | `SYNC_DELETIONS_EDITS` | `false` | Sync deletions/edits from Telegram |
+| `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
 | `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private chats |
@@ -306,6 +307,8 @@ data/
 |---------|----------|
 | "Failed to authorize" | Run `./init_auth.sh` again |
 | "Permission denied" | `chmod -R 755 data/` |
+| Media files missing/corrupted | Set `VERIFY_MEDIA=true` to re-download them |
+| Backup interrupted | Set `VERIFY_MEDIA=true` once to recover missing files |
 
 ## Limitations
 
