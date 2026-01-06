@@ -43,8 +43,15 @@ class Config:
         self.database_timeout = float(os.getenv('DATABASE_TIMEOUT', '60.0'))
         
         # Chat type filters
-        chat_types_str = os.getenv('CHAT_TYPES', 'private,groups,channels')
-        # Filter out empty strings to allow CHAT_TYPES= (empty) for whitelist-only mode
+        # Use os.environ.get() to distinguish between "not set" vs "set to empty"
+        # This ensures CHAT_TYPES= (empty) works for whitelist-only mode in Docker
+        chat_types_env = os.environ.get('CHAT_TYPES')
+        if chat_types_env is None:
+            # Not set at all, use default (backup all types)
+            chat_types_str = 'private,groups,channels'
+        else:
+            # Explicitly set (even if empty string)
+            chat_types_str = chat_types_env
         self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',') if ct.strip()]
         self._validate_chat_types()
         

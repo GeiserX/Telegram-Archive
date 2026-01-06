@@ -113,6 +113,21 @@ class TestChatTypes(unittest.TestCase):
                 Config()
             self.assertIn('Invalid chat types', str(ctx.exception))
 
+    def test_chat_types_not_set_uses_default(self):
+        """When CHAT_TYPES is not set at all, should use default (all types)."""
+        env_vars = {
+            'BACKUP_PATH': self.temp_dir
+            # CHAT_TYPES deliberately NOT set
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # Should default to all three types
+            self.assertEqual(set(config.chat_types), {'private', 'groups', 'channels'})
+            # Should backup all types
+            self.assertTrue(config.should_backup_chat_type(is_user=True, is_group=False, is_channel=False))
+            self.assertTrue(config.should_backup_chat_type(is_user=False, is_group=True, is_channel=False))
+            self.assertTrue(config.should_backup_chat_type(is_user=False, is_group=False, is_channel=True))
+
 
 class TestDisplayChatIds(unittest.TestCase):
     """Test DISPLAY_CHAT_IDS configuration for viewer restriction."""
