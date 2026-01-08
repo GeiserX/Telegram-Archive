@@ -26,10 +26,15 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 ## Tech Stack
 
-- Python
-- FastAPI
-- PostgreSQL
-- SQLite
+- Python 3.11
+- Telethon (Telegram MTProto client)
+- FastAPI + uvicorn (web viewer)
+- SQLAlchemy async (ORM)
+- aiosqlite / asyncpg (database drivers)
+- APScheduler (cron scheduling)
+- Alembic (database migrations)
+- Jinja2 (HTML templates)
+- PostgreSQL / SQLite
 
 > **AI Assistance:** Let AI analyze the codebase and suggest additional technologies and approaches as needed.
 
@@ -37,13 +42,14 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 - **Host:** github
 - **License:** gpl-3.0
-- **Architecture:** microservices
-- **CI/CD:** github_actions
+- **Architecture:** Dual-image Docker (shared codebase, separate entrypoints for backup and viewer)
 - **Commits:** Follow [Conventional Commits](https://conventionalcommits.org) format
 - **Versioning:** Follow [Semantic Versioning](https://semver.org) (semver)
 - **CI/CD:** GitHub Actions
 - **Deployment:** Docker
-- **Containers:** Docker container builds enabled → Docker Hub
+- **Docker Images:**
+  - `drumsergio/telegram-archive` — Backup scheduler (requires Telegram credentials)
+  - `drumsergio/telegram-archive-viewer` — Web viewer only (no Telegram client)
 - **Example Repo:** https://github.com/GeiserX/LynxPrompt (use as reference for style/structure)
 
 ## AI Behavior Rules
@@ -52,16 +58,19 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 ## Git Workflow
 
-- **Workflow:** Create feature branches and submit pull requests
-- Do NOT commit directly to main/master branch
-- Create a descriptive branch name (e.g., `feat/add-login`, `fix/button-styling`)
-- Open a PR for review before merging
+- **Workflow:** Direct commits to master are acceptable for small fixes and documentation
+- For larger features or breaking changes, create a feature branch and open a PR
+- Create descriptive branch names when needed (e.g., `feat/add-login`, `fix/button-styling`)
 
 ## Important Files to Read
 
 Always read these files first to understand the project context:
 
-- `README.md`
+- `README.md` — Features, configuration, deployment
+- `src/config.py` — All environment variables and their handling
+- `src/telegram_backup.py` — Core backup logic
+- `.env.example` — Configuration reference
+- `docker-compose.yml` — Deployment patterns
 
 ## Self-Improving Blueprint
 
@@ -100,7 +109,7 @@ Always read these files first to understand the project context:
 ## Code Style
 
 - **Naming:** follow idiomatic conventions for the primary language
-- **Logging:** Python logging logger
+- **Logging:** Python logging with `logger = logging.getLogger(__name__)`
 
 Follow these conventions:
 
@@ -153,16 +162,6 @@ Use: pytest
 > Use environment variables, secret managers, or secure vaults for credentials.
 
 **🔍 Security Audit Recommendation:** When making changes that involve authentication, data handling, API endpoints, or dependencies, proactively offer to perform a security review of the affected code.
-
-## 📄 Static Files Reference
-
-The following static file contents are included for AI context. These are not separate files.
-
-### .editorconfig
-
-```
-test
-```
 
 ---
 
