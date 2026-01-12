@@ -167,6 +167,21 @@ Features:
 | `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels |
 | `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels |
 
+#### Chat ID Format
+
+Chat IDs use Telegram's "marked" format:
+- **Users**: Positive numbers (e.g., `123456789`)
+- **Basic groups**: Negative numbers (e.g., `-123456789`)
+- **Supergroups/Channels**: Negative with `-100` prefix (e.g., `-1001234567890`)
+
+**Finding Chat IDs**: Forward a message from the chat to [@userinfobot](https://t.me/userinfobot) on Telegram.
+
+**Whitelist-only mode**: Set `CHAT_TYPES=` (empty) to backup ONLY explicitly included chat IDs:
+```yaml
+- CHAT_TYPES=                           # Empty = no types by default
+- GLOBAL_INCLUDE_CHAT_IDS=-1001234567   # Only backup this specific chat
+```
+
 ### Database Configuration (v3.0+)
 
 Telegram Archive supports both SQLite and PostgreSQL.

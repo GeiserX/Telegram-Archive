@@ -17,8 +17,10 @@ from telethon.tl.types import (
     MessageMediaPhoto, MessageMediaDocument,
     MessageMediaContact,
     MessageMediaGeo, MessageMediaPoll,
-    TextWithEntities
+    TextWithEntities,
+    PeerChannel, PeerChat, PeerUser
 )
+from telethon.utils import get_peer_id
 
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
@@ -43,6 +45,19 @@ class TelegramBackup:
         self.client: Optional[TelegramClient] = None
         
         logger.info("TelegramBackup initialized")
+    
+    def _get_marked_id(self, entity) -> int:
+        """
+        Get the marked ID for an entity (with -100 prefix for channels/supergroups).
+        
+        Telegram uses different ID formats:
+        - Users: positive ID (e.g., 123456789)
+        - Basic groups (Chat): negative ID (e.g., -123456789)
+        - Supergroups/Channels: marked with -100 prefix (e.g., -1001234567890)
+        
+        This ensures IDs match what users see in Telegram and configure in env vars.
+        """
+        return get_peer_id(entity)
     
     @classmethod
     async def create(cls, config: Config) -> "TelegramBackup":
@@ -137,10 +152,13 @@ class TelegramBackup:
             # Also delete explicitly excluded chats from database
             filtered_dialogs = []
             explicitly_excluded_chat_ids = set()
+            seen_chat_ids = set()  # Track which IDs we've processed from dialogs
             
             for dialog in dialogs:
                 entity = dialog.entity
-                chat_id = entity.id
+                # Use marked ID (with -100 prefix for channels/supergroups) to match user config
+                chat_id = self._get_marked_id(entity)
+                seen_chat_ids.add(chat_id)
 
                 is_user = isinstance(entity, User) and not entity.bot
                 is_group = isinstance(entity, Chat) or (
@@ -162,6 +180,33 @@ class TelegramBackup:
                 elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
                     # Chat should be backed up
                     filtered_dialogs.append(dialog)
+            
+            # Fetch explicitly included chats that weren't in dialogs
+            # This handles cases where chats don't appear in the dialog list
+            # (newly created, archived, or not recently messaged)
+            all_include_ids = (
+                self.config.global_include_ids |
+                self.config.private_include_ids |
+                self.config.groups_include_ids |
+                self.config.channels_include_ids
+            )
+            missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
+            
+            if missing_include_ids:
+                logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in dialogs...")
+                for include_id in missing_include_ids:
+                    try:
+                        entity = await self.client.get_entity(include_id)
+                        # Create a simple dialog-like wrapper
+                        class SimpleDialog:
+                            def __init__(self, entity):
+                                self.entity = entity
+                                self.date = datetime.now()
+                        
+                        filtered_dialogs.append(SimpleDialog(entity))
+                        logger.info(f"  → Added explicitly included chat: {self._get_chat_name(entity)} (ID: {include_id})")
+                    except Exception as e:
+                        logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
             
             # Delete only explicitly excluded chats from database
             if explicitly_excluded_chat_ids:
@@ -196,7 +241,7 @@ class TelegramBackup:
             total_messages = 0
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
-                chat_id = entity.id
+                chat_id = self._get_marked_id(entity)
                 chat_name = self._get_chat_name(entity)
                 logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up: {chat_name} (ID: {chat_id})")
 
@@ -394,7 +439,8 @@ class TelegramBackup:
             Number of new messages backed up
         """
         entity = dialog.entity
-        chat_id = entity.id
+        # Use marked ID (with -100 prefix for channels/supergroups) for consistency
+        chat_id = self._get_marked_id(entity)
 
         # Save chat information
         chat_data = self._extract_chat_data(entity)
