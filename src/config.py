@@ -117,6 +117,11 @@ class Config:
         # Useful for recovering from interrupted backups or deleted media files
         self.verify_media = os.getenv('VERIFY_MEDIA', 'false').lower() == 'true'
         
+        # Real-time listener mode
+        # When enabled, runs a background listener that catches message edits and deletions
+        # in real-time instead of batch-checking on each backup run
+        self.enable_listener = os.getenv('ENABLE_LISTENER', 'false').lower() == 'true'
+        
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
         self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
@@ -134,6 +139,8 @@ class Config:
             logger.warning("SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)")
         if self.verify_media:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
+        if self.enable_listener:
+            logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
     
