@@ -156,7 +156,8 @@ Features:
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
-| `SYNC_DELETIONS_EDITS` | `false` | Sync deletions/edits from Telegram |
+| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions (recommended) |
+| `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
@@ -181,6 +182,34 @@ Chat IDs use Telegram's "marked" format:
 - CHAT_TYPES=                           # Empty = no types by default
 - GLOBAL_INCLUDE_CHAT_IDS=-1001234567   # Only backup this specific chat
 ```
+
+### Real-time Edit/Deletion Tracking
+
+By default, the backup runs on a schedule and only captures new messages. Edits and deletions made between backups are not tracked. You have two options:
+
+#### Option 1: Real-time Listener (Recommended) ⭐
+
+Enable `ENABLE_LISTENER=true` to run a background listener that catches edits and deletions as they happen:
+
+```yaml
+- ENABLE_LISTENER=true
+```
+
+**How it works:**
+- Stays connected to Telegram between scheduled backups
+- Instantly captures message edits and deletions
+- Very efficient - only processes actual changes
+- Automatically restarts if disconnected
+
+#### Option 2: Batch Sync (Expensive)
+
+Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each backup run:
+
+```yaml
+- SYNC_DELETIONS_EDITS=true
+```
+
+**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for one-time catch-up or if you can't use the listener.
 
 ### Database Configuration (v3.0+)
 
@@ -328,7 +357,7 @@ data/
 ## Limitations
 
 - Secret chats not supported (API limitation)
-- Edit history not tracked (only latest version stored; enable `SYNC_DELETIONS_EDITS` to update edits)
+- Edit history not tracked (only latest version stored; enable `ENABLE_LISTENER=true` to track edits in real-time)
 - Deleted messages before first backup cannot be recovered
 
 ## License
