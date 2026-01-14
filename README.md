@@ -9,6 +9,7 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 ## Features
 
 ✨ **Incremental Backups** - Only downloads new messages since last backup  
+⚡ **Real-time Sync** - Track edits and deletions instantly with listener mode (v4.1+)  
 📅 **Scheduled Execution** - Configurable cron schedule  
 🐳 **Docker Ready** - Easy deployment with Docker Compose  
 🌐 **Web Viewer** - Browse chats with Telegram-like UI (mobile-friendly)  
@@ -22,33 +23,10 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 
 ## 🗺️ Roadmap
 
-Planned features for future releases:
-
-**Multi-tenancy & Access Control:**
-- [ ] **Multi-tenant architecture** - Single instance serving multiple users, each with their own Telegram accounts and private chats
-- [ ] **Shared channel access** - Allow multiple users to view specific shared channels
-- [ ] **Role-based permissions** - Admin, viewer, and per-chat access controls
-
-**Authentication:**
-- [ ] **OAuth/Social login** - Sign in with Google, GitHub, Discord, etc.
-- [ ] **Magic link authentication** - Passwordless login via email
-- [ ] **OIDC/SAML support** - Enterprise SSO integration
-
-**Viewer Enhancements:**
-- [ ] **Full-text search** - Search message content across all chats
-- [ ] **Reactions display** - Show message reactions in the web viewer
-- [ ] **Chat statistics** - Analytics dashboard with message counts, activity graphs
-
-**Backup Features:**
-- [ ] **Real-time sync mode** - Live message sync instead of scheduled backups
-- [ ] **Multi-account support** - Backup multiple Telegram accounts simultaneously
-- [ ] **S3/Cloud storage** - Store backups in AWS S3, MinIO, or other cloud storage
-- [ ] **Encryption at rest** - Encrypt database and media files
-
-**Integrations:**
-- [ ] **API endpoints** - REST API for external integrations
-- [ ] **Scheduled reports** - Email/webhook notifications with backup summaries
-- [ ] **Export formats** - Export to HTML, PDF, or other archive formats
+See **[docs/ROADMAP.md](docs/ROADMAP.md)** for:
+- Complete version history with all features and fixes
+- Planned features for v5.0 and beyond
+- Future roadmap items
 
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
@@ -108,7 +86,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:latest
+    image: drumsergio/telegram-archive-viewer:v4.1.0
     ports:
       - "8000:8000"
     environment:
