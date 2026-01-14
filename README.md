@@ -216,6 +216,55 @@ Telegram Archive supports both SQLite and PostgreSQL.
 4. Uncomment `depends_on` in backup and viewer services
 5. Run `docker-compose up -d`
 
+## ⚠️ Upgrading to v4.0.6 (IMPORTANT)
+
+> 🚨 **Database Migration Required**: v4.0.6 fixes a critical bug with chat ID handling. **You MUST run a migration script** before updating if you've used v4.0.5.
+
+### Background
+
+Version v4.0.5 introduced inconsistent chat ID handling that caused foreign key violations during backups. Chats were stored with positive IDs while messages used negative (marked) IDs, causing backup failures.
+
+### Migration Steps
+
+**If upgrading from v4.0.5:**
+
+1. **Stop your backup container** (viewer can stay running):
+   ```bash
+   docker-compose stop telegram-backup
+   ```
+
+2. **Run the migration script**:
+   
+   **For PostgreSQL:**
+   ```bash
+   # Download the migration script
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids.sql
+   
+   # Run against your database
+   docker exec -i <postgres-container> psql -U telegram -d telegram_backup < migrate_to_marked_ids.sql
+   ```
+   
+   **For SQLite:**
+   ```bash
+   # Download the SQLite version
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids_sqlite.sql
+   
+   # Run against your database
+   sqlite3 /path/to/telegram_backup.db < migrate_to_marked_ids_sqlite.sql
+   ```
+
+3. **Pull the new image and restart:**
+   ```bash
+   docker-compose pull
+   docker-compose up -d
+   ```
+
+**If upgrading from v4.0.4 or earlier:** No migration needed - just update normally.
+
+**If starting fresh:** No migration needed.
+
+---
+
 ## Upgrading from v3.x to v4.0
 
 > ⚠️ **Breaking Change**: v4.0 introduces separate Docker images with new names.
