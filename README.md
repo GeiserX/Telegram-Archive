@@ -176,6 +176,7 @@ Features:
 | `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (defeats backup purpose!) |
 | `MASS_OPERATION_THRESHOLD` | `50` | Block if more than N operations in time window |
 | `MASS_OPERATION_WINDOW_SECONDS` | `60` | Time window for mass operation detection |
+| `ENABLE_NOTIFICATIONS` | `false` | Enable browser push notifications in viewer |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |

@@ -3,25 +3,88 @@ Web viewer for Telegram Backup.
 
 FastAPI application providing a web interface to browse backed-up messages.
 v3.0: Async database operations with SQLAlchemy.
+v5.0: WebSocket support for real-time updates and notifications.
 """
 
-from fastapi import FastAPI, Request, HTTPException, Query, Depends, Cookie
+from fastapi import FastAPI, Request, HTTPException, Query, Depends, Cookie, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import logging
 import glob
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Optional, List, AsyncGenerator
+from typing import Optional, List, AsyncGenerator, Set, Dict
 from pathlib import Path
 import hashlib
 import json
 
 from ..config import Config
 from ..db import DatabaseAdapter, init_database, close_database
+
+
+# WebSocket Connection Manager for real-time updates
+class ConnectionManager:
+    """Manages WebSocket connections for real-time updates."""
+    
+    def __init__(self):
+        # Active connections: {websocket: set of subscribed chat_ids}
+        self.active_connections: Dict[WebSocket, Set[int]] = {}
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[websocket] = set()
+        logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            del self.active_connections[websocket]
+        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+    
+    def subscribe(self, websocket: WebSocket, chat_id: int):
+        """Subscribe a connection to updates for a specific chat."""
+        if websocket in self.active_connections:
+            self.active_connections[websocket].add(chat_id)
+    
+    def unsubscribe(self, websocket: WebSocket, chat_id: int):
+        """Unsubscribe a connection from a specific chat."""
+        if websocket in self.active_connections:
+            self.active_connections[websocket].discard(chat_id)
+    
+    async def broadcast_to_chat(self, chat_id: int, message: dict):
+        """Broadcast a message to all connections subscribed to a chat."""
+        disconnected = []
+        for websocket, subscribed_chats in self.active_connections.items():
+            if chat_id in subscribed_chats or not subscribed_chats:  # Empty set = subscribed to all
+                try:
+                    await websocket.send_json(message)
+                except Exception as e:
+                    logger.warning(f"Failed to send to websocket: {e}")
+                    disconnected.append(websocket)
+        
+        # Clean up disconnected sockets
+        for ws in disconnected:
+            self.disconnect(ws)
+    
+    async def broadcast_to_all(self, message: dict):
+        """Broadcast a message to all connected clients."""
+        disconnected = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to send to websocket: {e}")
+                disconnected.append(websocket)
+        
+        for ws in disconnected:
+            self.disconnect(ws)
+
+
+# Global connection manager
+ws_manager = ConnectionManager()
 
 # Configure logging
 logging.basicConfig(
@@ -356,3 +419,107 @@ async def export_chat(chat_id: int):
     except Exception as e:
         logger.error(f"Error exporting chat: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Real-time WebSocket Endpoints (v5.0)
+# ============================================================================
+
+@app.get("/api/notifications/settings")
+async def get_notification_settings(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
+    """Get notification settings for the viewer."""
+    # Check auth if enabled
+    if AUTH_ENABLED and (not auth_cookie or auth_cookie != AUTH_TOKEN):
+        return {"enabled": False, "reason": "Not authenticated"}
+    
+    return {
+        "enabled": config.enable_notifications,
+        "websocket_url": "/ws/updates"
+    }
+
+
+@app.websocket("/ws/updates")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time updates.
+    
+    Clients can subscribe to specific chats or receive all updates.
+    
+    Message format (client -> server):
+        {"action": "subscribe", "chat_id": 123456}
+        {"action": "unsubscribe", "chat_id": 123456}
+        {"action": "ping"}
+    
+    Message format (server -> client):
+        {"type": "new_message", "chat_id": 123, "message": {...}}
+        {"type": "edit", "chat_id": 123, "message_id": 456, "new_text": "..."}
+        {"type": "delete", "chat_id": 123, "message_id": 456}
+        {"type": "pong"}
+        {"type": "subscribed", "chat_id": 123}
+        {"type": "unsubscribed", "chat_id": 123}
+    """
+    await ws_manager.connect(websocket)
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_json()
+            action = data.get("action")
+            
+            if action == "subscribe":
+                chat_id = data.get("chat_id")
+                if chat_id:
+                    # Check access in display mode
+                    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+                        await websocket.send_json({"type": "error", "message": "Access denied"})
+                    else:
+                        ws_manager.subscribe(websocket, chat_id)
+                        await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+            
+            elif action == "unsubscribe":
+                chat_id = data.get("chat_id")
+                if chat_id:
+                    ws_manager.unsubscribe(websocket, chat_id)
+                    await websocket.send_json({"type": "unsubscribed", "chat_id": chat_id})
+            
+            elif action == "ping":
+                await websocket.send_json({"type": "pong"})
+            
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        ws_manager.disconnect(websocket)
+
+
+# ============================================================================
+# Helper functions for broadcasting updates (called from listener)
+# ============================================================================
+
+async def broadcast_new_message(chat_id: int, message: dict):
+    """Broadcast a new message to subscribed clients."""
+    await ws_manager.broadcast_to_chat(chat_id, {
+        "type": "new_message",
+        "chat_id": chat_id,
+        "message": message
+    })
+
+
+async def broadcast_message_edit(chat_id: int, message_id: int, new_text: str, edit_date: str):
+    """Broadcast a message edit to subscribed clients."""
+    await ws_manager.broadcast_to_chat(chat_id, {
+        "type": "edit",
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "new_text": new_text,
+        "edit_date": edit_date
+    })
+
+
+async def broadcast_message_delete(chat_id: int, message_id: int):
+    """Broadcast a message deletion to subscribed clients."""
+    await ws_manager.broadcast_to_chat(chat_id, {
+        "type": "delete",
+        "chat_id": chat_id,
+        "message_id": message_id
+    })

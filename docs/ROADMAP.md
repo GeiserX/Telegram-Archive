@@ -129,27 +129,34 @@ This document tracks the version history and planned features for Telegram Archi
 
 ## Planned Features
 
-### v5.0.0 - Backup Protection & Safety (Planned)
+### v5.0.0 - Real-time Sync & Notifications (Planned)
 
-**Goal:** Protect backup integrity while enabling real-time sync for those who want it.
+**Goal:** Enable real-time message sync and viewer notifications, with built-in safety to protect backup integrity.
 
-#### Safety Features (Core Philosophy: Backup First!)
+#### 🎯 Headline Features
+- [ ] **Real-time listener** - Catch message edits instantly as they happen
+- [ ] **Viewer notifications** - Browser push notifications when new messages arrive
+- [ ] **WebSocket updates** - Live message updates without page refresh
+- [ ] **Unread indicators** - Show unread message counts in chat list
+
+#### 🛡️ Safety Foundation (Backup First!)
+Real-time features are powerful but could compromise your backup. v5 includes built-in protection:
+
 - [x] **LISTEN_DELETIONS=false by default** - Never delete from backup unless explicitly enabled
 - [x] **LISTEN_EDITS=true** - Safe: just updates text, doesn't lose data
 - [x] **Mass operation detection** - Blocks bulk deletions/edits to protect data integrity
-- [x] **Configurable thresholds** - `MASS_OPERATION_THRESHOLD` and `MASS_OPERATION_WINDOW_SECONDS`
+- [x] **Configurable thresholds** - Tune protection to your needs
 
 #### Configuration
-- `ENABLE_LISTENER=false` (opt-in) - Real-time sync is optional
-- `LISTEN_EDITS=true` - Apply text edits (safe, default on)
-- `LISTEN_DELETIONS=false` - Delete messages (dangerous, default off!)
-- `MASS_OPERATION_THRESHOLD=50` - Block if >50 operations in time window
-- `MASS_OPERATION_WINDOW_SECONDS=60` - Time window for detection
 
-#### Viewer Enhancements
-- [ ] **Push notifications** - Browser notifications for new messages
-- [ ] **Real-time updates** - WebSocket for live message updates
-- [ ] **Unread indicators** - Show unread message counts
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_LISTENER` | `false` | Enable real-time sync (opt-in) |
+| `LISTEN_EDITS` | `true` | Apply text edits (safe) |
+| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup (dangerous!) |
+| `MASS_OPERATION_THRESHOLD` | `50` | Block if >N ops in window |
+| `MASS_OPERATION_WINDOW_SECONDS` | `60` | Detection window |
+| `ENABLE_NOTIFICATIONS` | `false` | Browser push notifications |
 
 ---
 

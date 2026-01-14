@@ -145,6 +145,10 @@ class Config:
         # Defaults to Europe/Madrid if not specified
         self.viewer_timezone = os.getenv('VIEWER_TIMEZONE', 'Europe/Madrid')
         
+        # Viewer notifications
+        # When enabled, browser push notifications are available for new messages
+        self.enable_notifications = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")

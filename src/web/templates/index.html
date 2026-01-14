@@ -663,6 +663,13 @@
                 let flatpickrInstance = null
                 const showScrollToBottom = ref(false)
 
+                // WebSocket and Notifications (v5.0)
+                const notificationsEnabled = ref(false)
+                const notificationsSupported = ref('Notification' in window)
+                const notificationPermission = ref(Notification?.permission || 'denied')
+                let ws = null
+                let wsReconnectTimer = null
+
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
 
@@ -766,7 +773,140 @@
                     } finally {
                         loadingAuth.value = false
                     }
+                    
+                    // Initialize WebSocket and notifications (v5.0)
+                    await initNotifications()
+                    initWebSocket()
                 })
+
+                // WebSocket initialization
+                const initWebSocket = () => {
+                    if (ws) {
+                        ws.close()
+                    }
+                    
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+                    const wsUrl = `${protocol}//${window.location.host}/ws/updates`
+                    
+                    try {
+                        ws = new WebSocket(wsUrl)
+                        
+                        ws.onopen = () => {
+                            console.log('[WS] Connected to real-time updates')
+                            // Subscribe to current chat if selected
+                            if (selectedChat.value) {
+                                ws.send(JSON.stringify({
+                                    action: 'subscribe',
+                                    chat_id: selectedChat.value.id
+                                }))
+                            }
+                        }
+                        
+                        ws.onmessage = (event) => {
+                            try {
+                                const data = JSON.parse(event.data)
+                                handleWebSocketMessage(data)
+                            } catch (e) {
+                                console.error('[WS] Parse error:', e)
+                            }
+                        }
+                        
+                        ws.onclose = () => {
+                            console.log('[WS] Connection closed, reconnecting in 5s...')
+                            wsReconnectTimer = setTimeout(initWebSocket, 5000)
+                        }
+                        
+                        ws.onerror = (e) => {
+                            console.error('[WS] Error:', e)
+                        }
+                    } catch (e) {
+                        console.error('[WS] Failed to connect:', e)
+                    }
+                }
+                
+                const handleWebSocketMessage = (data) => {
+                    switch (data.type) {
+                        case 'new_message':
+                            // Add to messages if we're viewing that chat
+                            if (selectedChat.value?.id === data.chat_id) {
+                                messages.value.push(data.message)
+                            }
+                            // Show notification
+                            if (notificationPermission.value === 'granted' && document.hidden) {
+                                showNotification(data)
+                            }
+                            break
+                        
+                        case 'edit':
+                            // Update message text in current view
+                            const editMsg = messages.value.find(m => m.id === data.message_id)
+                            if (editMsg) {
+                                editMsg.text = data.new_text
+                                editMsg.edit_date = data.edit_date
+                            }
+                            break
+                        
+                        case 'delete':
+                            // Remove from current view
+                            const deleteIdx = messages.value.findIndex(m => m.id === data.message_id)
+                            if (deleteIdx !== -1) {
+                                messages.value.splice(deleteIdx, 1)
+                            }
+                            break
+                        
+                        case 'subscribed':
+                            console.log('[WS] Subscribed to chat:', data.chat_id)
+                            break
+                    }
+                }
+                
+                // Notification functions
+                const initNotifications = async () => {
+                    try {
+                        const res = await fetch('/api/notifications/settings')
+                        if (res.ok) {
+                            const data = await res.json()
+                            notificationsEnabled.value = data.enabled
+                        }
+                    } catch (e) {
+                        console.warn('Could not fetch notification settings:', e)
+                    }
+                    
+                    // Register service worker
+                    if ('serviceWorker' in navigator && notificationsEnabled.value) {
+                        try {
+                            await navigator.serviceWorker.register('/static/sw.js')
+                            console.log('[SW] Service worker registered')
+                        } catch (e) {
+                            console.warn('[SW] Registration failed:', e)
+                        }
+                    }
+                }
+                
+                const requestNotificationPermission = async () => {
+                    if (!notificationsSupported.value) return
+                    
+                    try {
+                        const permission = await Notification.requestPermission()
+                        notificationPermission.value = permission
+                    } catch (e) {
+                        console.error('Notification permission error:', e)
+                    }
+                }
+                
+                const showNotification = (data) => {
+                    if (notificationPermission.value !== 'granted') return
+                    
+                    const chatName = chats.value.find(c => c.id === data.chat_id)?.title || 'New Message'
+                    const body = data.message?.text?.substring(0, 100) || 'New message received'
+                    
+                    new Notification(chatName, {
+                        body: body,
+                        icon: '/static/favicon.ico',
+                        tag: `chat-${data.chat_id}`,
+                        data: { chat_id: data.chat_id }
+                    })
+                }
 
                 // Setup Intersection Observer for GIF autoplay
                 const setupGifObserver = () => {
@@ -800,6 +940,26 @@
                         })
                     })
                 }, { deep: true })
+                
+                // Subscribe to WebSocket updates when chat changes
+                watch(selectedChat, (newChat, oldChat) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // Unsubscribe from old chat
+                        if (oldChat) {
+                            ws.send(JSON.stringify({
+                                action: 'unsubscribe',
+                                chat_id: oldChat.id
+                            }))
+                        }
+                        // Subscribe to new chat
+                        if (newChat) {
+                            ws.send(JSON.stringify({
+                                action: 'subscribe',
+                                chat_id: newChat.id
+                            }))
+                        }
+                    }
+                })
 
                 const performLogin = async () => {
                     loginError.value = ''
@@ -1455,6 +1615,11 @@
                     // Scroll to bottom
                     showScrollToBottom,
                     scrollToLatest,
+                    // Notifications (v5.0)
+                    notificationsEnabled,
+                    notificationsSupported,
+                    notificationPermission,
+                    requestNotificationPermission,
                 }
             }
         }).mount('#app')
