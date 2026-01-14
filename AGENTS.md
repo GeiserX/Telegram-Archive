@@ -59,6 +59,17 @@ Project description: Own your Telegram history. Automated, incremental backups w
   - `drumsergio/telegram-archive-viewer` — Web viewer only (no Telegram client)
 - **Example Repo:** https://github.com/GeiserX/LynxPrompt (use as reference for style/structure)
 
+## Deployment Environments
+
+| Environment | Instance | Image Tag | Purpose |
+|-------------|----------|-----------|---------|
+| **Production** | Sergio | `v4.x.x` (semver) | Stable releases only |
+| **Development** | Annais | `:dev` | PR builds, pre-release testing |
+
+- **PRs build `:dev` tag** via `docker-publish-dev.yml` workflow
+- **Tags build semver** via `docker-publish.yml` workflow
+- Always test on Annais (dev) before releasing to Sergio (prod)
+
 ## AI Behavior Rules
 
 - **Always enter Plan Mode** before making any changes - think through the approach first
@@ -127,6 +138,43 @@ Follow these conventions:
 - Add comments for complex logic only
 - Keep functions focused and testable
 
+## ⚠️ Data Consistency Rules (CRITICAL)
+
+These rules exist because of bugs that reached production. **Always verify these when modifying DB code.**
+
+### Chat ID Format (Marked IDs)
+
+Telegram uses "marked" IDs that differ from raw entity IDs:
+
+| Entity Type | Format | Example |
+|-------------|--------|---------|
+| Users | Positive | `123456789` |
+| Basic groups | Negative | `-123456789` |
+| Supergroups/Channels | -1000000000000 - id | `-1001234567890` |
+
+**Rules:**
+- Always use `telethon.utils.get_peer_id(entity)` to get the marked ID
+- Never use `entity.id` directly for database operations
+- The `_get_marked_id()` method in `telegram_backup.py` wraps this
+- User config (`GROUPS_INCLUDE_CHAT_IDS`, etc.) uses marked format
+
+### DateTime Timezone Handling
+
+Telethon returns timezone-aware datetimes, but PostgreSQL uses `TIMESTAMP WITHOUT TIME ZONE`.
+
+**Rules:**
+- Always strip timezone before DB insert/update using `_strip_tz(dt)` in `adapter.py`
+- Apply to ALL datetime fields: `date`, `edit_date`, `created_at`, etc.
+- Check both INSERT and UPDATE operations (v4.0.6 bug: insert used `_strip_tz`, update didn't)
+
+### Consistency Checklist
+
+When modifying database code, verify:
+- [ ] All chat_id values use marked format (via `_get_marked_id()`)
+- [ ] All datetime values pass through `_strip_tz()` before DB operations
+- [ ] INSERT and UPDATE operations handle the same fields identically
+- [ ] Tests exist in `tests/test_db_adapter.py` for data type handling
+
 ## Testing Strategy
 
 ### Test Levels
@@ -141,6 +189,21 @@ Follow these conventions:
 Use: pytest
 
 ### Coverage Target: 80%
+
+### CI Requirements
+
+**All PRs MUST pass tests before merge.** The `Tests` workflow runs on every PR:
+- `tests/test_db_adapter.py` — Data type consistency (timezone, chat IDs)
+- `tests/test_config.py` — Environment variable parsing
+- `tests/test_telegram_backup.py` — Core backup logic
+
+### When to Add Tests
+
+Add tests when:
+1. Fixing a bug — write a test that would have caught it
+2. Adding DB operations — test data type handling
+3. Modifying config parsing — test edge cases (empty strings, etc.)
+4. Adding new features — test the happy path and error cases
 
 ## 🔐 Security Configuration
 
