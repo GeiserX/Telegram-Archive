@@ -25,6 +25,12 @@ class TestTelegramListener:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # Mass operation protection settings
+        config.listen_edits = True
+        config.listen_deletions = False
+        config.mass_operation_threshold = 10
+        config.mass_operation_window_seconds = 30
+        config.mass_operation_buffer_delay = 2.0
         return config
     
     @pytest.fixture
@@ -130,6 +136,12 @@ class TestListenerEventHandling:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # Mass operation protection settings
+        config.listen_edits = True
+        config.listen_deletions = False
+        config.mass_operation_threshold = 10
+        config.mass_operation_window_seconds = 30
+        config.mass_operation_buffer_delay = 2.0
         return config
     
     @pytest.fixture
