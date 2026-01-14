@@ -1,12 +1,16 @@
 """
 Scheduler for automated Telegram backups.
 Runs backup tasks on a configurable cron schedule.
+
+Optionally runs a real-time listener that catches message edits and deletions
+between scheduled backup runs (when ENABLE_LISTENER=true).
 """
 
 import asyncio
 import logging
 import signal
 import sys
+from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -17,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackupScheduler:
-    """Scheduler for automated backups."""
+    """Scheduler for automated backups with optional real-time listener."""
     
     def __init__(self, config: Config):
         """
@@ -29,6 +33,8 @@ class BackupScheduler:
         self.config = config
         self.scheduler = AsyncIOScheduler()
         self.running = False
+        self._listener = None
+        self._listener_task: Optional[asyncio.Task] = None
         
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -100,9 +106,52 @@ class BackupScheduler:
             self.running = False
             logger.info("Scheduler stopped")
     
+    async def _start_listener(self) -> None:
+        """Start the real-time listener if enabled."""
+        if not self.config.enable_listener:
+            return
+        
+        try:
+            from .listener import TelegramListener
+            
+            logger.info("Starting real-time listener...")
+            self._listener = await TelegramListener.create(self.config)
+            await self._listener.connect()
+            
+            # Run listener in background task
+            self._listener_task = asyncio.create_task(
+                self._listener.run(),
+                name="telegram_listener"
+            )
+            logger.info("Real-time listener started successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to start listener: {e}", exc_info=True)
+            self._listener = None
+            self._listener_task = None
+    
+    async def _stop_listener(self) -> None:
+        """Stop the real-time listener if running."""
+        if self._listener_task:
+            logger.info("Stopping real-time listener...")
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
+            self._listener_task = None
+        
+        if self._listener:
+            await self._listener.close()
+            self._listener = None
+            logger.info("Real-time listener stopped")
+    
     async def run_forever(self):
-        """Keep the scheduler running."""
+        """Keep the scheduler running with optional listener."""
         self.start()
+        
+        # Start real-time listener if enabled
+        await self._start_listener()
         
         # Run initial backup immediately on startup
         logger.info("Running initial backup on startup...")
@@ -112,13 +161,27 @@ class BackupScheduler:
         except Exception as e:
             logger.error(f"Initial backup failed: {e}", exc_info=True)
         
+        # Reload tracked chats in listener after initial backup
+        if self._listener:
+            await self._listener._load_tracked_chats()
+        
         # Keep running until stopped
         try:
             while self.running:
                 await asyncio.sleep(1)
+                
+                # Check if listener task died unexpectedly and restart it
+                if self.config.enable_listener and self._listener_task:
+                    if self._listener_task.done():
+                        logger.warning("Listener task died, restarting...")
+                        await self._stop_listener()
+                        await asyncio.sleep(5)  # Brief pause before restart
+                        await self._start_listener()
+                        
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
         finally:
+            await self._stop_listener()
             self.stop()
 
 
@@ -136,7 +199,8 @@ async def main():
         logger.info(f"Schedule: {config.schedule}")
         logger.info(f"Backup path: {config.backup_path}")
         logger.info(f"Download media: {config.download_media}")
-        logger.info(f"Chat types: {', '.join(config.chat_types)}")
+        logger.info(f"Chat types: {', '.join(config.chat_types) or '(whitelist-only mode)'}")
+        logger.info(f"Real-time listener: {'ENABLED' if config.enable_listener else 'disabled'}")
         logger.info("=" * 60)
         
         # Create and run scheduler
