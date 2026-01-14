@@ -81,6 +81,21 @@ Project description: Own your Telegram history. Automated, incremental backups w
 - For larger features or breaking changes, create a feature branch and open a PR
 - Create descriptive branch names when needed (e.g., `feat/add-login`, `fix/button-styling`)
 
+### Git Commit Identity
+
+**IMPORTANT:** Always use the correct GitHub identity for commits:
+
+```bash
+git config user.name "GeiserX"
+git config user.email "9169332+GeiserX@users.noreply.github.com"
+```
+
+- **GitHub User ID:** 9169332
+- **Username:** GeiserX
+- **No-reply email:** `9169332+GeiserX@users.noreply.github.com`
+
+⚠️ Using the wrong ID in the email (e.g., `57840286+...`) will link commits to a different GitHub account!
+
 ## Important Files to Read
 
 Always read these files first to understand the project context:
