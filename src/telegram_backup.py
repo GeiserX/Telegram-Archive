@@ -233,7 +233,7 @@ class TelegramBackup:
             # (i.e. some chats have a non-zero last_message_id recorded)
             has_synced_before = False
             for dialog in filtered_dialogs:
-                if await self.db.get_last_message_id(dialog.entity.id) > 0:
+                if await self.db.get_last_message_id(self._get_marked_id(dialog.entity)) > 0:
                     has_synced_before = True
                     break
 
@@ -1058,7 +1058,8 @@ class TelegramBackup:
     
     def _extract_chat_data(self, entity) -> dict:
         """Extract chat data from entity."""
-        chat_data = {'id': entity.id}
+        # Use marked ID (with -100 prefix for channels/supergroups) for consistency
+        chat_data = {'id': self._get_marked_id(entity)}
         
         if isinstance(entity, User):
             chat_data['type'] = 'private'
