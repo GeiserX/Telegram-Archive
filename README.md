@@ -171,7 +171,11 @@ Features:
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
-| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions (recommended) |
+| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
+| `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
+| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (defeats backup purpose!) |
+| `MASS_OPERATION_THRESHOLD` | `50` | Block if more than N operations in time window |
+| `MASS_OPERATION_WINDOW_SECONDS` | `60` | Time window for mass operation detection |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
@@ -202,21 +206,40 @@ Chat IDs use Telegram's "marked" format:
 
 By default, the backup runs on a schedule and only captures new messages. Edits and deletions made between backups are not tracked. You have two options:
 
-#### Option 1: Real-time Listener (Recommended) ⭐
+#### Option 1: Real-time Listener ⭐
 
-Enable `ENABLE_LISTENER=true` to run a background listener that catches edits and deletions as they happen:
+Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as they happen:
 
 ```yaml
-- ENABLE_LISTENER=true
+- ENABLE_LISTENER=true      # Enable real-time listener
+- LISTEN_EDITS=true         # Apply text edits (default: true, safe)
+- LISTEN_DELETIONS=false    # Delete from backup (default: false - KEEPS YOUR BACKUP SAFE!)
 ```
 
 **How it works:**
 - Stays connected to Telegram between scheduled backups
-- Instantly captures message edits and deletions
+- Instantly captures message edits (and optionally deletions)
 - Very efficient - only processes actual changes
 - Automatically restarts if disconnected
 
-#### Option 2: Batch Sync (Expensive)
+**⚠️ IMPORTANT: Backup Protection**
+
+By default, `LISTEN_DELETIONS=false` - this means even with the listener enabled, **messages deleted on Telegram stay in your backup**. This is intentional! The whole point of a backup is to preserve data.
+
+Only set `LISTEN_DELETIONS=true` if you explicitly want to mirror Telegram exactly (which defeats the backup purpose).
+
+#### Mass Operation Protection
+
+Even if you enable `LISTEN_DELETIONS=true`, the system has built-in protection against mass deletions/edits (e.g., someone clearing a chat history):
+
+```yaml
+- MASS_OPERATION_THRESHOLD=50      # Block if >50 operations in time window
+- MASS_OPERATION_WINDOW_SECONDS=60 # Time window in seconds
+```
+
+When a mass operation is detected, the affected chat is temporarily blocked from further edits/deletions to protect your data.
+
+#### Option 2: Batch Sync (One-time catch-up)
 
 Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each backup run:
 
@@ -224,7 +247,11 @@ Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each ba
 - SYNC_DELETIONS_EDITS=true
 ```
 
-**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for one-time catch-up or if you can't use the listener.
+**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for:
+- One-time initial catch-up on edits/deletions
+- If you can't use the real-time listener
+
+After running once, switch back to `ENABLE_LISTENER=true` for ongoing sync.
 
 ### Database Configuration (v3.0+)
 

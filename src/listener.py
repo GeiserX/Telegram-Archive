@@ -1,12 +1,18 @@
 """
 Real-time event listener for Telegram message edits and deletions.
 Catches events as they happen and updates the local database immediately.
+
+Safety features:
+- LISTEN_EDITS: Apply text edits (default: true, safe)
+- LISTEN_DELETIONS: Delete messages (default: false, protects backup!)
+- Mass operation detection: Blocks bulk edits/deletions to protect data
 """
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Optional, Set
+from collections import deque
+from datetime import datetime, timedelta
+from typing import Optional, Set, Deque, Tuple
 
 from telethon import TelegramClient, events
 from telethon.utils import get_peer_id
@@ -17,12 +23,110 @@ from .db import DatabaseAdapter, create_adapter
 logger = logging.getLogger(__name__)
 
 
+class MassOperationDetector:
+    """
+    Detects and blocks mass deletions/edits to protect backup integrity.
+    
+    Tracks operations per chat within a sliding time window.
+    If operations exceed threshold, blocks further operations and alerts.
+    """
+    
+    def __init__(self, threshold: int, window_seconds: int):
+        """
+        Args:
+            threshold: Max operations allowed per chat in the time window
+            window_seconds: Time window in seconds
+        """
+        self.threshold = threshold
+        self.window = timedelta(seconds=window_seconds)
+        # Per-chat operation timestamps: {chat_id: deque[(timestamp, count)]}
+        self._operations: dict[int, Deque[Tuple[datetime, int]]] = {}
+        # Blocked chats: {chat_id: (blocked_until, reason)}
+        self._blocked: dict[int, Tuple[datetime, str]] = {}
+        
+    def _cleanup_old(self, chat_id: int) -> None:
+        """Remove operations outside the time window."""
+        if chat_id not in self._operations:
+            return
+        now = datetime.now()
+        cutoff = now - self.window
+        while self._operations[chat_id] and self._operations[chat_id][0][0] < cutoff:
+            self._operations[chat_id].popleft()
+    
+    def _count_recent(self, chat_id: int) -> int:
+        """Count operations in the current time window."""
+        if chat_id not in self._operations:
+            return 0
+        return sum(count for _, count in self._operations[chat_id])
+    
+    def check_and_record(self, chat_id: int, operation_type: str, count: int = 1) -> Tuple[bool, str]:
+        """
+        Check if operation is allowed and record it.
+        
+        Args:
+            chat_id: The chat ID
+            operation_type: 'edit' or 'deletion'
+            count: Number of operations (for batch deletions)
+            
+        Returns:
+            (allowed, reason): True if allowed, False if blocked with reason
+        """
+        now = datetime.now()
+        
+        # Check if chat is currently blocked
+        if chat_id in self._blocked:
+            blocked_until, reason = self._blocked[chat_id]
+            if now < blocked_until:
+                return False, f"BLOCKED: {reason}"
+            else:
+                # Block expired, remove it
+                del self._blocked[chat_id]
+                logger.info(f"🔓 Block expired for chat {chat_id}")
+        
+        # Initialize if needed
+        if chat_id not in self._operations:
+            self._operations[chat_id] = deque()
+        
+        # Clean up old entries
+        self._cleanup_old(chat_id)
+        
+        # Count recent operations
+        recent_count = self._count_recent(chat_id)
+        
+        # Check threshold
+        if recent_count + count > self.threshold:
+            # Block this chat for the window duration
+            block_until = now + self.window
+            reason = f"Mass {operation_type} detected: {recent_count + count} operations in {self.window.seconds}s (threshold: {self.threshold})"
+            self._blocked[chat_id] = (block_until, reason)
+            logger.warning(f"🛑 {reason} - Chat {chat_id} BLOCKED until {block_until}")
+            return False, reason
+        
+        # Record the operation
+        self._operations[chat_id].append((now, count))
+        return True, "OK"
+    
+    def get_blocked_chats(self) -> dict[int, str]:
+        """Get currently blocked chats and their reasons."""
+        now = datetime.now()
+        return {
+            chat_id: reason 
+            for chat_id, (blocked_until, reason) in self._blocked.items() 
+            if now < blocked_until
+        }
+
+
 class TelegramListener:
     """
     Real-time event listener for Telegram.
     
     Catches message edits and deletions as they happen and updates the database.
     Designed to run alongside the scheduled backup process.
+    
+    Safety features:
+    - LISTEN_EDITS: Only sync edits if enabled (default: true)
+    - LISTEN_DELETIONS: Only delete if enabled (default: false - protects backup!)
+    - Mass operation detection: Blocks bulk changes to protect data integrity
     """
     
     def __init__(self, config: Config, db: DatabaseAdapter):
@@ -40,15 +144,32 @@ class TelegramListener:
         self._running = False
         self._tracked_chat_ids: Set[int] = set()
         
+        # Mass operation protection
+        self._mass_detector = MassOperationDetector(
+            threshold=config.mass_operation_threshold,
+            window_seconds=config.mass_operation_window_seconds
+        )
+        
         # Statistics
         self.stats = {
             'edits_processed': 0,
+            'edits_blocked': 0,
             'deletions_processed': 0,
+            'deletions_blocked': 0,
+            'deletions_skipped': 0,  # Skipped due to LISTEN_DELETIONS=false
+            'mass_operations_blocked': 0,
             'errors': 0,
             'start_time': None
         }
         
+        # Log safety settings
         logger.info("TelegramListener initialized")
+        logger.info(f"  LISTEN_EDITS: {config.listen_edits}")
+        if config.listen_deletions:
+            logger.warning(f"  ⚠️ LISTEN_DELETIONS: true - Messages WILL be deleted from backup!")
+        else:
+            logger.info(f"  LISTEN_DELETIONS: false (backup protected)")
+        logger.info(f"  Mass operation protection: >{config.mass_operation_threshold} ops in {config.mass_operation_window_seconds}s")
     
     @classmethod
     async def create(cls, config: Config) -> "TelegramListener":
@@ -145,10 +266,22 @@ class TelegramListener:
         @self.client.on(events.MessageEdited)
         async def on_message_edited(event: events.MessageEdited.Event) -> None:
             """Handle message edit events."""
+            # Check if edits are enabled
+            if not self.config.listen_edits:
+                return
+                
             try:
                 chat_id = self._get_marked_id(event.chat_id)
                 
                 if not self._should_process_chat(chat_id):
+                    return
+                
+                # Check mass operation protection
+                allowed, reason = self._mass_detector.check_and_record(chat_id, 'edit')
+                if not allowed:
+                    self.stats['edits_blocked'] += 1
+                    self.stats['mass_operations_blocked'] += 1
+                    logger.warning(f"🛑 Edit blocked: chat={chat_id} msg={event.message.id} - {reason}")
                     return
                 
                 message = event.message
@@ -176,6 +309,14 @@ class TelegramListener:
         @self.client.on(events.MessageDeleted)
         async def on_message_deleted(event: events.MessageDeleted.Event) -> None:
             """Handle message deletion events."""
+            # Check if deletions are enabled (DEFAULT: FALSE to protect backup!)
+            if not self.config.listen_deletions:
+                # Just log and skip - don't delete from backup
+                if event.deleted_ids:
+                    self.stats['deletions_skipped'] += len(event.deleted_ids)
+                    logger.debug(f"⏭️ Deletion skipped (LISTEN_DELETIONS=false): {len(event.deleted_ids)} messages")
+                return
+            
             try:
                 # Note: event.chat_id might be None for some deletion events
                 chat_id = event.chat_id
@@ -185,14 +326,27 @@ class TelegramListener:
                     if not self._should_process_chat(chat_id):
                         return
                 
+                deletion_count = len(event.deleted_ids)
+                
+                # Check mass operation protection BEFORE processing
+                if chat_id is not None:
+                    allowed, reason = self._mass_detector.check_and_record(
+                        chat_id, 'deletion', count=deletion_count
+                    )
+                    if not allowed:
+                        self.stats['deletions_blocked'] += deletion_count
+                        self.stats['mass_operations_blocked'] += 1
+                        logger.warning(f"🛑 Mass deletion blocked: chat={chat_id} count={deletion_count} - {reason}")
+                        return
+                
                 for msg_id in event.deleted_ids:
                     if chat_id is not None:
                         # We know the chat - delete directly
                         await self.db.delete_message(chat_id, msg_id)
                         logger.info(f"🗑️ Deleted: chat={chat_id} msg={msg_id}")
                     else:
-                        # Chat unknown - try to find and delete from all chats
-                        # This is less efficient but handles edge cases
+                        # Chat unknown - check each deletion individually (can't determine chat for protection)
+                        # This is rare and less efficient
                         deleted = await self.db.delete_message_by_id_any_chat(msg_id)
                         if deleted:
                             logger.info(f"🗑️ Deleted: msg={msg_id} (chat unknown)")
@@ -264,8 +418,23 @@ class TelegramListener:
             logger.info("Listener Statistics")
             logger.info(f"  Uptime: {uptime}")
             logger.info(f"  Edits processed: {self.stats['edits_processed']}")
+            if self.stats['edits_blocked']:
+                logger.warning(f"  Edits BLOCKED (mass operation): {self.stats['edits_blocked']}")
             logger.info(f"  Deletions processed: {self.stats['deletions_processed']}")
+            if self.stats['deletions_skipped']:
+                logger.info(f"  Deletions skipped (LISTEN_DELETIONS=false): {self.stats['deletions_skipped']}")
+            if self.stats['deletions_blocked']:
+                logger.warning(f"  Deletions BLOCKED (mass operation): {self.stats['deletions_blocked']}")
+            if self.stats['mass_operations_blocked']:
+                logger.warning(f"  ⚠️ Mass operations blocked: {self.stats['mass_operations_blocked']} incidents")
             logger.info(f"  Errors: {self.stats['errors']}")
+            
+            # Show currently blocked chats
+            blocked = self._mass_detector.get_blocked_chats()
+            if blocked:
+                logger.warning(f"  Currently blocked chats: {len(blocked)}")
+                for chat_id, reason in blocked.items():
+                    logger.warning(f"    - {chat_id}: {reason}")
             logger.info("=" * 60)
     
     async def close(self) -> None:

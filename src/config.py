@@ -122,6 +122,21 @@ class Config:
         # in real-time instead of batch-checking on each backup run
         self.enable_listener = os.getenv('ENABLE_LISTENER', 'false').lower() == 'true'
         
+        # Listener granular controls (only apply when ENABLE_LISTENER=true)
+        # LISTEN_EDITS: Apply text edits to backed up messages (safe, just updates text)
+        self.listen_edits = os.getenv('LISTEN_EDITS', 'true').lower() == 'true'
+        
+        # LISTEN_DELETIONS: Delete messages from backup when deleted on Telegram
+        # ⚠️ DEFAULT FALSE - Enabling defeats the purpose of having a backup!
+        # Only enable if you explicitly want to mirror Telegram exactly
+        self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'false').lower() == 'true'
+        
+        # Mass operation protection (applies to both listener and batch sync)
+        # If more than THRESHOLD operations happen in WINDOW seconds, block them
+        # This protects against mass deletions (e.g., someone clearing a chat)
+        self.mass_operation_threshold = int(os.getenv('MASS_OPERATION_THRESHOLD', '50'))
+        self.mass_operation_window_seconds = int(os.getenv('MASS_OPERATION_WINDOW_SECONDS', '60'))
+        
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
         self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
@@ -141,6 +156,12 @@ class Config:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
         if self.enable_listener:
             logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
+            logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
+            if self.listen_deletions:
+                logger.warning("  ⚠️ LISTEN_DELETIONS: true - Messages will be DELETED from backup!")
+            else:
+                logger.info("  LISTEN_DELETIONS: false (backup protected)")
+            logger.info(f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
     

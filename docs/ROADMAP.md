@@ -129,23 +129,27 @@ This document tracks the version history and planned features for Telegram Archi
 
 ## Planned Features
 
-### v5.0.0 - Real-time by Default (Planned)
+### v5.0.0 - Backup Protection & Safety (Planned)
 
-**Goal:** Make Telegram Archive fully automatic with instant message sync.
+**Goal:** Protect backup integrity while enabling real-time sync for those who want it.
 
-#### Core Changes
-- [ ] **ENABLE_LISTENER=true by default** - Real-time sync out of the box
-- [ ] **Instant message retrieval** - No more waiting for hourly backups
-- [ ] **Background listener** - Runs alongside scheduled full syncs
+#### Safety Features (Core Philosophy: Backup First!)
+- [x] **LISTEN_DELETIONS=false by default** - Never delete from backup unless explicitly enabled
+- [x] **LISTEN_EDITS=true** - Safe: just updates text, doesn't lose data
+- [x] **Mass operation detection** - Blocks bulk deletions/edits to protect data integrity
+- [x] **Configurable thresholds** - `MASS_OPERATION_THRESHOLD` and `MASS_OPERATION_WINDOW_SECONDS`
+
+#### Configuration
+- `ENABLE_LISTENER=false` (opt-in) - Real-time sync is optional
+- `LISTEN_EDITS=true` - Apply text edits (safe, default on)
+- `LISTEN_DELETIONS=false` - Delete messages (dangerous, default off!)
+- `MASS_OPERATION_THRESHOLD=50` - Block if >50 operations in time window
+- `MASS_OPERATION_WINDOW_SECONDS=60` - Time window for detection
 
 #### Viewer Enhancements
 - [ ] **Push notifications** - Browser notifications for new messages
 - [ ] **Real-time updates** - WebSocket for live message updates
 - [ ] **Unread indicators** - Show unread message counts
-
-#### Configuration
-- [ ] New defaults optimized for real-time operation
-- [ ] Backward-compatible for users preferring scheduled backups
 
 ---
 
