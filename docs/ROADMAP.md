@@ -139,13 +139,20 @@ This document tracks the version history and planned features for Telegram Archi
 - [ ] **WebSocket updates** - Live message updates without page refresh
 - [ ] **Unread indicators** - Show unread message counts in chat list
 
-#### 🛡️ Safety Foundation (Backup First!)
-Real-time features are powerful but could compromise your backup. v5 includes built-in protection:
+#### 🛡️ Zero-Footprint Protection (Backup First!)
+Real-time features are powerful but could compromise your backup. v5 includes **military-grade protection**:
 
-- [x] **LISTEN_DELETIONS=false by default** - Never delete from backup unless explicitly enabled
-- [x] **LISTEN_EDITS=true** - Safe: just updates text, doesn't lose data
-- [x] **Mass operation detection** - Blocks bulk deletions/edits to protect data integrity
+- [x] **Buffered operations** - Nothing written immediately, all ops wait in buffer
+- [x] **Burst detection** - If >10 ops arrive, triggers protection BEFORE any writes
+- [x] **Zero footprint** - On trigger, ENTIRE buffer discarded, no changes to DB
+- [x] **LISTEN_DELETIONS=false by default** - Extra safety layer
 - [x] **Configurable thresholds** - Tune protection to your needs
+
+**How it works:**
+1. Operations queue in a buffer (2-second delay)
+2. If >10 ops for a chat → BURST DETECTED
+3. Entire buffer discarded → ZERO changes to your backup
+4. Chat blocked for 30 seconds → Attack neutralized
 
 #### Configuration
 
@@ -153,9 +160,9 @@ Real-time features are powerful but could compromise your backup. v5 includes bu
 |----------|---------|-------------|
 | `ENABLE_LISTENER` | `false` | Enable real-time sync (opt-in) |
 | `LISTEN_EDITS` | `true` | Apply text edits (safe) |
-| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup (dangerous!) |
-| `MASS_OPERATION_THRESHOLD` | `50` | Block if >N ops in window |
-| `MASS_OPERATION_WINDOW_SECONDS` | `60` | Detection window |
+| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup (protected!) |
+| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Aggressive default - triggers fast |
+| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window |
 | `ENABLE_NOTIFICATIONS` | `false` | Browser push notifications |
 
 ---
