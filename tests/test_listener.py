@@ -2,6 +2,7 @@
 Tests for the real-time listener module.
 """
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,12 +52,12 @@ class TestTelegramListener:
         assert listener._running is False
         assert listener._tracked_chat_ids == set()
     
-    @pytest.mark.asyncio
-    async def test_load_tracked_chats(self, mock_config, mock_db):
+    def test_load_tracked_chats(self, mock_config, mock_db):
         """Test loading tracked chats from database."""
         listener = TelegramListener(mock_config, mock_db)
         
-        await listener._load_tracked_chats()
+        # Run async method synchronously
+        asyncio.get_event_loop().run_until_complete(listener._load_tracked_chats())
         
         assert listener._tracked_chat_ids == {-1001234567890, 123456789, -987654321}
         mock_db.get_all_chats.assert_called_once()
@@ -93,14 +94,14 @@ class TestTelegramListener:
         result = listener._get_marked_id(mock_entity)
         assert result == 987654321
     
-    @pytest.mark.asyncio
-    async def test_close(self, mock_config, mock_db):
+    def test_close(self, mock_config, mock_db):
         """Test clean shutdown."""
         listener = TelegramListener(mock_config, mock_db)
         listener.client = AsyncMock()
         listener.client.is_connected = MagicMock(return_value=False)
         
-        await listener.close()
+        # Run async method synchronously
+        asyncio.get_event_loop().run_until_complete(listener.close())
         
         mock_db.close.assert_called_once()
     
