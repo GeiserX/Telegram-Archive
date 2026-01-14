@@ -496,13 +496,13 @@ class DatabaseAdapter:
             logger.debug(f"Deleted message {message_id} from {len(chat_ids)} chat(s)")
             return True
     
-    async def update_message_text(self, chat_id: int, message_id: int, new_text: str, edit_date) -> None:
+    async def update_message_text(self, chat_id: int, message_id: int, new_text: str, edit_date: Optional[datetime]) -> None:
         """Update a message's text and edit date."""
         async with self.db_manager.async_session_factory() as session:
             await session.execute(
                 update(Message)
                 .where(and_(Message.chat_id == chat_id, Message.id == message_id))
-                .values(text=new_text, edit_date=edit_date)
+                .values(text=new_text, edit_date=_strip_tz(edit_date))
             )
             await session.commit()
             logger.debug(f"Updated message {message_id} in chat {chat_id}")
