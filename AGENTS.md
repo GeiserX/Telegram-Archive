@@ -61,14 +61,15 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 ## Deployment Environments
 
-| Environment | Instance | Image Tag | Purpose |
-|-------------|----------|-----------|---------|
-| **Production** | Sergio | `v4.x.x` (semver) | Stable releases only |
-| **Development** | Annais | `:dev` | PR builds, pre-release testing |
+| Environment | Image Tag | Purpose |
+|-------------|-----------|---------|
+| **Production** | `v4.x.x` (semver) | Stable releases only |
+| **Development** | `:dev` | PR builds, pre-release testing |
 
 - **PRs build `:dev` tag** via `docker-publish-dev.yml` workflow
 - **Tags build semver** via `docker-publish.yml` workflow
-- Always test on Annais (dev) before releasing to Sergio (prod)
+- Always test on dev environment before releasing to prod
+- See gitea docker-compose for environment assignments
 
 ## AI Behavior Rules
 
