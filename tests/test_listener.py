@@ -115,8 +115,13 @@ class TestTelegramListener:
         """Test statistics are properly initialized."""
         listener = TelegramListener(mock_config, mock_db)
         
-        assert listener.stats['edits_processed'] == 0
-        assert listener.stats['deletions_processed'] == 0
+        # Check stats keys match actual implementation
+        assert listener.stats['edits_received'] == 0
+        assert listener.stats['edits_applied'] == 0
+        assert listener.stats['deletions_received'] == 0
+        assert listener.stats['deletions_applied'] == 0
+        assert listener.stats['deletions_skipped'] == 0
+        assert listener.stats['operations_discarded'] == 0
         assert listener.stats['errors'] == 0
         assert listener.stats['start_time'] is None
 
