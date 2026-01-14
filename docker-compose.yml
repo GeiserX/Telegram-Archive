@@ -47,6 +47,14 @@ services:
       CHANNELS_INCLUDE_CHAT_IDS: ${CHANNELS_INCLUDE_CHAT_IDS:-}
       CHANNELS_EXCLUDE_CHAT_IDS: ${CHANNELS_EXCLUDE_CHAT_IDS:-}
 
+      # Real-time Sync Options
+      # ENABLE_LISTENER: Catches edits/deletions in real-time (recommended)
+      ENABLE_LISTENER: ${ENABLE_LISTENER:-false}
+      # SYNC_DELETIONS_EDITS: Batch-check ALL messages for edits/deletions (expensive!)
+      SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
+      # VERIFY_MEDIA: Re-download missing/corrupted media files
+      VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
+
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 

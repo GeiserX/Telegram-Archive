@@ -448,8 +448,56 @@ class DatabaseAdapter:
             await session.commit()
             logger.debug(f"Deleted message {message_id} from chat {chat_id}")
     
-    async def update_message_text(self, chat_id: int, message_id: int, new_text: str, edit_date: str) -> None:
-        """Update a message's text."""
+    async def delete_message_by_id_any_chat(self, message_id: int) -> bool:
+        """
+        Delete a message by ID when chat is unknown.
+        
+        This is used by the real-time listener when Telegram sends deletion
+        events without specifying the chat (can happen in some edge cases).
+        
+        Args:
+            message_id: The message ID to delete
+            
+        Returns:
+            True if a message was deleted, False otherwise
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # First, find which chat(s) have this message
+            result = await session.execute(
+                select(Message.chat_id).where(Message.id == message_id)
+            )
+            chat_ids = [row[0] for row in result.fetchall()]
+            
+            if not chat_ids:
+                return False
+            
+            # Delete from all matching chats (usually just one)
+            for chat_id in chat_ids:
+                # Delete associated media
+                await session.execute(
+                    delete(Media).where(
+                        and_(Media.chat_id == chat_id, Media.message_id == message_id)
+                    )
+                )
+                # Delete reactions
+                await session.execute(
+                    delete(Reaction).where(
+                        and_(Reaction.chat_id == chat_id, Reaction.message_id == message_id)
+                    )
+                )
+                # Delete the message
+                await session.execute(
+                    delete(Message).where(
+                        and_(Message.chat_id == chat_id, Message.id == message_id)
+                    )
+                )
+            
+            await session.commit()
+            logger.debug(f"Deleted message {message_id} from {len(chat_ids)} chat(s)")
+            return True
+    
+    async def update_message_text(self, chat_id: int, message_id: int, new_text: str, edit_date) -> None:
+        """Update a message's text and edit date."""
         async with self.db_manager.async_session_factory() as session:
             await session.execute(
                 update(Message)
