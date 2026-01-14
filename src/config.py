@@ -131,12 +131,20 @@ class Config:
         # Only enable if you explicitly want to mirror Telegram exactly
         self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'false').lower() == 'true'
         
-        # Mass operation protection (applies to both listener and batch sync)
-        # If more than THRESHOLD operations happen in WINDOW seconds, block them
-        # This protects against mass deletions (e.g., someone clearing a chat)
-        # Default: 10 ops in 30 seconds triggers protection (aggressive by design!)
+        # =====================================================================
+        # ZERO-FOOTPRINT MASS OPERATION PROTECTION
+        # =====================================================================
+        # Operations are BUFFERED before being applied. If a burst is detected,
+        # the ENTIRE buffer is discarded - ZERO changes written to your backup.
+        #
+        # THRESHOLD: How many operations trigger protection (default: 10 - aggressive!)
+        # WINDOW: Time window for counting operations (default: 30 seconds)
+        # BUFFER_DELAY: How long ops wait before applying (default: 2.0 seconds)
+        #
+        # Example: If >10 deletions arrive within 30s, all are discarded
         self.mass_operation_threshold = int(os.getenv('MASS_OPERATION_THRESHOLD', '10'))
         self.mass_operation_window_seconds = int(os.getenv('MASS_OPERATION_WINDOW_SECONDS', '30'))
+        self.mass_operation_buffer_delay = float(os.getenv('MASS_OPERATION_BUFFER_DELAY', '2.0'))
         
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats

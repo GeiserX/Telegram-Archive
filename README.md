@@ -174,8 +174,9 @@ Features:
 | `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
 | `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
 | `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
-| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Block if more than N operations (aggressive default!) |
+| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Ops count that triggers protection |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window in seconds |
+| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | Seconds to buffer before applying |
 | `ENABLE_NOTIFICATIONS` | `false` | Enable browser push notifications in viewer |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
@@ -234,9 +235,15 @@ Only set `LISTEN_DELETIONS=true` if you explicitly want to track deletions (see 
 Even if you enable `LISTEN_DELETIONS=true`, the system has **military-grade protection** against mass deletions and edits:
 
 ```yaml
-- MASS_OPERATION_THRESHOLD=10      # Block if >10 operations (aggressive!)
-- MASS_OPERATION_WINDOW_SECONDS=30 # Detection window in seconds
+- MASS_OPERATION_THRESHOLD=10       # Block if >10 operations (aggressive default)
+- MASS_OPERATION_WINDOW_SECONDS=30  # Detection window in seconds
+- MASS_OPERATION_BUFFER_DELAY=2.0   # Seconds to buffer before applying
 ```
+
+All three values are configurable. Tune them based on your needs:
+- Lower threshold = more aggressive protection
+- Shorter window = faster detection but may catch normal activity
+- Longer buffer = more time to detect bursts but slightly delayed updates
 
 #### How It Works
 

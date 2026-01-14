@@ -289,7 +289,7 @@ class TelegramListener:
         self._protector = MassOperationProtector(
             threshold=config.mass_operation_threshold,
             window_seconds=config.mass_operation_window_seconds,
-            buffer_delay_seconds=2.0  # Buffer for 2 seconds before applying
+            buffer_delay_seconds=config.mass_operation_buffer_delay
         )
         
         # Background task for processing buffered operations
@@ -319,7 +319,7 @@ class TelegramListener:
             logger.info(f"  LISTEN_DELETIONS: false (backup fully protected)")
         logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
         logger.info(f"  Protection window: {config.mass_operation_window_seconds}s")
-        logger.info(f"  Buffer delay: 2.0s (operations held before applying)")
+        logger.info(f"  Buffer delay: {config.mass_operation_buffer_delay}s (operations held before applying)")
         logger.info("=" * 70)
     
     @classmethod
