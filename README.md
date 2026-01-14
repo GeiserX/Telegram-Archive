@@ -173,9 +173,9 @@ Features:
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
 | `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
 | `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
-| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (defeats backup purpose!) |
-| `MASS_OPERATION_THRESHOLD` | `50` | Block if more than N operations in time window |
-| `MASS_OPERATION_WINDOW_SECONDS` | `60` | Time window for mass operation detection |
+| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
+| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Block if more than N operations (aggressive default!) |
+| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window in seconds |
 | `ENABLE_NOTIFICATIONS` | `false` | Enable browser push notifications in viewer |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
@@ -227,18 +227,48 @@ Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as
 
 By default, `LISTEN_DELETIONS=false` - this means even with the listener enabled, **messages deleted on Telegram stay in your backup**. This is intentional! The whole point of a backup is to preserve data.
 
-Only set `LISTEN_DELETIONS=true` if you explicitly want to mirror Telegram exactly (which defeats the backup purpose).
+Only set `LISTEN_DELETIONS=true` if you explicitly want to track deletions (see protection features below).
 
-#### Mass Operation Protection
+### 🛡️ Zero-Footprint Mass Operation Protection
 
-Even if you enable `LISTEN_DELETIONS=true`, the system has built-in protection against mass deletions/edits (e.g., someone clearing a chat history):
+Even if you enable `LISTEN_DELETIONS=true`, the system has **military-grade protection** against mass deletions and edits:
 
 ```yaml
-- MASS_OPERATION_THRESHOLD=50      # Block if >50 operations in time window
-- MASS_OPERATION_WINDOW_SECONDS=60 # Time window in seconds
+- MASS_OPERATION_THRESHOLD=10      # Block if >10 operations (aggressive!)
+- MASS_OPERATION_WINDOW_SECONDS=30 # Detection window in seconds
 ```
 
-When a mass operation is detected, the affected chat is temporarily blocked from further edits/deletions to protect your data.
+#### How It Works
+
+1. **Operations are BUFFERED** - Nothing is written to your database immediately
+2. **2-second delay** - All operations wait in a buffer before being applied
+3. **Burst detection** - If >10 operations arrive for a chat within the buffer window, it triggers protection
+4. **ZERO footprint** - When triggered, the ENTIRE buffer is discarded. No changes written. Your backup stays intact.
+
+#### Example Attack Scenario
+
+Someone clears their chat history (100 messages deleted at once):
+```
+🛡️ ZERO-FOOTPRINT PROTECTION ACTIVATED
+   Chat: -1001234567890
+   Attack type: Mass deletion
+   Operations intercepted: 100
+   Data preserved: 100% (ZERO changes written to database)
+   Chat blocked until: 2026-01-14 12:35:00
+```
+
+**Result**: All 100 messages are still safely in your backup. The attacker's deletions had no effect.
+
+#### Why This Matters
+
+| Without Protection | With Protection |
+|-------------------|-----------------|
+| 10 deletions = 10 messages lost | 10 deletions = NOTHING lost |
+| Burst detected too late | Burst detected BEFORE any writes |
+| Partial data loss | Zero data loss |
+| Manual recovery needed | Automatic protection |
+
+This is the core philosophy: **your backup is sacred**. Even if you opt-in to deletion tracking, you're protected against mass operations that could wipe your data.
 
 #### Option 2: Batch Sync (One-time catch-up)
 

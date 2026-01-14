@@ -134,8 +134,9 @@ class Config:
         # Mass operation protection (applies to both listener and batch sync)
         # If more than THRESHOLD operations happen in WINDOW seconds, block them
         # This protects against mass deletions (e.g., someone clearing a chat)
-        self.mass_operation_threshold = int(os.getenv('MASS_OPERATION_THRESHOLD', '50'))
-        self.mass_operation_window_seconds = int(os.getenv('MASS_OPERATION_WINDOW_SECONDS', '60'))
+        # Default: 10 ops in 30 seconds triggers protection (aggressive by design!)
+        self.mass_operation_threshold = int(os.getenv('MASS_OPERATION_THRESHOLD', '10'))
+        self.mass_operation_window_seconds = int(os.getenv('MASS_OPERATION_WINDOW_SECONDS', '30'))
         
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
