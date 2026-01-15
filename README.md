@@ -59,24 +59,61 @@ Two separate Docker images are available (v4.0+):
 ### 1. Get Telegram API Credentials
 
 1. Go to https://my.telegram.org/apps
-2. Create a new application
-3. Note your `API_ID` and `API_HASH`
+2. Log in with your phone number
+3. Create a new application (any name/platform)
+4. Note your **API ID** (numbers) and **API Hash** (letters+numbers)
 
 ### 2. Deploy with Docker
 
 ```bash
-# Clone and configure
+# Clone the repository
 git clone https://github.com/GeiserX/Telegram-Archive
 cd Telegram-Archive
+
+# Create data directories
+mkdir -p data/session data/backups
+chmod -R 755 data/
+
+# Configure environment
 cp .env.example .env
-# Edit .env with your credentials
+```
 
-# Authenticate (one-time)
-./init_auth.sh  # or init_auth.bat on Windows
+**Edit `.env`** with your credentials:
+```bash
+TELEGRAM_API_ID=12345678          # Your API ID
+TELEGRAM_API_HASH=abcdef123456    # Your API Hash  
+TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
+```
 
-# Start services
+### 3. Authenticate with Telegram
+
+```bash
+# Make script executable (Linux/Mac)
+chmod +x init_auth.sh
+
+# Run authentication
+./init_auth.sh    # Linux/Mac
+# init_auth.bat   # Windows
+```
+
+You'll receive a code on Telegram - enter it when prompted.
+
+### 4. Start Services
+
+```bash
 docker-compose up -d
 ```
+
+**View your backup** at http://localhost:8000
+
+### Common Issues
+
+| Problem | Solution |
+|---------|----------|
+| `Permission denied` | Run `chmod -R 755 data/` |
+| `init_auth.sh: command not found` | Run `chmod +x init_auth.sh` first |
+| Viewer shows no data | Both containers need same database path - see [Database Configuration](#database-configuration-v30) |
+| `Failed to authorize` | Re-run `./init_auth.sh` |
 
 ## Web Viewer
 
@@ -192,6 +229,13 @@ Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each ba
 ### Database Configuration (v3.0+)
 
 Telegram Archive supports both SQLite and PostgreSQL.
+
+> ⚠️ **Viewer shows no data?** Both backup and viewer containers **must access the same database**. If using SQLite, add `DB_PATH` to BOTH services in docker-compose.yml:
+> ```yaml
+> environment:
+>   DB_TYPE: sqlite
+>   DB_PATH: /data/backups/telegram_backup.db
+> ```
 
 **SQLite Path Resolution (in priority order):**
 

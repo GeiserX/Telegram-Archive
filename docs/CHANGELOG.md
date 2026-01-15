@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [4.1.5] - 2026-01-15
+
+### Improved
+- **Quick Start guide** - Expanded with step-by-step instructions for beginners
+- **Database configuration** - Added prominent warning about viewer needing same DB path
+- **Troubleshooting table** - Common permission and setup issues
+- **docker-compose.yml** - Clearer comments about matching DB settings
+
+### Added
+- `scripts/release.sh` - Validates changelog entry before allowing tag creation
+
 ## [4.1.4] - 2026-01-15
 
 ### Changed
