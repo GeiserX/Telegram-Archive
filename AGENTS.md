@@ -75,18 +75,31 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 ### Creating Releases
 
-1. **Update `docs/CHANGELOG.md`** before tagging:
+**Always use the release script** to ensure changelog is updated:
+
+```bash
+./scripts/release.sh v4.1.5
+```
+
+The script:
+1. Validates version format (vX.Y.Z)
+2. **Checks that CHANGELOG.md has an entry** for this version (fails if missing!)
+3. Creates and pushes the git tag
+4. GitHub Actions creates the release with changelog notes
+
+### Manual Process (if needed)
+
+1. **Update `docs/CHANGELOG.md`** FIRST:
    - Add new section: `## [X.Y.Z] - YYYY-MM-DD`
    - Document all changes: Added, Fixed, Changed, Removed
    - Mark breaking changes with `### ⚠️ Breaking Change`
    - Include migration steps if needed
 
-2. **Tag format:** `vX.Y.Z` (e.g., `v4.1.3`)
+2. Commit the changelog update
 
-3. **Release workflow** automatically:
-   - Extracts changelog section for the version
-   - Creates GitHub release with proper notes
-   - Falls back to auto-generated notes if no changelog entry
+3. Tag: `git tag vX.Y.Z -m "Release vX.Y.Z"`
+
+4. Push: `git push origin vX.Y.Z`
 
 ### Breaking Changes
 
