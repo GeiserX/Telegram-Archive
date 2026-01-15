@@ -201,6 +201,10 @@ async def main():
         logger.info(f"Download media: {config.download_media}")
         logger.info(f"Chat types: {', '.join(config.chat_types) or '(whitelist-only mode)'}")
         logger.info(f"Real-time listener: {'ENABLED' if config.enable_listener else 'disabled'}")
+        if config.sync_deletions_edits:
+            logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
+            logger.warning("   → Will re-check ALL messages for edits/deletions each run")
+            logger.warning("   → This is expensive but catches changes made while offline")
         logger.info("=" * 60)
         
         # Create and run scheduler
