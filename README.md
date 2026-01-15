@@ -380,6 +380,33 @@ data/
 | "Permission denied" | `chmod -R 755 data/` |
 | Media files missing/corrupted | Set `VERIFY_MEDIA=true` to re-download them |
 | Backup interrupted | Set `VERIFY_MEDIA=true` once to recover missing files |
+| "duplicate key value violates unique constraint reactions_pkey" | See [Reactions Sequence Fix](#reactions-sequence-fix-postgresql) below |
+
+### Reactions Sequence Fix (PostgreSQL)
+
+If you see this error during backup:
+```
+duplicate key value violates unique constraint "reactions_pkey"
+DETAIL: Key (id)=(XXXX) already exists
+```
+
+**Cause:** The PostgreSQL sequence for `reactions.id` got out of sync with the actual data. This commonly occurs after database restores or migrations.
+
+**Solutions:**
+
+1. **Upgrade to v4.1.2+** (recommended) - The code automatically detects and recovers from this issue.
+
+2. **Manual fix** - Run this SQL command:
+   ```bash
+   docker exec -i <postgres-container> psql -U telegram -d telegram_backup -c \
+     "SELECT setval('reactions_id_seq', COALESCE((SELECT MAX(id) FROM reactions), 0) + 1, false);"
+   ```
+
+   Or use the provided script:
+   ```bash
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/scripts/fix_reactions_sequence.sql
+   docker exec -i <postgres-container> psql -U telegram -d telegram_backup < fix_reactions_sequence.sql
+   ```
 
 ## Limitations
 
