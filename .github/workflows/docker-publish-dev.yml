@@ -1,7 +1,7 @@
 name: Docker Publish Dev
 
 # Builds and pushes :dev tag for testing PRs before merging
-# Annais instance uses :dev tag for pre-production testing
+# Dev/test instances use :dev tag for pre-production testing
 
 on:
   pull_request:
@@ -87,7 +87,7 @@ jobs:
               - \`drumsergio/telegram-archive:dev\`
               - \`drumsergio/telegram-archive-viewer:dev\`
               
-              The Annais test instance will pick up these changes within 5 minutes (Portainer auto-update).
+              The dev/test instance will pick up these changes automatically (Portainer GitOps).
               
               To test locally:
               \`\`\`bash
