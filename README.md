@@ -223,122 +223,18 @@ Telegram Archive supports both SQLite and PostgreSQL.
 4. Uncomment `depends_on` in backup and viewer services
 5. Run `docker-compose up -d`
 
-## ⚠️ Upgrading to v4.0.6 (IMPORTANT)
+## ⚠️ Upgrading
 
-> 🚨 **Database Migration Required**: v4.0.6 fixes a critical bug with chat ID handling. **You MUST run a migration script** before updating if you've used v4.0.5.
+For detailed upgrade instructions, breaking changes, and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
 
-### Background
+### Quick Reference
 
-Version v4.0.5 introduced inconsistent chat ID handling that caused foreign key violations during backups. Chats were stored with positive IDs while messages used negative (marked) IDs, causing backup failures.
-
-### Migration Steps
-
-**If upgrading from v4.0.5:**
-
-1. **Stop your backup container** (viewer can stay running):
-   ```bash
-   docker-compose stop telegram-backup
-   ```
-
-2. **Run the migration script**:
-   
-   **For PostgreSQL:**
-   ```bash
-   # Download the migration script
-   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids.sql
-   
-   # Run against your database
-   docker exec -i <postgres-container> psql -U telegram -d telegram_backup < migrate_to_marked_ids.sql
-   ```
-   
-   **For SQLite:**
-   ```bash
-   # Download the SQLite version
-   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids_sqlite.sql
-   
-   # Run against your database
-   sqlite3 /path/to/telegram_backup.db < migrate_to_marked_ids_sqlite.sql
-   ```
-
-3. **Pull the new image and restart:**
-   ```bash
-   docker-compose pull
-   docker-compose up -d
-   ```
-
-**If upgrading from v4.0.4 or earlier:** No migration needed - just update normally.
-
-**If starting fresh:** No migration needed.
-
----
-
-## Upgrading from v3.x to v4.0
-
-> ⚠️ **Breaking Change**: v4.0 introduces separate Docker images with new names.
-
-### What Changed
-
-| v3.x | v4.0 |
-|------|------|
-| `drumsergio/telegram-backup-automation` | `drumsergio/telegram-archive` |
-| Same image with `command: uvicorn...` | `drumsergio/telegram-archive-viewer` |
-
-### Migration Steps
-
-1. **Update your `docker-compose.yml`:**
-
-   ```yaml
-   # Before (v3.x)
-   telegram-backup:
-     image: drumsergio/telegram-backup-automation:latest
-   
-   telegram-viewer:
-     image: drumsergio/telegram-backup-automation:latest
-     command: uvicorn src.web.main:app --host 0.0.0.0 --port 8000
-
-   # After (v4.0)
-   telegram-backup:
-     image: drumsergio/telegram-archive:latest
-   
-   telegram-viewer:
-     image: drumsergio/telegram-archive-viewer:latest
-     # No command needed - it's the default
-   ```
-
-2. **Pull new images and restart:**
-   ```bash
-   docker-compose pull
-   docker-compose up -d
-   ```
-
-**Your data is safe** - no database migration needed. The change is only in image names.
-
-### Why the Change?
-
-- **Smaller viewer image** (~150MB vs ~300MB) - no Telegram client needed
-- **Faster CI/CD** - viewer changes don't rebuild the backup image
-- **Cleaner naming** - aligned with repository name
-
----
-
-## Upgrading from v2.x to v3.0
-
-v3.0 introduces async database operations and PostgreSQL support. **Existing SQLite databases work automatically** - no migration needed.
-
-The upgrade is transparent:
-1. Pull the new image: `docker-compose pull`
-2. Restart: `docker-compose up -d`
-
-Your existing data will continue to work. v3 automatically detects v2 environment variables (`DATABASE_PATH`, `DATABASE_DIR`) for backward compatibility.
-
-**Optional: Switch to PostgreSQL**
-
-If you want to migrate from SQLite to PostgreSQL:
-
-1. Stop services: `docker-compose down`
-2. Configure PostgreSQL (see above)
-3. Run migration: `docker-compose run --rm telegram-backup python -c "from src.db import *; import asyncio; asyncio.run(migrate_sqlite_to_postgres())"`
-4. Start services: `docker-compose up -d`
+| From | To | Action Required |
+|------|-----|-----------------|
+| v4.0.5 | v4.0.6+ | **Migration required** - see CHANGELOG |
+| v3.x | v4.0 | Update image names in docker-compose |
+| v2.x | v3.0 | Just pull and restart |
+| Fresh install | Any | No migration needed |
 
 ## CLI Commands
 

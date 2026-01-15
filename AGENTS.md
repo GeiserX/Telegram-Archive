@@ -71,6 +71,40 @@ Project description: Own your Telegram history. Automated, incremental backups w
 - Always test on dev environment before releasing to prod
 - See gitea docker-compose for environment assignments
 
+## Release Guidelines
+
+### Creating Releases
+
+1. **Update `docs/CHANGELOG.md`** before tagging:
+   - Add new section: `## [X.Y.Z] - YYYY-MM-DD`
+   - Document all changes: Added, Fixed, Changed, Removed
+   - Mark breaking changes with `### ⚠️ Breaking Change`
+   - Include migration steps if needed
+
+2. **Tag format:** `vX.Y.Z` (e.g., `v4.1.3`)
+
+3. **Release workflow** automatically:
+   - Extracts changelog section for the version
+   - Creates GitHub release with proper notes
+   - Falls back to auto-generated notes if no changelog entry
+
+### Breaking Changes
+
+When introducing breaking changes:
+- Bump **MAJOR** version (e.g., v4.0.0 → v5.0.0)
+- Document in CHANGELOG with migration steps
+- Update README upgrade section if significant
+- Consider providing migration scripts in `scripts/`
+
+### Chat ID Format (CRITICAL)
+
+All chat IDs must use Telegram's **marked format**:
+- Users: positive (e.g., `123456789`)
+- Basic groups: negative (e.g., `-123456789`)
+- Supergroups/Channels: -100 prefix (e.g., `-1002240913478`)
+
+When documenting or configuring chat IDs, always use marked format!
+
 ## AI Behavior Rules
 
 - **Always enter Plan Mode** before making any changes - think through the approach first
