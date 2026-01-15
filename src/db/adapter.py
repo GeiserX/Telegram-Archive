@@ -627,30 +627,63 @@ class DatabaseAdapter:
     
     @retry_on_locked()
     async def insert_reactions(self, message_id: int, chat_id: int, reactions: List[Dict[str, Any]]) -> None:
-        """Insert reactions for a message."""
+        """Insert reactions for a message using upsert to avoid sequence issues."""
         if not reactions:
             return
         
         async with self.db_manager.async_session_factory() as session:
-            # Delete existing reactions
+            # Delete existing reactions first
             await session.execute(
                 delete(Reaction).where(
                     and_(Reaction.message_id == message_id, Reaction.chat_id == chat_id)
                 )
             )
-            
-            # Insert new reactions
+            await session.commit()
+        
+        # Insert in a separate transaction to avoid sequence conflicts
+        async with self.db_manager.async_session_factory() as session:
             for reaction in reactions:
-                r = Reaction(
-                    message_id=message_id,
-                    chat_id=chat_id,
-                    emoji=reaction['emoji'],
-                    user_id=reaction.get('user_id'),
-                    count=reaction.get('count', 1),
-                )
-                session.add(r)
+                try:
+                    r = Reaction(
+                        message_id=message_id,
+                        chat_id=chat_id,
+                        emoji=reaction['emoji'],
+                        user_id=reaction.get('user_id'),
+                        count=reaction.get('count', 1),
+                    )
+                    session.add(r)
+                    await session.flush()  # Flush each to catch errors early
+                except Exception as e:
+                    if 'duplicate key' in str(e).lower() or 'unique' in str(e).lower():
+                        # Sequence out of sync - reset and retry
+                        logger.warning(f"Reactions sequence out of sync, resetting...")
+                        await session.rollback()
+                        await self._reset_reactions_sequence()
+                        # Retry the insert
+                        async with self.db_manager.async_session_factory() as retry_session:
+                            r = Reaction(
+                                message_id=message_id,
+                                chat_id=chat_id,
+                                emoji=reaction['emoji'],
+                                user_id=reaction.get('user_id'),
+                                count=reaction.get('count', 1),
+                            )
+                            retry_session.add(r)
+                            await retry_session.commit()
+                        return  # Exit after recovery
+                    raise
             
             await session.commit()
+    
+    async def _reset_reactions_sequence(self) -> None:
+        """Reset the reactions table sequence to max(id) + 1."""
+        async with self.db_manager.async_session_factory() as session:
+            if self.db_manager.db_type == 'postgresql':
+                await session.execute(text(
+                    "SELECT setval('reactions_id_seq', COALESCE((SELECT MAX(id) FROM reactions), 0) + 1, false)"
+                ))
+                await session.commit()
+                logger.info("Reset reactions_id_seq sequence")
     
     async def get_reactions(self, message_id: int, chat_id: int) -> List[Dict[str, Any]]:
         """Get all reactions for a message."""
