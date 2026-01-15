@@ -15,8 +15,51 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Create Release
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Extract section for this version from CHANGELOG.md
+          # Look for ## [version] and extract until next ## [
+          if [ -f docs/CHANGELOG.md ]; then
+            NOTES=$(awk "/^## \[${VERSION#v}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" docs/CHANGELOG.md)
+            if [ -n "$NOTES" ]; then
+              echo "Found changelog notes for $VERSION"
+              # Write to file to preserve newlines
+              echo "$NOTES" > /tmp/release_notes.md
+              echo "" >> /tmp/release_notes.md
+              echo "---" >> /tmp/release_notes.md
+              echo "" >> /tmp/release_notes.md
+              echo "📋 **Full changelog:** [docs/CHANGELOG.md](https://github.com/${{ github.repository }}/blob/master/docs/CHANGELOG.md)" >> /tmp/release_notes.md
+              echo "has_notes=true" >> $GITHUB_OUTPUT
+            else
+              echo "No changelog notes found for $VERSION"
+              echo "has_notes=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No CHANGELOG.md found"
+            echo "has_notes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release with changelog
+        if: steps.changelog.outputs.has_notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release with auto-generated notes
+        if: steps.changelog.outputs.has_notes != 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
