@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [4.1.4] - 2026-01-15
+
+### Changed
+- Moved all upgrade notices from README to `docs/CHANGELOG.md`
+- README now references CHANGELOG for upgrade instructions
+
+### Improved
+- Release workflow now extracts changelog notes for GitHub releases
+- Added release guidelines to AGENTS.md
+- Documented chat ID format requirements
+
 ## [4.1.3] - 2026-01-15
 
 ### Added
