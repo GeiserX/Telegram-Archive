@@ -37,6 +37,44 @@ config = Config()
 db: Optional[DatabaseAdapter] = None
 
 
+async def _normalize_display_chat_ids():
+    """
+    Normalize DISPLAY_CHAT_IDS to use marked format.
+    
+    If a positive ID doesn't exist in DB but -100{id} does, auto-correct it.
+    This handles common user mistakes where they forget the -100 prefix for channels.
+    """
+    if not config.display_chat_ids or not db:
+        return
+    
+    all_chats = await db.get_all_chats()
+    existing_ids = {c['id'] for c in all_chats}
+    
+    normalized = set()
+    for chat_id in config.display_chat_ids:
+        if chat_id in existing_ids:
+            # ID exists as-is
+            normalized.add(chat_id)
+        elif chat_id > 0:
+            # Positive ID not found - try -100 prefix (channel/supergroup format)
+            marked_id = -1000000000000 - chat_id
+            if marked_id in existing_ids:
+                logger.warning(
+                    f"DISPLAY_CHAT_IDS: Auto-correcting {chat_id} → {marked_id} "
+                    f"(use marked format for channels/supergroups)"
+                )
+                normalized.add(marked_id)
+            else:
+                logger.warning(f"DISPLAY_CHAT_IDS: Chat ID {chat_id} not found in database")
+                normalized.add(chat_id)  # Keep original, might be backed up later
+        else:
+            # Negative ID not found
+            logger.warning(f"DISPLAY_CHAT_IDS: Chat ID {chat_id} not found in database")
+            normalized.add(chat_id)
+    
+    config.display_chat_ids = normalized
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application lifecycle - initialize and cleanup database."""
@@ -45,6 +83,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db_manager = await init_database()
     db = DatabaseAdapter(db_manager)
     logger.info("Database connection established")
+    
+    # Normalize display chat IDs (auto-correct missing -100 prefix)
+    await _normalize_display_chat_ids()
+    
     yield
     logger.info("Closing database connection...")
     await close_database()
