@@ -90,7 +90,8 @@ services:
       VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
       # Timezone for displaying last backup time
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
-      # Database Configuration (must match telegram-backup service)
+      # Database Configuration - MUST MATCH telegram-backup service!
+      # If viewer shows no data, ensure these match the backup container
       DATABASE_URL: ${DATABASE_URL:-}
       DB_TYPE: ${DB_TYPE:-sqlite}
       DB_PATH: ${DB_PATH:-/data/backups/telegram_backup.db}
