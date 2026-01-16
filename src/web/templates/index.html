@@ -255,7 +255,17 @@
                 :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
                 <!-- Header -->
                 <div class="p-4 border-b border-gray-700">
-                    <h1 class="text-xl font-bold mb-4">Telegram Archive</h1>
+                    <div class="flex items-center gap-2 mb-4">
+                        <h1 class="text-xl font-bold">Telegram Archive</h1>
+                        <!-- Small loading indicator for stats/WS initialization -->
+                        <div v-if="loadingStats" class="flex items-center gap-1.5 text-xs text-tg-muted">
+                            <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Syncing...</span>
+                        </div>
+                    </div>
                     <div class="relative mb-3">
                         <input v-model="searchQuery" type="text" placeholder="Search chats..."
                             class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -309,6 +319,22 @@
 
                 <!-- Chat List -->
                 <div class="flex-1 overflow-y-auto">
+                    <!-- Loading spinner while chats are loading -->
+                    <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                        <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span class="text-sm">Loading chats...</span>
+                    </div>
+                    <!-- Empty state -->
+                    <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                        <svg class="w-12 h-12 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        </svg>
+                        <span class="text-sm">{{ searchQuery ? 'No chats found' : 'No chats yet' }}</span>
+                    </div>
                     <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
                         class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
                         :class="{'bg-tg-active': selectedChat?.id === chat.id}">
@@ -515,13 +541,15 @@
                                     <div v-if="msg.media_path" class="mb-2 space-y-1">
                                         <!-- Photos sent as photos -->
                                         <img v-if="msg.media_type === 'photo'" :src="getMediaUrl(msg)"
+                                            loading="lazy"
                                             class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
 
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-[200px] max-w-md bg-black/20 p-3 rounded-lg">
-                                            <audio controls preload="metadata" class="w-full h-10" :src="getMediaUrl(msg)">
+                                            <audio controls preload="none" class="w-full h-10" :src="getMediaUrl(msg)"
+                                                @error="handleMediaError($event, msg)">
                                                 Your browser does not support the audio element.
                                             </audio>
                                             <div class="text-[11px] opacity-70 mt-1.5 truncate px-1">{{
@@ -535,15 +563,18 @@
                                         </video>
 
                                         <!-- Videos -->
-                                        <video v-else-if="msg.media_type === 'video'" controls
-                                            class="rounded-lg max-h-64 w-full">
+                                        <video v-else-if="msg.media_type === 'video'" controls preload="none"
+                                            class="rounded-lg max-h-64 w-full"
+                                            @error="handleMediaError($event, msg)">
                                             <source :src="getMediaUrl(msg)" type="video/mp4">
                                         </video>
 
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media_type === 'sticker'" class="max-w-[200px]">
                                             <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
-                                                :src="getMediaUrl(msg)" class="max-h-48 max-w-full object-contain">
+                                                :src="getMediaUrl(msg)" loading="lazy" 
+                                                class="max-h-48 max-w-full object-contain"
+                                                @error="handleImageError($event, msg)">
                                             <div v-else class="text-xs text-tg-muted p-2 bg-black/20 rounded">
                                                 🎭 Animated Sticker
                                             </div>
@@ -553,6 +584,7 @@
                                         <div v-else-if="msg.media_type === 'document' && isImageDocument(msg)"
                                             class="space-y-1">
                                             <img :src="getMediaUrl(msg)"
+                                                loading="lazy"
                                                 class="rounded-lg max-h-48 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
@@ -674,6 +706,8 @@
                 const searchQuery = ref('')
                 const messageSearchQuery = ref('')
                 const loading = ref(false)
+                const loadingChats = ref(true)  // Start as true, loading on init
+                const loadingStats = ref(true)  // Start as true, loading on init
                 const page = ref(0)
                 const hasMore = ref(true)
                 const messagesContainer = ref(null)
@@ -705,6 +739,7 @@
                 let gifObserver = null
 
                 const loadChats = async () => {
+                    loadingChats.value = true
                     try {
                         const res = await fetch('/api/chats', {
                             credentials: 'include'
@@ -732,6 +767,8 @@
                         } else {
                             chatsError.value = 'Failed to load chats. Please try again.'
                         }
+                    } finally {
+                        loadingChats.value = false
                     }
                 }
 
@@ -769,7 +806,15 @@
                         }
                     } catch (e) {
                         console.error("Failed to fetch stats", e)
+                    } finally {
+                        // Stats loading is part of the secondary init phase
+                        // Will be fully complete when WS connects
                     }
+                }
+                
+                // Mark initialization complete (called after WS connects and notifications init)
+                const finishInitialization = () => {
+                    loadingStats.value = false
                 }
 
                 // Auth check on mount
@@ -808,6 +853,9 @@
                     // Initialize WebSocket and notifications (v5.0)
                     await initNotifications()
                     initWebSocket()
+                    
+                    // Mark secondary initialization complete
+                    finishInitialization()
                 })
 
                 // WebSocket initialization for real-time updates
@@ -1499,18 +1547,34 @@
                 }
 
                 const handleImageError = (event, msg) => {
-                    // Show placeholder instead of hiding broken image
+                    // Show placeholder instead of broken image - SILENTLY (no console spam)
                     const img = event.target
                     img.onerror = null  // Prevent infinite loop
                     img.src = 'data:image/svg+xml,' + encodeURIComponent(`
                         <svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
                             <rect fill="#374151" width="200" height="150"/>
-                            <text x="100" y="70" text-anchor="middle" fill="#9CA3AF" font-family="system-ui" font-size="12">Media not downloaded</text>
+                            <text x="100" y="70" text-anchor="middle" fill="#9CA3AF" font-family="system-ui" font-size="12">Media not available</text>
                             <text x="100" y="90" text-anchor="middle" fill="#6B7280" font-family="system-ui" font-size="10">(will sync on next backup)</text>
                         </svg>
                     `)
                     img.style.cursor = 'default'
                     img.onclick = null
+                }
+                
+                const handleMediaError = (event, msg) => {
+                    // Silently handle audio/video errors - replace with placeholder
+                    const media = event.target
+                    const parent = media.parentElement
+                    if (parent) {
+                        parent.innerHTML = `
+                            <div class="flex items-center gap-2 text-gray-400 text-sm py-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <span>Media not available</span>
+                            </div>
+                        `
+                    }
                 }
 
                 const openMedia = (msg) => {
@@ -1733,6 +1797,7 @@
                     getDocumentDisplayName,
                     isImageDocument,
                     handleImageError,
+                    handleMediaError,
                     openMedia,
                     linkifyText,
                     scrollToMessage,
@@ -1756,6 +1821,9 @@
                     // Error states
                     chatsError,
                     loadChats,
+                    // Loading states
+                    loadingChats,
+                    loadingStats,
                     // Stats
                     lastBackupTime,
                     lastBackupTimeSource,

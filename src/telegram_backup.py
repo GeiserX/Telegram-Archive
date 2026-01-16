@@ -852,8 +852,9 @@ class TelegramBackup:
             return
         
         # ChatPhotoEmpty has no photo_id, skip these
+        # Note: photo_id can be 0 for some entities, treat it as invalid
         photo_id = getattr(photo, "photo_id", None)
-        if photo_id is None:
+        if not photo_id:  # None, 0, or empty
             return
 
         # Determine target directory based on entity type
@@ -873,7 +874,6 @@ class TelegramBackup:
             return
 
         try:
-            # Use download=True to actually download the photo
             result = await self.client.download_profile_photo(
                 entity, 
                 file=file_path,

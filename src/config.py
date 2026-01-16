@@ -129,20 +129,20 @@ class Config:
         # LISTEN_DELETIONS: Delete messages from backup when deleted on Telegram
         # ⚠️ DEFAULT FALSE - Enabling defeats the purpose of having a backup!
         # Only enable if you explicitly want to mirror Telegram exactly
-        self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'false').lower() == 'true'
+        self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'true').lower() == 'true'
         
         # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
         # When enabled, new messages are saved immediately instead of waiting for scheduled backup
         # This provides true real-time backup but may increase API usage
-        self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'false').lower() == 'true'
+        self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'true').lower() == 'true'
         
         # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
         # When enabled, updates to chat metadata are captured in real-time
-        self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'false').lower() == 'true'
+        self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'true').lower() == 'true'
         
         # LISTEN_ALBUMS: Group media uploads together as albums
         # When enabled, grouped photos/videos are detected and stored together
-        self.listen_albums = os.getenv('LISTEN_ALBUMS', 'false').lower() == 'true'
+        self.listen_albums = os.getenv('LISTEN_ALBUMS', 'true').lower() == 'true'
         
         # =====================================================================
         # ZERO-FOOTPRINT MASS OPERATION PROTECTION
