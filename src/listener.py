@@ -533,24 +533,36 @@ class TelegramListener:
                 for msg_id in event.deleted_ids:
                     self.stats['deletions_received'] += 1
                     
-                    if chat_id is not None:
+                    # If chat_id is unknown, try to look it up from the database
+                    effective_chat_id = chat_id
+                    if effective_chat_id is None:
+                        try:
+                            effective_chat_id = await self.db.get_chat_id_for_message(msg_id)
+                            if effective_chat_id:
+                                logger.debug(f"🔍 Resolved chat_id={effective_chat_id} for msg={msg_id} from database")
+                        except Exception as e:
+                            logger.debug(f"Could not look up chat for msg {msg_id}: {e}")
+                    
+                    if effective_chat_id is not None:
+                        if not self._should_process_chat(effective_chat_id):
+                            continue
+                            
                         queued, reason = self._protector.queue_operation(
-                            chat_id=chat_id,
+                            chat_id=effective_chat_id,
                             operation_type='deletion',
                             data={
                                 'message_id': msg_id,
-                                'chat_id': chat_id
+                                'chat_id': effective_chat_id
                             }
                         )
                         
                         if not queued:
                             self.stats['operations_discarded'] += 1
                         else:
-                            logger.debug(f"🗑️ Deletion queued: chat={chat_id} msg={msg_id}")
+                            logger.debug(f"🗑️ Deletion queued: chat={effective_chat_id} msg={msg_id}")
                     else:
-                        # Chat unknown - log warning but don't process
-                        # (can't protect without knowing the chat)
-                        logger.warning(f"⚠️ Deletion with unknown chat ignored: msg={msg_id}")
+                        # Chat unknown even after DB lookup - skip
+                        logger.debug(f"⚠️ Deletion skipped (unknown chat): msg={msg_id}")
                 
             except Exception as e:
                 self.stats['errors'] += 1

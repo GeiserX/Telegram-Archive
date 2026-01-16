@@ -424,6 +424,20 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
     
+    async def get_chat_id_for_message(self, message_id: int) -> Optional[int]:
+        """
+        Look up the chat_id for a message by its ID.
+        
+        Used when Telegram sends deletion events without chat_id.
+        Note: Message IDs are only unique within a chat, so this may return
+        multiple results. Returns the first match.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.chat_id).where(Message.id == message_id).limit(1)
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
+    
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         """Delete a specific message and its media."""
         async with self.db_manager.async_session_factory() as session:
