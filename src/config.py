@@ -136,6 +136,14 @@ class Config:
         # This provides true real-time backup but may increase API usage
         self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'false').lower() == 'true'
         
+        # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
+        # When enabled, updates to chat metadata are captured in real-time
+        self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'false').lower() == 'true'
+        
+        # LISTEN_ALBUMS: Group media uploads together as albums
+        # When enabled, grouped photos/videos are detected and stored together
+        self.listen_albums = os.getenv('LISTEN_ALBUMS', 'false').lower() == 'true'
+        
         # =====================================================================
         # ZERO-FOOTPRINT MASS OPERATION PROTECTION
         # =====================================================================
@@ -183,6 +191,10 @@ class Config:
                 logger.info("  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
             else:
                 logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
+            if self.listen_chat_actions:
+                logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
+            if self.listen_albums:
+                logger.info("  LISTEN_ALBUMS: true - Grouped media detected!")
             logger.info(f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")

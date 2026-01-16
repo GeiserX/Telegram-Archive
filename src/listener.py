@@ -641,6 +641,127 @@ class TelegramListener:
             except Exception as e:
                 self.stats['errors'] += 1
                 logger.error(f"Error in new message handler: {e}", exc_info=True)
+        
+        # ChatAction handler - tracks chat metadata changes
+        @self.client.on(events.ChatAction)
+        async def on_chat_action(event: events.ChatAction.Event) -> None:
+            """
+            Handle chat action events (photo changes, member joins/leaves, title changes).
+            
+            Only active if LISTEN_CHAT_ACTIONS is enabled.
+            """
+            if not self.config.listen_chat_actions:
+                return
+            
+            try:
+                chat_id = self._get_marked_id(event.chat_id)
+                
+                if not self._should_process_chat(chat_id):
+                    return
+                
+                # Track stats
+                if 'chat_actions' not in self.stats:
+                    self.stats['chat_actions'] = 0
+                self.stats['chat_actions'] += 1
+                
+                action_type = None
+                if event.new_photo:
+                    action_type = 'photo_changed'
+                    logger.info(f"📷 Chat photo changed: chat={chat_id}")
+                elif event.photo_removed:
+                    action_type = 'photo_removed'
+                    logger.info(f"📷 Chat photo removed: chat={chat_id}")
+                elif event.new_title:
+                    action_type = 'title_changed'
+                    logger.info(f"📝 Chat title changed to '{event.new_title}': chat={chat_id}")
+                elif event.user_joined:
+                    action_type = 'user_joined'
+                    logger.debug(f"👤 User joined: chat={chat_id}")
+                elif event.user_left:
+                    action_type = 'user_left'
+                    logger.debug(f"👤 User left: chat={chat_id}")
+                elif event.user_added:
+                    action_type = 'user_added'
+                    logger.debug(f"👤 User added: chat={chat_id}")
+                elif event.user_kicked:
+                    action_type = 'user_kicked'
+                    logger.debug(f"👤 User kicked: chat={chat_id}")
+                
+                # Update chat info if photo or title changed
+                if action_type in ('photo_changed', 'title_changed'):
+                    # Get full entity for update
+                    try:
+                        entity = await self.client.get_entity(chat_id)
+                        if entity:
+                            # Update chat in database
+                            chat_data = {
+                                'id': chat_id,
+                                'type': 'channel' if hasattr(entity, 'broadcast') else 'group',
+                                'title': getattr(entity, 'title', None),
+                                'username': getattr(entity, 'username', None),
+                            }
+                            await self.db.upsert_chat(chat_data)
+                            logger.info(f"✅ Chat {chat_id} metadata updated")
+                    except Exception as e:
+                        logger.warning(f"Failed to update chat metadata for {chat_id}: {e}")
+                        
+            except Exception as e:
+                self.stats['errors'] += 1
+                logger.error(f"Error in chat action handler: {e}", exc_info=True)
+        
+        # Album handler - groups media uploads together
+        @self.client.on(events.Album)
+        async def on_album(event: events.Album.Event) -> None:
+            """
+            Handle album events (grouped photos/videos).
+            
+            Only active if LISTEN_ALBUMS is enabled.
+            Albums are groups of photos/videos sent together.
+            """
+            if not self.config.listen_albums:
+                return
+            
+            try:
+                chat_id = self._get_marked_id(event.chat_id)
+                
+                if not self._should_process_chat(chat_id):
+                    return
+                
+                # Track stats
+                if 'albums_received' not in self.stats:
+                    self.stats['albums_received'] = 0
+                self.stats['albums_received'] += 1
+                
+                album_size = len(event.messages)
+                logger.info(f"📸 Album received: chat={chat_id} size={album_size}")
+                
+                # If LISTEN_NEW_MESSAGES is enabled, save each message in the album
+                if self.config.listen_new_messages:
+                    for message in event.messages:
+                        message_data = {
+                            'id': message.id,
+                            'chat_id': chat_id,
+                            'sender_id': message.sender_id,
+                            'date': message.date,
+                            'text': message.text or '',
+                            'reply_to_msg_id': message.reply_to_msg_id if hasattr(message, 'reply_to_msg_id') else None,
+                            'reply_to_text': None,
+                            'forward_from_id': None,
+                            'edit_date': message.edit_date,
+                            'media_type': 'album',  # Mark as album for special handling
+                            'media_id': None,  # Media handled by scheduled backup
+                            'media_path': None,
+                            'raw_data': {'grouped_id': message.grouped_id} if message.grouped_id else {},
+                            'is_outgoing': 1 if message.out else 0
+                        }
+                        await self.db.insert_message(message_data)
+                        self.stats['new_messages_saved'] += 1
+                    
+                    logger.info(f"📸 Album saved: chat={chat_id} messages={album_size}")
+                        
+            except Exception as e:
+                self.stats['errors'] += 1
+                logger.error(f"Error in album handler: {e}", exc_info=True)
     
     async def _process_buffered_operations(self) -> None:
         """

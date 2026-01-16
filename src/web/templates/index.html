@@ -898,16 +898,20 @@
                         if (res.ok) {
                             const data = await res.json()
                             notificationsEnabled.value = data.enabled
-                            console.log('[Notifications] API enabled:', data.enabled)
+                            if (data.enabled) {
+                                console.log('[Notifications] ✅ Enabled by server')
+                            } else {
+                                console.log('[Notifications] ❌ Disabled by server:', data.reason || 'unknown')
+                            }
                         }
                     } catch (e) {
-                        console.warn('Could not fetch notification settings:', e)
+                        console.warn('[Notifications] Could not fetch settings:', e)
                     }
                     
                     // Log notification state for debugging
                     console.log('[Notifications] State:', {
-                        enabled: notificationsEnabled.value,
-                        supported: notificationsSupported.value,
+                        serverEnabled: notificationsEnabled.value,
+                        browserSupported: notificationsSupported.value,
                         permission: notificationPermission.value
                     })
                     
@@ -1024,6 +1028,8 @@
                             isAuthenticated.value = true
                             await loadChats()
                             await loadStats()
+                            // Re-initialize notifications after login (cookie now set)
+                            await initNotifications()
                         } else {
                             loginError.value = 'Login failed'
                         }
@@ -1101,13 +1107,21 @@
                         const latestIds = new Set(latestMessages.map(m => m.id))
                         const existingIds = new Set(messages.value.map(m => m.id))
                         
-                        // Find new messages
+                        // Find new messages (in server response but not in our view)
                         const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
                         
-                        // Find deleted messages (in our view but not in latest from server)
-                        // Only check messages that would be in the first page (recent ones)
-                        const recentMessages = messages.value.slice(-50)
-                        const deletedIds = recentMessages
+                        // Find deleted messages - ONLY check messages that overlap with our fetch
+                        // We fetched the latest 50/20 from server. Compare with our newest messages.
+                        // Sort our messages by date descending to get the newest ones
+                        const sortedByDate = [...messages.value].sort((a, b) => 
+                            new Date(b.date) - new Date(a.date)
+                        )
+                        // Get our newest messages (same count as server returned)
+                        const ourNewestMessages = sortedByDate.slice(0, latestMessages.length)
+                        
+                        // Only messages that SHOULD be in the latest fetch but aren't = deleted
+                        // A message is deleted if: it's in our newest messages AND not in server's latest
+                        const deletedIds = ourNewestMessages
                             .filter(m => !latestIds.has(m.id))
                             .map(m => m.id)
                         
