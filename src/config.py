@@ -136,6 +136,11 @@ class Config:
         # This provides true real-time backup but may increase API usage
         self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'true').lower() == 'true'
         
+        # LISTEN_NEW_MESSAGES_MEDIA: Also download media in real-time (not just text)
+        # When disabled (default), media is marked for download on next scheduled backup
+        # When enabled, media is downloaded immediately - more API usage but instant availability
+        self.listen_new_messages_media = os.getenv('LISTEN_NEW_MESSAGES_MEDIA', 'false').lower() == 'true'
+        
         # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
         # When enabled, updates to chat metadata are captured in real-time
         self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'true').lower() == 'true'

@@ -20,8 +20,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Set, Deque, Tuple, List, Dict, Any
 
+import os
 from telethon import TelegramClient, events
-from telethon.tl.types import User
+from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument, MessageMediaContact, MessageMediaGeo, MessageMediaPoll
 from telethon.utils import get_peer_id
 
 from .config import Config
@@ -339,6 +340,10 @@ class TelegramListener:
             logger.info(f"  LISTEN_DELETIONS: false (backup fully protected)")
         if config.listen_new_messages:
             logger.info(f"  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
+            if config.listen_new_messages_media:
+                logger.info(f"  LISTEN_NEW_MESSAGES_MEDIA: true - Media downloaded immediately!")
+            else:
+                logger.info(f"  LISTEN_NEW_MESSAGES_MEDIA: false (media on scheduled backup)")
         else:
             logger.info(f"  LISTEN_NEW_MESSAGES: false (saved on scheduled backup)")
         logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
@@ -453,6 +458,118 @@ class TelegramListener:
             return True
         
         return False
+    
+    def _get_media_type(self, media) -> Optional[str]:
+        """Get media type as string."""
+        if isinstance(media, MessageMediaPhoto):
+            return 'photo'
+        elif isinstance(media, MessageMediaDocument):
+            # Check document attributes to determine specific type
+            if hasattr(media, 'document') and media.document:
+                is_animated = False
+                for attr in media.document.attributes:
+                    attr_type = type(attr).__name__
+                    if 'Animated' in attr_type:
+                        is_animated = True
+                    if 'Video' in attr_type:
+                        return 'animation' if is_animated else 'video'
+                    elif 'Audio' in attr_type:
+                        if hasattr(attr, 'voice') and attr.voice:
+                            return 'voice'
+                        return 'audio'
+                    elif 'Sticker' in attr_type:
+                        return 'sticker'
+                if is_animated:
+                    return 'animation'
+            return 'document'
+        elif isinstance(media, MessageMediaContact):
+            return 'contact'
+        elif isinstance(media, MessageMediaGeo):
+            return 'geo'
+        elif isinstance(media, MessageMediaPoll):
+            return 'poll'
+        return None
+    
+    def _get_media_filename(self, message, media_type: str, telegram_file_id: Optional[str] = None) -> str:
+        """Generate a filename for media."""
+        # Try to get original filename from document
+        if hasattr(message.media, 'document') and message.media.document:
+            for attr in message.media.document.attributes:
+                if hasattr(attr, 'file_name') and attr.file_name:
+                    # Use Telegram file ID + original name for deduplication
+                    if telegram_file_id:
+                        return f"{telegram_file_id}_{attr.file_name}"
+                    return attr.file_name
+        
+        # Generate filename based on type
+        extensions = {
+            'photo': '.jpg',
+            'video': '.mp4',
+            'animation': '.mp4',
+            'voice': '.ogg',
+            'audio': '.mp3',
+            'sticker': '.webp',
+            'document': ''
+        }
+        ext = extensions.get(media_type, '')
+        
+        if telegram_file_id:
+            return f"{telegram_file_id}{ext}"
+        return f"{message.id}_{media_type}{ext}"
+    
+    async def _download_media(self, message, chat_id: int) -> Optional[str]:
+        """
+        Download media from a message.
+        
+        Returns the file path if successful, None otherwise.
+        """
+        media = message.media
+        media_type = self._get_media_type(media)
+        
+        if not media_type or media_type in ('contact', 'geo', 'poll'):
+            return None  # These don't have downloadable files
+        
+        try:
+            # Get Telegram's file unique ID for deduplication
+            telegram_file_id = None
+            if hasattr(media, 'photo'):
+                telegram_file_id = str(getattr(media.photo, 'id', None))
+            elif hasattr(media, 'document'):
+                telegram_file_id = str(getattr(media.document, 'id', None))
+            
+            # Check file size
+            file_size = 0
+            if hasattr(media, 'document') and media.document:
+                file_size = getattr(media.document, 'size', 0)
+            elif hasattr(media, 'photo') and media.photo:
+                if hasattr(media.photo, 'sizes') and media.photo.sizes:
+                    largest = max(media.photo.sizes, key=lambda s: getattr(s, 'size', 0), default=None)
+                    if largest:
+                        file_size = getattr(largest, 'size', 0)
+            
+            max_size = self.config.get_max_media_size_bytes()
+            if file_size > max_size:
+                logger.debug(f"Skipping large media file: {file_size / 1024 / 1024:.2f} MB")
+                return None
+            
+            # Create chat-specific media directory
+            chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
+            os.makedirs(chat_media_dir, exist_ok=True)
+            
+            # Generate filename
+            file_name = self._get_media_filename(message, media_type, telegram_file_id)
+            file_path = os.path.join(chat_media_dir, file_name)
+            
+            # Download if not already exists
+            if not os.path.exists(file_path):
+                await self.client.download_media(message, file_path)
+            
+            # Return the path as stored in DB (relative to media root)
+            return f"{self.config.media_path}/{chat_id}/{file_name}"
+            
+        except Exception as e:
+            logger.error(f"Error downloading media: {e}")
+            return None
     
     def _register_handlers(self) -> None:
         """Register Telethon event handlers."""
@@ -621,12 +738,29 @@ class TelegramListener:
                     'reply_to_text': None,
                     'forward_from_id': None,  # Will be filled by next backup if needed
                     'edit_date': message.edit_date,
-                    'media_type': None,  # Media handled by scheduled backup
+                    'media_type': None,
                     'media_id': None,
                     'media_path': None,
                     'raw_data': {},
                     'is_outgoing': 1 if message.out else 0
                 }
+                
+                # Handle media if present
+                if message.media:
+                    media_type = self._get_media_type(message.media)
+                    if media_type:
+                        message_data['media_type'] = media_type
+                        message_data['media_id'] = f"{chat_id}_{message.id}_{media_type}"
+                        
+                        # Download media immediately if enabled
+                        if self.config.listen_new_messages_media and self.config.download_media:
+                            try:
+                                media_path = await self._download_media(message, chat_id)
+                                if media_path:
+                                    message_data['media_path'] = media_path
+                                    logger.debug(f"📎 Downloaded media: {media_path}")
+                            except Exception as e:
+                                logger.warning(f"Failed to download media for message {message.id}: {e}")
                 
                 # Insert the message
                 await self.db.insert_message(message_data)
@@ -636,7 +770,8 @@ class TelegramListener:
                 text_preview = (message.text or '')[:50]
                 if len(message.text or '') > 50:
                     text_preview += '...'
-                logger.info(f"📩 New message saved: chat={chat_id} msg={message.id} text='{text_preview}'")
+                media_indicator = f" [{message_data['media_type']}]" if message_data['media_type'] else ""
+                logger.info(f"📩 New message saved: chat={chat_id} msg={message.id}{media_indicator} text='{text_preview}'")
                         
             except Exception as e:
                 self.stats['errors'] += 1
