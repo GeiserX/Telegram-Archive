@@ -31,18 +31,26 @@ logger = logging.getLogger(__name__)
 class TelegramBackup:
     """Main class for managing Telegram backups."""
     
-    def __init__(self, config: Config, db: DatabaseAdapter):
+    def __init__(
+        self, 
+        config: Config, 
+        db: DatabaseAdapter,
+        client: Optional[TelegramClient] = None
+    ):
         """
         Initialize Telegram backup manager.
         
         Args:
             config: Configuration object
             db: Async database adapter (must be initialized before passing)
+            client: Optional existing TelegramClient to use (for shared connection).
+                   If not provided, will create a new client in connect().
         """
         self.config = config
         self.config.validate_credentials()
         self.db = db
-        self.client: Optional[TelegramClient] = None
+        self.client: Optional[TelegramClient] = client
+        self._owns_client = client is None  # Track if we created the client
         
         logger.info("TelegramBackup initialized")
     
@@ -60,26 +68,45 @@ class TelegramBackup:
         return get_peer_id(entity)
     
     @classmethod
-    async def create(cls, config: Config) -> "TelegramBackup":
+    async def create(
+        cls, 
+        config: Config,
+        client: Optional[TelegramClient] = None
+    ) -> "TelegramBackup":
         """
         Factory method to create TelegramBackup with initialized database.
         
         Args:
             config: Configuration object
+            client: Optional existing TelegramClient to use (for shared connection)
             
         Returns:
             Initialized TelegramBackup instance
         """
         db = await create_adapter()
-        return cls(config, db)
+        return cls(config, db, client=client)
     
     async def connect(self):
-        """Connect to Telegram and authenticate."""
+        """
+        Connect to Telegram and authenticate.
+        
+        If a client was provided in __init__, verifies it's connected.
+        Otherwise, creates a new client and connects.
+        """
+        # If using shared client, just verify it's connected
+        if self.client is not None and not self._owns_client:
+            if not self.client.is_connected():
+                raise RuntimeError("Shared client is not connected")
+            logger.debug("Using shared Telegram client")
+            return
+        
+        # Create new client
         self.client = TelegramClient(
             self.config.session_path,
             self.config.api_id,
             self.config.api_hash
         )
+        self._owns_client = True
         
         # Fix for database locked errors: Enable WAL mode for session DB
         # This is critical for concurrency when the viewer is also running
@@ -112,8 +139,13 @@ class TelegramBackup:
         logger.info(f"Connected as {me.first_name} ({me.phone})")
     
     async def disconnect(self):
-        """Disconnect from Telegram."""
-        if self.client:
+        """
+        Disconnect from Telegram.
+        
+        Only disconnects if we own the client (created it ourselves).
+        Shared clients are managed by the connection owner.
+        """
+        if self.client and self._owns_client:
             await self.client.disconnect()
             logger.info("Disconnected from Telegram")
     
@@ -1106,14 +1138,20 @@ class TelegramBackup:
         return f"Unknown {entity.id}"
 
 
-async def run_backup(config: Config):
+async def run_backup(
+    config: Config,
+    client: Optional[TelegramClient] = None
+):
     """
     Run a single backup operation.
 
     Args:
         config: Configuration object
+        client: Optional existing TelegramClient to use (for shared connection).
+               If provided, the backup will use this client instead of creating
+               its own, avoiding session file lock conflicts.
     """
-    backup = await TelegramBackup.create(config)
+    backup = await TelegramBackup.create(config, client=client)
     try:
         await backup.connect()
         await backup.backup_all()
