@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Set, Deque, Tuple, List, Dict, Any
 
 from telethon import TelegramClient, events
+from telethon.tl.types import User
 from telethon.utils import get_peer_id
 
 from .config import Config
@@ -319,6 +320,8 @@ class TelegramListener:
             'deletions_received': 0,
             'deletions_applied': 0,
             'deletions_skipped': 0,  # Skipped due to LISTEN_DELETIONS=false
+            'new_messages_received': 0,
+            'new_messages_saved': 0,
             'bursts_intercepted': 0,
             'operations_discarded': 0,
             'errors': 0,
@@ -334,6 +337,10 @@ class TelegramListener:
             logger.warning(f"  ⚠️ LISTEN_DELETIONS: true - Deletions will be processed (with protection)")
         else:
             logger.info(f"  LISTEN_DELETIONS: false (backup fully protected)")
+        if config.listen_new_messages:
+            logger.info(f"  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
+        else:
+            logger.info(f"  LISTEN_NEW_MESSAGES: false (saved on scheduled backup)")
         logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
         logger.info(f"  Protection window: {config.mass_operation_window_seconds}s")
         logger.info(f"  Buffer delay: {config.mass_operation_buffer_delay}s (operations held before applying)")
@@ -552,9 +559,10 @@ class TelegramListener:
         @self.client.on(events.NewMessage)
         async def on_new_message(event: events.NewMessage.Event) -> None:
             """
-            Handle new messages to keep tracked chat list updated.
+            Handle new messages.
             
-            This ensures newly backed-up chats are tracked for edits/deletions.
+            If LISTEN_NEW_MESSAGES is enabled, saves messages to database in real-time.
+            Otherwise, just tracks chat IDs for edits/deletions.
             """
             try:
                 chat_id = self._get_marked_id(event.chat_id)
@@ -564,9 +572,63 @@ class TelegramListener:
                     if self._should_process_chat(chat_id):
                         self._tracked_chat_ids.add(chat_id)
                         logger.debug(f"Added chat {chat_id} to tracking list")
+                
+                # Skip if not in tracked chats
+                if not self._should_process_chat(chat_id):
+                    return
+                
+                self.stats['new_messages_received'] += 1
+                
+                # If LISTEN_NEW_MESSAGES is disabled, we're done
+                if not self.config.listen_new_messages:
+                    return
+                
+                # Save the message to database
+                message = event.message
+                
+                # Save sender information if available
+                if message.sender and isinstance(message.sender, User):
+                    user_data = {
+                        'id': message.sender.id,
+                        'username': message.sender.username,
+                        'first_name': message.sender.first_name,
+                        'last_name': message.sender.last_name,
+                        'phone': message.sender.phone,
+                        'is_bot': message.sender.bot
+                    }
+                    await self.db.upsert_user(user_data)
+                
+                # Extract message data
+                message_data = {
+                    'id': message.id,
+                    'chat_id': chat_id,
+                    'sender_id': message.sender_id,
+                    'date': message.date,
+                    'text': message.text or '',
+                    'reply_to_msg_id': message.reply_to_msg_id if hasattr(message, 'reply_to_msg_id') else None,
+                    'reply_to_text': None,
+                    'forward_from_id': None,  # Will be filled by next backup if needed
+                    'edit_date': message.edit_date,
+                    'media_type': None,  # Media handled by scheduled backup
+                    'media_id': None,
+                    'media_path': None,
+                    'raw_data': {},
+                    'is_outgoing': 1 if message.out else 0
+                }
+                
+                # Insert the message
+                await self.db.insert_message(message_data)
+                self.stats['new_messages_saved'] += 1
+                
+                # Log the new message (truncate text for logging)
+                text_preview = (message.text or '')[:50]
+                if len(message.text or '') > 50:
+                    text_preview += '...'
+                logger.info(f"📩 New message saved: chat={chat_id} msg={message.id} text='{text_preview}'")
                         
             except Exception as e:
-                logger.debug(f"Error in new message handler: {e}")
+                self.stats['errors'] += 1
+                logger.error(f"Error in new message handler: {e}", exc_info=True)
     
     async def _process_buffered_operations(self) -> None:
         """
@@ -692,6 +754,10 @@ class TelegramListener:
             logger.info(f"      Applied:  {self.stats['deletions_applied']}")
             if self.stats['deletions_skipped']:
                 logger.info(f"      Skipped (LISTEN_DELETIONS=false): {self.stats['deletions_skipped']}")
+            logger.info("")
+            logger.info("   📩 New Messages:")
+            logger.info(f"      Received: {self.stats['new_messages_received']}")
+            logger.info(f"      Saved:    {self.stats['new_messages_saved']}")
             logger.info("")
             logger.info("   🛡️ Protection:")
             logger.info(f"      Bursts intercepted: {protector_stats['bursts_detected']}")

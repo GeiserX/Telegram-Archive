@@ -131,6 +131,11 @@ class Config:
         # Only enable if you explicitly want to mirror Telegram exactly
         self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'false').lower() == 'true'
         
+        # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
+        # When enabled, new messages are saved immediately instead of waiting for scheduled backup
+        # This provides true real-time backup but may increase API usage
+        self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'false').lower() == 'true'
+        
         # =====================================================================
         # ZERO-FOOTPRINT MASS OPERATION PROTECTION
         # =====================================================================
@@ -174,6 +179,10 @@ class Config:
                 logger.warning("  ⚠️ LISTEN_DELETIONS: true - Messages will be DELETED from backup!")
             else:
                 logger.info("  LISTEN_DELETIONS: false (backup protected)")
+            if self.listen_new_messages:
+                logger.info("  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
+            else:
+                logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
             logger.info(f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
