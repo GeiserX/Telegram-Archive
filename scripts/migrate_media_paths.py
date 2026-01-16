@@ -255,6 +255,28 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
     return stats
 
 
+def get_database_url() -> str:
+    """Build database URL from environment variables (same logic as Config)."""
+    # Check for explicit DATABASE_URL first
+    if os.environ.get("DATABASE_URL"):
+        return os.environ["DATABASE_URL"]
+    
+    # Otherwise build from DB_TYPE and components
+    db_type = os.environ.get("DB_TYPE", "sqlite").lower()
+    
+    if db_type == "postgresql":
+        host = os.environ.get("POSTGRES_HOST", "localhost")
+        port = os.environ.get("POSTGRES_PORT", "5432")
+        db = os.environ.get("POSTGRES_DB", "telegram_backup")
+        user = os.environ.get("POSTGRES_USER", "telegram")
+        password = os.environ.get("POSTGRES_PASSWORD", "telegram")
+        return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    else:
+        # SQLite
+        backup_path = os.environ.get("BACKUP_PATH", "/data/backups")
+        return f"sqlite:///{backup_path}/telegram_backup.db"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Migrate media paths to use negative IDs for groups/channels",
@@ -273,14 +295,16 @@ def main():
     )
     parser.add_argument(
         "--db-url",
-        default=os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///data/telegram_backup.db"),
-        help="Database URL (default: $DATABASE_URL)"
+        default=None,
+        help="Database URL (default: built from env vars like DB_TYPE, POSTGRES_*)"
     )
     
     args = parser.parse_args()
     
+    # Get database URL
+    db_url = args.db_url if args.db_url else get_database_url()
+    
     # Convert sync DB URL to async if needed
-    db_url = args.db_url
     if db_url.startswith("postgresql://"):
         db_url = db_url.replace("postgresql://", "postgresql+asyncpg://")
     elif db_url.startswith("sqlite://"):
