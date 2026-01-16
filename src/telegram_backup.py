@@ -7,7 +7,7 @@ import os
 import logging
 import hashlib
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict
 from pathlib import Path
 
@@ -256,8 +256,11 @@ class TelegramBackup:
                 return
 
             # Ensure we start from the most recently active chats
+            # Use .timestamp() to avoid comparing timezone-aware vs naive datetimes
+            # (Saved Messages chat has UTC timezone, others may be naive)
+            # Fixes: https://github.com/GeiserX/Telegram-Archive/issues/12
             filtered_dialogs.sort(
-                key=lambda d: getattr(d, "date", None) or datetime.min,
+                key=lambda d: (getattr(d, "date", None) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
                 reverse=True,
             )
 
