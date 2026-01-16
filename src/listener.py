@@ -27,6 +27,7 @@ from telethon.utils import get_peer_id
 
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .realtime import RealtimeNotifier, NotificationType
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,9 @@ class TelegramListener:
         # Background task for processing buffered operations
         self._processor_task: Optional[asyncio.Task] = None
         
+        # Real-time notifier for viewer WebSocket updates
+        self._notifier: Optional[RealtimeNotifier] = None
+        
         # Statistics
         self.stats = {
             'edits_received': 0,
@@ -405,6 +409,12 @@ class TelegramListener:
         
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
+        
+        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite)
+        from .db import get_db_manager
+        self._notifier = RealtimeNotifier(get_db_manager())
+        await self._notifier.init()
+        logger.info("Real-time notifier initialized")
         
         # Register event handlers
         self._register_handlers()
@@ -766,6 +776,14 @@ class TelegramListener:
                 await self.db.insert_message(message_data)
                 self.stats['new_messages_saved'] += 1
                 
+                # Send real-time notification
+                if self._notifier:
+                    await self._notifier.notify(
+                        NotificationType.NEW_MESSAGE,
+                        chat_id,
+                        {'message': message_data}
+                    )
+                
                 # Log the new message (truncate text for logging)
                 text_preview = (message.text or '')[:50]
                 if len(message.text or '') > 50:
@@ -924,12 +942,30 @@ class TelegramListener:
                                 edit_date=op.data['edit_date']
                             )
                             self.stats['edits_applied'] += 1
+                            
+                            # Send real-time notification
+                            if self._notifier:
+                                await self._notifier.notify(
+                                    NotificationType.EDIT,
+                                    op.chat_id,
+                                    {'message_id': op.data['message_id'], 'new_text': op.data['new_text']}
+                                )
+                            
                             preview = op.data['new_text'][:30] + '...' if len(op.data['new_text']) > 30 else op.data['new_text']
                             logger.info(f"📝 Edit applied: chat={op.chat_id} msg={op.data['message_id']} text=\"{preview}\"")
                         
                         elif op.operation_type == 'deletion':
                             await self.db.delete_message(op.chat_id, op.data['message_id'])
                             self.stats['deletions_applied'] += 1
+                            
+                            # Send real-time notification
+                            if self._notifier:
+                                await self._notifier.notify(
+                                    NotificationType.DELETE,
+                                    op.chat_id,
+                                    {'message_id': op.data['message_id']}
+                                )
+                            
                             logger.info(f"🗑️ Deletion applied: chat={op.chat_id} msg={op.data['message_id']}")
                     
                     except Exception as e:

@@ -176,6 +176,11 @@ class Config:
         # When enabled, browser push notifications are available for new messages
         self.enable_notifications = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
         
+        # Stats calculation schedule
+        # Daily calculation of statistics (chat counts, message counts, etc.)
+        # Default: 03:00 (3am) in the configured viewer timezone
+        self.stats_calculation_hour = int(os.getenv('STATS_CALCULATION_HOUR', '3'))
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")

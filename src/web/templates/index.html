@@ -397,6 +397,32 @@
                             </p>
                         </div>
                     </div>
+                    
+                    <!-- Load More Chats Button -->
+                    <div v-if="hasMoreChats && !searchQuery" class="p-3">
+                        <button @click="loadMoreChats" 
+                            :disabled="loadingMoreChats"
+                            class="w-full py-2 px-4 bg-tg-hover text-tg-muted hover:bg-tg-active hover:text-white rounded-lg transition text-sm flex items-center justify-center gap-2">
+                            <svg v-if="loadingMoreChats" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span v-if="loadingMoreChats">Loading...</span>
+                            <span v-else>Load more ({{ chatTotal - chats.length }} remaining)</span>
+                        </button>
+                    </div>
+                    
+                    <!-- Stats Summary (shown below chats) -->
+                    <div v-if="!loadingChats && statsData.stats_calculated_at" class="p-3 border-t border-gray-700/50 text-xs text-tg-muted">
+                        <div class="flex justify-between mb-1">
+                            <span>📊 {{ statsData.messages.toLocaleString() }} messages</span>
+                            <span>📁 {{ statsData.media_files.toLocaleString() }} files</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span>💾 {{ statsData.total_size_mb.toLocaleString() }} MB</span>
+                            <span title="Stats calculated at">🕐 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -788,28 +814,51 @@
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
 
-                const loadChats = async () => {
-                    loadingChats.value = true
+                // Chat pagination state
+                const chatOffset = ref(0)
+                const chatTotal = ref(0)
+                const hasMoreChats = ref(true)
+                const loadingMoreChats = ref(false)
+                
+                const loadChats = async (append = false) => {
+                    if (!append) {
+                        loadingChats.value = true
+                        chatOffset.value = 0
+                    } else {
+                        loadingMoreChats.value = true
+                    }
+                    
                     try {
-                        const res = await fetch('/api/chats', {
+                        const limit = 50
+                        const offset = append ? chatOffset.value : 0
+                        const res = await fetch(`/api/chats?limit=${limit}&offset=${offset}`, {
                             credentials: 'include'
                         })
                         if (!res.ok) {
                             if (res.status === 401) {
-                                // Auth expired, reset auth state
                                 isAuthenticated.value = false
                                 return
                             }
                             if (res.status === 503) {
-                                // Database busy (backup in progress)
                                 const data = await res.json().catch(() => ({}))
-                                chatsError.value = data.detail || 'Database is busy (backup in progress). Please wait a moment and refresh.'
+                                chatsError.value = data.detail || 'Database is busy. Please wait and refresh.'
                                 return
                             }
                             throw new Error('Failed to fetch chats')
                         }
                         chatsError.value = ''
-                        chats.value = await res.json()
+                        const data = await res.json()
+                        
+                        if (append) {
+                            chats.value.push(...data.chats)
+                        } else {
+                            chats.value = data.chats
+                        }
+                        
+                        chatTotal.value = data.total
+                        hasMoreChats.value = data.has_more
+                        chatOffset.value = offset + data.chats.length
+                        
                     } catch (e) {
                         console.error("Failed to fetch chats", e)
                         if (e.message.includes('401') || e.message.includes('Unauthorized')) {
@@ -819,9 +868,25 @@
                         }
                     } finally {
                         loadingChats.value = false
+                        loadingMoreChats.value = false
+                    }
+                }
+                
+                const loadMoreChats = () => {
+                    if (!loadingMoreChats.value && hasMoreChats.value) {
+                        loadChats(true)
                     }
                 }
 
+                // Stats data
+                const statsData = ref({
+                    chats: 0,
+                    messages: 0,
+                    media_files: 0,
+                    total_size_mb: 0,
+                    stats_calculated_at: null
+                })
+                
                 const loadStats = async () => {
                     try {
                         const res = await fetch('/api/stats', {
@@ -831,6 +896,15 @@
                             const stats = await res.json()
                             console.log('Stats loaded:', stats)
                             
+                            // Store stats data
+                            statsData.value = {
+                                chats: stats.chats || 0,
+                                messages: stats.messages || 0,
+                                media_files: stats.media_files || 0,
+                                total_size_mb: stats.total_size_mb || 0,
+                                stats_calculated_at: stats.stats_calculated_at
+                            }
+                            
                             // Update timezone from config
                             if (stats.timezone) {
                                 viewerTimezone.value = stats.timezone
@@ -839,15 +913,11 @@
                                 }
                             }
                             
-                            // Always try to get last backup time - from metadata or sync_status
+                            // Last backup time (only relevant when listener is disabled)
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
                                 lastBackupTimeSource.value = stats.last_backup_time_source || 'metadata'
-                                console.log('Last backup time set to:', lastBackupTime.value, 'from:', lastBackupTimeSource.value)
                             } else {
-                                // If no last_backup_time, try to get from sync_status directly
-                                console.log('No last_backup_time in stats, checking sync_status...')
-                                // The backend should already handle this, but if it doesn't, we'll show "Never"
                                 lastBackupTime.value = null
                                 lastBackupTimeSource.value = 'metadata'
                             }
@@ -856,10 +926,18 @@
                         }
                     } catch (e) {
                         console.error("Failed to fetch stats", e)
-                    } finally {
-                        // Stats loading is part of the secondary init phase
-                        // Will be fully complete when WS connects
                     }
+                }
+                
+                const formatStatsTime = (isoString) => {
+                    if (!isoString) return 'Never'
+                    const date = moment(isoString)
+                    const now = moment()
+                    const diffHours = now.diff(date, 'hours')
+                    if (diffHours < 24) {
+                        return date.fromNow()
+                    }
+                    return date.format('MMM D, HH:mm')
                 }
                 
                 // Mark initialization complete (called after WS connects and notifications init)
@@ -1928,10 +2006,18 @@
                     // Error states
                     chatsError,
                     loadChats,
+                    loadMoreChats,
+                    // Chat pagination
+                    chatOffset,
+                    chatTotal,
+                    hasMoreChats,
+                    loadingMoreChats,
                     // Loading states
                     loadingChats,
                     loadingStats,
                     // Stats
+                    statsData,
+                    formatStatsTime,
                     lastBackupTime,
                     lastBackupTimeSource,
                     viewerTimezone,

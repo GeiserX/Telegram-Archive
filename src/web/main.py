@@ -23,7 +23,8 @@ import hashlib
 import json
 
 from ..config import Config
-from ..db import DatabaseAdapter, init_database, close_database
+from ..db import DatabaseAdapter, init_database, close_database, get_db_manager
+from ..realtime import RealtimeListener
 
 
 # WebSocket Connection Manager for real-time updates
@@ -138,10 +139,76 @@ async def _normalize_display_chat_ids():
     config.display_chat_ids = normalized
 
 
+# Background task for stats calculation
+stats_task: Optional[asyncio.Task] = None
+
+# Real-time listener (PostgreSQL LISTEN/NOTIFY)
+realtime_listener: Optional[RealtimeListener] = None
+
+
+async def handle_realtime_notification(payload: dict):
+    """Handle real-time notifications and broadcast to WebSocket clients."""
+    notification_type = payload.get('type')
+    chat_id = payload.get('chat_id')
+    data = payload.get('data', {})
+    
+    if notification_type == 'new_message':
+        await ws_manager.broadcast_to_chat(chat_id, {
+            "type": "new_message",
+            "message": data.get('message')
+        })
+    elif notification_type == 'edit':
+        await ws_manager.broadcast_to_chat(chat_id, {
+            "type": "edit",
+            "message_id": data.get('message_id'),
+            "new_text": data.get('new_text')
+        })
+    elif notification_type == 'delete':
+        await ws_manager.broadcast_to_chat(chat_id, {
+            "type": "delete",
+            "message_id": data.get('message_id')
+        })
+
+
+async def stats_calculation_scheduler():
+    """Background task that runs stats calculation daily at configured hour."""
+    while True:
+        try:
+            # Get current time in configured timezone
+            tz = ZoneInfo(config.viewer_timezone)
+            now = datetime.now(tz)
+            
+            # Calculate next run time (configured hour, e.g., 3am)
+            target_hour = config.stats_calculation_hour
+            next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+            
+            # If we've passed the target time today, schedule for tomorrow
+            if now.hour >= target_hour:
+                next_run = next_run.replace(day=now.day + 1)
+            
+            # Wait until next run
+            wait_seconds = (next_run - now).total_seconds()
+            logger.info(f"Stats calculation scheduled for {next_run.strftime('%Y-%m-%d %H:%M')} ({wait_seconds/3600:.1f}h from now)")
+            await asyncio.sleep(wait_seconds)
+            
+            # Run stats calculation
+            logger.info("Running scheduled stats calculation...")
+            await db.calculate_and_store_statistics()
+            logger.info("Stats calculation completed")
+            
+        except asyncio.CancelledError:
+            logger.info("Stats calculation scheduler cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in stats calculation scheduler: {e}")
+            # Wait an hour before retrying on error
+            await asyncio.sleep(3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application lifecycle - initialize and cleanup database."""
-    global db
+    global db, stats_task
     logger.info("Initializing database connection...")
     db_manager = await init_database()
     db = DatabaseAdapter(db_manager)
@@ -150,7 +217,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Normalize display chat IDs (auto-correct missing -100 prefix)
     await _normalize_display_chat_ids()
     
+    # Check if stats have ever been calculated, if not, run initial calculation
+    stats_calculated_at = await db.get_metadata('stats_calculated_at')
+    if not stats_calculated_at:
+        logger.info("No cached stats found, running initial calculation...")
+        try:
+            await db.calculate_and_store_statistics()
+        except Exception as e:
+            logger.warning(f"Initial stats calculation failed: {e}")
+    
+    # Start background stats calculation scheduler
+    stats_task = asyncio.create_task(stats_calculation_scheduler())
+    logger.info(f"Stats calculation scheduler started (runs daily at {config.stats_calculation_hour}:00 {config.viewer_timezone})")
+    
+    # Start real-time listener (auto-detects PostgreSQL vs SQLite)
+    global realtime_listener
+    realtime_listener = RealtimeListener(get_db_manager(), callback=handle_realtime_notification)
+    await realtime_listener.init()
+    await realtime_listener.start()
+    logger.info("Real-time listener started (auto-detected database type)")
+    
     yield
+    
+    # Cleanup
+    if realtime_listener:
+        await realtime_listener.stop()
+    
+    if stats_task:
+        stats_task.cancel()
+        try:
+            await stats_task
+        except asyncio.CancelledError:
+            pass
+    
     logger.info("Closing database connection...")
     await close_database()
     logger.info("Database connection closed")
@@ -276,20 +375,56 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
     return None
 
 
+# Cache avatar paths to avoid repeated filesystem lookups
+_avatar_cache: Dict[int, Optional[str]] = {}
+_avatar_cache_time: Optional[datetime] = None
+AVATAR_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+def _get_cached_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
+    """Get avatar path with caching."""
+    global _avatar_cache, _avatar_cache_time
+    
+    # Invalidate cache if too old
+    if _avatar_cache_time and (datetime.utcnow() - _avatar_cache_time).total_seconds() > AVATAR_CACHE_TTL_SECONDS:
+        _avatar_cache.clear()
+        _avatar_cache_time = None
+    
+    # Check cache
+    if chat_id in _avatar_cache:
+        return _avatar_cache[chat_id]
+    
+    # Lookup and cache
+    avatar_path = _find_avatar_path(chat_id, chat_type)
+    _avatar_cache[chat_id] = avatar_path
+    if _avatar_cache_time is None:
+        _avatar_cache_time = datetime.utcnow()
+    
+    return avatar_path
+
+
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
-async def get_chats():
-    """Get all chats with metadata, including avatar URLs."""
+async def get_chats(
+    limit: int = Query(50, ge=1, le=500, description="Number of chats to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination")
+):
+    """Get chats with metadata, paginated. Returns most recent chats first."""
     try:
-        chats = await db.get_all_chats()
-        
-        # Filter to display chats if configured
+        # If display_chat_ids is configured, we need to load all matching chats
+        # Otherwise, use pagination
         if config.display_chat_ids:
+            chats = await db.get_all_chats()
             chats = [c for c in chats if c['id'] in config.display_chat_ids]
+            total = len(chats)
+            # Apply pagination after filtering
+            chats = chats[offset:offset + limit]
+        else:
+            chats = await db.get_all_chats(limit=limit, offset=offset)
+            total = await db.get_chat_count()
         
-        # Add avatar URLs to each chat
+        # Add avatar URLs using cache
         for chat in chats:
             try:
-                avatar_path = _find_avatar_path(chat['id'], chat.get('type', 'private'))
+                avatar_path = _get_cached_avatar_path(chat['id'], chat.get('type', 'private'))
                 if avatar_path:
                     chat['avatar_url'] = f"/media/{avatar_path}"
                 else:
@@ -298,7 +433,13 @@ async def get_chats():
                 logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
                 chat['avatar_url'] = None
         
-        return chats
+        return {
+            "chats": chats,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(chats) < total
+        }
     except Exception as e:
         logger.error(f"Error fetching chats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -354,14 +495,54 @@ async def get_messages(
 
 @app.get("/api/stats", dependencies=[Depends(require_auth)])
 async def get_stats():
-    """Get backup statistics."""
+    """Get cached backup statistics (fast, calculated daily)."""
     try:
-        stats = await db.get_statistics()
+        stats = await db.get_cached_statistics()
         stats['timezone'] = config.viewer_timezone
+        stats['stats_calculation_hour'] = config.stats_calculation_hour
         return stats
     except Exception as e:
         logger.error(f"Error fetching stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/stats/refresh", dependencies=[Depends(require_auth)])
+async def refresh_stats():
+    """Manually trigger stats recalculation (expensive, use sparingly)."""
+    try:
+        stats = await db.calculate_and_store_statistics()
+        stats['timezone'] = config.viewer_timezone
+        return stats
+    except Exception as e:
+        logger.error(f"Error calculating stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/internal/push")
+async def internal_push(request: Request):
+    """
+    Internal endpoint for SQLite real-time push notifications.
+    
+    The backup/listener container POSTs to this endpoint when using SQLite,
+    and this broadcasts to connected WebSocket clients.
+    
+    For PostgreSQL, use LISTEN/NOTIFY instead (auto-detected).
+    """
+    # Only allow from localhost/internal network
+    client_host = request.client.host if request.client else None
+    if client_host not in ('127.0.0.1', 'localhost', '::1', None):
+        # In Docker, containers communicate via internal network
+        # We'll be permissive here as this is internal-only
+        pass
+    
+    try:
+        payload = await request.json()
+        if realtime_listener:
+            await realtime_listener.handle_http_push(payload)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.warning(f"Error handling internal push: {e}")
+        return {"status": "error", "detail": str(e)}
 
 
 @app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])

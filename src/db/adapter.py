@@ -213,8 +213,8 @@ class DatabaseAdapter:
             await session.commit()
             return chat_data['id']
     
-    async def get_all_chats(self) -> List[Dict[str, Any]]:
-        """Get all chats with their last message date."""
+    async def get_all_chats(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get chats with their last message date, with optional pagination."""
         async with self.db_manager.async_session_factory() as session:
             # Subquery for last message date
             subq = (
@@ -231,6 +231,10 @@ class DatabaseAdapter:
                     subq.c.last_message_date.desc()
                 )
             )
+            
+            # Apply pagination if limit is specified
+            if limit is not None:
+                stmt = stmt.limit(limit).offset(offset)
             
             result = await session.execute(stmt)
             chats = []
@@ -252,6 +256,12 @@ class DatabaseAdapter:
                 }
                 chats.append(chat_dict)
             return chats
+    
+    async def get_chat_count(self) -> int:
+        """Get total number of chats (fast count for pagination)."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(func.count(Chat.id)))
+            return result.scalar() or 0
     
     # ========== User Operations ==========
     
@@ -761,22 +771,55 @@ class DatabaseAdapter:
     
     # ========== Statistics ==========
     
-    async def get_statistics(self) -> Dict[str, Any]:
-        """Get backup statistics."""
+    async def get_cached_statistics(self) -> Dict[str, Any]:
+        """Get cached statistics (fast, no expensive queries)."""
+        # Get cached stats from metadata
+        cached_stats = await self.get_metadata('cached_stats')
+        stats_calculated_at = await self.get_metadata('stats_calculated_at')
+        last_backup_time = await self.get_metadata('last_backup_time')
+        
+        result = {
+            'chats': 0,
+            'messages': 0,
+            'media_files': 0,
+            'total_size_mb': 0,
+            'stats_calculated_at': stats_calculated_at
+        }
+        
+        if cached_stats:
+            import json
+            try:
+                result.update(json.loads(cached_stats))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        if last_backup_time:
+            result['last_backup_time'] = last_backup_time
+            result['last_backup_time_source'] = 'metadata'
+        
+        return result
+    
+    async def calculate_and_store_statistics(self) -> Dict[str, Any]:
+        """Calculate statistics and store in metadata (expensive, run daily)."""
+        import json
+        from datetime import datetime
+        
         async with self.db_manager.async_session_factory() as session:
+            logger.info("Calculating statistics (this may take a while)...")
+            
             # Chat count
             chat_count = await session.execute(select(func.count(Chat.id)))
-            chat_count = chat_count.scalar()
+            chat_count = chat_count.scalar() or 0
             
             # Message count
             msg_count = await session.execute(select(func.count()).select_from(Message))
-            msg_count = msg_count.scalar()
+            msg_count = msg_count.scalar() or 0
             
             # Media count
             media_count = await session.execute(
                 select(func.count(Media.id)).where(Media.downloaded == 1)
             )
-            media_count = media_count.scalar()
+            media_count = media_count.scalar() or 0
             
             # Total media size
             total_size = await session.execute(
@@ -784,30 +827,32 @@ class DatabaseAdapter:
             )
             total_size = total_size.scalar() or 0
             
-            # Last backup time
-            last_backup_time = await self.get_metadata('last_backup_time')
-            timezone_source = 'metadata'
-            
-            if not last_backup_time:
-                last_sync = await session.execute(
-                    select(func.max(SyncStatus.last_sync_date))
+            # Per-chat statistics
+            chat_stats_query = (
+                select(
+                    Message.chat_id,
+                    func.count(Message.id).label('message_count')
                 )
-                last_backup_time = last_sync.scalar()
-                if last_backup_time:
-                    timezone_source = 'sync_status'
+                .group_by(Message.chat_id)
+            )
+            chat_stats_result = await session.execute(chat_stats_query)
+            per_chat_stats = {row.chat_id: row.message_count for row in chat_stats_result}
             
             stats = {
                 'chats': chat_count,
                 'messages': msg_count,
                 'media_files': media_count,
-                'total_size_mb': round(total_size / (1024 * 1024), 2)
+                'total_size_mb': round(total_size / (1024 * 1024), 2),
+                'per_chat_message_counts': per_chat_stats
             }
             
-            if last_backup_time:
-                stats['last_backup_time'] = last_backup_time
-                stats['last_backup_time_source'] = timezone_source
-            
-            return stats
+            logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
+        
+        # Store in metadata
+        await self.set_metadata('cached_stats', json.dumps(stats))
+        await self.set_metadata('stats_calculated_at', datetime.utcnow().isoformat())
+        
+        return stats
     
     # ========== Delete Operations ==========
     
