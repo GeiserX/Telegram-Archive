@@ -1072,25 +1072,40 @@
                     }
                 }
                 
-                // Check for new messages without clearing existing ones
+                // Check for new messages and deletions
                 const checkForNewMessages = async () => {
                     if (!selectedChat.value) return
                     
                     try {
                         // Get latest messages (just first page)
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?limit=20&offset=0`, {
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`, {
                             credentials: 'include'
                         })
                         if (!res.ok) return
                         
                         const latestMessages = await res.json()
-                        
-                        // Find the newest message ID we have
+                        const latestIds = new Set(latestMessages.map(m => m.id))
                         const existingIds = new Set(messages.value.map(m => m.id))
+                        
+                        // Find new messages
                         const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
                         
+                        // Find deleted messages (in our view but not in latest from server)
+                        // Only check messages that would be in the first page (recent ones)
+                        const recentMessages = messages.value.slice(-50)
+                        const deletedIds = recentMessages
+                            .filter(m => !latestIds.has(m.id))
+                            .map(m => m.id)
+                        
+                        // Remove deleted messages
+                        if (deletedIds.length > 0) {
+                            const deletedSet = new Set(deletedIds)
+                            messages.value = messages.value.filter(m => !deletedSet.has(m.id))
+                            console.log(`[Auto-refresh] Removed ${deletedIds.length} deleted message(s)`)
+                        }
+                        
+                        // Add new messages
                         if (newMessages.length > 0) {
-                            // Add new messages to the end (they're newer)
                             messages.value.push(...newMessages)
                             console.log(`[Auto-refresh] Added ${newMessages.length} new message(s)`)
                             
@@ -1105,7 +1120,7 @@
                             }
                         }
                     } catch (e) {
-                        console.warn('[Auto-refresh] Error checking for new messages:', e)
+                        console.warn('[Auto-refresh] Error checking for messages:', e)
                     }
                 }
 
