@@ -56,7 +56,8 @@ class TestAsyncDatabaseAdapter(unittest.TestCase):
         required_methods = [
             'get_all_chats',
             'get_messages_paginated',
-            'get_statistics',
+            'get_cached_statistics',
+            'calculate_and_store_statistics',
             'upsert_chat',
             'upsert_user',
             'insert_message',
