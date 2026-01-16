@@ -232,7 +232,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     # Start real-time listener (auto-detects PostgreSQL vs SQLite)
     global realtime_listener
-    realtime_listener = RealtimeListener(get_db_manager(), callback=handle_realtime_notification)
+    db_manager_instance = await get_db_manager()
+    realtime_listener = RealtimeListener(db_manager_instance, callback=handle_realtime_notification)
     await realtime_listener.init()
     await realtime_listener.start()
     logger.info("Real-time listener started (auto-detected database type)")

@@ -412,7 +412,8 @@ class TelegramListener:
         
         # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite)
         from .db import get_db_manager
-        self._notifier = RealtimeNotifier(get_db_manager())
+        db_manager_instance = await get_db_manager()
+        self._notifier = RealtimeNotifier(db_manager_instance)
         await self._notifier.init()
         logger.info("Real-time notifier initialized")
         
