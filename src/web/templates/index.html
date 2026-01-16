@@ -291,7 +291,7 @@
                     </div>
                 </div>
 
-                <!-- Notification Permission Banner -->
+                <!-- Notification Permission Banner (shows only once when permission is 'default') -->
                 <div v-if="notificationsEnabled && notificationsSupported && notificationPermission === 'default'" 
                     class="px-3 py-2 bg-blue-900/80 border-b border-blue-700">
                     <div class="flex items-center gap-2 text-blue-200 text-sm">
@@ -685,6 +685,7 @@
                 const notificationPermission = ref(Notification?.permission || 'denied')
                 let ws = null
                 let wsReconnectTimer = null
+                let messageRefreshTimer = null  // Timer for auto-refreshing messages
 
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
@@ -879,14 +880,22 @@
                 // Notification functions
                 const initNotifications = async () => {
                     try {
-                        const res = await fetch('/api/notifications/settings')
+                        const res = await fetch('/api/notifications/settings', { credentials: 'include' })
                         if (res.ok) {
                             const data = await res.json()
                             notificationsEnabled.value = data.enabled
+                            console.log('[Notifications] API enabled:', data.enabled)
                         }
                     } catch (e) {
                         console.warn('Could not fetch notification settings:', e)
                     }
+                    
+                    // Log notification state for debugging
+                    console.log('[Notifications] State:', {
+                        enabled: notificationsEnabled.value,
+                        supported: notificationsSupported.value,
+                        permission: notificationPermission.value
+                    })
                     
                     // Register service worker
                     if ('serviceWorker' in navigator && notificationsEnabled.value) {
@@ -1043,6 +1052,61 @@
                     await loadMessages()
                     await nextTick()
                     scrollToBottom()
+                    // Start auto-refresh for new messages
+                    startMessageRefresh()
+                }
+                
+                // Auto-refresh messages every 3 seconds to catch new messages
+                const startMessageRefresh = () => {
+                    stopMessageRefresh()  // Clear any existing timer
+                    messageRefreshTimer = setInterval(async () => {
+                        if (!selectedChat.value || loading.value) return
+                        await checkForNewMessages()
+                    }, 3000)
+                }
+                
+                const stopMessageRefresh = () => {
+                    if (messageRefreshTimer) {
+                        clearInterval(messageRefreshTimer)
+                        messageRefreshTimer = null
+                    }
+                }
+                
+                // Check for new messages without clearing existing ones
+                const checkForNewMessages = async () => {
+                    if (!selectedChat.value) return
+                    
+                    try {
+                        // Get latest messages (just first page)
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?limit=20&offset=0`, {
+                            credentials: 'include'
+                        })
+                        if (!res.ok) return
+                        
+                        const latestMessages = await res.json()
+                        
+                        // Find the newest message ID we have
+                        const existingIds = new Set(messages.value.map(m => m.id))
+                        const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
+                        
+                        if (newMessages.length > 0) {
+                            // Add new messages to the end (they're newer)
+                            messages.value.push(...newMessages)
+                            console.log(`[Auto-refresh] Added ${newMessages.length} new message(s)`)
+                            
+                            // Scroll to bottom if user is near bottom
+                            await nextTick()
+                            const container = messagesContainer.value
+                            if (container) {
+                                const isNearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 200
+                                if (isNearBottom) {
+                                    scrollToBottom()
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[Auto-refresh] Error checking for new messages:', e)
+                    }
                 }
 
                 const loadMessages = async () => {
