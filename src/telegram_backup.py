@@ -845,8 +845,15 @@ class TelegramBackup:
         """
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
-        if not photo:
-            logger.debug(f"No photo attribute for entity {entity.id}")
+        
+        # For channels/groups, the photo might be a ChatPhoto object
+        # Check for photo_id attribute which indicates a valid photo
+        if photo is None:
+            return
+        
+        # ChatPhotoEmpty has no photo_id, skip these
+        photo_id = getattr(photo, "photo_id", None)
+        if photo_id is None:
             return
 
         # Determine target directory based on entity type
@@ -858,26 +865,19 @@ class TelegramBackup:
 
         os.makedirs(base_dir, exist_ok=True)
 
-        # Use Telegram's internal photo id to derive a stable filename so
-        # a new photo results in a new file, while old ones are kept.
-        photo_id = getattr(photo, "photo_id", None) or getattr(photo, "id", None)
-        suffix = str(photo_id) if photo_id is not None else "current"
-        file_name = f"{entity.id}_{suffix}.jpg"
+        file_name = f"{entity.id}_{photo_id}.jpg"
         file_path = os.path.join(base_dir, file_name)
 
         # If we've already downloaded this exact photo, skip
         if os.path.exists(file_path):
-            logger.debug(f"Avatar already exists: {file_path}")
             return
 
         try:
             result = await self.client.download_profile_photo(entity, file_path)
             if result:
-                logger.info(f"Downloaded avatar for {entity.id}: {file_path}")
-            else:
-                logger.debug(f"No profile photo available for entity {entity.id}")
+                logger.info(f"📷 Downloaded avatar: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to download profile photo for {entity.id}: {e}")
+            logger.warning(f"Failed to download avatar for {entity.id}: {e}")
     
     async def _process_media(self, message: Message, chat_id: int) -> Optional[dict]:
         """
