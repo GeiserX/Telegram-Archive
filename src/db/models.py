@@ -70,6 +70,8 @@ class Message(Base):
         Index('idx_messages_chat_id', 'chat_id'),
         Index('idx_messages_date', 'date'),
         Index('idx_messages_sender_id', 'sender_id'),
+        # Composite index for fast pagination: WHERE chat_id = ? ORDER BY date DESC
+        Index('idx_messages_chat_date_desc', 'chat_id', date.desc()),
     )
 
 
