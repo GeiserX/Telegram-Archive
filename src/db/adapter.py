@@ -839,11 +839,11 @@ class DatabaseAdapter:
             per_chat_stats = {row.chat_id: row.message_count for row in chat_stats_result}
             
             stats = {
-                'chats': chat_count,
-                'messages': msg_count,
-                'media_files': media_count,
-                'total_size_mb': round(total_size / (1024 * 1024), 2),
-                'per_chat_message_counts': per_chat_stats
+                'chats': int(chat_count),
+                'messages': int(msg_count),
+                'media_files': int(media_count),
+                'total_size_mb': float(round(total_size / (1024 * 1024), 2)),
+                'per_chat_message_counts': {int(k): int(v) for k, v in per_chat_stats.items()}
             }
             
             logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
