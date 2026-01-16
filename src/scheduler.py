@@ -46,13 +46,34 @@ class BackupScheduler:
         self.stop()
     
     async def _run_backup_job(self):
-        """Wrapper for backup job that handles errors."""
+        """Wrapper for backup job that handles errors.
+        
+        If the real-time listener is running, we need to pause it during backup
+        because both use the same Telethon session file which only allows one connection.
+        """
+        listener_was_running = self._listener is not None
+        
         try:
+            # Stop listener to release the session file
+            if listener_was_running:
+                logger.info("Pausing real-time listener for scheduled backup...")
+                await self._stop_listener()
+                # Brief pause to ensure session is released
+                await asyncio.sleep(1)
+            
             logger.info("Scheduled backup starting...")
             await run_backup(self.config)
             logger.info("Scheduled backup completed successfully")
+            
         except Exception as e:
             logger.error(f"Scheduled backup failed: {e}", exc_info=True)
+        
+        finally:
+            # Restart listener if it was running
+            if listener_was_running and self.config.enable_listener:
+                logger.info("Resuming real-time listener...")
+                await asyncio.sleep(1)  # Brief pause
+                await self._start_listener()
     
     def start(self):
         """Start the scheduler."""
@@ -154,16 +175,18 @@ class BackupScheduler:
         await self._start_listener()
         
         # Run initial backup immediately on startup
-        logger.info("Running initial backup on startup...")
-        try:
-            await run_backup(self.config)
-            logger.info("Initial backup completed")
-        except Exception as e:
-            logger.error(f"Initial backup failed: {e}", exc_info=True)
-        
-        # Reload tracked chats in listener after initial backup
-        if self._listener:
-            await self._listener._load_tracked_chats()
+        # Skip if listener is enabled - the session file would be locked
+        # The scheduled backup will run at the next cron interval
+        if not self.config.enable_listener:
+            logger.info("Running initial backup on startup...")
+            try:
+                await run_backup(self.config)
+                logger.info("Initial backup completed")
+            except Exception as e:
+                logger.error(f"Initial backup failed: {e}", exc_info=True)
+        else:
+            logger.info("Skipping initial backup (real-time listener is using the session)")
+            logger.info(f"Scheduled backup will run at: {self.config.schedule}")
         
         # Keep running until stopped
         try:
