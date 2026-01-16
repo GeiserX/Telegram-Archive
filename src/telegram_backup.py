@@ -729,6 +729,10 @@ class TelegramBackup:
             'is_outgoing': 1 if message.out else 0
         }
         
+        # Capture grouped_id for album detection (multiple photos/videos sent together)
+        if message.grouped_id:
+            message_data['raw_data']['grouped_id'] = str(message.grouped_id)
+        
         # Get reply text if this is a reply
         if message.reply_to_msg_id and message.reply_to:
             reply_msg = message.reply_to

@@ -180,6 +180,28 @@
         .message-text a:hover {
             color: #93c5fd;
         }
+        
+        /* Album Grid Styles */
+        .album-grid {
+            max-width: 400px;
+        }
+        .album-grid .grid {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .album-item {
+            aspect-ratio: 1;
+            min-height: 80px;
+            max-height: 200px;
+        }
+        .album-item img,
+        .album-item video {
+            min-height: 100%;
+        }
+        /* 3-item album: make first item span 2 rows */
+        .album-grid .grid-cols-2:has(.album-item:nth-child(3):last-child) .album-item:first-child {
+            grid-row: span 2;
+        }
     </style>
     <script>
         tailwind.config = {
@@ -539,8 +561,36 @@
                                         </div>
                                     </div>
                                     <div v-if="msg.media_path" class="mb-2 space-y-1">
-                                        <!-- Photos sent as photos -->
-                                        <img v-if="msg.media_type === 'photo'" :src="getMediaUrl(msg)"
+                                        <!-- Album Grid (multiple photos/videos grouped together) -->
+                                        <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
+                                            <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
+                                                <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
+                                                    <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
+                                                        @click="openMedia(albumMsg)">
+                                                        <img v-if="albumMsg.media_type === 'photo'" 
+                                                            :src="getMediaUrl(albumMsg)"
+                                                            loading="lazy"
+                                                            class="w-full h-full object-cover"
+                                                            @error="handleImageError($event, albumMsg)">
+                                                        <video v-else-if="albumMsg.media_type === 'video'" 
+                                                            class="w-full h-full object-cover"
+                                                            preload="metadata">
+                                                            <source :src="getMediaUrl(albumMsg)" type="video/mp4">
+                                                        </video>
+                                                        <!-- Video indicator overlay -->
+                                                        <div v-if="albumMsg.media_type === 'video'" 
+                                                            class="absolute inset-0 flex items-center justify-center bg-black/20">
+                                                            <svg class="w-10 h-10 text-white/90" fill="currentColor" viewBox="0 0 24 24">
+                                                                <path d="M8 5v14l11-7z"/>
+                                                            </svg>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Regular photo (not part of album) -->
+                                        <img v-else-if="msg.media_type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
                                             loading="lazy"
                                             class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
@@ -1106,6 +1156,50 @@
                         new Date(a.date).getTime() - new Date(b.date).getTime()
                     )
                 })
+                
+                // Group consecutive messages that belong to an album (same grouped_id)
+                const getAlbumForMessage = (msg) => {
+                    const groupedId = msg.raw_data?.grouped_id
+                    if (!groupedId) return null
+                    
+                    // Find all messages in this album
+                    return sortedMessages.value.filter(m => m.raw_data?.grouped_id === groupedId)
+                }
+                
+                // Check if this message is the first in its album (render the album here)
+                const isFirstInAlbum = (msg, index) => {
+                    const groupedId = msg.raw_data?.grouped_id
+                    if (!groupedId) return false
+                    
+                    // Check if previous message has same grouped_id
+                    if (index > 0) {
+                        const prevMsg = sortedMessages.value[index - 1]
+                        if (prevMsg.raw_data?.grouped_id === groupedId) {
+                            return false  // Not first, skip rendering here
+                        }
+                    }
+                    return true  // First in album, render the album grid
+                }
+                
+                // Check if this message should be hidden (it's part of album but not first)
+                const isHiddenAlbumMessage = (msg, index) => {
+                    const groupedId = msg.raw_data?.grouped_id
+                    if (!groupedId) return false
+                    return !isFirstInAlbum(msg, index)
+                }
+                
+                // Get grid layout class based on album size (like Telegram)
+                const getAlbumGridClass = (album) => {
+                    if (!album) return 'grid-cols-1'
+                    const count = album.length
+                    switch (count) {
+                        case 1: return 'grid-cols-1'
+                        case 2: return 'grid-cols-2'
+                        case 3: return 'grid-cols-2'  // 2+1 layout
+                        case 4: return 'grid-cols-2'  // 2x2 grid
+                        default: return 'grid-cols-3'  // 3+ items = 3 columns
+                    }
+                }
 
                 const isGroup = computed(() => {
                     return selectedChat.value && (selectedChat.value.type === 'group' || selectedChat.value.type === 'channel')
@@ -1512,9 +1606,13 @@
 
                 const getMediaUrl = (msg) => {
                     if (!msg.media_path) return ''
-                    // Extract filename from path
-                    const filename = msg.media_path.split(/[/\\]/).pop()
-                    return `/media/${msg.chat_id}/${filename}`
+                    // Extract folder and filename from the stored path
+                    // media_path is like: /data/backups/media/35258041/filename.jpg
+                    // We need to extract: /media/35258041/filename.jpg
+                    const parts = msg.media_path.split(/[/\\]/)
+                    const filename = parts.pop()
+                    const folder = parts.pop()  // Get the folder from the path, not from chat_id
+                    return `/media/${folder}/${filename}`
                 }
 
                 const getDocumentDisplayName = (msg) => {
@@ -1547,14 +1645,16 @@
                 }
 
                 const handleImageError = (event, msg) => {
-                    // Show placeholder instead of broken image - SILENTLY (no console spam)
+                    // Log the error for debugging (real 404s should be investigated)
+                    console.error('Failed to load image:', getMediaUrl(msg))
+                    // Show placeholder instead of broken image
                     const img = event.target
                     img.onerror = null  // Prevent infinite loop
                     img.src = 'data:image/svg+xml,' + encodeURIComponent(`
                         <svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
                             <rect fill="#374151" width="200" height="150"/>
-                            <text x="100" y="70" text-anchor="middle" fill="#9CA3AF" font-family="system-ui" font-size="12">Media not available</text>
-                            <text x="100" y="90" text-anchor="middle" fill="#6B7280" font-family="system-ui" font-size="10">(will sync on next backup)</text>
+                            <text x="100" y="70" text-anchor="middle" fill="#9CA3AF" font-family="system-ui" font-size="12">Media not found</text>
+                            <text x="100" y="90" text-anchor="middle" fill="#6B7280" font-family="system-ui" font-size="10">(file may be missing from disk)</text>
                         </svg>
                     `)
                     img.style.cursor = 'default'
@@ -1562,7 +1662,9 @@
                 }
                 
                 const handleMediaError = (event, msg) => {
-                    // Silently handle audio/video errors - replace with placeholder
+                    // Log the error for debugging (real 404s should be investigated)
+                    console.error('Failed to load media:', getMediaUrl(msg))
+                    // Replace with placeholder
                     const media = event.target
                     const parent = media.parentElement
                     if (parent) {
@@ -1571,7 +1673,7 @@
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                                 </svg>
-                                <span>Media not available</span>
+                                <span>Media not found</span>
                             </div>
                         `
                     }
@@ -1786,6 +1888,11 @@
                     getSenderName,
                     showSenderName,
                     showDateSeparator,
+                    // Album support
+                    getAlbumForMessage,
+                    isFirstInAlbum,
+                    isHiddenAlbumMessage,
+                    getAlbumGridClass,
                     getChatName,
                     getInitials,
                     formatDate,

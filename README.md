@@ -173,7 +173,7 @@ Features:
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
 | `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
 | `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
-| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
+| `LISTEN_DELETIONS` | `true` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
 | `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Ops count that triggers protection |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window in seconds |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | Seconds to buffer before applying |
@@ -215,7 +215,7 @@ Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as
 ```yaml
 - ENABLE_LISTENER=true      # Enable real-time listener
 - LISTEN_EDITS=true         # Apply text edits (default: true, safe)
-- LISTEN_DELETIONS=false    # Delete from backup (default: false - KEEPS YOUR BACKUP SAFE!)
+- LISTEN_DELETIONS=true     # Delete from backup (protected by zero-footprint mass operation detection)
 ```
 
 **How it works:**
@@ -226,7 +226,7 @@ Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as
 
 **⚠️ IMPORTANT: Backup Protection**
 
-By default, `LISTEN_DELETIONS=false` - this means even with the listener enabled, **messages deleted on Telegram stay in your backup**. This is intentional! The whole point of a backup is to preserve data.
+By default, `LISTEN_DELETIONS=true` - deletions are synced but protected by **zero-footprint mass operation detection**. If a mass deletion is detected (>10 deletions in 30s), all pending deletions are discarded - your backup stays safe. Set to `false` if you want to keep ALL messages even when deleted on Telegram.
 
 Only set `LISTEN_DELETIONS=true` if you explicitly want to track deletions (see protection features below).
 

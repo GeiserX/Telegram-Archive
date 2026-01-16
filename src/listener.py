@@ -4,7 +4,7 @@ Catches events as they happen and updates the local database immediately.
 
 Safety features:
 - LISTEN_EDITS: Apply text edits (default: true, safe)
-- LISTEN_DELETIONS: Delete messages (default: false, protects backup!)
+- LISTEN_DELETIONS: Delete messages (default: true, protected by zero-footprint)
 - Mass operation detection: Blocks bulk edits/deletions to protect data
 
 ZERO-FOOTPRINT PROTECTION:
@@ -276,7 +276,7 @@ class TelegramListener:
     
     Safety features:
     - LISTEN_EDITS: Only sync edits if enabled (default: true)
-    - LISTEN_DELETIONS: Only delete if enabled (default: false - protects backup!)
+    - LISTEN_DELETIONS: Only delete if enabled (default: true - protected by zero-footprint)
     - Mass operation detection: Blocks bulk changes with zero footprint
     """
     

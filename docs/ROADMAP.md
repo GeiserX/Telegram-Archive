@@ -145,7 +145,7 @@ Real-time features are powerful but could compromise your backup. v5 includes **
 - [x] **Buffered operations** - Nothing written immediately, all ops wait in buffer
 - [x] **Burst detection** - If >10 ops arrive, triggers protection BEFORE any writes
 - [x] **Zero footprint** - On trigger, ENTIRE buffer discarded, no changes to DB
-- [x] **LISTEN_DELETIONS=false by default** - Extra safety layer
+- [x] **LISTEN_DELETIONS=true by default** - With zero-footprint protection
 - [x] **Configurable thresholds** - Tune protection to your needs
 
 **How it works:**
@@ -160,7 +160,7 @@ Real-time features are powerful but could compromise your backup. v5 includes **
 |----------|---------|-------------|
 | `ENABLE_LISTENER` | `false` | Enable real-time sync (opt-in) |
 | `LISTEN_EDITS` | `true` | Apply text edits (safe) |
-| `LISTEN_DELETIONS` | `false` | ⚠️ Delete from backup (protected!) |
+| `LISTEN_DELETIONS` | `true` | ⚠️ Delete from backup (protected!) |
 | `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Aggressive default - triggers fast |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window |
 | `ENABLE_NOTIFICATIONS` | `false` | Browser push notifications |
