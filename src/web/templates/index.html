@@ -796,11 +796,49 @@
                     initWebSocket()
                 })
 
-                // WebSocket initialization (disabled - using polling instead)
+                // WebSocket initialization for real-time updates
                 const initWebSocket = () => {
-                    // WebSocket disabled - auto-refresh polling handles new messages
-                    // WebSocket would require Caddy config changes to proxy /ws/updates
-                    console.log('[WS] WebSocket disabled, using polling for real-time updates')
+                    if (ws) {
+                        ws.close()
+                    }
+                    
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+                    const wsUrl = `${protocol}//${window.location.host}/ws/updates`
+                    
+                    try {
+                        ws = new WebSocket(wsUrl)
+                        
+                        ws.onopen = () => {
+                            console.log('[WS] Connected to real-time updates')
+                            // Subscribe to current chat if selected
+                            if (selectedChat.value) {
+                                ws.send(JSON.stringify({
+                                    action: 'subscribe',
+                                    chat_id: selectedChat.value.id
+                                }))
+                            }
+                        }
+                        
+                        ws.onmessage = (event) => {
+                            try {
+                                const data = JSON.parse(event.data)
+                                handleWebSocketMessage(data)
+                            } catch (e) {
+                                console.error('[WS] Parse error:', e)
+                            }
+                        }
+                        
+                        ws.onclose = () => {
+                            console.log('[WS] Connection closed, reconnecting in 5s...')
+                            wsReconnectTimer = setTimeout(initWebSocket, 5000)
+                        }
+                        
+                        ws.onerror = (e) => {
+                            console.warn('[WS] Error:', e)
+                        }
+                    } catch (e) {
+                        console.warn('[WS] Failed to connect:', e)
+                    }
                 }
                 
                 const handleWebSocketMessage = (data) => {
