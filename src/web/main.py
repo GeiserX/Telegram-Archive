@@ -253,9 +253,8 @@ async def login(request: Request):
 def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
     """Find avatar file path for a chat.
     
-    Note: Telethon saves avatars using entity.id which is POSITIVE for groups/channels,
-    but our database stores marked IDs which are NEGATIVE for groups/channels.
-    We need to try both positive and negative versions of the ID.
+    Avatar files are stored as: {chat_id}_{photo_id}.jpg
+    For groups/channels, chat_id is negative (marked ID format).
     """
     # Determine folder: 'chats' for groups/channels, 'users' for private
     avatar_folder = 'users' if chat_type == 'private' else 'chats'
@@ -264,16 +263,9 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
     if not os.path.exists(avatar_dir):
         return None
     
-    # For groups/channels, Telethon saves with positive ID but DB has negative
-    # Try both the original ID and its absolute value
-    ids_to_try = [chat_id]
-    if chat_id < 0:
-        ids_to_try.append(abs(chat_id))  # Try positive version too
-    
-    matches = []
-    for id_variant in ids_to_try:
-        pattern = os.path.join(avatar_dir, f'{id_variant}_*.jpg')
-        matches.extend(glob.glob(pattern))
+    # Look for avatar file matching chat_id
+    pattern = os.path.join(avatar_dir, f'{chat_id}_*.jpg')
+    matches = glob.glob(pattern)
     
     if matches:
         # Return the most recently modified avatar (newest profile photo)
