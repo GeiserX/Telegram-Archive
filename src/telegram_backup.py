@@ -846,6 +846,7 @@ class TelegramBackup:
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
         if not photo:
+            logger.debug(f"No photo attribute for entity {entity.id}")
             return
 
         # Determine target directory based on entity type
@@ -866,9 +867,17 @@ class TelegramBackup:
 
         # If we've already downloaded this exact photo, skip
         if os.path.exists(file_path):
+            logger.debug(f"Avatar already exists: {file_path}")
             return
 
-        await self.client.download_profile_photo(entity, file_path)
+        try:
+            result = await self.client.download_profile_photo(entity, file_path)
+            if result:
+                logger.info(f"Downloaded avatar for {entity.id}: {file_path}")
+            else:
+                logger.debug(f"No profile photo available for entity {entity.id}")
+        except Exception as e:
+            logger.warning(f"Failed to download profile photo for {entity.id}: {e}")
     
     async def _process_media(self, message: Message, chat_id: int) -> Optional[dict]:
         """

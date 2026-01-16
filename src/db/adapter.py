@@ -855,16 +855,24 @@ class DatabaseAdapter:
         chat_id: int,
         limit: int = 50,
         offset: int = 0,
-        search: Optional[str] = None
+        search: Optional[str] = None,
+        before_date: Optional[datetime] = None,
+        before_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
         
+        Supports two pagination modes:
+        1. Offset-based (legacy): Uses offset parameter - slower for large offsets
+        2. Cursor-based (preferred): Uses before_date/before_id - O(1) regardless of position
+        
         Args:
             chat_id: Chat ID
             limit: Maximum messages to return
-            offset: Pagination offset
+            offset: Pagination offset (used only if before_date/before_id not provided)
             search: Optional text search filter
+            before_date: Cursor - get messages before this date (faster than offset)
+            before_id: Cursor - message ID to use as tiebreaker for same-date messages
             
         Returns:
             List of message dictionaries with user and media info
@@ -888,7 +896,23 @@ class DatabaseAdapter:
             if search:
                 stmt = stmt.where(Message.text.ilike(f'%{search}%'))
             
-            stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+            # Cursor-based pagination (preferred - O(1) performance)
+            if before_date is not None:
+                # Use composite cursor: (date, id) for deterministic ordering
+                # Messages with same date are ordered by id DESC
+                if before_id is not None:
+                    stmt = stmt.where(
+                        or_(
+                            Message.date < before_date,
+                            and_(Message.date == before_date, Message.id < before_id)
+                        )
+                    )
+                else:
+                    stmt = stmt.where(Message.date < before_date)
+                stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit)
+            else:
+                # Offset-based pagination (legacy fallback)
+                stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
             
             result = await session.execute(stmt)
             messages = []

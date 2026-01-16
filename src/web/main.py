@@ -306,18 +306,41 @@ async def get_messages(
     limit: int = 50,
     offset: int = 0,
     search: Optional[str] = None,
+    before_date: Optional[str] = None,
+    before_id: Optional[int] = None,
 ):
-    """Get messages for a specific chat with user and media info."""
+    """
+    Get messages for a specific chat with user and media info.
+    
+    Supports two pagination modes:
+    - Offset-based: ?offset=100 (slower for large offsets)
+    - Cursor-based: ?before_date=2026-01-15T12:00:00&before_id=12345 (O(1) performance)
+    
+    Cursor-based pagination is preferred for infinite scroll.
+    """
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Parse before_date if provided
+    parsed_before_date = None
+    if before_date:
+        try:
+            parsed_before_date = datetime.fromisoformat(before_date.replace('Z', '+00:00'))
+            # Strip timezone for DB compatibility
+            if parsed_before_date.tzinfo:
+                parsed_before_date = parsed_before_date.replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid before_date format. Use ISO 8601.")
     
     try:
         messages = await db.get_messages_paginated(
             chat_id=chat_id,
             limit=limit,
             offset=offset,
-            search=search
+            search=search,
+            before_date=parsed_before_date,
+            before_id=before_id
         )
         return messages
     except Exception as e:
