@@ -172,18 +172,28 @@ class MassOperationProtector:
         return True, "queued"
     
     async def _process_loop(self):
-        """Background loop that processes buffered operations after delay."""
+        """Background loop that processes buffered operations after delay.
+        
+        Note: This loop just triggers _process_pending periodically.
+        The actual application of operations is done by TelegramListener._process_buffered_operations
+        which calls get_ready_operations().
+        """
         while self._running:
             try:
                 await asyncio.sleep(self.buffer_delay)
-                await self._process_pending()
+                # Just trigger the processing - operations are collected by listener
+                self._process_pending()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in protection processor: {e}")
     
-    async def _process_pending(self):
-        """Process pending operations that have been buffered long enough."""
+    def _process_pending(self) -> List[PendingOperation]:
+        """Process pending operations that have been buffered long enough.
+        
+        Returns:
+            List of operations ready to be applied.
+        """
         now = datetime.now()
         cutoff = now - timedelta(seconds=self.buffer_delay)
         
@@ -212,7 +222,8 @@ class MassOperationProtector:
                 else:
                     del self._pending[chat_id]
         
-        # Apply ready operations
+        # Filter out blocked operations and count applied
+        result: List[PendingOperation] = []
         for op in ready_ops:
             # Double-check not blocked (could have been blocked by newer ops)
             blocked, _ = self.is_blocked(op.chat_id)
@@ -220,16 +231,14 @@ class MassOperationProtector:
                 self.stats['operations_discarded'] += 1
                 continue
             
-            # Yield the operation for processing
             self.stats['operations_applied'] += 1
-            yield op
+            result.append(op)
+        
+        return result
     
     async def get_ready_operations(self) -> List[PendingOperation]:
         """Get operations ready to be applied (called by listener)."""
-        ready = []
-        async for op in self._process_pending():
-            ready.append(op)
-        return ready
+        return self._process_pending()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get protection statistics."""
