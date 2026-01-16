@@ -873,7 +873,12 @@ class TelegramBackup:
             return
 
         try:
-            result = await self.client.download_profile_photo(entity, file_path)
+            # Use download=True to actually download the photo
+            result = await self.client.download_profile_photo(
+                entity, 
+                file=file_path,
+                download_big=False  # Small size is usually sufficient
+            )
             if result:
                 logger.info(f"📷 Downloaded avatar: {file_path}")
         except Exception as e:
