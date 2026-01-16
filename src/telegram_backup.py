@@ -482,7 +482,7 @@ class TelegramBackup:
         # This runs on every dialog backup but only downloads new files when
         # Telegram reports a different profile photo.
         try:
-            await self._ensure_profile_photo(entity)
+            await self._ensure_profile_photo(entity, chat_id)
         except Exception as e:
             logger.error(f"Error downloading profile photo for {chat_id}: {e}", exc_info=True)
         
@@ -839,13 +839,17 @@ class TelegramBackup:
         # Return message data for batch processing
         return message_data
 
-    async def _ensure_profile_photo(self, entity) -> None:
+    async def _ensure_profile_photo(self, entity, marked_id: int = None) -> None:
         """
         Download and keep a copy of the profile photo for users and chats.
 
         We only ever add new files when Telegram reports a different photo,
         and we never delete older ones. This way, if a user removes their
         photo later, we still keep at least one historical copy.
+        
+        Args:
+            entity: Telegram entity (User, Chat, Channel)
+            marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
@@ -870,7 +874,10 @@ class TelegramBackup:
 
         os.makedirs(base_dir, exist_ok=True)
 
-        file_name = f"{entity.id}_{photo_id}.jpg"
+        # Use marked_id for consistent naming (matches what DB uses)
+        # For users, marked_id equals entity.id. For groups/channels, it's negative.
+        file_id = marked_id if marked_id is not None else entity.id
+        file_name = f"{file_id}_{photo_id}.jpg"
         file_path = os.path.join(base_dir, file_name)
 
         # If we've already downloaded this exact photo, skip
