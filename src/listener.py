@@ -279,18 +279,26 @@ class TelegramListener:
     - Mass operation detection: Blocks bulk changes with zero footprint
     """
     
-    def __init__(self, config: Config, db: DatabaseAdapter):
+    def __init__(
+        self, 
+        config: Config, 
+        db: DatabaseAdapter,
+        client: Optional[TelegramClient] = None
+    ):
         """
         Initialize the listener.
         
         Args:
             config: Configuration object
             db: Database adapter (must be initialized)
+            client: Optional existing TelegramClient to use (for shared connection).
+                   If not provided, will create a new client in connect().
         """
         self.config = config
         self.config.validate_credentials()
         self.db = db
-        self.client: Optional[TelegramClient] = None
+        self.client: Optional[TelegramClient] = client
+        self._owns_client = client is None  # Track if we created the client
         self._running = False
         self._tracked_chat_ids: Set[int] = set()
         
@@ -332,37 +340,56 @@ class TelegramListener:
         logger.info("=" * 70)
     
     @classmethod
-    async def create(cls, config: Config) -> "TelegramListener":
+    async def create(
+        cls, 
+        config: Config,
+        client: Optional[TelegramClient] = None
+    ) -> "TelegramListener":
         """
         Factory method to create TelegramListener with initialized database.
         
         Args:
             config: Configuration object
+            client: Optional existing TelegramClient to use (for shared connection)
             
         Returns:
             Initialized TelegramListener instance
         """
         db = await create_adapter()
-        return cls(config, db)
+        return cls(config, db, client=client)
     
     async def connect(self) -> None:
-        """Connect to Telegram and set up event handlers."""
-        self.client = TelegramClient(
-            self.config.session_path,
-            self.config.api_id,
-            self.config.api_hash
-        )
+        """
+        Connect to Telegram and set up event handlers.
         
-        # Connect and authenticate
-        await self.client.connect()
-        
-        if not await self.client.is_user_authorized():
-            logger.error("❌ Session not authorized!")
-            logger.error("Please run the authentication setup first.")
-            raise RuntimeError("Session not authorized. Please run authentication setup.")
-        
-        me = await self.client.get_me()
-        logger.info(f"Connected as {me.first_name} ({me.phone})")
+        If a client was provided in __init__, verifies it's connected.
+        Otherwise, creates a new client and connects.
+        """
+        # If using shared client, just verify it's connected
+        if self.client is not None and not self._owns_client:
+            if not self.client.is_connected():
+                raise RuntimeError("Shared client is not connected")
+            me = await self.client.get_me()
+            logger.info(f"Connected as {me.first_name} ({me.phone})")
+        else:
+            # Create new client
+            self.client = TelegramClient(
+                self.config.session_path,
+                self.config.api_id,
+                self.config.api_hash
+            )
+            self._owns_client = True
+            
+            # Connect and authenticate
+            await self.client.connect()
+            
+            if not await self.client.is_user_authorized():
+                logger.error("❌ Session not authorized!")
+                logger.error("Please run the authentication setup first.")
+                raise RuntimeError("Session not authorized. Please run authentication setup.")
+            
+            me = await self.client.get_me()
+            logger.info(f"Connected as {me.first_name} ({me.phone})")
         
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
@@ -630,11 +657,17 @@ class TelegramListener:
             await self._log_stats()
     
     async def stop(self) -> None:
-        """Stop the listener gracefully."""
+        """
+        Stop the listener gracefully.
+        
+        Only disconnects if we own the client (created it ourselves).
+        Shared clients are managed by the connection owner.
+        """
         logger.info("Stopping listener...")
         self._running = False
         
-        if self.client and self.client.is_connected():
+        # Only disconnect if we own the client
+        if self.client and self._owns_client and self.client.is_connected():
             await self.client.disconnect()
         
         await self._log_stats()
