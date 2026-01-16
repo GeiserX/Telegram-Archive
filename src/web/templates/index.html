@@ -291,17 +291,16 @@
                     </div>
                 </div>
 
-                <!-- Notification Permission Banner -->
-                <div v-if="notificationsEnabled && notificationsSupported && notificationPermission !== 'granted'" 
+                <!-- Notification Permission Banner (shows only once when permission is 'default') -->
+                <div v-if="notificationsEnabled && notificationsSupported && notificationPermission === 'default'" 
                     class="px-3 py-2 bg-blue-900/80 border-b border-blue-700">
                     <div class="flex items-center gap-2 text-blue-200 text-sm">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
                         </svg>
-                        <span v-if="notificationPermission === 'denied'">Notifications blocked - enable in browser settings</span>
-                        <span v-else>Enable notifications for new messages</span>
-                        <button v-if="notificationPermission !== 'denied'" @click="requestNotificationPermission()" 
+                        <span>Enable notifications for new messages</span>
+                        <button @click="requestNotificationPermission()" 
                             class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
                             Enable
                         </button>
@@ -881,14 +880,22 @@
                 // Notification functions
                 const initNotifications = async () => {
                     try {
-                        const res = await fetch('/api/notifications/settings')
+                        const res = await fetch('/api/notifications/settings', { credentials: 'include' })
                         if (res.ok) {
                             const data = await res.json()
                             notificationsEnabled.value = data.enabled
+                            console.log('[Notifications] API enabled:', data.enabled)
                         }
                     } catch (e) {
                         console.warn('Could not fetch notification settings:', e)
                     }
+                    
+                    // Log notification state for debugging
+                    console.log('[Notifications] State:', {
+                        enabled: notificationsEnabled.value,
+                        supported: notificationsSupported.value,
+                        permission: notificationPermission.value
+                    })
                     
                     // Register service worker
                     if ('serviceWorker' in navigator && notificationsEnabled.value) {
