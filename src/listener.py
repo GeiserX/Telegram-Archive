@@ -16,7 +16,6 @@ that burst attacks are caught BEFORE any data is modified.
 import asyncio
 import logging
 from collections import deque
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Set, Deque, Tuple, List, Dict, Any
 
@@ -32,96 +31,71 @@ from .realtime import RealtimeNotifier, NotificationType
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PendingOperation:
-    """A pending operation waiting to be applied."""
-    chat_id: int
-    operation_type: str  # 'edit' or 'deletion'
-    timestamp: datetime
-    data: Dict[str, Any]  # Operation-specific data
-
-
 class MassOperationProtector:
     """
-    Zero-footprint protection against mass deletions/edits.
+    Rate-limiting protection against mass deletions/edits.
     
     HOW IT WORKS:
-    1. Operations are buffered with timestamps (not applied immediately)
-    2. Before applying, we check: were there >THRESHOLD ops in the last WINDOW seconds?
-    3. If yes → BURST DETECTED → discard ALL buffered operations, block the chat
-    4. If no → apply the operations that have waited long enough (BUFFER_DELAY)
+    - Uses a sliding time window to count operations per chat
+    - Operations are applied IMMEDIATELY if under threshold
+    - Once threshold exceeded, chat is blocked for remainder of window
     
     PARAMETERS:
     - THRESHOLD (default 10): Max operations allowed in the time window
     - WINDOW_SECONDS (default 30): Sliding time window for counting operations
-    - BUFFER_DELAY (default 2s): Minimum time to buffer before applying
     
     EXAMPLE:
-    - 5 deletions at t=0
-    - 5 more at t=25  → Total 10 in 30s window → OK, applied after delay
-    - 5 deletions at t=0
-    - 6 more at t=25  → Total 11 in 30s window → BURST! All discarded
+    - User deletes 2 messages → both applied immediately ✓
+    - User deletes 10 messages over 30s → all applied ✓  
+    - Attacker deletes 50 messages in 10s → first 10 applied, remaining 40 blocked ✓
     
-    This ensures ZERO footprint - no data is modified during an attack.
+    This provides RATE LIMITING - normal usage works, mass attacks are capped.
+    For zero deletions from backup, disable LISTEN_DELETIONS entirely.
     """
     
     def __init__(
         self, 
         threshold: int = 10,
         window_seconds: int = 30,
-        buffer_delay_seconds: float = 2.0
+        buffer_delay_seconds: float = 2.0  # DEPRECATED: kept for config compatibility
     ):
         """
         Args:
             threshold: Max operations allowed per chat in the time window
-            window_seconds: Sliding window for counting operations (NOT just block duration)
-            buffer_delay_seconds: How long to buffer before applying
+            window_seconds: Sliding window for counting operations
+            buffer_delay_seconds: DEPRECATED - no longer used, operations apply immediately
         """
         self.threshold = threshold
         self.window_seconds = window_seconds
         self.window = timedelta(seconds=window_seconds)
-        self.buffer_delay = buffer_delay_seconds
         
-        # Pending operations buffer: {chat_id: [PendingOperation, ...]}
-        self._pending: Dict[int, List[PendingOperation]] = {}
-        
-        # Operation history for sliding window: {chat_id: [timestamp, ...]}
+        # Operation history for sliding window: {chat_id: deque of timestamps}
         self._operation_history: Dict[int, Deque[datetime]] = {}
         
-        # Blocked chats: {chat_id: (blocked_until, reason, discarded_count)}
+        # Blocked chats: {chat_id: (blocked_until, reason, blocked_count)}
         self._blocked: Dict[int, Tuple[datetime, str, int]] = {}
         
-        # Processing task
-        self._process_task: Optional[asyncio.Task] = None
         self._running = False
         
         # Statistics
         self.stats = {
             'operations_applied': 0,
-            'operations_discarded': 0,
-            'bursts_detected': 0,
-            'chats_protected': set()
+            'operations_blocked': 0,
+            'rate_limits_triggered': 0,
+            'chats_rate_limited': set()
         }
     
     def start(self):
-        """Start the background processing task."""
-        if not self._running:
-            self._running = True
-            self._process_task = asyncio.create_task(self._process_loop())
-            logger.info(f"🛡️ Mass operation protector started (threshold: {self.threshold} ops in {self.window.seconds}s)")
+        """Start the protector."""
+        self._running = True
+        logger.info(f"🛡️ Rate limiter active: max {self.threshold} ops per {self.window_seconds}s per chat")
     
     async def stop(self):
-        """Stop the processing task."""
+        """Stop the protector."""
         self._running = False
-        if self._process_task:
-            self._process_task.cancel()
-            try:
-                await self._process_task
-            except asyncio.CancelledError:
-                pass
     
     def is_blocked(self, chat_id: int) -> Tuple[bool, str]:
-        """Check if a chat is currently blocked."""
+        """Check if a chat is currently rate-limited."""
         if chat_id in self._blocked:
             blocked_until, reason, _ = self._blocked[chat_id]
             if datetime.now() < blocked_until:
@@ -129,7 +103,7 @@ class MassOperationProtector:
             else:
                 # Block expired
                 del self._blocked[chat_id]
-                logger.info(f"🔓 Protection block expired for chat {chat_id}")
+                logger.info(f"🔓 Rate limit expired for chat {chat_id}")
         return False, ""
     
     def _count_ops_in_window(self, chat_id: int) -> int:
@@ -153,180 +127,68 @@ class MassOperationProtector:
             self._operation_history[chat_id] = deque()
         self._operation_history[chat_id].append(datetime.now())
     
-    def queue_operation(self, chat_id: int, operation_type: str, data: Dict[str, Any]) -> Tuple[bool, str]:
+    def check_operation(self, chat_id: int, operation_type: str) -> Tuple[bool, str]:
         """
-        Queue an operation for processing.
+        Check if an operation should be allowed.
         
-        Returns (queued, reason):
-            - (True, "queued") if operation was queued
-            - (False, reason) if chat is blocked or burst detected
+        Returns (allowed, reason):
+            - (True, "allowed") if operation can proceed
+            - (False, reason) if chat is rate-limited
         """
-        # Check if blocked
+        # Check if already blocked
         blocked, reason = self.is_blocked(chat_id)
         if blocked:
-            self.stats['operations_discarded'] += 1
-            return False, f"BLOCKED: {reason}"
+            self.stats['operations_blocked'] += 1
+            return False, f"RATE LIMITED: {reason}"
         
-        # Record this operation for sliding window
+        # Record this operation
         self._record_operation(chat_id)
         
-        # Check sliding window BEFORE adding to buffer
+        # Check sliding window
         ops_in_window = self._count_ops_in_window(chat_id)
         
         if ops_in_window > self.threshold:
-            # BURST DETECTED - Discard ALL pending operations for this chat
-            discarded = len(self._pending.get(chat_id, [])) + 1  # +1 for current op
-            if chat_id in self._pending:
-                del self._pending[chat_id]
-            
-            # Clear history for this chat
-            if chat_id in self._operation_history:
-                del self._operation_history[chat_id]
-            
-            # Block the chat
+            # Rate limit triggered - block further operations
             block_until = datetime.now() + self.window
-            reason = f"🛡️ BURST DETECTED: {ops_in_window} {operation_type}s in {self.window_seconds}s"
-            self._blocked[chat_id] = (block_until, reason, discarded)
+            reason = f"Rate limit: {ops_in_window} {operation_type}s in {self.window_seconds}s (max: {self.threshold})"
+            self._blocked[chat_id] = (block_until, reason, ops_in_window - self.threshold)
             
             # Update stats
-            self.stats['bursts_detected'] += 1
-            self.stats['operations_discarded'] += discarded
-            self.stats['chats_protected'].add(chat_id)
+            self.stats['rate_limits_triggered'] += 1
+            self.stats['operations_blocked'] += 1
+            self.stats['chats_rate_limited'].add(chat_id)
             
             logger.warning("=" * 70)
-            logger.warning(f"🛡️ ZERO-FOOTPRINT PROTECTION ACTIVATED")
+            logger.warning(f"🛡️ RATE LIMIT TRIGGERED")
             logger.warning(f"   Chat: {chat_id}")
-            logger.warning(f"   Attack type: Mass {operation_type}")
-            logger.warning(f"   Operations in {self.window_seconds}s window: {ops_in_window} (threshold: {self.threshold})")
-            logger.warning(f"   Operations discarded: {discarded}")
-            logger.warning(f"   Data preserved: 100% (ZERO changes written to database)")
+            logger.warning(f"   Operation type: {operation_type}")
+            logger.warning(f"   Operations in {self.window_seconds}s: {ops_in_window} (max: {self.threshold})")
+            logger.warning(f"   First {self.threshold} were applied, remaining blocked")
             logger.warning(f"   Chat blocked until: {block_until}")
             logger.warning("=" * 70)
             
             return False, reason
         
-        # Add to pending buffer (will be applied after buffer_delay)
-        if chat_id not in self._pending:
-            self._pending[chat_id] = []
-        
-        op = PendingOperation(
-            chat_id=chat_id,
-            operation_type=operation_type,
-            timestamp=datetime.now(),
-            data=data
-        )
-        self._pending[chat_id].append(op)
-        
-        return True, "queued"
-    
-    async def _process_loop(self):
-        """Background loop that processes buffered operations after delay.
-        
-        Note: This loop just triggers _process_pending periodically.
-        The actual application of operations is done by TelegramListener._process_buffered_operations
-        which calls get_ready_operations().
-        """
-        while self._running:
-            try:
-                await asyncio.sleep(self.buffer_delay)
-                # Just trigger the processing - operations are collected by listener
-                self._process_pending()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in protection processor: {e}")
-    
-    def _process_pending(self) -> List[PendingOperation]:
-        """Process pending operations that have been buffered long enough.
-        
-        Before applying, re-checks the sliding window to catch any bursts
-        that developed while operations were buffered.
-        
-        Returns:
-            List of operations ready to be applied.
-        """
-        now = datetime.now()
-        cutoff = now - timedelta(seconds=self.buffer_delay)
-        
-        # Collect operations ready to be applied
-        ready_ops: List[PendingOperation] = []
-        
-        for chat_id in list(self._pending.keys()):
-            # Check if chat got blocked while we were waiting
-            blocked, _ = self.is_blocked(chat_id)
-            if blocked:
-                # Discard all pending for this chat
-                discarded = len(self._pending[chat_id])
-                self.stats['operations_discarded'] += discarded
-                del self._pending[chat_id]
-                continue
-            
-            # Re-check sliding window before applying
-            ops_in_window = self._count_ops_in_window(chat_id)
-            if ops_in_window > self.threshold:
-                # Burst developed while buffering - discard all
-                discarded = len(self._pending[chat_id])
-                logger.warning(f"🛡️ Burst detected during buffer for chat {chat_id}: {ops_in_window} ops in window, discarding {discarded}")
-                self.stats['operations_discarded'] += discarded
-                self.stats['bursts_detected'] += 1
-                self.stats['chats_protected'].add(chat_id)
-                
-                # Block the chat
-                block_until = now + self.window
-                self._blocked[chat_id] = (block_until, f"Burst during buffer: {ops_in_window} ops", discarded)
-                
-                del self._pending[chat_id]
-                if chat_id in self._operation_history:
-                    del self._operation_history[chat_id]
-                continue
-            
-            # Find operations old enough to process
-            ops = self._pending[chat_id]
-            ready = [op for op in ops if op.timestamp < cutoff]
-            remaining = [op for op in ops if op.timestamp >= cutoff]
-            
-            if ready:
-                ready_ops.extend(ready)
-                if remaining:
-                    self._pending[chat_id] = remaining
-                else:
-                    del self._pending[chat_id]
-        
-        # Filter out blocked operations and count applied
-        result: List[PendingOperation] = []
-        for op in ready_ops:
-            # Double-check not blocked (could have been blocked by newer ops)
-            blocked, _ = self.is_blocked(op.chat_id)
-            if blocked:
-                self.stats['operations_discarded'] += 1
-                continue
-            
-            self.stats['operations_applied'] += 1
-            result.append(op)
-        
-        return result
-    
-    async def get_ready_operations(self) -> List[PendingOperation]:
-        """Get operations ready to be applied (called by listener)."""
-        return self._process_pending()
+        # Operation allowed
+        self.stats['operations_applied'] += 1
+        return True, "allowed"
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get protection statistics."""
+        """Get rate limiter statistics."""
         return {
             'operations_applied': self.stats['operations_applied'],
-            'operations_discarded': self.stats['operations_discarded'],
-            'bursts_detected': self.stats['bursts_detected'],
-            'chats_protected': len(self.stats['chats_protected']),
-            'currently_blocked': len([c for c in self._blocked if datetime.now() < self._blocked[c][0]]),
-            'pending_operations': sum(len(ops) for ops in self._pending.values())
+            'operations_blocked': self.stats['operations_blocked'],
+            'rate_limits_triggered': self.stats['rate_limits_triggered'],
+            'chats_rate_limited': len(self.stats['chats_rate_limited']),
+            'currently_blocked': len([c for c in self._blocked if datetime.now() < self._blocked[c][0]])
         }
     
     def get_blocked_chats(self) -> Dict[int, Tuple[str, int]]:
-        """Get currently blocked chats with reasons and discarded counts."""
+        """Get currently rate-limited chats."""
         now = datetime.now()
         return {
-            chat_id: (reason, discarded)
-            for chat_id, (blocked_until, reason, discarded) in self._blocked.items()
+            chat_id: (reason, blocked_count)
+            for chat_id, (blocked_until, reason, blocked_count) in self._blocked.items()
             if now < blocked_until
         }
 
@@ -338,15 +200,19 @@ class TelegramListener:
     Catches message edits and deletions as they happen and updates the database.
     Designed to run alongside the scheduled backup process.
     
-    ZERO-FOOTPRINT PROTECTION:
-    All operations are buffered before being applied. If a mass operation
-    is detected (burst of edits/deletions), the ENTIRE buffer is discarded
-    and NO changes are written to the database. Your backup stays intact.
+    RATE LIMITING PROTECTION:
+    Uses a sliding window to limit operations per chat. Normal usage (deleting
+    a few messages) works instantly. Mass operations (deleting 50+ messages)
+    are blocked after the threshold, protecting most of your backup.
+    
+    Example: threshold=10, window=30s
+    - Delete 2 messages → both applied ✓
+    - Delete 50 messages in 10s → first 10 applied, remaining 40 blocked ✓
     
     Safety features:
     - LISTEN_EDITS: Only sync edits if enabled (default: true)
-    - LISTEN_DELETIONS: Only delete if enabled (default: true - protected by zero-footprint)
-    - Mass operation detection: Blocks bulk changes with zero footprint
+    - LISTEN_DELETIONS: Sync deletions with rate limiting (default: true)
+    - For zero deletions from backup, set LISTEN_DELETIONS=false
     """
     
     def __init__(
@@ -677,39 +543,45 @@ class TelegramListener:
                 new_text = message.text or ''
                 edit_date = message.edit_date
                 
-                # Queue for protected processing (NOT applied immediately!)
-                queued, reason = self._protector.queue_operation(
-                    chat_id=chat_id,
-                    operation_type='edit',
-                    data={
-                        'message_id': message.id,
-                        'new_text': new_text,
-                        'edit_date': edit_date
-                    }
-                )
+                # Check rate limit before applying
+                allowed, reason = self._protector.check_operation(chat_id, 'edit')
                 
-                if not queued:
+                if not allowed:
                     self.stats['operations_discarded'] += 1
-                    # Don't log every blocked op - the protector already logged the burst
-                else:
-                    logger.debug(f"📝 Edit queued: chat={chat_id} msg={message.id}")
+                    return
+                
+                # Apply the edit immediately
+                await self.db.update_message_text(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    new_text=new_text,
+                    edit_date=edit_date
+                )
+                self.stats['edits_applied'] += 1
+                logger.debug(f"📝 Edit applied: chat={chat_id} msg={message.id}")
+                
+                # Notify viewer of the update
+                await self._notify_update('edit', {
+                    'chat_id': chat_id,
+                    'message_id': message.id,
+                    'new_text': new_text,
+                    'edit_date': edit_date.isoformat() if edit_date else None
+                })
                 
             except Exception as e:
                 self.stats['errors'] += 1
-                logger.error(f"Error queueing edit event: {e}", exc_info=True)
+                logger.error(f"Error processing edit event: {e}", exc_info=True)
         
         @self.client.on(events.MessageDeleted)
         async def on_message_deleted(event: events.MessageDeleted.Event) -> None:
             """
             Handle message deletion events.
             
-            Operations are QUEUED, not applied immediately.
-            If a mass deletion is detected, ALL queued deletions are discarded
-            and NOTHING is deleted from your backup.
+            Rate-limited: if too many deletions occur in a short time,
+            further deletions are blocked to protect the backup.
             """
-            # Check if deletions are enabled (DEFAULT: FALSE to protect backup!)
+            # Check if deletions are enabled (DEFAULT: TRUE with rate limiting)
             if not self.config.listen_deletions:
-                # Just log and skip - don't delete from backup
                 if event.deleted_ids:
                     self.stats['deletions_skipped'] += len(event.deleted_ids)
                     logger.debug(f"⏭️ Deletion skipped (LISTEN_DELETIONS=false): {len(event.deleted_ids)} messages")
@@ -724,7 +596,7 @@ class TelegramListener:
                     if not self._should_process_chat(chat_id):
                         return
                 
-                # Queue each deletion for protected processing
+                # Process each deletion
                 for msg_id in event.deleted_ids:
                     self.stats['deletions_received'] += 1
                     
@@ -741,27 +613,30 @@ class TelegramListener:
                     if effective_chat_id is not None:
                         if not self._should_process_chat(effective_chat_id):
                             continue
-                            
-                        queued, reason = self._protector.queue_operation(
-                            chat_id=effective_chat_id,
-                            operation_type='deletion',
-                            data={
-                                'message_id': msg_id,
-                                'chat_id': effective_chat_id
-                            }
-                        )
                         
-                        if not queued:
+                        # Check rate limit before applying
+                        allowed, reason = self._protector.check_operation(effective_chat_id, 'deletion')
+                        
+                        if not allowed:
                             self.stats['operations_discarded'] += 1
-                        else:
-                            logger.debug(f"🗑️ Deletion queued: chat={effective_chat_id} msg={msg_id}")
+                            continue
+                        
+                        # Apply the deletion immediately
+                        await self.db.delete_message(effective_chat_id, msg_id)
+                        self.stats['deletions_applied'] += 1
+                        logger.debug(f"🗑️ Deletion applied: chat={effective_chat_id} msg={msg_id}")
+                        
+                        # Notify viewer of the deletion
+                        await self._notify_update('delete', {
+                            'chat_id': effective_chat_id,
+                            'message_id': msg_id
+                        })
                     else:
-                        # Chat unknown even after DB lookup - skip
                         logger.debug(f"⚠️ Deletion skipped (unknown chat): msg={msg_id}")
                 
             except Exception as e:
                 self.stats['errors'] += 1
-                logger.error(f"Error queueing deletion event: {e}", exc_info=True)
+                logger.error(f"Error processing deletion event: {e}", exc_info=True)
         
         @self.client.on(events.NewMessage)
         async def on_new_message(event: events.NewMessage.Event) -> None:
@@ -984,83 +859,20 @@ class TelegramListener:
                 self.stats['errors'] += 1
                 logger.error(f"Error in album handler: {e}", exc_info=True)
     
-    async def _process_buffered_operations(self) -> None:
-        """
-        Background task that processes buffered operations.
-        
-        This is the core of zero-footprint protection:
-        - Operations wait in the buffer for 2 seconds
-        - If a burst is detected, the buffer is discarded
-        - Only "safe" operations that passed the delay are applied
-        """
-        while self._running:
-            try:
-                await asyncio.sleep(0.5)  # Check every 500ms
-                
-                # Get operations ready to be applied
-                ready_ops = await self._protector.get_ready_operations()
-                
-                for op in ready_ops:
-                    try:
-                        if op.operation_type == 'edit':
-                            await self.db.update_message_text(
-                                chat_id=op.chat_id,
-                                message_id=op.data['message_id'],
-                                new_text=op.data['new_text'],
-                                edit_date=op.data['edit_date']
-                            )
-                            self.stats['edits_applied'] += 1
-                            
-                            # Send real-time notification
-                            if self._notifier:
-                                await self._notifier.notify(
-                                    NotificationType.EDIT,
-                                    op.chat_id,
-                                    {'message_id': op.data['message_id'], 'new_text': op.data['new_text']}
-                                )
-                            
-                            preview = op.data['new_text'][:30] + '...' if len(op.data['new_text']) > 30 else op.data['new_text']
-                            logger.info(f"📝 Edit applied: chat={op.chat_id} msg={op.data['message_id']} text=\"{preview}\"")
-                        
-                        elif op.operation_type == 'deletion':
-                            await self.db.delete_message(op.chat_id, op.data['message_id'])
-                            self.stats['deletions_applied'] += 1
-                            
-                            # Send real-time notification
-                            if self._notifier:
-                                await self._notifier.notify(
-                                    NotificationType.DELETE,
-                                    op.chat_id,
-                                    {'message_id': op.data['message_id']}
-                                )
-                            
-                            logger.info(f"🗑️ Deletion applied: chat={op.chat_id} msg={op.data['message_id']}")
-                    
-                    except Exception as e:
-                        self.stats['errors'] += 1
-                        logger.error(f"Error applying {op.operation_type}: {e}")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in operation processor: {e}")
     
     async def run(self) -> None:
         """
         Run the listener until stopped.
         
-        This starts:
-        1. The Telegram client for receiving events
-        2. The background processor for applying buffered operations
+        Operations are applied immediately with rate limiting:
+        - Normal usage (few deletions) → applied instantly
+        - Mass operations → blocked after threshold
         """
         self._running = True
         self.stats['start_time'] = datetime.now()
         
-        # Start the protection system
+        # Start the rate limiter
         self._protector.start()
-        
-        # Start the background operation processor
-        self._processor_task = asyncio.create_task(self._process_buffered_operations())
         
         # Write listener status to database (for viewer to display)
         try:
@@ -1069,10 +881,9 @@ class TelegramListener:
             logger.warning(f"Could not write listener status to DB: {e}")
         
         logger.info("=" * 70)
-        logger.info("🎧 Real-time listener started with ZERO-FOOTPRINT PROTECTION")
-        logger.info("   All operations are buffered before being applied")
-        logger.info("   Mass operations will be detected and discarded")
-        logger.info("   Your backup data is protected!")
+        logger.info("🎧 Real-time listener started with RATE LIMITING")
+        logger.info(f"   Max {self._protector.threshold} ops per {self._protector.window_seconds}s per chat")
+        logger.info("   Normal usage works instantly, mass operations blocked")
         logger.info("=" * 70)
         
         try:
