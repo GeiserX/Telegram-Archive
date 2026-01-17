@@ -238,10 +238,17 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
                         src = os.path.join(old_folder_path, item)
                         dst = os.path.join(new_folder_path, item)
                         if not os.path.exists(dst):
+                            # File doesn't exist in destination - move it
                             shutil.move(src, dst)
-                    # Remove old folder if empty
-                    if not os.listdir(old_folder_path):
+                        else:
+                            # File exists in both - delete from old folder (keep new)
+                            os.remove(src)
+                    # Remove old folder (should be empty now)
+                    try:
                         os.rmdir(old_folder_path)
+                        logger.info(f"   ✓ Removed empty folder: {old_folder}/")
+                    except OSError:
+                        logger.warning(f"   Could not remove folder {old_folder}/ (not empty?)")
                 
                 stats["folders_renamed"] += 1
             else:
