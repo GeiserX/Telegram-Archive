@@ -86,9 +86,14 @@ class PushNotificationManager:
                 await self.db.set_metadata('vapid_public_key', self._public_key)
                 logger.info("Generated and stored new VAPID keys")
         
-        # Create VAPID instance
+        # Create VAPID instance from the stored private key
         try:
-            self._vapid = Vapid.from_string(self._private_key)
+            # Try PEM format first (our default storage format)
+            if '-----BEGIN' in self._private_key:
+                self._vapid = Vapid.from_pem(self._private_key.encode('utf-8'))
+            else:
+                # Try DER/raw format
+                self._vapid = Vapid.from_string(self._private_key)
             logger.info(f"Web Push initialized. Public key: {self._public_key[:20]}...")
             return True
         except Exception as e:
