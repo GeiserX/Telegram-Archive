@@ -46,7 +46,7 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
         force: If True, update all records including those with existing sizes
     """
     config = Config()
-    db = await create_adapter(config.database_url if hasattr(config, 'database_url') else None, config)
+    db = await create_adapter()
     
     media_base_path = config.media_path
     if not os.path.exists(media_base_path):
