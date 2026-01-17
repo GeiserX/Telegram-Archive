@@ -61,22 +61,40 @@ async def get_group_channel_chats(session) -> list:
     return [{"id": row[0], "type": row[1], "title": row[2]} for row in result.fetchall()]
 
 
-async def get_media_paths_for_chat(session, chat_id: int, old_folder: str) -> list:
-    """Get all media paths that use the old (positive) folder name."""
-    # Look for paths containing the positive folder name
+async def get_media_paths_for_chat(session, chat_id: int, old_folder: str) -> dict:
+    """Get all media paths that use the old (positive) folder name from both tables."""
     pattern = f"%/media/{old_folder}/%"
-    result = await session.execute(
+    
+    # Get from messages table
+    msg_result = await session.execute(
         text("SELECT id, media_path FROM messages WHERE chat_id = :chat_id AND media_path LIKE :pattern"),
         {"chat_id": chat_id, "pattern": pattern}
     )
-    return [{"id": row[0], "media_path": row[1]} for row in result.fetchall()]
+    messages = [{"id": row[0], "media_path": row[1]} for row in msg_result.fetchall()]
+    
+    # Get from media table (has its own file_path column!)
+    media_result = await session.execute(
+        text("SELECT id, file_path FROM media WHERE chat_id = :chat_id AND file_path LIKE :pattern"),
+        {"chat_id": chat_id, "pattern": pattern}
+    )
+    media = [{"id": row[0], "file_path": row[1]} for row in media_result.fetchall()]
+    
+    return {"messages": messages, "media": media}
 
 
 async def update_media_path(session, message_id: int, old_path: str, new_path: str):
-    """Update a single media_path in the database."""
+    """Update a single media_path in the messages table."""
     await session.execute(
         text("UPDATE messages SET media_path = :new_path WHERE id = :id AND media_path = :old_path"),
         {"id": message_id, "new_path": new_path, "old_path": old_path}
+    )
+
+
+async def update_media_file_path(session, media_id: str, old_path: str, new_path: str):
+    """Update a single file_path in the media table."""
+    await session.execute(
+        text("UPDATE media SET file_path = :new_path WHERE id = :id AND file_path = :old_path"),
+        {"id": media_id, "new_path": new_path, "old_path": old_path}
     )
 
 
@@ -176,20 +194,37 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
             stats["chats_processed"] += 1
             logger.info(f"📁 Chat {chat_id} ({chat['type']}): {chat['title']}")
             
-            # Check for paths that need updating in DB
-            messages_to_update = await get_media_paths_for_chat(session, chat_id, old_folder)
+            # Check for paths that need updating in DB (both messages and media tables)
+            paths_to_update = await get_media_paths_for_chat(session, chat_id, old_folder)
+            
+            messages_to_update = paths_to_update["messages"]
+            media_to_update = paths_to_update["media"]
             
             if messages_to_update:
-                logger.info(f"   Found {len(messages_to_update)} media paths to update in database")
+                logger.info(f"   Found {len(messages_to_update)} message paths to update")
                 
                 for msg in messages_to_update:
                     old_path = msg["media_path"]
                     new_path = old_path.replace(f"/media/{old_folder}/", f"/media/{new_folder}/")
                     
                     if dry_run:
-                        logger.debug(f"   [DRY RUN] Would update: {old_path} → {new_path}")
+                        logger.debug(f"   [DRY RUN] Would update message: {old_path} → {new_path}")
                     else:
                         await update_media_path(session, msg["id"], old_path, new_path)
+                    
+                    stats["paths_updated"] += 1
+            
+            if media_to_update:
+                logger.info(f"   Found {len(media_to_update)} media table paths to update")
+                
+                for med in media_to_update:
+                    old_path = med["file_path"]
+                    new_path = old_path.replace(f"/media/{old_folder}/", f"/media/{new_folder}/")
+                    
+                    if dry_run:
+                        logger.debug(f"   [DRY RUN] Would update media: {old_path} → {new_path}")
+                    else:
+                        await update_media_file_path(session, med["id"], old_path, new_path)
                     
                     stats["paths_updated"] += 1
             
