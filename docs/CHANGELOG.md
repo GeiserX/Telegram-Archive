@@ -40,6 +40,17 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 - **Compact stats dropdown** - Stats moved to dropdown next to header
 - **Per-chat stats** - Message count, media count, total size per chat
 - **"Real-time sync" indicator** - Shows when listener is active
+- **`SHOW_STATS`** - Hide stats dropdown for restricted viewers (default: true)
+
+#### Web Push Notifications
+- **`PUSH_NOTIFICATIONS`** - Notification mode: `off`, `basic`, `full` (default: basic)
+  - `off` - No notifications
+  - `basic` - In-browser notifications (tab must be open)
+  - `full` - **Persistent Web Push** (works even when browser is closed!)
+- **Auto-generated VAPID keys** - Stored in database, persist across restarts
+- **Subscription management** - Subscriptions survive container restarts and updates
+- **Automatic cleanup** - Expired subscriptions removed automatically
+- **Optional custom VAPID keys** via `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CONTACT`
 
 #### Migration Scripts
 - **`scripts/migrate_media_paths.py`** - ⚠️ **HIGHLY RECOMMENDED** - Normalizes media folder names to use marked IDs
