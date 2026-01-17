@@ -293,6 +293,7 @@
                     <div v-if="statsData.stats_calculated_at" class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-tg-muted mb-3 bg-gray-800/50 rounded-lg px-3 py-2">
                         <span title="Total chats backed up">💬 {{ formatNumber(statsData.chats) }} chats</span>
                         <span title="Total messages">📬 {{ formatNumber(statsData.messages) }} msgs</span>
+                        <span title="Total media files">🖼️ {{ formatNumber(statsData.media_files) }} media</span>
                         <span title="Storage used">💾 {{ formatSize(statsData.total_size_mb) }}</span>
                         <span title="Stats last calculated" class="ml-auto opacity-70">📊 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
                     </div>
@@ -492,8 +493,8 @@
                             </div>
                             <!-- Per-Chat Stats -->
                             <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
-                                <span title="Messages in this chat">📬 {{ formatNumber(chatStats.messages) }}</span>
-                                <span v-if="chatStats.media_files > 0" title="Media files">📁 {{ formatNumber(chatStats.media_files) }}</span>
+                                <span title="Messages in this chat">📬 {{ formatNumber(chatStats.messages) }} msgs</span>
+                                <span v-if="chatStats.media_files > 0" title="Media files">🖼️ {{ formatNumber(chatStats.media_files) }} media</span>
                                 <span v-if="chatStats.total_size_mb > 0" title="Storage used">💾 {{ formatSize(chatStats.total_size_mb) }}</span>
                             </div>
                             <!-- Loading indicator for chat stats -->
@@ -652,18 +653,9 @@
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-[200px] max-w-md bg-black/20 p-3 rounded-lg">
-                                            <div class="flex items-center gap-3">
-                                                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-tg-accent flex items-center justify-center">
-                                                    <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93h2c0 3.31 2.69 6 6 6s6-2.69 6-6h2c0 4.08-3.06 7.44-7 7.93V20h4v2H8v-2h4v-4.07z"/>
-                                                    </svg>
-                                                </div>
-                                                <audio controls preload="metadata" class="flex-grow h-10" 
-                                                    :src="getMediaUrl(msg)"
-                                                    @error="handleMediaError($event, msg)">
-                                                    Your browser does not support the audio element.
-                                                </audio>
-                                            </div>
+                                            <audio controls preload="metadata" class="w-full h-10" :src="getMediaUrl(msg)">
+                                                Your browser does not support the audio element.
+                                            </audio>
                                             <div class="text-[11px] opacity-70 mt-1.5 truncate px-1">{{
                                                 getDocumentDisplayName(msg) }}</div>
                                         </div>
