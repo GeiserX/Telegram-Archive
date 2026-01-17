@@ -377,6 +377,37 @@ class TelegramListener:
                 return entity_or_peer.id
             return entity_or_peer
     
+    async def _notify_update(self, notification_type: str, data: dict) -> None:
+        """
+        Send a real-time notification to the viewer.
+        
+        Args:
+            notification_type: Type of notification ('edit', 'delete', 'new_message')
+            data: Notification data (must include 'chat_id')
+        """
+        if self._notifier is None:
+            return
+        
+        try:
+            from .realtime import NotificationType
+            
+            # Map string types to enum
+            type_map = {
+                'edit': NotificationType.EDIT,
+                'delete': NotificationType.DELETE,
+                'new_message': NotificationType.NEW_MESSAGE,
+            }
+            
+            nt = type_map.get(notification_type)
+            if nt is None:
+                logger.warning(f"Unknown notification type: {notification_type}")
+                return
+            
+            chat_id = data.get('chat_id', 0)
+            await self._notifier.notify(nt, chat_id, data)
+        except Exception as e:
+            logger.debug(f"Failed to send notification: {e}")
+    
     def _should_process_chat(self, chat_id: int) -> bool:
         """
         Check if we should process events for this chat.

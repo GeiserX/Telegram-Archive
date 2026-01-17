@@ -13,10 +13,18 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Optional, Callable, Any
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+def _json_serializer(obj):
+    """Custom JSON serializer for datetime objects."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class NotificationType(str, Enum):
@@ -104,8 +112,8 @@ class RealtimeNotifier:
         
         async with self._db_manager.async_session_factory() as session:
             from sqlalchemy import text
-            # Escape the JSON payload
-            payload_json = json.dumps(payload).replace("'", "''")
+            # Escape the JSON payload (handle datetime objects)
+            payload_json = json.dumps(payload, default=_json_serializer).replace("'", "''")
             await session.execute(
                 text(f"NOTIFY telegram_updates, '{payload_json}'")
             )
