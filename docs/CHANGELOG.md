@@ -6,7 +6,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
-## [5.0.0] - 2026-01-XX
+## [5.0.0] - 2026-01-18
 
 ### ⚠️ Major Release - Real-time Sync & Media Path Changes
 
