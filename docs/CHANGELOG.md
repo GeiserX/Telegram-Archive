@@ -44,13 +44,14 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 
 #### Web Push Notifications
 - **`PUSH_NOTIFICATIONS`** - Notification mode: `off`, `basic`, `full` (default: basic)
-  - `off` - No notifications
+  - `off` - No notifications at all
   - `basic` - In-browser notifications (tab must be open)
   - `full` - **Persistent Web Push** (works even when browser is closed!)
 - **Auto-generated VAPID keys** - Stored in database, persist across restarts
 - **Subscription management** - Subscriptions survive container restarts and updates
 - **Automatic cleanup** - Expired subscriptions removed automatically
 - **Optional custom VAPID keys** via `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CONTACT`
+- **`ENABLE_NOTIFICATIONS`** is now legacy - use `PUSH_NOTIFICATIONS` instead (kept for backward compatibility)
 
 #### Migration Scripts
 - **`scripts/migrate_media_paths.py`** - ⚠️ **HIGHLY RECOMMENDED** - Normalizes media folder names to use marked IDs

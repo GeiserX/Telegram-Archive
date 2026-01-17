@@ -563,12 +563,15 @@ async def get_stats():
         stats['listener_active'] = bool(listener_active_since)
         stats['listener_active_since'] = listener_active_since if listener_active_since else None
         
-        # Push notifications config
-        stats['push_notifications'] = config.push_notifications
+        # Notifications config
+        stats['push_notifications'] = config.push_notifications  # off, basic, full
         stats['push_enabled'] = push_manager is not None and push_manager.is_enabled
         
-        # Notifications enabled (basic browser notifications)
-        stats['enable_notifications'] = config.enable_notifications
+        # Notifications enabled if ENABLE_NOTIFICATIONS=true OR PUSH_NOTIFICATIONS is basic/full
+        stats['enable_notifications'] = (
+            config.enable_notifications or 
+            config.push_notifications in ('basic', 'full')
+        )
         
         return stats
     except Exception as e:
@@ -833,8 +836,17 @@ async def get_notification_settings(auth_cookie: str | None = Cookie(default=Non
     if AUTH_ENABLED and (not auth_cookie or auth_cookie != AUTH_TOKEN):
         return {"enabled": False, "reason": "Not authenticated"}
     
+    # Notifications enabled if:
+    # - ENABLE_NOTIFICATIONS=true (legacy), OR
+    # - PUSH_NOTIFICATIONS is 'basic' or 'full'
+    notifications_active = (
+        config.enable_notifications or 
+        config.push_notifications in ('basic', 'full')
+    )
+    
     return {
-        "enabled": config.enable_notifications,
+        "enabled": notifications_active,
+        "mode": config.push_notifications,  # off, basic, full
         "websocket_url": "/ws/updates"
     }
 
