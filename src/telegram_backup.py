@@ -940,7 +940,7 @@ class TelegramBackup:
                 'downloaded': False
             }
         
-        # Download media
+        # Download media (with optional global deduplication)
         try:
             # Create chat-specific media directory
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
@@ -950,14 +950,54 @@ class TelegramBackup:
             file_name = self._get_media_filename(message, media_type, telegram_file_id)
             file_path = os.path.join(chat_media_dir, file_name)
             
-            # Download if not already exists
-            if not os.path.exists(file_path):
-                await self.client.download_media(message, file_path)
-                logger.debug(f"Downloaded media: {file_name}")
-            
-            # Update file_size with actual size from disk
-            if os.path.exists(file_path):
-                file_size = os.path.getsize(file_path)
+            # Check if deduplication is enabled
+            if getattr(self.config, 'deduplicate_media', True):
+                # Global deduplication: use _shared directory for actual files
+                shared_dir = os.path.join(self.config.media_path, '_shared')
+                os.makedirs(shared_dir, exist_ok=True)
+                shared_file_path = os.path.join(shared_dir, file_name)
+                
+                # Check if file already exists (either directly or in shared)
+                if not os.path.exists(file_path):
+                    if os.path.exists(shared_file_path):
+                        # File exists in shared - create symlink
+                        try:
+                            # Use relative symlink for portability
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                            logger.debug(f"Created symlink for deduplicated media: {file_name}")
+                        except OSError as e:
+                            # Symlink failed (e.g., Windows), copy reference instead
+                            logger.warning(f"Symlink failed, downloading copy: {e}")
+                            await self.client.download_media(message, file_path)
+                    else:
+                        # First time seeing this file - download to shared and create symlink
+                        await self.client.download_media(message, shared_file_path)
+                        logger.debug(f"Downloaded media to shared: {file_name}")
+                        
+                        # Create symlink in chat directory
+                        try:
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                        except OSError as e:
+                            # Symlink failed - move file to chat dir instead
+                            logger.warning(f"Symlink failed, using direct path: {e}")
+                            import shutil
+                            shutil.move(shared_file_path, file_path)
+                
+                # Update file_size with actual size from disk (follow symlinks)
+                actual_path = shared_file_path if os.path.exists(shared_file_path) else file_path
+                if os.path.exists(actual_path):
+                    file_size = os.path.getsize(actual_path)
+            else:
+                # No deduplication - download directly to chat directory
+                if not os.path.exists(file_path):
+                    await self.client.download_media(message, file_path)
+                    logger.debug(f"Downloaded media: {file_name}")
+                
+                # Update file_size with actual size from disk
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
 
             # Extract media metadata
             media_data = {

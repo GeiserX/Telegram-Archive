@@ -150,6 +150,15 @@ class Config:
         self.listen_albums = os.getenv('LISTEN_ALBUMS', 'true').lower() == 'true'
         
         # =====================================================================
+        # MEDIA DEDUPLICATION
+        # =====================================================================
+        # DEDUPLICATE_MEDIA: Use symlinks to avoid storing duplicate files
+        # When enabled (default), files shared across multiple chats are stored once
+        # in a _shared directory and symlinked from chat directories.
+        # Saves significant disk space when same media is shared across chats.
+        self.deduplicate_media = os.getenv('DEDUPLICATE_MEDIA', 'true').lower() == 'true'
+        
+        # =====================================================================
         # ZERO-FOOTPRINT MASS OPERATION PROTECTION
         # =====================================================================
         # Operations are BUFFERED before being applied. If a burst is detected,

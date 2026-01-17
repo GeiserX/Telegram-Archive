@@ -26,6 +26,18 @@ from ..config import Config
 from ..db import DatabaseAdapter, init_database, close_database, get_db_manager
 from ..realtime import RealtimeListener
 
+# Register MIME types for audio files (required for StaticFiles to serve with correct Content-Type)
+import mimetypes
+mimetypes.add_type('audio/ogg', '.ogg')
+mimetypes.add_type('audio/opus', '.opus')
+mimetypes.add_type('audio/mpeg', '.mp3')
+mimetypes.add_type('audio/wav', '.wav')
+mimetypes.add_type('audio/flac', '.flac')
+mimetypes.add_type('audio/x-m4a', '.m4a')
+mimetypes.add_type('video/mp4', '.mp4')
+mimetypes.add_type('video/webm', '.webm')
+mimetypes.add_type('image/webp', '.webp')
+
 
 # WebSocket Connection Manager for real-time updates
 class ConnectionManager:
