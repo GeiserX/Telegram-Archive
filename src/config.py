@@ -74,6 +74,10 @@ class Config:
         self.channels_include_ids = self._parse_id_list(os.getenv('CHANNELS_INCLUDE_CHAT_IDS', ''))
         self.channels_exclude_ids = self._parse_id_list(os.getenv('CHANNELS_EXCLUDE_CHAT_IDS', ''))
         
+        # Priority chats - these are processed FIRST in all backup/sync operations
+        # Useful for ensuring important chats are always backed up first
+        self.priority_chat_ids = self._parse_id_list(os.getenv('PRIORITY_CHAT_IDS', ''))
+        
         # Session configuration
         self.session_name = os.getenv('SESSION_NAME', 'telegram_backup')
         

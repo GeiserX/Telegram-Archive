@@ -255,14 +255,27 @@ class TelegramBackup:
                 logger.info("No dialogs to back up after filtering")
                 return
 
-            # Ensure we start from the most recently active chats
+            # Sort dialogs: priority chats first, then by most recently active
+            # Priority chats (PRIORITY_CHAT_IDS) are always processed first
             # Use .timestamp() to avoid comparing timezone-aware vs naive datetimes
             # (Saved Messages chat has UTC timezone, others may be naive)
             # Fixes: https://github.com/GeiserX/Telegram-Archive/issues/12
-            filtered_dialogs.sort(
-                key=lambda d: (getattr(d, "date", None) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
-                reverse=True,
-            )
+            priority_ids = self.config.priority_chat_ids
+            
+            def dialog_sort_key(d):
+                chat_id = self._get_marked_id(d.entity)
+                is_priority = chat_id in priority_ids
+                timestamp = (getattr(d, "date", None) or datetime.min.replace(tzinfo=timezone.utc)).timestamp()
+                # Sort by: (not is_priority, -timestamp) so priority=True sorts first, then by recency
+                return (not is_priority, -timestamp)
+            
+            filtered_dialogs.sort(key=dialog_sort_key)
+            
+            # Log priority chats if any
+            if priority_ids:
+                priority_count = sum(1 for d in filtered_dialogs if self._get_marked_id(d.entity) in priority_ids)
+                if priority_count > 0:
+                    logger.info(f"📌 {priority_count} priority chat(s) will be processed first")
 
             # Detect whether we've already completed at least one full backup run
             # (i.e. some chats have a non-zero last_message_id recorded)
