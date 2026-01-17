@@ -1111,37 +1111,57 @@ class DatabaseAdapter:
                 'participants_count': chat.participants_count,
             }
     
-    async def get_messages_for_export(self, chat_id: int):
+    async def get_messages_for_export(self, chat_id: int, include_media: bool = False):
         """
         Get messages for export with user info.
         Returns an async generator for streaming.
         
         Args:
             chat_id: Chat ID to export
+            include_media: If True, include media_path and media_type
             
         Yields:
             Message dictionaries with user info
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                select(
-                    Message.id,
-                    Message.date,
-                    Message.text,
-                    Message.is_outgoing,
-                    Message.reply_to_msg_id,
-                    User.first_name,
-                    User.last_name,
-                    User.username,
+            if include_media:
+                stmt = (
+                    select(
+                        Message.id,
+                        Message.date,
+                        Message.text,
+                        Message.is_outgoing,
+                        Message.reply_to_msg_id,
+                        Message.media_type,
+                        Message.media_path,
+                        User.first_name,
+                        User.last_name,
+                        User.username,
+                    )
+                    .outerjoin(User, Message.sender_id == User.id)
+                    .where(Message.chat_id == chat_id)
+                    .order_by(Message.date.asc())
                 )
-                .outerjoin(User, Message.sender_id == User.id)
-                .where(Message.chat_id == chat_id)
-                .order_by(Message.date.asc())
-            )
+            else:
+                stmt = (
+                    select(
+                        Message.id,
+                        Message.date,
+                        Message.text,
+                        Message.is_outgoing,
+                        Message.reply_to_msg_id,
+                        User.first_name,
+                        User.last_name,
+                        User.username,
+                    )
+                    .outerjoin(User, Message.sender_id == User.id)
+                    .where(Message.chat_id == chat_id)
+                    .order_by(Message.date.asc())
+                )
             
             result = await session.stream(stmt)
             async for row in result:
-                yield {
+                msg = {
                     'id': row.id,
                     'date': row.date.isoformat() if row.date else None,
                     'sender': {
@@ -1152,6 +1172,10 @@ class DatabaseAdapter:
                     'is_outgoing': bool(row.is_outgoing),
                     'reply_to': row.reply_to_msg_id
                 }
+                if include_media:
+                    msg['media_type'] = row.media_type
+                    msg['media_path'] = row.media_path
+                yield msg
     
     async def close(self) -> None:
         """Close database connections."""
