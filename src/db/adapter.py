@@ -620,7 +620,7 @@ class DatabaseAdapter:
             media_result = await session.execute(
                 select(
                     func.count(Media.id),
-                    func.coalesce(func.sum(Media.size), 0)
+                    func.coalesce(func.sum(Media.file_size), 0)
                 ).where(Media.chat_id == chat_id)
             )
             media_row = media_result.one()
