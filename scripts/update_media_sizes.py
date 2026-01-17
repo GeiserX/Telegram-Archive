@@ -27,6 +27,8 @@ import logging
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import text
+
 from src.config import Config
 from src.db import create_adapter
 
@@ -35,6 +37,47 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+async def _bulk_update_sizes(session, updates: list):
+    """
+    Bulk update file sizes using a single SQL query with CASE statement.
+    Much faster than individual UPDATEs - does 1000 rows in one round-trip!
+    
+    Args:
+        session: SQLAlchemy async session
+        updates: List of (media_id, file_size) tuples
+    """
+    if not updates:
+        return
+    
+    # Build a VALUES clause and UPDATE with JOIN
+    # PostgreSQL: UPDATE media SET file_size = v.size FROM (VALUES ...) AS v(id, size) WHERE media.id = v.id
+    # SQLite: Use CASE WHEN approach
+    
+    # Detect database type from connection
+    dialect = session.bind.dialect.name
+    
+    if dialect == 'postgresql':
+        # PostgreSQL - use UPDATE FROM VALUES (fastest)
+        values_str = ", ".join(f"('{mid}', {size})" for mid, size in updates)
+        query = text(f"""
+            UPDATE media 
+            SET file_size = v.size::bigint
+            FROM (VALUES {values_str}) AS v(id, size)
+            WHERE media.id = v.id
+        """)
+    else:
+        # SQLite - use CASE WHEN
+        case_clauses = " ".join(f"WHEN '{mid}' THEN {size}" for mid, size in updates)
+        ids = ", ".join(f"'{mid}'" for mid, _ in updates)
+        query = text(f"""
+            UPDATE media 
+            SET file_size = CASE id {case_clauses} END
+            WHERE id IN ({ids})
+        """)
+    
+    await session.execute(query)
 
 
 async def update_media_sizes(dry_run: bool = False, force: bool = False):
@@ -92,12 +135,16 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
         total_size_added = 0
         
         BATCH_SIZE = 1000
+        pending_updates = []  # Collect updates for bulk execution
         
         for i, media in enumerate(media_records):
-            # Commit in batches and report progress
+            # Flush batch and report progress
             if i % BATCH_SIZE == 0 and i > 0:
-                if not dry_run:
+                if pending_updates and not dry_run:
+                    # BULK UPDATE using VALUES - single query for entire batch!
+                    await _bulk_update_sizes(session, pending_updates)
                     await session.commit()
+                    pending_updates = []
                 logger.info(f"Progress: {i}/{len(media_records)} ({updated_count} updated, {missing_count} missing) - committed")
             
             # Construct full path
@@ -119,18 +166,9 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
             if os.path.exists(full_path):
                 try:
                     file_size = os.path.getsize(full_path)
-                    
-                    if not dry_run:
-                        # Update the record
-                        await session.execute(
-                            update(Media)
-                            .where(Media.id == media.id)
-                            .values(file_size=file_size)
-                        )
-                    
+                    pending_updates.append((media.id, file_size))
                     updated_count += 1
                     total_size_added += file_size
-                    
                 except Exception as e:
                     logger.error(f"Error processing {full_path}: {e}")
                     error_count += 1
@@ -139,7 +177,9 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
                 if missing_count <= 10:  # Only log first 10 missing files
                     logger.warning(f"File not found: {full_path}")
         
-        if not dry_run:
+        # Flush remaining updates
+        if pending_updates and not dry_run:
+            await _bulk_update_sizes(session, pending_updates)
             await session.commit()
             logger.info("Final batch committed to database")
         
