@@ -1,20 +1,25 @@
 /**
- * Telegram Archive - Service Worker
- * Handles push notifications for new messages and real-time updates.
+ * Service Worker for Telegram Archive Web Push Notifications.
+ * 
+ * This enables push notifications even when the browser tab is closed.
+ * The service worker runs in the background and handles:
+ * - Receiving push messages from the server
+ * - Displaying notifications to the user
+ * - Handling notification clicks (opening the relevant chat)
  */
 
-const CACHE_NAME = 'telegram-archive-v5';
-const NOTIFICATION_TAG = 'telegram-archive';
+const CACHE_NAME = 'telegram-archive-v1';
 
-// Install event - cache static assets
+// Install event - cache essential files
 self.addEventListener('install', (event) => {
-    console.log('[SW] Installing service worker...');
+    console.log('[SW] Installing service worker');
+    // Skip waiting to activate immediately
     self.skipWaiting();
 });
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('[SW] Activating service worker...');
+    console.log('[SW] Activating service worker');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
@@ -24,94 +29,121 @@ self.addEventListener('activate', (event) => {
             );
         })
     );
+    // Take control of all pages immediately
     self.clients.claim();
 });
 
-// Push notification event
+// Push event - handle incoming push notifications
 self.addEventListener('push', (event) => {
-    console.log('[SW] Push received:', event);
+    console.log('[SW] Push received');
     
-    let data = {
+    let payload = {
         title: 'Telegram Archive',
         body: 'New message received',
         icon: '/static/favicon.ico',
         badge: '/static/favicon.ico',
-        tag: NOTIFICATION_TAG,
+        tag: 'telegram-archive',
         data: {}
     };
     
-    if (event.data) {
-        try {
-            const payload = event.data.json();
-            data = {
-                ...data,
-                ...payload
+    try {
+        if (event.data) {
+            const data = event.data.json();
+            payload = {
+                title: data.title || payload.title,
+                body: data.body || payload.body,
+                icon: data.icon || payload.icon,
+                badge: payload.badge,
+                tag: data.tag || payload.tag,
+                data: data.data || {},
+                timestamp: data.timestamp ? new Date(data.timestamp).getTime() : Date.now(),
+                requireInteraction: false,
+                renotify: true,
+                silent: false
             };
-        } catch (e) {
-            data.body = event.data.text();
+        }
+    } catch (e) {
+        console.error('[SW] Failed to parse push payload:', e);
+        if (event.data) {
+            payload.body = event.data.text();
         }
     }
     
     const options = {
-        body: data.body,
-        icon: data.icon,
-        badge: data.badge,
-        tag: data.tag,
-        data: data.data,
-        vibrate: [100, 50, 100],
-        requireInteraction: false,
-        actions: [
-            { action: 'open', title: 'Open' },
-            { action: 'dismiss', title: 'Dismiss' }
-        ]
+        body: payload.body,
+        icon: payload.icon,
+        badge: payload.badge,
+        tag: payload.tag,
+        data: payload.data,
+        timestamp: payload.timestamp,
+        requireInteraction: payload.requireInteraction,
+        renotify: payload.renotify,
+        silent: payload.silent,
+        vibrate: [200, 100, 200]
     };
     
     event.waitUntil(
-        self.registration.showNotification(data.title, options)
+        self.registration.showNotification(payload.title, options)
     );
 });
 
-// Notification click handler
+// Notification click event - handle user clicking on notification
 self.addEventListener('notificationclick', (event) => {
-    console.log('[SW] Notification clicked:', event);
+    console.log('[SW] Notification clicked');
     
-    event.notification.close();
+    const notification = event.notification;
+    const data = notification.data || {};
     
-    if (event.action === 'dismiss') {
-        return;
+    notification.close();
+    
+    // Determine the URL to open
+    let url = '/';
+    if (data.url) {
+        url = data.url;
+    } else if (data.chat_id) {
+        url = `/?chat=${data.chat_id}`;
+        if (data.message_id) {
+            url += `&msg=${data.message_id}`;
+        }
     }
-    
-    // Open or focus the app
-    const urlToOpen = event.notification.data?.url || '/';
     
     event.waitUntil(
         clients.matchAll({ type: 'window', includeUncontrolled: true })
             .then((windowClients) => {
-                // Check if there is already a window/tab open
+                // Check if there's already a window open
                 for (const client of windowClients) {
-                    if (client.url.includes(self.location.origin)) {
-                        // Focus existing window and navigate
-                        client.focus();
-                        if (event.notification.data?.chat_id) {
+                    // If we find an existing window, focus it and navigate
+                    if ('focus' in client) {
+                        return client.focus().then(() => {
+                            if (client.url !== url && 'navigate' in client) {
+                                return client.navigate(url);
+                            }
+                            // Post message to the client to navigate/highlight
                             client.postMessage({
-                                type: 'navigate',
-                                chat_id: event.notification.data.chat_id
+                                type: 'NOTIFICATION_CLICK',
+                                data: data
                             });
-                        }
-                        return;
+                        });
                     }
                 }
-                // Open new window
-                return clients.openWindow(urlToOpen);
+                // No existing window, open a new one
+                if (clients.openWindow) {
+                    return clients.openWindow(url);
+                }
             })
     );
 });
 
-// Message handler for communication with the main app
+// Handle notification close
+self.addEventListener('notificationclose', (event) => {
+    console.log('[SW] Notification closed');
+});
+
+// Handle messages from the main page
 self.addEventListener('message', (event) => {
     console.log('[SW] Message received:', event.data);
     
-    if (event.data.type === 'SKIP_WAITING') {
+    if (event.data && event.data.type === 'SKIP_WAITING') {
         self.skipWaiting();
     }
 });

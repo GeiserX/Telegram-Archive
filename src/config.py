@@ -189,6 +189,19 @@ class Config:
         # When enabled, browser push notifications are available for new messages
         self.enable_notifications = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
         
+        # Push notifications mode: 'off', 'basic', 'full'
+        # - off: No notifications
+        # - basic: In-browser notifications only (tab must be open)
+        # - full: Web Push notifications (work even with browser closed, persistent subscriptions)
+        push_mode = os.getenv('PUSH_NOTIFICATIONS', 'basic').lower()
+        self.push_notifications = push_mode if push_mode in ('off', 'basic', 'full') else 'basic'
+        
+        # VAPID keys for Web Push (auto-generated if not provided)
+        # Generate your own with: npx web-push generate-vapid-keys
+        self.vapid_private_key = os.getenv('VAPID_PRIVATE_KEY', '')
+        self.vapid_public_key = os.getenv('VAPID_PUBLIC_KEY', '')
+        self.vapid_contact = os.getenv('VAPID_CONTACT', 'mailto:admin@example.com')
+        
         # Stats calculation schedule
         # Daily calculation of statistics (chat counts, message counts, etc.)
         # Default: 03:00 (3am) in the configured viewer timezone

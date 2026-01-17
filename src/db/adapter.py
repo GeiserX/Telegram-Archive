@@ -1193,6 +1193,22 @@ class DatabaseAdapter:
                 'participants_count': chat.participants_count,
             }
     
+    async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get a user by ID."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                return None
+            return {
+                'id': user.id,
+                'username': user.username,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'phone': user.phone,
+                'is_bot': user.is_bot,
+            }
+    
     async def get_messages_for_export(self, chat_id: int, include_media: bool = False):
         """
         Get messages for export with user info.

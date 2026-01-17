@@ -25,6 +25,7 @@ import json
 from ..config import Config
 from ..db import DatabaseAdapter, init_database, close_database, get_db_manager
 from ..realtime import RealtimeListener
+from .push import PushNotificationManager
 
 # Register MIME types for audio files (required for StaticFiles to serve with correct Content-Type)
 import mimetypes
@@ -157,9 +158,12 @@ stats_task: Optional[asyncio.Task] = None
 # Real-time listener (PostgreSQL LISTEN/NOTIFY)
 realtime_listener: Optional[RealtimeListener] = None
 
+# Push notification manager (Web Push API)
+push_manager: Optional[PushNotificationManager] = None
+
 
 async def handle_realtime_notification(payload: dict):
-    """Handle real-time notifications and broadcast to WebSocket clients."""
+    """Handle real-time notifications and broadcast to WebSocket clients + push notifications."""
     notification_type = payload.get('type')
     chat_id = payload.get('chat_id')
     data = payload.get('data', {})
@@ -169,6 +173,28 @@ async def handle_realtime_notification(payload: dict):
             "type": "new_message",
             "message": data.get('message')
         })
+        
+        # Send Web Push notification for new messages
+        if push_manager and push_manager.is_enabled:
+            message = data.get('message', {})
+            # Get chat info for the notification
+            chat = await db.get_chat_by_id(chat_id) if db else None
+            chat_title = chat.get('title', 'Telegram') if chat else 'Telegram'
+            
+            sender_name = ''
+            if message.get('sender_id'):
+                sender = await db.get_user_by_id(message.get('sender_id')) if db else None
+                if sender:
+                    sender_name = sender.get('first_name', '') or sender.get('username', '')
+            
+            await push_manager.notify_new_message(
+                chat_id=chat_id,
+                chat_title=chat_title,
+                sender_name=sender_name,
+                message_text=message.get('text', '') or '[Media]',
+                message_id=message.get('id', 0)
+            )
+            
     elif notification_type == 'edit':
         await ws_manager.broadcast_to_chat(chat_id, {
             "type": "edit",
@@ -249,6 +275,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await realtime_listener.init()
     await realtime_listener.start()
     logger.info("Real-time listener started (auto-detected database type)")
+    
+    # Initialize Web Push notifications (if enabled)
+    global push_manager
+    if config.push_notifications == 'full':
+        push_manager = PushNotificationManager(db, config)
+        push_enabled = await push_manager.initialize()
+        if push_enabled:
+            logger.info("Web Push notifications enabled (PUSH_NOTIFICATIONS=full)")
+        else:
+            logger.warning("Web Push notifications failed to initialize")
+    else:
+        logger.info(f"Push notifications mode: {config.push_notifications}")
     
     yield
     
@@ -525,6 +563,13 @@ async def get_stats():
         stats['listener_active'] = bool(listener_active_since)
         stats['listener_active_since'] = listener_active_since if listener_active_since else None
         
+        # Push notifications config
+        stats['push_notifications'] = config.push_notifications
+        stats['push_enabled'] = push_manager is not None and push_manager.is_enabled
+        
+        # Notifications enabled (basic browser notifications)
+        stats['enable_notifications'] = config.enable_notifications
+        
         return stats
     except Exception as e:
         logger.error(f"Error fetching stats: {e}", exc_info=True)
@@ -540,6 +585,114 @@ async def refresh_stats():
         return stats
     except Exception as e:
         logger.error(f"Error calculating stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Web Push Notification Endpoints
+# ============================================================================
+
+@app.get("/api/push/config")
+async def get_push_config():
+    """
+    Get push notification configuration.
+    
+    Returns the push notification mode and VAPID public key if available.
+    This endpoint is public (no auth) so clients can check before subscribing.
+    """
+    result = {
+        'mode': config.push_notifications,
+        'enabled': config.push_notifications == 'full' and push_manager is not None and push_manager.is_enabled,
+        'vapid_public_key': None
+    }
+    
+    if push_manager and push_manager.is_enabled:
+        result['vapid_public_key'] = push_manager.public_key
+    
+    return result
+
+
+@app.post("/api/push/subscribe", dependencies=[Depends(require_auth)])
+async def push_subscribe(request: Request):
+    """
+    Subscribe to push notifications.
+    
+    Body should contain:
+    - endpoint: Push service URL
+    - keys.p256dh: Client public key (base64)
+    - keys.auth: Auth secret (base64)
+    - chat_id: Optional chat ID for chat-specific subscriptions
+    """
+    if not push_manager or not push_manager.is_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Push notifications not enabled. Set PUSH_NOTIFICATIONS=full"
+        )
+    
+    try:
+        data = await request.json()
+        
+        endpoint = data.get('endpoint')
+        keys = data.get('keys', {})
+        p256dh = keys.get('p256dh')
+        auth = keys.get('auth')
+        chat_id = data.get('chat_id')
+        
+        if not endpoint or not p256dh or not auth:
+            raise HTTPException(status_code=400, detail="Missing required subscription data")
+        
+        # Get user agent for debugging
+        user_agent = request.headers.get('user-agent', '')[:500]
+        
+        success = await push_manager.subscribe(
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
+            chat_id=chat_id,
+            user_agent=user_agent
+        )
+        
+        if success:
+            return {"status": "subscribed", "chat_id": chat_id}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to store subscription")
+            
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Push subscribe error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/push/unsubscribe", dependencies=[Depends(require_auth)])
+async def push_unsubscribe(request: Request):
+    """
+    Unsubscribe from push notifications.
+    
+    Body should contain:
+    - endpoint: Push service URL to unsubscribe
+    """
+    if not push_manager:
+        raise HTTPException(status_code=400, detail="Push notifications not enabled")
+    
+    try:
+        data = await request.json()
+        endpoint = data.get('endpoint')
+        
+        if not endpoint:
+            raise HTTPException(status_code=400, detail="Missing endpoint")
+        
+        success = await push_manager.unsubscribe(endpoint)
+        return {"status": "unsubscribed" if success else "not_found"}
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Push unsubscribe error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

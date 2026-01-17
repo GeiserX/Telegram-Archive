@@ -364,8 +364,8 @@
                     </div>
                 </div>
 
-                <!-- Notification Permission Banner (shows only once when permission is 'default') -->
-                <div v-if="notificationsEnabled && notificationsSupported && notificationPermission === 'default'" 
+                <!-- Notification Permission Banner (shows when permission is 'default' AND notifications are enabled) -->
+                <div v-if="(notificationsEnabled || pushEnabled) && notificationsSupported && notificationPermission === 'default'" 
                     class="px-3 py-2 bg-blue-900/80 border-b border-blue-700">
                     <div class="flex items-center gap-2 text-blue-200 text-sm">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -863,9 +863,13 @@
                 const notificationsEnabled = ref(false)
                 const notificationsSupported = ref('Notification' in window)
                 const notificationPermission = ref(Notification?.permission || 'denied')
+                const pushEnabled = ref(false)  // Web Push (works when tab closed)
+                const pushSubscribed = ref(false)  // Currently subscribed to push
+                const pushVapidKey = ref(null)  // VAPID public key for push subscription
                 let ws = null
                 let wsReconnectTimer = null
                 let messageRefreshTimer = null  // Timer for auto-refreshing messages
+                let pushSubscription = null  // Current push subscription object
 
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
@@ -1225,6 +1229,20 @@
                 
                 // Notification functions
                 const initNotifications = async () => {
+                    // Check push notification config from server
+                    try {
+                        const pushRes = await fetch('/api/push/config', { credentials: 'include' })
+                        if (pushRes.ok) {
+                            const pushConfig = await pushRes.json()
+                            pushEnabled.value = pushConfig.enabled
+                            pushVapidKey.value = pushConfig.vapid_public_key
+                            console.log('[Push] Config:', pushConfig)
+                        }
+                    } catch (e) {
+                        console.warn('[Push] Could not fetch config:', e)
+                    }
+                    
+                    // Check basic notification settings
                     try {
                         const res = await fetch('/api/notifications/settings', { credentials: 'include' })
                         if (res.ok) {
@@ -1237,21 +1255,35 @@
                             }
                         }
                     } catch (e) {
-                        console.warn('[Notifications] Could not fetch settings:', e)
+                        // Fallback: enable if push is enabled
+                        if (pushEnabled.value) {
+                            notificationsEnabled.value = true
+                        }
                     }
                     
                     // Log notification state for debugging
                     console.log('[Notifications] State:', {
                         serverEnabled: notificationsEnabled.value,
                         browserSupported: notificationsSupported.value,
-                        permission: notificationPermission.value
+                        permission: notificationPermission.value,
+                        pushEnabled: pushEnabled.value,
+                        pushSubscribed: pushSubscribed.value
                     })
                     
-                    // Register service worker
-                    if ('serviceWorker' in navigator && notificationsEnabled.value) {
+                    // Register service worker (required for both basic and push notifications)
+                    if ('serviceWorker' in navigator && (notificationsEnabled.value || pushEnabled.value)) {
                         try {
-                            await navigator.serviceWorker.register('/static/sw.js')
+                            const registration = await navigator.serviceWorker.register('/static/sw.js')
                             console.log('[SW] Service worker registered')
+                            
+                            // Check for existing push subscription
+                            if (pushEnabled.value && 'PushManager' in window) {
+                                pushSubscription = await registration.pushManager.getSubscription()
+                                if (pushSubscription) {
+                                    pushSubscribed.value = true
+                                    console.log('[Push] Already subscribed')
+                                }
+                            }
                         } catch (e) {
                             console.warn('[SW] Registration failed:', e)
                         }
@@ -1264,13 +1296,100 @@
                     try {
                         const permission = await Notification.requestPermission()
                         notificationPermission.value = permission
+                        
+                        // Auto-subscribe to push if permission granted and push is enabled
+                        if (permission === 'granted' && pushEnabled.value && !pushSubscribed.value) {
+                            await subscribeToPush()
+                        }
                     } catch (e) {
                         console.error('Notification permission error:', e)
                     }
                 }
                 
+                // Convert VAPID public key from base64 to Uint8Array
+                const urlBase64ToUint8Array = (base64String) => {
+                    const padding = '='.repeat((4 - base64String.length % 4) % 4)
+                    const base64 = (base64String + padding)
+                        .replace(/\-/g, '+')
+                        .replace(/_/g, '/')
+                    const rawData = window.atob(base64)
+                    const outputArray = new Uint8Array(rawData.length)
+                    for (let i = 0; i < rawData.length; ++i) {
+                        outputArray[i] = rawData.charCodeAt(i)
+                    }
+                    return outputArray
+                }
+                
+                const subscribeToPush = async () => {
+                    if (!pushEnabled.value || !pushVapidKey.value) {
+                        console.log('[Push] Not enabled or no VAPID key')
+                        return false
+                    }
+                    
+                    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+                        console.log('[Push] Not supported in this browser')
+                        return false
+                    }
+                    
+                    try {
+                        const registration = await navigator.serviceWorker.ready
+                        
+                        // Subscribe to push
+                        pushSubscription = await registration.pushManager.subscribe({
+                            userVisibleOnly: true,
+                            applicationServerKey: urlBase64ToUint8Array(pushVapidKey.value)
+                        })
+                        
+                        // Send subscription to server
+                        const response = await fetch('/api/push/subscribe', {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(pushSubscription.toJSON())
+                        })
+                        
+                        if (response.ok) {
+                            pushSubscribed.value = true
+                            console.log('[Push] ✅ Subscribed successfully')
+                            return true
+                        } else {
+                            console.error('[Push] Failed to store subscription:', await response.text())
+                            return false
+                        }
+                    } catch (e) {
+                        console.error('[Push] Subscription error:', e)
+                        return false
+                    }
+                }
+                
+                const unsubscribeFromPush = async () => {
+                    if (!pushSubscription) return
+                    
+                    try {
+                        // Unsubscribe from push service
+                        await pushSubscription.unsubscribe()
+                        
+                        // Remove from server
+                        await fetch('/api/push/unsubscribe', {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ endpoint: pushSubscription.endpoint })
+                        })
+                        
+                        pushSubscription = null
+                        pushSubscribed.value = false
+                        console.log('[Push] Unsubscribed')
+                    } catch (e) {
+                        console.error('[Push] Unsubscribe error:', e)
+                    }
+                }
+                
                 const showNotification = (data) => {
                     if (notificationPermission.value !== 'granted') return
+                    
+                    // Skip if push is enabled (service worker handles it)
+                    if (pushEnabled.value && pushSubscribed.value) return
                     
                     const chatName = chats.value.find(c => c.id === data.chat_id)?.title || 'New Message'
                     const body = data.message?.text?.substring(0, 100) || 'New message received'
@@ -2219,7 +2338,11 @@
                     notificationsEnabled,
                     notificationsSupported,
                     notificationPermission,
+                    pushEnabled,
+                    pushSubscribed,
                     requestNotificationPermission,
+                    subscribeToPush,
+                    unsubscribeFromPush,
                 }
             }
         }).mount('#app')

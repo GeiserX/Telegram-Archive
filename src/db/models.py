@@ -163,3 +163,21 @@ class Metadata(Base):
     
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class PushSubscription(Base):
+    """Push notification subscriptions for Web Push API."""
+    __tablename__ = 'push_subscriptions'
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)  # Push service URL
+    p256dh: Mapped[str] = mapped_column(String(255), nullable=False)  # Public key
+    auth: Mapped[str] = mapped_column(String(255), nullable=False)  # Auth secret
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # Optional: subscribe to specific chat only
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500))  # Browser info for debugging
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)  # Track activity
+    
+    __table_args__ = (
+        Index('idx_push_sub_chat', 'chat_id'),
+    )
