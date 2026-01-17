@@ -280,8 +280,8 @@
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
                             <h1 class="text-xl font-bold">Telegram Archive</h1>
-                            <!-- Stats Dropdown Button -->
-                            <div class="relative" v-if="statsData.stats_calculated_at">
+                            <!-- Stats Dropdown Button (hidden if SHOW_STATS=false) -->
+                            <div class="relative" v-if="showStatsUI && statsData.stats_calculated_at">
                                 <button @click="statsPopupOpen = !statsPopupOpen" 
                                     class="flex items-center gap-1.5 px-2 py-1 text-xs text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition">
                                     <span>📊</span>
@@ -1006,6 +1006,7 @@
                     stats_calculated_at: null
                 })
                 const statsPopupOpen = ref(false)
+                const showStatsUI = ref(true)  // Can be disabled via SHOW_STATS=false
                 
                 const loadStats = async () => {
                     try {
@@ -1024,6 +1025,9 @@
                                 total_size_mb: stats.total_size_mb || 0,
                                 stats_calculated_at: stats.stats_calculated_at
                             }
+                            
+                            // Show/hide stats UI based on config
+                            showStatsUI.value = stats.show_stats !== false
                             
                             // Update timezone from config
                             if (stats.timezone) {
@@ -2194,6 +2198,7 @@
                     // Stats
                     statsData,
                     statsPopupOpen,
+                    showStatsUI,
                     formatStatsTime,
                     formatNumber,
                     formatSize,

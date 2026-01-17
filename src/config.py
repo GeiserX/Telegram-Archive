@@ -194,6 +194,11 @@ class Config:
         # Default: 03:00 (3am) in the configured viewer timezone
         self.stats_calculation_hour = int(os.getenv('STATS_CALCULATION_HOUR', '3'))
         
+        # Show stats in viewer UI
+        # When disabled, hides the stats dropdown next to "Telegram Archive" title
+        # Useful for restricted viewers where you don't want to expose total counts
+        self.show_stats = os.getenv('SHOW_STATS', 'true').lower() == 'true'
+        
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")

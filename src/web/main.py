@@ -518,6 +518,7 @@ async def get_stats():
         stats = await db.get_cached_statistics()
         stats['timezone'] = config.viewer_timezone
         stats['stats_calculation_hour'] = config.stats_calculation_hour
+        stats['show_stats'] = config.show_stats  # Whether to show stats UI
         
         # Check if real-time listener is active (written by backup container)
         listener_active_since = await db.get_metadata('listener_active_since')
