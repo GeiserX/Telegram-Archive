@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements-viewer.txt
 # Copy only the necessary application code for the viewer
 COPY src/__init__.py ./src/
 COPY src/config.py ./src/
+COPY src/realtime.py ./src/
 COPY src/db/ ./src/db/
 COPY src/web/ ./src/web/
 

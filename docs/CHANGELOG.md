@@ -6,6 +6,97 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-01-XX
+
+### ⚠️ Major Release - Real-time Sync & Media Path Changes
+
+This release introduces **real-time message sync**, **zero-footprint mass operation protection**, and **consistent media path naming**. Migration scripts are provided for existing installations.
+
+### Added
+
+#### Real-time Listener Mode
+- **`ENABLE_LISTENER`** - Background listener for instant sync (no waiting for scheduled backup)
+- **`LISTEN_EDITS`** - Apply text edits to backed up messages in real-time
+- **`LISTEN_DELETIONS`** - Mirror deletions from Telegram (with protection, see below)
+- **`LISTEN_NEW_MESSAGES`** - Save new messages immediately (default: true)
+- **`LISTEN_NEW_MESSAGES_MEDIA`** - Download media in real-time (default: false)
+- **`LISTEN_CHAT_ACTIONS`** - Track chat photo/title changes, member joins/leaves
+- **`LISTEN_ALBUMS`** - Detect and group album uploads together
+
+#### Zero-Footprint Mass Operation Protection
+- **Sliding-window rate limiter** protects against mass edit/deletion attacks
+- **`MASS_OPERATION_THRESHOLD`** - Operations before protection triggers (default: 10)
+- **`MASS_OPERATION_WINDOW_SECONDS`** - Time window for counting operations (default: 30)
+- When triggered, **ALL pending operations are discarded** - zero changes to your backup
+
+#### Priority Chats
+- **`PRIORITY_CHAT_IDS`** - Process these chats FIRST in all backup/sync operations
+- Useful for ensuring important chats are always backed up before others
+
+#### Viewer Enhancements
+- **WebSocket real-time updates** - New messages appear instantly without refresh
+- **Infinite scroll** - Cursor/keyset pagination for large chats
+- **Album grid display** - Photo/video albums shown as grids like Telegram
+- **Compact stats dropdown** - Stats moved to dropdown next to header
+- **Per-chat stats** - Message count, media count, total size per chat
+- **"Real-time sync" indicator** - Shows when listener is active
+- **`SHOW_STATS`** - Hide stats dropdown for restricted viewers (default: true)
+
+#### Web Push Notifications
+- **`PUSH_NOTIFICATIONS`** - Notification mode: `off`, `basic`, `full` (default: basic)
+  - `off` - No notifications at all
+  - `basic` - In-browser notifications (tab must be open)
+  - `full` - **Persistent Web Push** (works even when browser is closed!)
+- **Auto-generated VAPID keys** - Stored in database, persist across restarts
+- **Subscription management** - Subscriptions survive container restarts and updates
+- **Automatic cleanup** - Expired subscriptions removed automatically
+- **Optional custom VAPID keys** via `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CONTACT`
+
+#### Migration Scripts
+- **`scripts/migrate_media_paths.py`** - ⚠️ **HIGHLY RECOMMENDED** - Normalizes media folder names to use marked IDs
+- **`scripts/update_media_sizes.py`** - ⚠️ **HIGHLY RECOMMENDED** - Populates file_size for accurate stats
+- **`scripts/detect_albums.py`** - Detect albums in existing backups for album grid display
+- **`scripts/deduplicate_media.py`** - Global deduplication using symlinks (saves disk space)
+- **`scripts/restore_chat.py`** - Repost archived messages to Telegram
+
+### Changed
+- **Shared Telethon client** - Backup and listener share connection (avoids session DB locks)
+- **WAL mode for session DB** - Better concurrency for Telethon session
+- **Media folder naming** - Groups/channels now use marked IDs (e.g., `-35258041/` not `35258041/`)
+- **Bulk SQL operations** - Migration scripts use single queries per batch (10-100x faster)
+
+### Fixed
+- Media 404s due to inconsistent folder naming (positive vs negative IDs)
+- Audio files served with wrong Content-Type (now audio/ogg, audio/mp3, etc.)
+- Stats calculation error with Decimal types (JSON serialization)
+- Session DB locking when running backup and listener simultaneously
+
+### ⚠️ Migration Required
+
+**If upgrading from v4.x with existing data:**
+
+1. **Run migration scripts** (inside Docker container):
+   ```bash
+   # 1. Normalize media paths (HIGHLY RECOMMENDED)
+   docker run --rm -e DB_TYPE=postgresql ... python -m scripts.migrate_media_paths
+   
+   # 2. Update file sizes for accurate stats (HIGHLY RECOMMENDED)
+   docker run --rm -e DB_TYPE=postgresql ... python -m scripts.update_media_sizes
+   
+   # 3. Detect albums for grid display (optional but recommended)
+   docker run --rm -e DB_TYPE=postgresql ... python -m scripts.detect_albums
+   ```
+
+2. **Update docker-compose.yml** with new env variables (see README)
+
+See [Upgrading to v5.0.0](#upgrading-to-v500-from-v4x) below for detailed instructions.
+
+### Related Issues
+- Fixes #12 - Timezone-aware datetime sorting
+- Fixes #20 - Real-time sync for edits/deletions
+- Fixes #21 - Mass operation protection
+- Fixes #22 - Media path consistency
+
 ## [4.1.5] - 2026-01-15
 
 ### Improved
@@ -134,6 +225,101 @@ See [Upgrading from v3.x to v4.0](#upgrading-from-v3x-to-v40) below.
 ---
 
 # Upgrading
+
+## Upgrading to v5.0.0 (from v4.x)
+
+> ⚠️ **Migration Scripts Recommended**
+
+v5.0.0 changes media folder naming to use marked IDs consistently. While the backup will work without migration, **running the migration scripts is highly recommended** for:
+- Correct media display in viewer (no 404s)
+- Accurate file size statistics
+- Album grid display for existing photos/videos
+
+### Migration Steps
+
+1. **Stop your backup container:**
+   ```bash
+   docker-compose stop telegram-backup
+   ```
+
+2. **Pull the new image:**
+   ```bash
+   docker-compose pull
+   ```
+
+3. **Run migration scripts** (one at a time, wait for each to finish):
+
+   ```bash
+   # Replace with your actual values
+   NETWORK=telegram-backup_default
+   DB_HOST=your-postgres-container
+   DB_PASS=your-password
+   BACKUP_PATH=/path/to/backups
+   
+   # 1. Media path migration (HIGHLY RECOMMENDED)
+   docker run --rm \
+     -e DB_TYPE=postgresql \
+     -e POSTGRES_HOST=$DB_HOST \
+     -e POSTGRES_PASSWORD=$DB_PASS \
+     -e POSTGRES_USER=telegram \
+     -e POSTGRES_DB=telegram_backup \
+     -e BACKUP_PATH=/data/backups \
+     --network $NETWORK \
+     -v $BACKUP_PATH:/data/backups \
+     drumsergio/telegram-archive:latest \
+     python -m scripts.migrate_media_paths
+   
+   # 2. Update file sizes (HIGHLY RECOMMENDED)
+   docker run --rm \
+     -e DB_TYPE=postgresql \
+     -e POSTGRES_HOST=$DB_HOST \
+     -e POSTGRES_PASSWORD=$DB_PASS \
+     -e POSTGRES_USER=telegram \
+     -e POSTGRES_DB=telegram_backup \
+     -e BACKUP_PATH=/data/backups \
+     --network $NETWORK \
+     -v $BACKUP_PATH:/data/backups \
+     drumsergio/telegram-archive:latest \
+     python -m scripts.update_media_sizes
+   
+   # 3. Detect albums (optional but recommended)
+   docker run --rm \
+     -e DB_TYPE=postgresql \
+     -e POSTGRES_HOST=$DB_HOST \
+     -e POSTGRES_PASSWORD=$DB_PASS \
+     -e POSTGRES_USER=telegram \
+     -e POSTGRES_DB=telegram_backup \
+     -e BACKUP_PATH=/data/backups \
+     --network $NETWORK \
+     -v $BACKUP_PATH:/data/backups \
+     drumsergio/telegram-archive:latest \
+     python -m scripts.detect_albums
+   ```
+
+4. **Update docker-compose.yml** with new env variables:
+   ```yaml
+   environment:
+     # ... existing vars ...
+     # Real-time listener (recommended)
+     ENABLE_LISTENER: true
+     LISTEN_EDITS: true
+     LISTEN_DELETIONS: true  # ⚠️ Will delete from backup!
+     LISTEN_NEW_MESSAGES: true
+     # Mass operation protection
+     MASS_OPERATION_THRESHOLD: 10
+     MASS_OPERATION_WINDOW_SECONDS: 30
+     # Optional: Priority chats (processed first)
+     # PRIORITY_CHAT_IDS: -1002240913478,-1001234567890
+   ```
+
+5. **Start the new version:**
+   ```bash
+   docker-compose up -d
+   ```
+
+**If starting fresh:** No migration needed, just use the new image.
+
+---
 
 ## Upgrading to v4.0.6 (from v4.0.5)
 
