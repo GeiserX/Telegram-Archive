@@ -506,6 +506,12 @@ async def get_stats():
         stats = await db.get_cached_statistics()
         stats['timezone'] = config.viewer_timezone
         stats['stats_calculation_hour'] = config.stats_calculation_hour
+        
+        # Check if real-time listener is active (written by backup container)
+        listener_active_since = await db.get_metadata('listener_active_since')
+        stats['listener_active'] = bool(listener_active_since)
+        stats['listener_active_since'] = listener_active_since if listener_active_since else None
+        
         return stats
     except Exception as e:
         logger.error(f"Error fetching stats: {e}", exc_info=True)
@@ -549,6 +555,21 @@ async def internal_push(request: Request):
     except Exception as e:
         logger.warning(f"Error handling internal push: {e}")
         return {"status": "error", "detail": str(e)}
+
+
+@app.get("/api/chats/{chat_id}/stats", dependencies=[Depends(require_auth)])
+async def get_chat_stats(chat_id: int):
+    """Get statistics for a specific chat (message count, media files, size)."""
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        stats = await db.get_chat_stats(chat_id)
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting chat stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])

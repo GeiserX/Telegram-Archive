@@ -603,6 +603,51 @@ class DatabaseAdapter:
             'is_outgoing': message.is_outgoing,
         }
     
+    async def get_chat_stats(self, chat_id: int) -> Dict[str, Any]:
+        """Get statistics for a specific chat (message count, media count, total size).
+        
+        Returns:
+            Dict with keys: messages, media_files, total_size_bytes, first_message_date, last_message_date
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # Message count
+            msg_result = await session.execute(
+                select(func.count(Message.id)).where(Message.chat_id == chat_id)
+            )
+            message_count = msg_result.scalar() or 0
+            
+            # Media count and total size
+            media_result = await session.execute(
+                select(
+                    func.count(Media.id),
+                    func.coalesce(func.sum(Media.size), 0)
+                ).where(Media.chat_id == chat_id)
+            )
+            media_row = media_result.one()
+            media_count = media_row[0] or 0
+            total_size = media_row[1] or 0
+            
+            # First and last message dates
+            date_result = await session.execute(
+                select(
+                    func.min(Message.date),
+                    func.max(Message.date)
+                ).where(Message.chat_id == chat_id)
+            )
+            date_row = date_result.one()
+            first_message = date_row[0]
+            last_message = date_row[1]
+            
+            return {
+                'chat_id': chat_id,
+                'messages': int(message_count),
+                'media_files': int(media_count),
+                'total_size_bytes': int(total_size),
+                'total_size_mb': round(total_size / (1024 * 1024), 2) if total_size else 0,
+                'first_message_date': first_message.isoformat() if first_message else None,
+                'last_message_date': last_message.isoformat() if last_message else None,
+            }
+    
     # ========== Media Operations ==========
     
     async def insert_media(self, media_data: Dict[str, Any]) -> None:

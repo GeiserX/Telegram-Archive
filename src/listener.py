@@ -1062,6 +1062,12 @@ class TelegramListener:
         # Start the background operation processor
         self._processor_task = asyncio.create_task(self._process_buffered_operations())
         
+        # Write listener status to database (for viewer to display)
+        try:
+            await self.db.set_metadata('listener_active_since', datetime.now().isoformat())
+        except Exception as e:
+            logger.warning(f"Could not write listener status to DB: {e}")
+        
         logger.info("=" * 70)
         logger.info("🎧 Real-time listener started with ZERO-FOOTPRINT PROTECTION")
         logger.info("   All operations are buffered before being applied")
@@ -1076,6 +1082,11 @@ class TelegramListener:
             logger.info("Listener cancelled")
         finally:
             self._running = False
+            # Clear listener status when stopped
+            try:
+                await self.db.set_metadata('listener_active_since', '')
+            except Exception:
+                pass
             
             # Stop the processor
             if self._processor_task:

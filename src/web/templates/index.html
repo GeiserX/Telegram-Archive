@@ -306,14 +306,26 @@
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
                     </div>
-                    <!-- Last Backup Time -->
+                    <!-- Last Backup Time / Real-time Status -->
                     <div class="text-xs text-tg-muted">
                         <div class="flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
+                            <template v-if="listenerActive">
+                                <!-- Real-time mode indicator -->
+                                <span class="relative flex h-2 w-2">
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                </span>
+                                <span class="text-green-400">Real-time</span>
+                                <span class="text-gray-500">•</span>
+                                <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
+                            </template>
+                            <template v-else>
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
+                            </template>
                         </div>
                     </div>
                 </div>
@@ -477,6 +489,12 @@
                             <div>
                                 <h2 class="font-bold text-lg">{{ getChatName(selectedChat) }}</h2>
                                 <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+                            </div>
+                            <!-- Per-Chat Stats -->
+                            <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
+                                <span title="Messages in this chat">📬 {{ formatNumber(chatStats.messages) }}</span>
+                                <span title="Media files">📁 {{ formatNumber(chatStats.media_files) }}</span>
+                                <span v-if="chatStats.total_size_mb > 0" title="Storage used">💾 {{ chatStats.total_size_mb }} MB</span>
                             </div>
                         </div>
 
@@ -799,6 +817,7 @@
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
+                const listenerActive = ref(false)  // Whether real-time listener is active
                 const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
                 const showDatePickerModal = ref(false)
                 const datePickerInput = ref(null)
@@ -979,7 +998,7 @@
                                 }
                             }
                             
-                            // Last backup time (only relevant when listener is disabled)
+                            // Last backup time
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
                                 lastBackupTimeSource.value = stats.last_backup_time_source || 'metadata'
@@ -987,6 +1006,9 @@
                                 lastBackupTime.value = null
                                 lastBackupTimeSource.value = 'metadata'
                             }
+                            
+                            // Real-time listener status
+                            listenerActive.value = !!stats.listener_active
                         } else {
                             console.error('Failed to fetch stats, status:', res.status)
                         }
@@ -1362,13 +1384,32 @@
                     return selectedChat.value && (selectedChat.value.type === 'group' || selectedChat.value.type === 'channel')
                 })
 
+                // Per-chat statistics
+                const chatStats = ref(null)
+                
+                const loadChatStats = async (chatId) => {
+                    try {
+                        const res = await fetch(`/api/chats/${chatId}/stats`, {
+                            credentials: 'include'
+                        })
+                        if (res.ok) {
+                            chatStats.value = await res.json()
+                        }
+                    } catch (e) {
+                        console.error('Failed to load chat stats:', e)
+                        chatStats.value = null
+                    }
+                }
+                
                 const selectChat = async (chat) => {
                     selectedChat.value = chat
                     messages.value = []
                     page.value = 0
                     hasMore.value = true
                     messageSearchQuery.value = ''
+                    chatStats.value = null  // Reset stats when changing chat
                     await loadMessages()
+                    await loadChatStats(chat.id)  // Load stats for this chat
                     await nextTick()
                     scrollToBottom()
                     // Start auto-refresh for new messages
@@ -2040,6 +2081,7 @@
                     loading,
                     isGroup,
                     selectChat,
+                    chatStats,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
@@ -2105,6 +2147,7 @@
                     formatNumber,
                     lastBackupTime,
                     lastBackupTimeSource,
+                    listenerActive,
                     viewerTimezone,
                     // Date picker
                     showDatePickerModal,
