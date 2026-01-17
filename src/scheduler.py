@@ -4,6 +4,10 @@ Runs backup tasks on a configurable cron schedule.
 
 Optionally runs a real-time listener that catches message edits and deletions
 between scheduled backup runs (when ENABLE_LISTENER=true).
+
+SHARED CONNECTION ARCHITECTURE:
+A single TelegramClient is shared between the backup and listener components.
+This avoids session file lock conflicts and allows both to run simultaneously.
 """
 
 import asyncio
@@ -15,13 +19,19 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .config import Config, setup_logging
+from .connection import TelegramConnection
 from .telegram_backup import run_backup
 
 logger = logging.getLogger(__name__)
 
 
 class BackupScheduler:
-    """Scheduler for automated backups with optional real-time listener."""
+    """
+    Scheduler for automated backups with optional real-time listener.
+    
+    Uses a shared TelegramClient connection for both backup and listener,
+    eliminating session file lock conflicts.
+    """
     
     def __init__(self, config: Config):
         """
@@ -33,6 +43,11 @@ class BackupScheduler:
         self.config = config
         self.scheduler = AsyncIOScheduler()
         self.running = False
+        
+        # Shared Telegram connection (used by both backup and listener)
+        self._connection: Optional[TelegramConnection] = None
+        
+        # Real-time listener (optional)
         self._listener = None
         self._listener_task: Optional[asyncio.Task] = None
         
@@ -46,11 +61,28 @@ class BackupScheduler:
         self.stop()
     
     async def _run_backup_job(self):
-        """Wrapper for backup job that handles errors."""
+        """
+        Wrapper for backup job that handles errors.
+        
+        Uses the shared connection - no need to pause the listener since both
+        use the same TelegramClient.
+        """
         try:
             logger.info("Scheduled backup starting...")
-            await run_backup(self.config)
+            
+            # Ensure connection is still alive
+            client = await self._connection.ensure_connected()
+            
+            # Run backup using shared client
+            await run_backup(self.config, client=client)
+            
+            # Reload tracked chats in listener after backup
+            # (new chats may have been added)
+            if self._listener:
+                await self._listener._load_tracked_chats()
+            
             logger.info("Scheduled backup completed successfully")
+            
         except Exception as e:
             logger.error(f"Scheduled backup failed: {e}", exc_info=True)
     
@@ -106,16 +138,38 @@ class BackupScheduler:
             self.running = False
             logger.info("Scheduler stopped")
     
+    async def _connect(self) -> None:
+        """Establish shared Telegram connection."""
+        logger.info("Establishing shared Telegram connection...")
+        self._connection = TelegramConnection(self.config)
+        await self._connection.connect()
+        logger.info("Shared connection established")
+    
+    async def _disconnect(self) -> None:
+        """Close shared Telegram connection."""
+        if self._connection:
+            await self._connection.disconnect()
+            self._connection = None
+    
     async def _start_listener(self) -> None:
         """Start the real-time listener if enabled."""
         if not self.config.enable_listener:
+            return
+        
+        if not self._connection or not self._connection.is_connected:
+            logger.error("Cannot start listener: not connected to Telegram")
             return
         
         try:
             from .listener import TelegramListener
             
             logger.info("Starting real-time listener...")
-            self._listener = await TelegramListener.create(self.config)
+            
+            # Create listener with shared client
+            self._listener = await TelegramListener.create(
+                self.config,
+                client=self._connection.client
+            )
             await self._listener.connect()
             
             # Run listener in background task
@@ -147,23 +201,37 @@ class BackupScheduler:
             logger.info("Real-time listener stopped")
     
     async def run_forever(self):
-        """Keep the scheduler running with optional listener."""
+        """
+        Keep the scheduler running with optional listener.
+        
+        Flow:
+        1. Connect to Telegram (shared connection)
+        2. Start scheduler
+        3. Start listener if enabled (uses shared connection)
+        4. Run initial backup (uses shared connection)
+        5. Keep running until stopped
+        """
+        # Establish shared connection
+        await self._connect()
+        
+        # Start scheduler
         self.start()
         
-        # Start real-time listener if enabled
+        # Start real-time listener if enabled (uses shared connection)
         await self._start_listener()
         
-        # Run initial backup immediately on startup
+        # Run initial backup immediately on startup (uses shared connection)
         logger.info("Running initial backup on startup...")
         try:
-            await run_backup(self.config)
+            await run_backup(self.config, client=self._connection.client)
             logger.info("Initial backup completed")
+            
+            # Reload tracked chats in listener after initial backup
+            if self._listener:
+                await self._listener._load_tracked_chats()
+                
         except Exception as e:
             logger.error(f"Initial backup failed: {e}", exc_info=True)
-        
-        # Reload tracked chats in listener after initial backup
-        if self._listener:
-            await self._listener._load_tracked_chats()
         
         # Keep running until stopped
         try:
@@ -173,6 +241,14 @@ class BackupScheduler:
                 # Check if listener task died unexpectedly and restart it
                 if self.config.enable_listener and self._listener_task:
                     if self._listener_task.done():
+                        # Check if there was an exception
+                        try:
+                            exc = self._listener_task.exception()
+                            if exc:
+                                logger.error(f"Listener task died with error: {exc}")
+                        except asyncio.CancelledError:
+                            pass
+                        
                         logger.warning("Listener task died, restarting...")
                         await self._stop_listener()
                         await asyncio.sleep(5)  # Brief pause before restart
@@ -183,6 +259,7 @@ class BackupScheduler:
         finally:
             await self._stop_listener()
             self.stop()
+            await self._disconnect()
 
 
 async def main():
