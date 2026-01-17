@@ -25,6 +25,12 @@ class TestTelegramListener:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # Mass operation protection settings
+        config.listen_edits = True
+        config.listen_deletions = False
+        config.mass_operation_threshold = 10
+        config.mass_operation_window_seconds = 30
+        config.mass_operation_buffer_delay = 2.0
         return config
     
     @pytest.fixture
@@ -109,8 +115,13 @@ class TestTelegramListener:
         """Test statistics are properly initialized."""
         listener = TelegramListener(mock_config, mock_db)
         
-        assert listener.stats['edits_processed'] == 0
-        assert listener.stats['deletions_processed'] == 0
+        # Check stats keys match actual implementation
+        assert listener.stats['edits_received'] == 0
+        assert listener.stats['edits_applied'] == 0
+        assert listener.stats['deletions_received'] == 0
+        assert listener.stats['deletions_applied'] == 0
+        assert listener.stats['deletions_skipped'] == 0
+        assert listener.stats['operations_discarded'] == 0
         assert listener.stats['errors'] == 0
         assert listener.stats['start_time'] is None
 
@@ -130,6 +141,12 @@ class TestListenerEventHandling:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # Mass operation protection settings
+        config.listen_edits = True
+        config.listen_deletions = False
+        config.mass_operation_threshold = 10
+        config.mass_operation_window_seconds = 30
+        config.mass_operation_buffer_delay = 2.0
         return config
     
     @pytest.fixture

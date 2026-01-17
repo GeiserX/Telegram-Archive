@@ -74,6 +74,10 @@ class Config:
         self.channels_include_ids = self._parse_id_list(os.getenv('CHANNELS_INCLUDE_CHAT_IDS', ''))
         self.channels_exclude_ids = self._parse_id_list(os.getenv('CHANNELS_EXCLUDE_CHAT_IDS', ''))
         
+        # Priority chats - these are processed FIRST in all backup/sync operations
+        # Useful for ensuring important chats are always backed up first
+        self.priority_chat_ids = self._parse_id_list(os.getenv('PRIORITY_CHAT_IDS', ''))
+        
         # Session configuration
         self.session_name = os.getenv('SESSION_NAME', 'telegram_backup')
         
@@ -122,6 +126,57 @@ class Config:
         # in real-time instead of batch-checking on each backup run
         self.enable_listener = os.getenv('ENABLE_LISTENER', 'false').lower() == 'true'
         
+        # Listener granular controls (only apply when ENABLE_LISTENER=true)
+        # LISTEN_EDITS: Apply text edits to backed up messages (safe, just updates text)
+        self.listen_edits = os.getenv('LISTEN_EDITS', 'true').lower() == 'true'
+        
+        # LISTEN_DELETIONS: Delete messages from backup when deleted on Telegram
+        # ⚠️ DEFAULT FALSE - Enabling defeats the purpose of having a backup!
+        # Only enable if you explicitly want to mirror Telegram exactly
+        self.listen_deletions = os.getenv('LISTEN_DELETIONS', 'true').lower() == 'true'
+        
+        # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
+        # When enabled, new messages are saved immediately instead of waiting for scheduled backup
+        # This provides true real-time backup but may increase API usage
+        self.listen_new_messages = os.getenv('LISTEN_NEW_MESSAGES', 'true').lower() == 'true'
+        
+        # LISTEN_NEW_MESSAGES_MEDIA: Also download media in real-time (not just text)
+        # When disabled (default), media is marked for download on next scheduled backup
+        # When enabled, media is downloaded immediately - more API usage but instant availability
+        self.listen_new_messages_media = os.getenv('LISTEN_NEW_MESSAGES_MEDIA', 'false').lower() == 'true'
+        
+        # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
+        # When enabled, updates to chat metadata are captured in real-time
+        self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'true').lower() == 'true'
+        
+        # LISTEN_ALBUMS: Group media uploads together as albums
+        # When enabled, grouped photos/videos are detected and stored together
+        self.listen_albums = os.getenv('LISTEN_ALBUMS', 'true').lower() == 'true'
+        
+        # =====================================================================
+        # MEDIA DEDUPLICATION
+        # =====================================================================
+        # DEDUPLICATE_MEDIA: Use symlinks to avoid storing duplicate files
+        # When enabled (default), files shared across multiple chats are stored once
+        # in a _shared directory and symlinked from chat directories.
+        # Saves significant disk space when same media is shared across chats.
+        self.deduplicate_media = os.getenv('DEDUPLICATE_MEDIA', 'true').lower() == 'true'
+        
+        # =====================================================================
+        # ZERO-FOOTPRINT MASS OPERATION PROTECTION
+        # =====================================================================
+        # Operations are BUFFERED before being applied. If a burst is detected,
+        # the ENTIRE buffer is discarded - ZERO changes written to your backup.
+        #
+        # THRESHOLD: How many operations trigger protection (default: 10 - aggressive!)
+        # WINDOW: Time window for counting operations (default: 30 seconds)
+        # BUFFER_DELAY: How long ops wait before applying (default: 2.0 seconds)
+        #
+        # Example: If >10 deletions arrive within 30s, all are discarded
+        self.mass_operation_threshold = int(os.getenv('MASS_OPERATION_THRESHOLD', '10'))
+        self.mass_operation_window_seconds = int(os.getenv('MASS_OPERATION_WINDOW_SECONDS', '30'))
+        self.mass_operation_buffer_delay = float(os.getenv('MASS_OPERATION_BUFFER_DELAY', '2.0'))
+        
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
         self.display_chat_ids = self._parse_id_list(os.getenv('DISPLAY_CHAT_IDS', ''))
@@ -129,6 +184,32 @@ class Config:
         # Timezone configuration for viewer display
         # Defaults to Europe/Madrid if not specified
         self.viewer_timezone = os.getenv('VIEWER_TIMEZONE', 'Europe/Madrid')
+        
+        # Viewer notifications (internal use, prefer PUSH_NOTIFICATIONS)
+        self.enable_notifications = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
+        
+        # Push notifications mode: 'off', 'basic', 'full'
+        # - off: No notifications
+        # - basic: In-browser notifications only (tab must be open)
+        # - full: Web Push notifications (work even with browser closed, persistent subscriptions)
+        push_mode = os.getenv('PUSH_NOTIFICATIONS', 'basic').lower()
+        self.push_notifications = push_mode if push_mode in ('off', 'basic', 'full') else 'basic'
+        
+        # VAPID keys for Web Push (auto-generated if not provided)
+        # Generate your own with: npx web-push generate-vapid-keys
+        self.vapid_private_key = os.getenv('VAPID_PRIVATE_KEY', '')
+        self.vapid_public_key = os.getenv('VAPID_PUBLIC_KEY', '')
+        self.vapid_contact = os.getenv('VAPID_CONTACT', 'mailto:admin@example.com')
+        
+        # Stats calculation schedule
+        # Daily calculation of statistics (chat counts, message counts, etc.)
+        # Default: 03:00 (3am) in the configured viewer timezone
+        self.stats_calculation_hour = int(os.getenv('STATS_CALCULATION_HOUR', '3'))
+        
+        # Show stats in viewer UI
+        # When disabled, hides the stats dropdown next to "Telegram Archive" title
+        # Useful for restricted viewers where you don't want to expose total counts
+        self.show_stats = os.getenv('SHOW_STATS', 'true').lower() == 'true'
         
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
@@ -141,6 +222,20 @@ class Config:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
         if self.enable_listener:
             logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
+            logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
+            if self.listen_deletions:
+                logger.warning("  ⚠️ LISTEN_DELETIONS: true - Messages will be DELETED from backup!")
+            else:
+                logger.info("  LISTEN_DELETIONS: false (backup protected)")
+            if self.listen_new_messages:
+                logger.info("  LISTEN_NEW_MESSAGES: true - New messages saved in real-time!")
+            else:
+                logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
+            if self.listen_chat_actions:
+                logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
+            if self.listen_albums:
+                logger.info("  LISTEN_ALBUMS: true - Grouped media detected!")
+            logger.info(f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
     

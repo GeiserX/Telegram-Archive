@@ -7,7 +7,7 @@ import os
 import logging
 import hashlib
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict
 from pathlib import Path
 
@@ -31,18 +31,26 @@ logger = logging.getLogger(__name__)
 class TelegramBackup:
     """Main class for managing Telegram backups."""
     
-    def __init__(self, config: Config, db: DatabaseAdapter):
+    def __init__(
+        self, 
+        config: Config, 
+        db: DatabaseAdapter,
+        client: Optional[TelegramClient] = None
+    ):
         """
         Initialize Telegram backup manager.
         
         Args:
             config: Configuration object
             db: Async database adapter (must be initialized before passing)
+            client: Optional existing TelegramClient to use (for shared connection).
+                   If not provided, will create a new client in connect().
         """
         self.config = config
         self.config.validate_credentials()
         self.db = db
-        self.client: Optional[TelegramClient] = None
+        self.client: Optional[TelegramClient] = client
+        self._owns_client = client is None  # Track if we created the client
         
         logger.info("TelegramBackup initialized")
     
@@ -60,26 +68,45 @@ class TelegramBackup:
         return get_peer_id(entity)
     
     @classmethod
-    async def create(cls, config: Config) -> "TelegramBackup":
+    async def create(
+        cls, 
+        config: Config,
+        client: Optional[TelegramClient] = None
+    ) -> "TelegramBackup":
         """
         Factory method to create TelegramBackup with initialized database.
         
         Args:
             config: Configuration object
+            client: Optional existing TelegramClient to use (for shared connection)
             
         Returns:
             Initialized TelegramBackup instance
         """
         db = await create_adapter()
-        return cls(config, db)
+        return cls(config, db, client=client)
     
     async def connect(self):
-        """Connect to Telegram and authenticate."""
+        """
+        Connect to Telegram and authenticate.
+        
+        If a client was provided in __init__, verifies it's connected.
+        Otherwise, creates a new client and connects.
+        """
+        # If using shared client, just verify it's connected
+        if self.client is not None and not self._owns_client:
+            if not self.client.is_connected():
+                raise RuntimeError("Shared client is not connected")
+            logger.debug("Using shared Telegram client")
+            return
+        
+        # Create new client
         self.client = TelegramClient(
             self.config.session_path,
             self.config.api_id,
             self.config.api_hash
         )
+        self._owns_client = True
         
         # Fix for database locked errors: Enable WAL mode for session DB
         # This is critical for concurrency when the viewer is also running
@@ -112,8 +139,13 @@ class TelegramBackup:
         logger.info(f"Connected as {me.first_name} ({me.phone})")
     
     async def disconnect(self):
-        """Disconnect from Telegram."""
-        if self.client:
+        """
+        Disconnect from Telegram.
+        
+        Only disconnects if we own the client (created it ourselves).
+        Shared clients are managed by the connection owner.
+        """
+        if self.client and self._owns_client:
             await self.client.disconnect()
             logger.info("Disconnected from Telegram")
     
@@ -223,11 +255,27 @@ class TelegramBackup:
                 logger.info("No dialogs to back up after filtering")
                 return
 
-            # Ensure we start from the most recently active chats
-            filtered_dialogs.sort(
-                key=lambda d: getattr(d, "date", None) or datetime.min,
-                reverse=True,
-            )
+            # Sort dialogs: priority chats first, then by most recently active
+            # Priority chats (PRIORITY_CHAT_IDS) are always processed first
+            # Use .timestamp() to avoid comparing timezone-aware vs naive datetimes
+            # (Saved Messages chat has UTC timezone, others may be naive)
+            # Fixes: https://github.com/GeiserX/Telegram-Archive/issues/12
+            priority_ids = self.config.priority_chat_ids
+            
+            def dialog_sort_key(d):
+                chat_id = self._get_marked_id(d.entity)
+                is_priority = chat_id in priority_ids
+                timestamp = (getattr(d, "date", None) or datetime.min.replace(tzinfo=timezone.utc)).timestamp()
+                # Sort by: (not is_priority, -timestamp) so priority=True sorts first, then by recency
+                return (not is_priority, -timestamp)
+            
+            filtered_dialogs.sort(key=dialog_sort_key)
+            
+            # Log priority chats if any
+            if priority_ids:
+                priority_count = sum(1 for d in filtered_dialogs if self._get_marked_id(d.entity) in priority_ids)
+                if priority_count > 0:
+                    logger.info(f"📌 {priority_count} priority chat(s) will be processed first")
 
             # Detect whether we've already completed at least one full backup run
             # (i.e. some chats have a non-zero last_message_id recorded)
@@ -450,7 +498,7 @@ class TelegramBackup:
         # This runs on every dialog backup but only downloads new files when
         # Telegram reports a different profile photo.
         try:
-            await self._ensure_profile_photo(entity)
+            await self._ensure_profile_photo(entity, chat_id)
         except Exception as e:
             logger.error(f"Error downloading profile photo for {chat_id}: {e}", exc_info=True)
         
@@ -697,6 +745,10 @@ class TelegramBackup:
             'is_outgoing': 1 if message.out else 0
         }
         
+        # Capture grouped_id for album detection (multiple photos/videos sent together)
+        if message.grouped_id:
+            message_data['raw_data']['grouped_id'] = str(message.grouped_id)
+        
         # Get reply text if this is a reply
         if message.reply_to_msg_id and message.reply_to:
             reply_msg = message.reply_to
@@ -803,17 +855,30 @@ class TelegramBackup:
         # Return message data for batch processing
         return message_data
 
-    async def _ensure_profile_photo(self, entity) -> None:
+    async def _ensure_profile_photo(self, entity, marked_id: int = None) -> None:
         """
         Download and keep a copy of the profile photo for users and chats.
 
         We only ever add new files when Telegram reports a different photo,
         and we never delete older ones. This way, if a user removes their
         photo later, we still keep at least one historical copy.
+        
+        Args:
+            entity: Telegram entity (User, Chat, Channel)
+            marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
-        if not photo:
+        
+        # For channels/groups, the photo might be a ChatPhoto object
+        # Check for photo_id attribute which indicates a valid photo
+        if photo is None:
+            return
+        
+        # ChatPhotoEmpty has no photo_id, skip these
+        # Note: photo_id can be 0 for some entities, treat it as invalid
+        photo_id = getattr(photo, "photo_id", None)
+        if not photo_id:  # None, 0, or empty
             return
 
         # Determine target directory based on entity type
@@ -825,18 +890,26 @@ class TelegramBackup:
 
         os.makedirs(base_dir, exist_ok=True)
 
-        # Use Telegram's internal photo id to derive a stable filename so
-        # a new photo results in a new file, while old ones are kept.
-        photo_id = getattr(photo, "photo_id", None) or getattr(photo, "id", None)
-        suffix = str(photo_id) if photo_id is not None else "current"
-        file_name = f"{entity.id}_{suffix}.jpg"
+        # Use marked_id for consistent naming (matches what DB uses)
+        # For users, marked_id equals entity.id. For groups/channels, it's negative.
+        file_id = marked_id if marked_id is not None else entity.id
+        file_name = f"{file_id}_{photo_id}.jpg"
         file_path = os.path.join(base_dir, file_name)
 
         # If we've already downloaded this exact photo, skip
         if os.path.exists(file_path):
             return
 
-        await self.client.download_profile_photo(entity, file_path)
+        try:
+            result = await self.client.download_profile_photo(
+                entity, 
+                file=file_path,
+                download_big=False  # Small size is usually sufficient
+            )
+            if result:
+                logger.info(f"📷 Downloaded avatar: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to download avatar for {entity.id}: {e}")
     
     async def _process_media(self, message: Message, chat_id: int) -> Optional[dict]:
         """
@@ -880,7 +953,7 @@ class TelegramBackup:
                 'downloaded': False
             }
         
-        # Download media
+        # Download media (with optional global deduplication)
         try:
             # Create chat-specific media directory
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
@@ -890,14 +963,54 @@ class TelegramBackup:
             file_name = self._get_media_filename(message, media_type, telegram_file_id)
             file_path = os.path.join(chat_media_dir, file_name)
             
-            # Download if not already exists
-            if not os.path.exists(file_path):
-                await self.client.download_media(message, file_path)
-                logger.debug(f"Downloaded media: {file_name}")
-            
-            # Update file_size with actual size from disk
-            if os.path.exists(file_path):
-                file_size = os.path.getsize(file_path)
+            # Check if deduplication is enabled
+            if getattr(self.config, 'deduplicate_media', True):
+                # Global deduplication: use _shared directory for actual files
+                shared_dir = os.path.join(self.config.media_path, '_shared')
+                os.makedirs(shared_dir, exist_ok=True)
+                shared_file_path = os.path.join(shared_dir, file_name)
+                
+                # Check if file already exists (either directly or in shared)
+                if not os.path.exists(file_path):
+                    if os.path.exists(shared_file_path):
+                        # File exists in shared - create symlink
+                        try:
+                            # Use relative symlink for portability
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                            logger.debug(f"Created symlink for deduplicated media: {file_name}")
+                        except OSError as e:
+                            # Symlink failed (e.g., Windows), copy reference instead
+                            logger.warning(f"Symlink failed, downloading copy: {e}")
+                            await self.client.download_media(message, file_path)
+                    else:
+                        # First time seeing this file - download to shared and create symlink
+                        await self.client.download_media(message, shared_file_path)
+                        logger.debug(f"Downloaded media to shared: {file_name}")
+                        
+                        # Create symlink in chat directory
+                        try:
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                        except OSError as e:
+                            # Symlink failed - move file to chat dir instead
+                            logger.warning(f"Symlink failed, using direct path: {e}")
+                            import shutil
+                            shutil.move(shared_file_path, file_path)
+                
+                # Update file_size with actual size from disk (follow symlinks)
+                actual_path = shared_file_path if os.path.exists(shared_file_path) else file_path
+                if os.path.exists(actual_path):
+                    file_size = os.path.getsize(actual_path)
+            else:
+                # No deduplication - download directly to chat directory
+                if not os.path.exists(file_path):
+                    await self.client.download_media(message, file_path)
+                    logger.debug(f"Downloaded media: {file_name}")
+                
+                # Update file_size with actual size from disk
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
 
             # Extract media metadata
             media_data = {
@@ -1106,14 +1219,20 @@ class TelegramBackup:
         return f"Unknown {entity.id}"
 
 
-async def run_backup(config: Config):
+async def run_backup(
+    config: Config,
+    client: Optional[TelegramClient] = None
+):
     """
     Run a single backup operation.
 
     Args:
         config: Configuration object
+        client: Optional existing TelegramClient to use (for shared connection).
+               If provided, the backup will use this client instead of creating
+               its own, avoiding session file lock conflicts.
     """
-    backup = await TelegramBackup.create(config)
+    backup = await TelegramBackup.create(config, client=client)
     try:
         await backup.connect()
         await backup.backup_all()

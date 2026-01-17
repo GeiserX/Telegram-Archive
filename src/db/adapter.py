@@ -213,8 +213,14 @@ class DatabaseAdapter:
             await session.commit()
             return chat_data['id']
     
-    async def get_all_chats(self) -> List[Dict[str, Any]]:
-        """Get all chats with their last message date."""
+    async def get_all_chats(self, limit: int = None, offset: int = 0, search: str = None) -> List[Dict[str, Any]]:
+        """Get chats with their last message date, with optional pagination and search.
+        
+        Args:
+            limit: Maximum number of chats to return
+            offset: Offset for pagination
+            search: Optional search query (case-insensitive, matches title/first_name/last_name/username)
+        """
         async with self.db_manager.async_session_factory() as session:
             # Subquery for last message date
             subq = (
@@ -226,11 +232,29 @@ class DatabaseAdapter:
             stmt = (
                 select(Chat, subq.c.last_message_date)
                 .outerjoin(subq, Chat.id == subq.c.chat_id)
-                .order_by(
-                    subq.c.last_message_date.is_(None),
-                    subq.c.last_message_date.desc()
-                )
             )
+            
+            # Apply search filter if provided
+            if search:
+                search_pattern = f"%{search}%"
+                stmt = stmt.where(
+                    or_(
+                        Chat.title.ilike(search_pattern),
+                        Chat.first_name.ilike(search_pattern),
+                        Chat.last_name.ilike(search_pattern),
+                        Chat.username.ilike(search_pattern)
+                    )
+                )
+            
+            # Order by last message date
+            stmt = stmt.order_by(
+                subq.c.last_message_date.is_(None),
+                subq.c.last_message_date.desc()
+            )
+            
+            # Apply pagination if limit is specified
+            if limit is not None:
+                stmt = stmt.limit(limit).offset(offset)
             
             result = await session.execute(stmt)
             chats = []
@@ -252,6 +276,29 @@ class DatabaseAdapter:
                 }
                 chats.append(chat_dict)
             return chats
+    
+    async def get_chat_count(self, search: str = None) -> int:
+        """Get total number of chats (fast count for pagination).
+        
+        Args:
+            search: Optional search query to filter count
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(func.count(Chat.id))
+            
+            if search:
+                search_pattern = f"%{search}%"
+                stmt = stmt.where(
+                    or_(
+                        Chat.title.ilike(search_pattern),
+                        Chat.first_name.ilike(search_pattern),
+                        Chat.last_name.ilike(search_pattern),
+                        Chat.username.ilike(search_pattern)
+                    )
+                )
+            
+            result = await session.execute(stmt)
+            return result.scalar() or 0
     
     # ========== User Operations ==========
     
@@ -424,6 +471,20 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
     
+    async def get_chat_id_for_message(self, message_id: int) -> Optional[int]:
+        """
+        Look up the chat_id for a message by its ID.
+        
+        Used when Telegram sends deletion events without chat_id.
+        Note: Message IDs are only unique within a chat, so this may return
+        multiple results. Returns the first match.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.chat_id).where(Message.id == message_id).limit(1)
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
+    
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         """Delete a specific message and its media."""
         async with self.db_manager.async_session_factory() as session:
@@ -541,6 +602,51 @@ class DatabaseAdapter:
             'created_at': message.created_at,
             'is_outgoing': message.is_outgoing,
         }
+    
+    async def get_chat_stats(self, chat_id: int) -> Dict[str, Any]:
+        """Get statistics for a specific chat (message count, media count, total size).
+        
+        Returns:
+            Dict with keys: messages, media_files, total_size_bytes, first_message_date, last_message_date
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # Message count
+            msg_result = await session.execute(
+                select(func.count(Message.id)).where(Message.chat_id == chat_id)
+            )
+            message_count = msg_result.scalar() or 0
+            
+            # Media count and total size
+            media_result = await session.execute(
+                select(
+                    func.count(Media.id),
+                    func.coalesce(func.sum(Media.file_size), 0)
+                ).where(Media.chat_id == chat_id)
+            )
+            media_row = media_result.one()
+            media_count = media_row[0] or 0
+            total_size = media_row[1] or 0
+            
+            # First and last message dates
+            date_result = await session.execute(
+                select(
+                    func.min(Message.date),
+                    func.max(Message.date)
+                ).where(Message.chat_id == chat_id)
+            )
+            date_row = date_result.one()
+            first_message = date_row[0]
+            last_message = date_row[1]
+            
+            return {
+                'chat_id': chat_id,
+                'messages': int(message_count),
+                'media_files': int(media_count),
+                'total_size_bytes': int(total_size),
+                'total_size_mb': round(total_size / (1024 * 1024), 2) if total_size else 0,
+                'first_message_date': first_message.isoformat() if first_message else None,
+                'last_message_date': last_message.isoformat() if last_message else None,
+            }
     
     # ========== Media Operations ==========
     
@@ -747,22 +853,55 @@ class DatabaseAdapter:
     
     # ========== Statistics ==========
     
-    async def get_statistics(self) -> Dict[str, Any]:
-        """Get backup statistics."""
+    async def get_cached_statistics(self) -> Dict[str, Any]:
+        """Get cached statistics (fast, no expensive queries)."""
+        # Get cached stats from metadata
+        cached_stats = await self.get_metadata('cached_stats')
+        stats_calculated_at = await self.get_metadata('stats_calculated_at')
+        last_backup_time = await self.get_metadata('last_backup_time')
+        
+        result = {
+            'chats': 0,
+            'messages': 0,
+            'media_files': 0,
+            'total_size_mb': 0,
+            'stats_calculated_at': stats_calculated_at
+        }
+        
+        if cached_stats:
+            import json
+            try:
+                result.update(json.loads(cached_stats))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        if last_backup_time:
+            result['last_backup_time'] = last_backup_time
+            result['last_backup_time_source'] = 'metadata'
+        
+        return result
+    
+    async def calculate_and_store_statistics(self) -> Dict[str, Any]:
+        """Calculate statistics and store in metadata (expensive, run daily)."""
+        import json
+        from datetime import datetime
+        
         async with self.db_manager.async_session_factory() as session:
+            logger.info("Calculating statistics (this may take a while)...")
+            
             # Chat count
             chat_count = await session.execute(select(func.count(Chat.id)))
-            chat_count = chat_count.scalar()
+            chat_count = chat_count.scalar() or 0
             
             # Message count
             msg_count = await session.execute(select(func.count()).select_from(Message))
-            msg_count = msg_count.scalar()
+            msg_count = msg_count.scalar() or 0
             
             # Media count
             media_count = await session.execute(
                 select(func.count(Media.id)).where(Media.downloaded == 1)
             )
-            media_count = media_count.scalar()
+            media_count = media_count.scalar() or 0
             
             # Total media size
             total_size = await session.execute(
@@ -770,30 +909,32 @@ class DatabaseAdapter:
             )
             total_size = total_size.scalar() or 0
             
-            # Last backup time
-            last_backup_time = await self.get_metadata('last_backup_time')
-            timezone_source = 'metadata'
-            
-            if not last_backup_time:
-                last_sync = await session.execute(
-                    select(func.max(SyncStatus.last_sync_date))
+            # Per-chat statistics
+            chat_stats_query = (
+                select(
+                    Message.chat_id,
+                    func.count(Message.id).label('message_count')
                 )
-                last_backup_time = last_sync.scalar()
-                if last_backup_time:
-                    timezone_source = 'sync_status'
+                .group_by(Message.chat_id)
+            )
+            chat_stats_result = await session.execute(chat_stats_query)
+            per_chat_stats = {row.chat_id: row.message_count for row in chat_stats_result}
             
             stats = {
-                'chats': chat_count,
-                'messages': msg_count,
-                'media_files': media_count,
-                'total_size_mb': round(total_size / (1024 * 1024), 2)
+                'chats': int(chat_count),
+                'messages': int(msg_count),
+                'media_files': int(media_count),
+                'total_size_mb': float(round(total_size / (1024 * 1024), 2)),
+                'per_chat_message_counts': {int(k): int(v) for k, v in per_chat_stats.items()}
             }
             
-            if last_backup_time:
-                stats['last_backup_time'] = last_backup_time
-                stats['last_backup_time_source'] = timezone_source
-            
-            return stats
+            logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
+        
+        # Store in metadata
+        await self.set_metadata('cached_stats', json.dumps(stats))
+        await self.set_metadata('stats_calculated_at', datetime.utcnow().isoformat())
+        
+        return stats
     
     # ========== Delete Operations ==========
     
@@ -841,16 +982,24 @@ class DatabaseAdapter:
         chat_id: int,
         limit: int = 50,
         offset: int = 0,
-        search: Optional[str] = None
+        search: Optional[str] = None,
+        before_date: Optional[datetime] = None,
+        before_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
         
+        Supports two pagination modes:
+        1. Offset-based (legacy): Uses offset parameter - slower for large offsets
+        2. Cursor-based (preferred): Uses before_date/before_id - O(1) regardless of position
+        
         Args:
             chat_id: Chat ID
             limit: Maximum messages to return
-            offset: Pagination offset
+            offset: Pagination offset (used only if before_date/before_id not provided)
             search: Optional text search filter
+            before_date: Cursor - get messages before this date (faster than offset)
+            before_id: Cursor - message ID to use as tiebreaker for same-date messages
             
         Returns:
             List of message dictionaries with user and media info
@@ -874,7 +1023,23 @@ class DatabaseAdapter:
             if search:
                 stmt = stmt.where(Message.text.ilike(f'%{search}%'))
             
-            stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+            # Cursor-based pagination (preferred - O(1) performance)
+            if before_date is not None:
+                # Use composite cursor: (date, id) for deterministic ordering
+                # Messages with same date are ordered by id DESC
+                if before_id is not None:
+                    stmt = stmt.where(
+                        or_(
+                            Message.date < before_date,
+                            and_(Message.date == before_date, Message.id < before_id)
+                        )
+                    )
+                else:
+                    stmt = stmt.where(Message.date < before_date)
+                stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit)
+            else:
+                # Offset-based pagination (legacy fallback)
+                stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
             
             result = await session.execute(stmt)
             messages = []
@@ -1028,37 +1193,73 @@ class DatabaseAdapter:
                 'participants_count': chat.participants_count,
             }
     
-    async def get_messages_for_export(self, chat_id: int):
+    async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get a user by ID."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                return None
+            return {
+                'id': user.id,
+                'username': user.username,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'phone': user.phone,
+                'is_bot': user.is_bot,
+            }
+    
+    async def get_messages_for_export(self, chat_id: int, include_media: bool = False):
         """
         Get messages for export with user info.
         Returns an async generator for streaming.
         
         Args:
             chat_id: Chat ID to export
+            include_media: If True, include media_path and media_type
             
         Yields:
             Message dictionaries with user info
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                select(
-                    Message.id,
-                    Message.date,
-                    Message.text,
-                    Message.is_outgoing,
-                    Message.reply_to_msg_id,
-                    User.first_name,
-                    User.last_name,
-                    User.username,
+            if include_media:
+                stmt = (
+                    select(
+                        Message.id,
+                        Message.date,
+                        Message.text,
+                        Message.is_outgoing,
+                        Message.reply_to_msg_id,
+                        Message.media_type,
+                        Message.media_path,
+                        User.first_name,
+                        User.last_name,
+                        User.username,
+                    )
+                    .outerjoin(User, Message.sender_id == User.id)
+                    .where(Message.chat_id == chat_id)
+                    .order_by(Message.date.asc())
                 )
-                .outerjoin(User, Message.sender_id == User.id)
-                .where(Message.chat_id == chat_id)
-                .order_by(Message.date.asc())
-            )
+            else:
+                stmt = (
+                    select(
+                        Message.id,
+                        Message.date,
+                        Message.text,
+                        Message.is_outgoing,
+                        Message.reply_to_msg_id,
+                        User.first_name,
+                        User.last_name,
+                        User.username,
+                    )
+                    .outerjoin(User, Message.sender_id == User.id)
+                    .where(Message.chat_id == chat_id)
+                    .order_by(Message.date.asc())
+                )
             
             result = await session.stream(stmt)
             async for row in result:
-                yield {
+                msg = {
                     'id': row.id,
                     'date': row.date.isoformat() if row.date else None,
                     'sender': {
@@ -1069,6 +1270,10 @@ class DatabaseAdapter:
                     'is_outgoing': bool(row.is_outgoing),
                     'reply_to': row.reply_to_msg_id
                 }
+                if include_media:
+                    msg['media_type'] = row.media_type
+                    msg['media_path'] = row.media_path
+                yield msg
     
     async def close(self) -> None:
         """Close database connections."""

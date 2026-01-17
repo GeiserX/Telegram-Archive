@@ -87,6 +87,8 @@ TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
 
 ### 3. Authenticate with Telegram
 
+**Option A: Using the provided scripts (recommended for fresh installs)**
+
 ```bash
 # Make script executable (Linux/Mac)
 chmod +x init_auth.sh
@@ -96,7 +98,42 @@ chmod +x init_auth.sh
 # init_auth.bat   # Windows
 ```
 
-You'll receive a code on Telegram - enter it when prompted.
+**Option B: Direct Docker command (for existing deployments or re-authentication)**
+
+If your session expires or you need to re-authenticate an existing container:
+
+```bash
+# Generic command - adjust volume paths and credentials
+docker run -it --rm \
+  -e TELEGRAM_API_ID=YOUR_API_ID \
+  -e TELEGRAM_API_HASH=YOUR_API_HASH \
+  -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
+  -e SESSION_NAME=telegram_backup \
+  -v /path/to/your/session:/data/session \
+  drumsergio/telegram-archive:latest \
+  python -m src.setup_auth
+```
+
+**Example for docker-compose deployment:**
+
+```bash
+# If using docker-compose with a session volume
+docker run -it --rm \
+  --env-file .env \
+  -v telegram-archive_session:/data/session \
+  drumsergio/telegram-archive:latest \
+  python -m src.setup_auth
+
+# Then restart the backup container
+docker-compose restart telegram-backup
+```
+
+**What happens during authentication:**
+1. The script connects to Telegram's servers
+2. Telegram sends a verification code to your Telegram app (check "Telegram" chat)
+3. Enter the code when prompted
+4. If you have 2FA enabled, enter your password when prompted
+5. Session is saved to the mounted volume for future use
 
 ### 4. Start Services
 
@@ -171,7 +208,13 @@ Features:
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
-| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions (recommended) |
+| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
+| `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
+| `LISTEN_DELETIONS` | `true` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
+| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Ops count that triggers protection |
+| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window in seconds |
+| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | Seconds to buffer before applying |
+| `ENABLE_NOTIFICATIONS` | `false` | Enable browser push notifications in viewer |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
@@ -202,21 +245,76 @@ Chat IDs use Telegram's "marked" format:
 
 By default, the backup runs on a schedule and only captures new messages. Edits and deletions made between backups are not tracked. You have two options:
 
-#### Option 1: Real-time Listener (Recommended) ⭐
+#### Option 1: Real-time Listener ⭐
 
-Enable `ENABLE_LISTENER=true` to run a background listener that catches edits and deletions as they happen:
+Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as they happen:
 
 ```yaml
-- ENABLE_LISTENER=true
+- ENABLE_LISTENER=true      # Enable real-time listener
+- LISTEN_EDITS=true         # Apply text edits (default: true, safe)
+- LISTEN_DELETIONS=true     # Delete from backup (protected by zero-footprint mass operation detection)
 ```
 
 **How it works:**
 - Stays connected to Telegram between scheduled backups
-- Instantly captures message edits and deletions
+- Instantly captures message edits (and optionally deletions)
 - Very efficient - only processes actual changes
 - Automatically restarts if disconnected
 
-#### Option 2: Batch Sync (Expensive)
+**⚠️ IMPORTANT: Backup Protection**
+
+By default, `LISTEN_DELETIONS=true` - deletions are synced but protected by **zero-footprint mass operation detection**. If a mass deletion is detected (>10 deletions in 30s), all pending deletions are discarded - your backup stays safe. Set to `false` if you want to keep ALL messages even when deleted on Telegram.
+
+Only set `LISTEN_DELETIONS=true` if you explicitly want to track deletions (see protection features below).
+
+### 🛡️ Zero-Footprint Mass Operation Protection
+
+Even if you enable `LISTEN_DELETIONS=true`, the system has **military-grade protection** against mass deletions and edits:
+
+```yaml
+- MASS_OPERATION_THRESHOLD=10       # Block if >10 operations (aggressive default)
+- MASS_OPERATION_WINDOW_SECONDS=30  # Detection window in seconds
+- MASS_OPERATION_BUFFER_DELAY=2.0   # Seconds to buffer before applying
+```
+
+All three values are configurable. Tune them based on your needs:
+- Lower threshold = more aggressive protection
+- Shorter window = faster detection but may catch normal activity
+- Longer buffer = more time to detect bursts but slightly delayed updates
+
+#### How It Works
+
+1. **Operations are BUFFERED** - Nothing is written to your database immediately
+2. **2-second delay** - All operations wait in a buffer before being applied
+3. **Burst detection** - If >10 operations arrive for a chat within the buffer window, it triggers protection
+4. **ZERO footprint** - When triggered, the ENTIRE buffer is discarded. No changes written. Your backup stays intact.
+
+#### Example Attack Scenario
+
+Someone clears their chat history (100 messages deleted at once):
+```
+🛡️ ZERO-FOOTPRINT PROTECTION ACTIVATED
+   Chat: -1001234567890
+   Attack type: Mass deletion
+   Operations intercepted: 100
+   Data preserved: 100% (ZERO changes written to database)
+   Chat blocked until: 2026-01-14 12:35:00
+```
+
+**Result**: All 100 messages are still safely in your backup. The attacker's deletions had no effect.
+
+#### Why This Matters
+
+| Without Protection | With Protection |
+|-------------------|-----------------|
+| 10 deletions = 10 messages lost | 10 deletions = NOTHING lost |
+| Burst detected too late | Burst detected BEFORE any writes |
+| Partial data loss | Zero data loss |
+| Manual recovery needed | Automatic protection |
+
+This is the core philosophy: **your backup is sacred**. Even if you opt-in to deletion tracking, you're protected against mass operations that could wipe your data.
+
+#### Option 2: Batch Sync (One-time catch-up)
 
 Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each backup run:
 
@@ -224,7 +322,11 @@ Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each ba
 - SYNC_DELETIONS_EDITS=true
 ```
 
-**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for one-time catch-up or if you can't use the listener.
+**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for:
+- One-time initial catch-up on edits/deletions
+- If you can't use the real-time listener
+
+After running once, switch back to `ENABLE_LISTENER=true` for ongoing sync.
 
 ### Database Configuration (v3.0+)
 
