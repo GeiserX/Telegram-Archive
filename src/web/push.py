@@ -13,7 +13,9 @@ import secrets
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
+from py_vapid.utils import b64urlencode
 from pywebpush import webpush, WebPushException
 
 logger = logging.getLogger(__name__)
@@ -68,8 +70,16 @@ class PushNotificationManager:
                 vapid = Vapid()
                 vapid.generate_keys()
                 
-                self._private_key = vapid.private_pem.decode('utf-8') if isinstance(vapid.private_pem, bytes) else vapid.private_pem
-                self._public_key = vapid.public_key_urlsafe_base64
+                # Get private key as PEM
+                private_pem = vapid.private_pem()
+                self._private_key = private_pem.decode('utf-8') if isinstance(private_pem, bytes) else private_pem
+                
+                # Get public key as URL-safe base64
+                public_bytes = vapid.public_key.public_bytes(
+                    serialization.Encoding.X962,
+                    serialization.PublicFormat.UncompressedPoint
+                )
+                self._public_key = b64urlencode(public_bytes)
                 
                 # Store in database for persistence across restarts
                 await self.db.set_metadata('vapid_private_key', self._private_key)
