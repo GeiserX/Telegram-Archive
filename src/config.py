@@ -185,11 +185,10 @@ class Config:
         # Defaults to Europe/Madrid if not specified
         self.viewer_timezone = os.getenv('VIEWER_TIMEZONE', 'Europe/Madrid')
         
-        # Viewer notifications (LEGACY - prefer PUSH_NOTIFICATIONS instead)
-        # Kept for backward compatibility. If true, enables notifications even if PUSH_NOTIFICATIONS=off
+        # Viewer notifications (internal use, prefer PUSH_NOTIFICATIONS)
         self.enable_notifications = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
         
-        # Push notifications mode: 'off', 'basic', 'full' (RECOMMENDED)
+        # Push notifications mode: 'off', 'basic', 'full'
         # - off: No notifications
         # - basic: In-browser notifications only (tab must be open)
         # - full: Web Push notifications (work even with browser closed, persistent subscriptions)

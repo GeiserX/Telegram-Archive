@@ -51,7 +51,6 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 - **Subscription management** - Subscriptions survive container restarts and updates
 - **Automatic cleanup** - Expired subscriptions removed automatically
 - **Optional custom VAPID keys** via `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CONTACT`
-- **`ENABLE_NOTIFICATIONS`** is now legacy - use `PUSH_NOTIFICATIONS` instead (kept for backward compatibility)
 
 #### Migration Scripts
 - **`scripts/migrate_media_paths.py`** - ⚠️ **HIGHLY RECOMMENDED** - Normalizes media folder names to use marked IDs
