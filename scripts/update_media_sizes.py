@@ -91,9 +91,14 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
         error_count = 0
         total_size_added = 0
         
+        BATCH_SIZE = 1000
+        
         for i, media in enumerate(media_records):
-            if i % 1000 == 0 and i > 0:
-                logger.info(f"Progress: {i}/{len(media_records)} ({updated_count} updated, {missing_count} missing)")
+            # Commit in batches and report progress
+            if i % BATCH_SIZE == 0 and i > 0:
+                if not dry_run:
+                    await session.commit()
+                logger.info(f"Progress: {i}/{len(media_records)} ({updated_count} updated, {missing_count} missing) - committed")
             
             # Construct full path
             if media.file_path:
@@ -136,7 +141,7 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
         
         if not dry_run:
             await session.commit()
-            logger.info("Changes committed to database")
+            logger.info("Final batch committed to database")
         
         # Summary
         logger.info("=" * 60)
