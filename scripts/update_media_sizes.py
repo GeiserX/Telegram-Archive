@@ -59,18 +59,27 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
     
     # Get media records that need updating
     async with db.db_manager.async_session_factory() as session:
-        from sqlalchemy import select, update
+        from sqlalchemy import select, update, not_
         from src.db.models import Media
         
-        # Build query - either all records or just those without sizes
+        # Media types that have actual downloadable files
+        DOWNLOADABLE_TYPES = ['photo', 'video', 'audio', 'voice', 'document', 'sticker', 'animation']
+        # Types without files (just metadata): geo, poll, contact, venue, etc.
+        
+        # Build query - only downloadable types, exclude non-file types
+        base_filter = Media.type.in_(DOWNLOADABLE_TYPES)
+        
         if force:
-            query = select(Media)
-            logger.info("Fetching ALL media records...")
+            query = select(Media).where(base_filter)
+            logger.info("Fetching ALL downloadable media records...")
         else:
             query = select(Media).where(
+                base_filter,
                 (Media.file_size == None) | (Media.file_size == 0)
             )
-            logger.info("Fetching media records with missing file sizes...")
+            logger.info("Fetching downloadable media records with missing file sizes...")
+        
+        logger.info(f"(Skipping non-file types: geo, poll, contact, venue, etc.)")
         
         result = await session.execute(query)
         media_records = result.scalars().all()
