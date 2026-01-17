@@ -87,6 +87,8 @@ TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
 
 ### 3. Authenticate with Telegram
 
+**Option A: Using the provided scripts (recommended for fresh installs)**
+
 ```bash
 # Make script executable (Linux/Mac)
 chmod +x init_auth.sh
@@ -96,7 +98,42 @@ chmod +x init_auth.sh
 # init_auth.bat   # Windows
 ```
 
-You'll receive a code on Telegram - enter it when prompted.
+**Option B: Direct Docker command (for existing deployments or re-authentication)**
+
+If your session expires or you need to re-authenticate an existing container:
+
+```bash
+# Generic command - adjust volume paths and credentials
+docker run -it --rm \
+  -e TELEGRAM_API_ID=YOUR_API_ID \
+  -e TELEGRAM_API_HASH=YOUR_API_HASH \
+  -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
+  -e SESSION_NAME=telegram_backup \
+  -v /path/to/your/session:/data/session \
+  drumsergio/telegram-archive:latest \
+  python -m src.setup_auth
+```
+
+**Example for docker-compose deployment:**
+
+```bash
+# If using docker-compose with a session volume
+docker run -it --rm \
+  --env-file .env \
+  -v telegram-archive_session:/data/session \
+  drumsergio/telegram-archive:latest \
+  python -m src.setup_auth
+
+# Then restart the backup container
+docker-compose restart telegram-backup
+```
+
+**What happens during authentication:**
+1. The script connects to Telegram's servers
+2. Telegram sends a verification code to your Telegram app (check "Telegram" chat)
+3. Enter the code when prompted
+4. If you have 2FA enabled, enter your password when prompted
+5. Session is saved to the mounted volume for future use
 
 ### 4. Start Services
 
