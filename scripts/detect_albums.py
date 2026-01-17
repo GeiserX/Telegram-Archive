@@ -31,6 +31,8 @@ from collections import defaultdict
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import text
+
 from src.config import Config
 from src.db import create_adapter
 
@@ -39,6 +41,51 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+async def _bulk_update_raw_data(session, updates: list):
+    """
+    Bulk update raw_data for messages using a single SQL query.
+    
+    Args:
+        session: SQLAlchemy async session  
+        updates: List of (chat_id, message_id, raw_data_json_str) tuples
+    """
+    if not updates:
+        return
+    
+    dialect = session.bind.dialect.name
+    
+    if dialect == 'postgresql':
+        # PostgreSQL - UPDATE FROM VALUES
+        # Escape single quotes in JSON strings
+        values_str = ", ".join(
+            f"({chat_id}::bigint, {msg_id}::bigint, '{raw_data.replace(chr(39), chr(39)+chr(39))}'::text)"
+            for chat_id, msg_id, raw_data in updates
+        )
+        query = text(f"""
+            UPDATE messages 
+            SET raw_data = v.raw_data
+            FROM (VALUES {values_str}) AS v(chat_id, id, raw_data)
+            WHERE messages.chat_id = v.chat_id AND messages.id = v.id
+        """)
+    else:
+        # SQLite - multiple CASE WHEN
+        case_clauses = " ".join(
+            f"WHEN chat_id = {chat_id} AND id = {msg_id} THEN '{raw_data.replace(chr(39), chr(39)+chr(39))}'"
+            for chat_id, msg_id, raw_data in updates
+        )
+        where_clauses = " OR ".join(
+            f"(chat_id = {chat_id} AND id = {msg_id})"
+            for chat_id, msg_id, _ in updates
+        )
+        query = text(f"""
+            UPDATE messages 
+            SET raw_data = CASE {case_clauses} END
+            WHERE {where_clauses}
+        """)
+    
+    await session.execute(query)
 
 
 async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
@@ -61,7 +108,7 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
     logger.info("")
     
     async with db.db_manager.async_session_factory() as session:
-        from sqlalchemy import select, update, text
+        from sqlalchemy import select
         from src.db.models import Message
         
         # Get all photo/video messages that don't have grouped_id, ordered by chat and date
@@ -89,8 +136,19 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
         albums_detected = 0
         messages_grouped = 0
         already_grouped = 0
+        pending_updates = []  # Collect all updates for bulk execution
+        BATCH_SIZE = 1000
         
-        for chat_id, chat_messages in by_chat.items():
+        for chat_idx, (chat_id, chat_messages) in enumerate(by_chat.items()):
+            # Progress report every 100 chats
+            if chat_idx % 100 == 0 and chat_idx > 0:
+                logger.info(f"Progress: {chat_idx}/{len(by_chat)} chats, {albums_detected} albums found")
+                # Flush pending updates
+                if pending_updates and not dry_run:
+                    await _bulk_update_raw_data(session, pending_updates)
+                    await session.commit()
+                    pending_updates = []
+            
             # Skip chats with only 1 message
             if len(chat_messages) < 2:
                 continue
@@ -127,23 +185,17 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
                     else:
                         # End current album, start new potential album
                         if len(current_album) >= 2:
-                            # This was an album - apply grouped_id
+                            # This was an album - collect updates
                             grouped_id = current_album[0].id  # Use first message ID as group ID
                             
-                            if not dry_run:
-                                for album_msg in current_album:
-                                    try:
-                                        existing_raw = json.loads(album_msg.raw_data) if album_msg.raw_data else {}
-                                    except:
-                                        existing_raw = {}
-                                    existing_raw['grouped_id'] = grouped_id
-                                    existing_raw['album_detected'] = True  # Mark as auto-detected
-                                    
-                                    await session.execute(
-                                        update(Message)
-                                        .where(Message.id == album_msg.id, Message.chat_id == album_msg.chat_id)
-                                        .values(raw_data=json.dumps(existing_raw))
-                                    )
+                            for album_msg in current_album:
+                                try:
+                                    existing_raw = json.loads(album_msg.raw_data) if album_msg.raw_data else {}
+                                except:
+                                    existing_raw = {}
+                                existing_raw['grouped_id'] = grouped_id
+                                existing_raw['album_detected'] = True
+                                pending_updates.append((album_msg.chat_id, album_msg.id, json.dumps(existing_raw)))
                             
                             albums_detected += 1
                             messages_grouped += len(current_album)
@@ -161,20 +213,14 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
             if len(current_album) >= 2:
                 grouped_id = current_album[0].id
                 
-                if not dry_run:
-                    for album_msg in current_album:
-                        try:
-                            existing_raw = json.loads(album_msg.raw_data) if album_msg.raw_data else {}
-                        except:
-                            existing_raw = {}
-                        existing_raw['grouped_id'] = grouped_id
-                        existing_raw['album_detected'] = True
-                        
-                        await session.execute(
-                            update(Message)
-                            .where(Message.id == album_msg.id, Message.chat_id == album_msg.chat_id)
-                            .values(raw_data=json.dumps(existing_raw))
-                        )
+                for album_msg in current_album:
+                    try:
+                        existing_raw = json.loads(album_msg.raw_data) if album_msg.raw_data else {}
+                    except:
+                        existing_raw = {}
+                    existing_raw['grouped_id'] = grouped_id
+                    existing_raw['album_detected'] = True
+                    pending_updates.append((album_msg.chat_id, album_msg.id, json.dumps(existing_raw)))
                 
                 albums_detected += 1
                 messages_grouped += len(current_album)
@@ -182,7 +228,9 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
                 if albums_detected <= 10:
                     logger.info(f"  Album detected: {len(current_album)} items in chat {chat_id} (msg {grouped_id})")
         
-        if not dry_run:
+        # Flush remaining updates
+        if pending_updates and not dry_run:
+            await _bulk_update_raw_data(session, pending_updates)
             await session.commit()
             logger.info("")
             logger.info("✅ Database changes committed")
