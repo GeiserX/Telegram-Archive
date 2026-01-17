@@ -289,13 +289,30 @@
                         </div>
                     </div>
                     
-                    <!-- Stats Bar (Option A) -->
-                    <div v-if="statsData.stats_calculated_at" class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-tg-muted mb-3 bg-gray-800/50 rounded-lg px-3 py-2">
-                        <span title="Total chats backed up">💬 {{ formatNumber(statsData.chats) }} chats</span>
-                        <span title="Total messages">📬 {{ formatNumber(statsData.messages) }} msgs</span>
-                        <span title="Total media files">🖼️ {{ formatNumber(statsData.media_files) }} media</span>
-                        <span title="Storage used">💾 {{ formatSize(statsData.total_size_mb) }}</span>
-                        <span title="Stats last calculated" class="ml-auto opacity-70">📊 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
+                    <!-- Stats Bar - Collapsible -->
+                    <div v-if="statsData.stats_calculated_at" class="text-xs text-tg-muted mb-3 bg-gray-800/50 rounded-lg px-3 py-2">
+                        <div class="flex items-center gap-2">
+                            <span class="opacity-70 flex-shrink-0">📊 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
+                            <span class="text-gray-600">|</span>
+                            <div class="flex-1 overflow-hidden">
+                                <div v-if="!statsExpanded" class="flex items-center gap-3 whitespace-nowrap overflow-hidden">
+                                    <span>💬 {{ formatNumber(statsData.chats) }} chats</span>
+                                    <span>📬 {{ formatNumber(statsData.messages) }} msgs</span>
+                                    <span class="opacity-50">...</span>
+                                </div>
+                                <div v-else class="flex flex-wrap gap-x-3 gap-y-1">
+                                    <span title="Total chats backed up">💬 {{ formatNumber(statsData.chats) }} chats</span>
+                                    <span title="Total messages">📬 {{ formatNumber(statsData.messages) }} msgs</span>
+                                    <span title="Total media files">🖼️ {{ formatNumber(statsData.media_files) }} media</span>
+                                    <span title="Storage used">💾 {{ formatSize(statsData.total_size_mb) }}</span>
+                                </div>
+                            </div>
+                            <button @click="statsExpanded = !statsExpanded" class="flex-shrink-0 text-tg-muted hover:text-white transition p-1 -m-1">
+                                <svg :class="{'rotate-180': statsExpanded}" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                     
                     <div class="relative mb-3">
@@ -978,6 +995,7 @@
                     total_size_mb: 0,
                     stats_calculated_at: null
                 })
+                const statsExpanded = ref(false)
                 
                 const loadStats = async () => {
                     try {
@@ -2165,6 +2183,7 @@
                     loadingStats,
                     // Stats
                     statsData,
+                    statsExpanded,
                     formatStatsTime,
                     formatNumber,
                     formatSize,
