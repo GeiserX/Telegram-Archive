@@ -275,9 +275,9 @@
             <!-- Sidebar - hidden on mobile when chat is selected -->
             <div class="bg-tg-sidebar flex flex-col border-r border-gray-700"
                 :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
-                <!-- Header -->
+                <!-- Header with Stats -->
                 <div class="p-4 border-b border-gray-700">
-                    <div class="flex items-center gap-2 mb-4">
+                    <div class="flex items-center justify-between mb-2">
                         <h1 class="text-xl font-bold">Telegram Archive</h1>
                         <!-- Small loading indicator for stats/WS initialization -->
                         <div v-if="loadingStats" class="flex items-center gap-1.5 text-xs text-tg-muted">
@@ -288,8 +288,17 @@
                             <span>Syncing...</span>
                         </div>
                     </div>
+                    
+                    <!-- Stats Bar (Option A) -->
+                    <div v-if="statsData.stats_calculated_at" class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-tg-muted mb-3 bg-gray-800/50 rounded-lg px-3 py-2">
+                        <span title="Total messages">📬 {{ formatNumber(statsData.messages) }}</span>
+                        <span title="Media files">📁 {{ formatNumber(statsData.media_files) }}</span>
+                        <span title="Storage used">💾 {{ statsData.total_size_mb.toLocaleString() }} MB</span>
+                        <span title="Stats last calculated" class="ml-auto opacity-70">🕐 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
+                    </div>
+                    
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" type="text" placeholder="Search chats..."
+                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
                             class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
@@ -398,30 +407,24 @@
                         </div>
                     </div>
                     
-                    <!-- Load More Chats Button -->
-                    <div v-if="hasMoreChats && !searchQuery" class="p-3">
-                        <button @click="loadMoreChats" 
-                            :disabled="loadingMoreChats"
-                            class="w-full py-2 px-4 bg-tg-hover text-tg-muted hover:bg-tg-active hover:text-white rounded-lg transition text-sm flex items-center justify-center gap-2">
-                            <svg v-if="loadingMoreChats" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <!-- Infinite Scroll Sentinel (loads more when visible) -->
+                    <div v-if="hasMoreChats && !searchQuery" ref="infiniteScrollSentinel" class="p-3 flex justify-center">
+                        <div v-if="loadingMoreChats" class="flex items-center gap-2 text-tg-muted text-sm">
+                            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            <span v-if="loadingMoreChats">Loading...</span>
-                            <span v-else>Load more ({{ chatTotal - chats.length }} remaining)</span>
-                        </button>
+                            <span>Loading more...</span>
+                        </div>
+                        <div v-else class="text-xs text-tg-muted opacity-50">
+                            {{ chatTotal - chats.length }} more chats
+                        </div>
                     </div>
                     
-                    <!-- Stats Summary (shown below chats) -->
-                    <div v-if="!loadingChats && statsData.stats_calculated_at" class="p-3 border-t border-gray-700/50 text-xs text-tg-muted">
-                        <div class="flex justify-between mb-1">
-                            <span>📊 {{ statsData.messages.toLocaleString() }} messages</span>
-                            <span>📁 {{ statsData.media_files.toLocaleString() }} files</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span>💾 {{ statsData.total_size_mb.toLocaleString() }} MB</span>
-                            <span title="Stats calculated at">🕐 {{ formatStatsTime(statsData.stats_calculated_at) }}</span>
-                        </div>
+                    <!-- Search results info -->
+                    <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-gray-700/50">
+                        <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
+                        <span v-else>No chats found</span>
                     </div>
                 </div>
             </div>
@@ -819,6 +822,13 @@
                 const chatTotal = ref(0)
                 const hasMoreChats = ref(true)
                 const loadingMoreChats = ref(false)
+                const infiniteScrollSentinel = ref(null)
+                let infiniteScrollObserver = null
+                
+                // Server-side search
+                const searchResults = ref([])
+                const searchLoading = ref(false)
+                let searchDebounceTimer = null
                 
                 const loadChats = async (append = false) => {
                     if (!append) {
@@ -873,9 +883,65 @@
                 }
                 
                 const loadMoreChats = () => {
-                    if (!loadingMoreChats.value && hasMoreChats.value) {
+                    if (!loadingMoreChats.value && hasMoreChats.value && !searchQuery.value) {
                         loadChats(true)
                     }
+                }
+                
+                // Server-side search with debounce
+                const onSearchInput = () => {
+                    if (searchDebounceTimer) {
+                        clearTimeout(searchDebounceTimer)
+                    }
+                    
+                    const query = searchQuery.value.trim()
+                    
+                    if (!query) {
+                        searchResults.value = []
+                        searchLoading.value = false
+                        return
+                    }
+                    
+                    searchLoading.value = true
+                    searchDebounceTimer = setTimeout(async () => {
+                        try {
+                            // Search ALL chats server-side (no pagination limit)
+                            const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
+                                credentials: 'include'
+                            })
+                            if (res.ok) {
+                                const data = await res.json()
+                                searchResults.value = data.chats
+                            }
+                        } catch (e) {
+                            console.error('Search failed:', e)
+                        } finally {
+                            searchLoading.value = false
+                        }
+                    }, 300) // 300ms debounce
+                }
+                
+                // Setup infinite scroll observer
+                const setupInfiniteScroll = () => {
+                    if (infiniteScrollObserver) {
+                        infiniteScrollObserver.disconnect()
+                    }
+                    
+                    infiniteScrollObserver = new IntersectionObserver(
+                        (entries) => {
+                            if (entries[0].isIntersecting && hasMoreChats.value && !loadingMoreChats.value && !searchQuery.value) {
+                                loadMoreChats()
+                            }
+                        },
+                        { rootMargin: '100px' }
+                    )
+                    
+                    // Watch for sentinel to be added to DOM
+                    nextTick(() => {
+                        if (infiniteScrollSentinel.value) {
+                            infiniteScrollObserver.observe(infiniteScrollSentinel.value)
+                        }
+                    })
                 }
 
                 // Stats data
@@ -940,6 +1006,17 @@
                     return date.format('MMM D, HH:mm')
                 }
                 
+                // Format large numbers with K/M suffix
+                const formatNumber = (num) => {
+                    if (num >= 1000000) {
+                        return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M'
+                    }
+                    if (num >= 1000) {
+                        return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
+                    }
+                    return num.toLocaleString()
+                }
+                
                 // Mark initialization complete (called after WS connects and notifications init)
                 const finishInitialization = () => {
                     loadingStats.value = false
@@ -959,6 +1036,7 @@
                             if (isAuthenticated.value) {
                                 await loadChats()
                                 await loadStats()
+                                setupInfiniteScroll()
                             }
                         } else {
                             // If status endpoint fails, assume no auth required
@@ -966,6 +1044,7 @@
                             authRequired.value = false
                             isAuthenticated.value = true
                             await loadChats()
+                            setupInfiniteScroll()
                         }
                     } catch (e) {
                         // On error, assume no auth required to allow access
@@ -974,6 +1053,7 @@
                         isAuthenticated.value = true
                         await loadChats()
                         await loadStats()
+                        setupInfiniteScroll()
                     } finally {
                         loadingAuth.value = false
                     }
@@ -1218,13 +1298,12 @@
                 }
 
                 const filteredChats = computed(() => {
-                    if (!searchQuery.value) return chats.value
-                    const q = searchQuery.value.toLowerCase()
-                    return chats.value.filter(c =>
-                        (c.title && c.title.toLowerCase().includes(q)) ||
-                        (c.first_name && c.first_name.toLowerCase().includes(q)) ||
-                        (c.username && c.username.toLowerCase().includes(q))
-                    )
+                    // If searching, use server-side search results
+                    if (searchQuery.value.trim()) {
+                        return searchResults.value
+                    }
+                    // Otherwise, show paginated chats
+                    return chats.value
                 })
 
                 const sortedMessages = computed(() => {
@@ -2012,12 +2091,18 @@
                     chatTotal,
                     hasMoreChats,
                     loadingMoreChats,
+                    infiniteScrollSentinel,
+                    // Search
+                    searchResults,
+                    searchLoading,
+                    onSearchInput,
                     // Loading states
                     loadingChats,
                     loadingStats,
                     // Stats
                     statsData,
                     formatStatsTime,
+                    formatNumber,
                     lastBackupTime,
                     lastBackupTimeSource,
                     viewerTimezone,

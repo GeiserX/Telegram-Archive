@@ -213,8 +213,14 @@ class DatabaseAdapter:
             await session.commit()
             return chat_data['id']
     
-    async def get_all_chats(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get chats with their last message date, with optional pagination."""
+    async def get_all_chats(self, limit: int = None, offset: int = 0, search: str = None) -> List[Dict[str, Any]]:
+        """Get chats with their last message date, with optional pagination and search.
+        
+        Args:
+            limit: Maximum number of chats to return
+            offset: Offset for pagination
+            search: Optional search query (case-insensitive, matches title/first_name/last_name/username)
+        """
         async with self.db_manager.async_session_factory() as session:
             # Subquery for last message date
             subq = (
@@ -226,10 +232,24 @@ class DatabaseAdapter:
             stmt = (
                 select(Chat, subq.c.last_message_date)
                 .outerjoin(subq, Chat.id == subq.c.chat_id)
-                .order_by(
-                    subq.c.last_message_date.is_(None),
-                    subq.c.last_message_date.desc()
+            )
+            
+            # Apply search filter if provided
+            if search:
+                search_pattern = f"%{search}%"
+                stmt = stmt.where(
+                    or_(
+                        Chat.title.ilike(search_pattern),
+                        Chat.first_name.ilike(search_pattern),
+                        Chat.last_name.ilike(search_pattern),
+                        Chat.username.ilike(search_pattern)
+                    )
                 )
+            
+            # Order by last message date
+            stmt = stmt.order_by(
+                subq.c.last_message_date.is_(None),
+                subq.c.last_message_date.desc()
             )
             
             # Apply pagination if limit is specified
@@ -257,10 +277,27 @@ class DatabaseAdapter:
                 chats.append(chat_dict)
             return chats
     
-    async def get_chat_count(self) -> int:
-        """Get total number of chats (fast count for pagination)."""
+    async def get_chat_count(self, search: str = None) -> int:
+        """Get total number of chats (fast count for pagination).
+        
+        Args:
+            search: Optional search query to filter count
+        """
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(func.count(Chat.id)))
+            stmt = select(func.count(Chat.id))
+            
+            if search:
+                search_pattern = f"%{search}%"
+                stmt = stmt.where(
+                    or_(
+                        Chat.title.ilike(search_pattern),
+                        Chat.first_name.ilike(search_pattern),
+                        Chat.last_name.ilike(search_pattern),
+                        Chat.username.ilike(search_pattern)
+                    )
+                )
+            
+            result = await session.execute(stmt)
             return result.scalar() or 0
     
     # ========== User Operations ==========

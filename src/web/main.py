@@ -406,9 +406,14 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 async def get_chats(
     limit: int = Query(50, ge=1, le=500, description="Number of chats to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination")
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    search: str = Query(None, description="Search query for chat names/usernames")
 ):
-    """Get chats with metadata, paginated. Returns most recent chats first."""
+    """Get chats with metadata, paginated. Returns most recent chats first.
+    
+    If 'search' is provided, returns all chats matching the search query (up to limit).
+    Search is case-insensitive and matches title, first_name, last_name, or username.
+    """
     try:
         # If display_chat_ids is configured, we need to load all matching chats
         # Otherwise, use pagination
@@ -419,8 +424,8 @@ async def get_chats(
             # Apply pagination after filtering
             chats = chats[offset:offset + limit]
         else:
-            chats = await db.get_all_chats(limit=limit, offset=offset)
-            total = await db.get_chat_count()
+            chats = await db.get_all_chats(limit=limit, offset=offset, search=search)
+            total = await db.get_chat_count(search=search)
         
         # Add avatar URLs using cache
         for chat in chats:

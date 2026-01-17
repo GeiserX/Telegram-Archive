@@ -46,13 +46,23 @@ class MassOperationProtector:
     Zero-footprint protection against mass deletions/edits.
     
     HOW IT WORKS:
-    1. Operations are NOT applied immediately - they go into a buffer
-    2. A background task processes the buffer after a short delay
-    3. If too many operations arrive before processing, the ENTIRE buffer is discarded
-    4. This ensures ZERO footprint - no data is ever modified during an attack
+    1. Operations are buffered with timestamps (not applied immediately)
+    2. Before applying, we check: were there >THRESHOLD ops in the last WINDOW seconds?
+    3. If yes → BURST DETECTED → discard ALL buffered operations, block the chat
+    4. If no → apply the operations that have waited long enough (BUFFER_DELAY)
     
-    The key insight: by buffering operations and applying them with a delay,
-    we can detect a burst pattern BEFORE writing anything to the database.
+    PARAMETERS:
+    - THRESHOLD (default 10): Max operations allowed in the time window
+    - WINDOW_SECONDS (default 30): Sliding time window for counting operations
+    - BUFFER_DELAY (default 2s): Minimum time to buffer before applying
+    
+    EXAMPLE:
+    - 5 deletions at t=0
+    - 5 more at t=25  → Total 10 in 30s window → OK, applied after delay
+    - 5 deletions at t=0
+    - 6 more at t=25  → Total 11 in 30s window → BURST! All discarded
+    
+    This ensures ZERO footprint - no data is modified during an attack.
     """
     
     def __init__(
@@ -64,15 +74,19 @@ class MassOperationProtector:
         """
         Args:
             threshold: Max operations allowed per chat in the time window
-            window_seconds: Time window for counting operations
-            buffer_delay_seconds: How long to buffer before applying (allows burst detection)
+            window_seconds: Sliding window for counting operations (NOT just block duration)
+            buffer_delay_seconds: How long to buffer before applying
         """
         self.threshold = threshold
+        self.window_seconds = window_seconds
         self.window = timedelta(seconds=window_seconds)
         self.buffer_delay = buffer_delay_seconds
         
         # Pending operations buffer: {chat_id: [PendingOperation, ...]}
         self._pending: Dict[int, List[PendingOperation]] = {}
+        
+        # Operation history for sliding window: {chat_id: [timestamp, ...]}
+        self._operation_history: Dict[int, Deque[datetime]] = {}
         
         # Blocked chats: {chat_id: (blocked_until, reason, discarded_count)}
         self._blocked: Dict[int, Tuple[datetime, str, int]] = {}
@@ -118,13 +132,34 @@ class MassOperationProtector:
                 logger.info(f"🔓 Protection block expired for chat {chat_id}")
         return False, ""
     
+    def _count_ops_in_window(self, chat_id: int) -> int:
+        """Count operations in the sliding time window for a chat."""
+        if chat_id not in self._operation_history:
+            return 0
+        
+        now = datetime.now()
+        cutoff = now - self.window
+        
+        # Clean old entries and count
+        history = self._operation_history[chat_id]
+        while history and history[0] < cutoff:
+            history.popleft()
+        
+        return len(history)
+    
+    def _record_operation(self, chat_id: int):
+        """Record an operation timestamp for sliding window tracking."""
+        if chat_id not in self._operation_history:
+            self._operation_history[chat_id] = deque()
+        self._operation_history[chat_id].append(datetime.now())
+    
     def queue_operation(self, chat_id: int, operation_type: str, data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Queue an operation for processing.
         
         Returns (queued, reason):
             - (True, "queued") if operation was queued
-            - (False, reason) if chat is blocked
+            - (False, reason) if chat is blocked or burst detected
         """
         # Check if blocked
         blocked, reason = self.is_blocked(chat_id)
@@ -132,28 +167,25 @@ class MassOperationProtector:
             self.stats['operations_discarded'] += 1
             return False, f"BLOCKED: {reason}"
         
-        # Add to pending buffer
-        if chat_id not in self._pending:
-            self._pending[chat_id] = []
+        # Record this operation for sliding window
+        self._record_operation(chat_id)
         
-        op = PendingOperation(
-            chat_id=chat_id,
-            operation_type=operation_type,
-            timestamp=datetime.now(),
-            data=data
-        )
-        self._pending[chat_id].append(op)
+        # Check sliding window BEFORE adding to buffer
+        ops_in_window = self._count_ops_in_window(chat_id)
         
-        # Check if this triggers protection
-        pending_count = len(self._pending[chat_id])
-        if pending_count >= self.threshold:
+        if ops_in_window > self.threshold:
             # BURST DETECTED - Discard ALL pending operations for this chat
-            discarded = len(self._pending[chat_id])
-            del self._pending[chat_id]
+            discarded = len(self._pending.get(chat_id, [])) + 1  # +1 for current op
+            if chat_id in self._pending:
+                del self._pending[chat_id]
+            
+            # Clear history for this chat
+            if chat_id in self._operation_history:
+                del self._operation_history[chat_id]
             
             # Block the chat
             block_until = datetime.now() + self.window
-            reason = f"🛡️ BURST DETECTED: {discarded} {operation_type}s in rapid succession"
+            reason = f"🛡️ BURST DETECTED: {ops_in_window} {operation_type}s in {self.window_seconds}s"
             self._blocked[chat_id] = (block_until, reason, discarded)
             
             # Update stats
@@ -165,12 +197,25 @@ class MassOperationProtector:
             logger.warning(f"🛡️ ZERO-FOOTPRINT PROTECTION ACTIVATED")
             logger.warning(f"   Chat: {chat_id}")
             logger.warning(f"   Attack type: Mass {operation_type}")
-            logger.warning(f"   Operations intercepted: {discarded}")
+            logger.warning(f"   Operations in {self.window_seconds}s window: {ops_in_window} (threshold: {self.threshold})")
+            logger.warning(f"   Operations discarded: {discarded}")
             logger.warning(f"   Data preserved: 100% (ZERO changes written to database)")
             logger.warning(f"   Chat blocked until: {block_until}")
             logger.warning("=" * 70)
             
             return False, reason
+        
+        # Add to pending buffer (will be applied after buffer_delay)
+        if chat_id not in self._pending:
+            self._pending[chat_id] = []
+        
+        op = PendingOperation(
+            chat_id=chat_id,
+            operation_type=operation_type,
+            timestamp=datetime.now(),
+            data=data
+        )
+        self._pending[chat_id].append(op)
         
         return True, "queued"
     
@@ -194,6 +239,9 @@ class MassOperationProtector:
     def _process_pending(self) -> List[PendingOperation]:
         """Process pending operations that have been buffered long enough.
         
+        Before applying, re-checks the sliding window to catch any bursts
+        that developed while operations were buffered.
+        
         Returns:
             List of operations ready to be applied.
         """
@@ -211,6 +259,25 @@ class MassOperationProtector:
                 discarded = len(self._pending[chat_id])
                 self.stats['operations_discarded'] += discarded
                 del self._pending[chat_id]
+                continue
+            
+            # Re-check sliding window before applying
+            ops_in_window = self._count_ops_in_window(chat_id)
+            if ops_in_window > self.threshold:
+                # Burst developed while buffering - discard all
+                discarded = len(self._pending[chat_id])
+                logger.warning(f"🛡️ Burst detected during buffer for chat {chat_id}: {ops_in_window} ops in window, discarding {discarded}")
+                self.stats['operations_discarded'] += discarded
+                self.stats['bursts_detected'] += 1
+                self.stats['chats_protected'].add(chat_id)
+                
+                # Block the chat
+                block_until = now + self.window
+                self._blocked[chat_id] = (block_until, f"Burst during buffer: {ops_in_window} ops", discarded)
+                
+                del self._pending[chat_id]
+                if chat_id in self._operation_history:
+                    del self._operation_history[chat_id]
                 continue
             
             # Find operations old enough to process
