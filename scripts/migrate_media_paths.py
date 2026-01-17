@@ -61,41 +61,55 @@ async def get_group_channel_chats(session) -> list:
     return [{"id": row[0], "type": row[1], "title": row[2]} for row in result.fetchall()]
 
 
-async def get_media_paths_for_chat(session, chat_id: int, old_folder: str) -> dict:
-    """Get all media paths that use the old (positive) folder name from both tables."""
+async def count_paths_for_chat(session, chat_id: int, old_folder: str) -> dict:
+    """Count media paths that use the old (positive) folder name in both tables."""
     pattern = f"%/media/{old_folder}/%"
     
-    # Get from messages table
+    # Count in messages table
     msg_result = await session.execute(
-        text("SELECT id, media_path FROM messages WHERE chat_id = :chat_id AND media_path LIKE :pattern"),
+        text("SELECT COUNT(*) FROM messages WHERE chat_id = :chat_id AND media_path LIKE :pattern"),
         {"chat_id": chat_id, "pattern": pattern}
     )
-    messages = [{"id": row[0], "media_path": row[1]} for row in msg_result.fetchall()]
+    msg_count = msg_result.scalar() or 0
     
-    # Get from media table (has its own file_path column!)
+    # Count in media table
     media_result = await session.execute(
-        text("SELECT id, file_path FROM media WHERE chat_id = :chat_id AND file_path LIKE :pattern"),
+        text("SELECT COUNT(*) FROM media WHERE chat_id = :chat_id AND file_path LIKE :pattern"),
         {"chat_id": chat_id, "pattern": pattern}
     )
-    media = [{"id": row[0], "file_path": row[1]} for row in media_result.fetchall()]
+    media_count = media_result.scalar() or 0
     
-    return {"messages": messages, "media": media}
+    return {"messages": msg_count, "media": media_count}
 
 
-async def update_media_path(session, message_id: int, old_path: str, new_path: str):
-    """Update a single media_path in the messages table."""
-    await session.execute(
-        text("UPDATE messages SET media_path = :new_path WHERE id = :id AND media_path = :old_path"),
-        {"id": message_id, "new_path": new_path, "old_path": old_path}
+async def bulk_update_media_paths(session, chat_id: int, old_folder: str, new_folder: str) -> dict:
+    """Bulk update all media paths for a chat using SQL REPLACE - single query per table!"""
+    old_pattern = f"/media/{old_folder}/"
+    new_pattern = f"/media/{new_folder}/"
+    
+    # Bulk update messages table
+    msg_result = await session.execute(
+        text("""
+            UPDATE messages 
+            SET media_path = REPLACE(media_path, :old_pattern, :new_pattern)
+            WHERE chat_id = :chat_id AND media_path LIKE :like_pattern
+        """),
+        {"chat_id": chat_id, "old_pattern": old_pattern, "new_pattern": new_pattern, "like_pattern": f"%{old_pattern}%"}
     )
-
-
-async def update_media_file_path(session, media_id: str, old_path: str, new_path: str):
-    """Update a single file_path in the media table."""
-    await session.execute(
-        text("UPDATE media SET file_path = :new_path WHERE id = :id AND file_path = :old_path"),
-        {"id": media_id, "new_path": new_path, "old_path": old_path}
+    msg_updated = msg_result.rowcount
+    
+    # Bulk update media table
+    media_result = await session.execute(
+        text("""
+            UPDATE media 
+            SET file_path = REPLACE(file_path, :old_pattern, :new_pattern)
+            WHERE chat_id = :chat_id AND file_path LIKE :like_pattern
+        """),
+        {"chat_id": chat_id, "old_pattern": old_pattern, "new_pattern": new_pattern, "like_pattern": f"%{old_pattern}%"}
     )
+    media_updated = media_result.rowcount
+    
+    return {"messages": msg_updated, "media": media_updated}
 
 
 async def migrate_avatars(media_path: str, dry_run: bool) -> dict:
@@ -194,39 +208,20 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
             stats["chats_processed"] += 1
             logger.info(f"📁 Chat {chat_id} ({chat['type']}): {chat['title']}")
             
-            # Check for paths that need updating in DB (both messages and media tables)
-            paths_to_update = await get_media_paths_for_chat(session, chat_id, old_folder)
+            # Count paths that need updating
+            counts = await count_paths_for_chat(session, chat_id, old_folder)
             
-            messages_to_update = paths_to_update["messages"]
-            media_to_update = paths_to_update["media"]
-            
-            if messages_to_update:
-                logger.info(f"   Found {len(messages_to_update)} message paths to update")
+            if counts["messages"] > 0 or counts["media"] > 0:
+                logger.info(f"   Found {counts['messages']} message + {counts['media']} media paths to update")
                 
-                for msg in messages_to_update:
-                    old_path = msg["media_path"]
-                    new_path = old_path.replace(f"/media/{old_folder}/", f"/media/{new_folder}/")
-                    
-                    if dry_run:
-                        logger.debug(f"   [DRY RUN] Would update message: {old_path} → {new_path}")
-                    else:
-                        await update_media_path(session, msg["id"], old_path, new_path)
-                    
-                    stats["paths_updated"] += 1
-            
-            if media_to_update:
-                logger.info(f"   Found {len(media_to_update)} media table paths to update")
-                
-                for med in media_to_update:
-                    old_path = med["file_path"]
-                    new_path = old_path.replace(f"/media/{old_folder}/", f"/media/{new_folder}/")
-                    
-                    if dry_run:
-                        logger.debug(f"   [DRY RUN] Would update media: {old_path} → {new_path}")
-                    else:
-                        await update_media_file_path(session, med["id"], old_path, new_path)
-                    
-                    stats["paths_updated"] += 1
+                if dry_run:
+                    logger.debug(f"   [DRY RUN] Would bulk update paths")
+                    stats["paths_updated"] += counts["messages"] + counts["media"]
+                else:
+                    # BULK UPDATE - single query per table instead of one per row!
+                    updated = await bulk_update_media_paths(session, chat_id, old_folder, new_folder)
+                    stats["paths_updated"] += updated["messages"] + updated["media"]
+                    logger.info(f"   ✓ Updated {updated['messages']} message + {updated['media']} media paths")
             
             # Rename the folder
             if os.path.exists(new_folder_path):
