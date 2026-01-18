@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.11] - 2026-01-18
+
+### Fixed
+- **Removed "Authentication is disabled" message permanently** - Login form now always shows regardless of any state. Nuclear option for iOS Safari cache issues.
+
 ## [5.0.10] - 2026-01-18
 
 ### Fixed

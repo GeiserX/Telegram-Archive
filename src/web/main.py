@@ -370,7 +370,7 @@ async def read_root(request: Request, v: str | None = None):
     If no version parameter, redirects to add one (cache-busting for iOS Safari).
     """
     # Current version - update this when deploying new versions
-    CURRENT_VERSION = "5.0.10"
+    CURRENT_VERSION = "5.0.11"
     
     # If no version param or wrong version, redirect to add it (forces cache bypass)
     if v != CURRENT_VERSION:

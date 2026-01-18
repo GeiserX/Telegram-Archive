@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.10 -->
+    <!-- v5.0.11 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -250,15 +250,12 @@
                 <p class="text-sm text-blue-100 mb-8 text-center" v-if="authCheckFailed">
                     ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
                 </p>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="!authRequired">
-                    Authentication is disabled
-                </p>
                 <p class="text-sm text-blue-100 mb-8 text-center" v-else>
                     Sign in to access your backup
                 </p>
 
-                <!-- Always show login form when auth is required -->
-                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
+                <!-- Always show login form -->
+                <form @submit.prevent="performLogin" class="space-y-5">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
