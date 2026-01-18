@@ -853,6 +853,10 @@ class DatabaseAdapter:
     
     # ========== Statistics ==========
     
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get statistics - alias for get_cached_statistics for backwards compatibility."""
+        return await self.get_cached_statistics()
+    
     async def get_cached_statistics(self) -> Dict[str, Any]:
         """Get cached statistics (fast, no expensive queries)."""
         # Get cached stats from metadata

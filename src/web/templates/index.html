@@ -603,9 +603,9 @@
                         </div>
                     </div>
 
-                    <!-- Messages -->
+                    <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
                     <div class="flex-1 relative overflow-hidden">
-                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 space-y-1" @scroll="handleScroll">
+                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 flex flex-col-reverse gap-1" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
@@ -1566,10 +1566,10 @@
                 })
 
                 const sortedMessages = computed(() => {
-                    // Sort messages by date (oldest first) for chronological display
-                    // Note: Can't just reverse since jumpToDate may add messages out of order
+                    // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
+                    // This gives instant "scroll to bottom" experience on mobile
                     return [...messages.value].sort((a, b) => 
-                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                        new Date(b.date).getTime() - new Date(a.date).getTime()
                     )
                 })
                 
@@ -1797,22 +1797,17 @@
 
                 const handleScroll = (e) => {
                     const { scrollTop, scrollHeight, clientHeight } = e.target
-                    // Load more when scrolling near top (for older messages)
-                    if (scrollTop < 100 && !loading.value && hasMore.value) {
-                        const previousHeight = scrollHeight
-                        loadMessages().then(() => {
-                            // Maintain scroll position
-                            nextTick(() => {
-                                const newHeight = messagesContainer.value.scrollHeight
-                                messagesContainer.value.scrollTop = scrollTop + (newHeight - previousHeight)
-                            })
-                        })
+                    // With flex-col-reverse: scrollTop=0 is bottom (newest), large scrollTop is top (oldest)
+                    const distanceFromTop = scrollHeight - scrollTop - clientHeight
+                    
+                    // Load more when scrolling near visual top (older messages)
+                    if (distanceFromTop < 100 && !loading.value && hasMore.value) {
+                        loadMessages()
                     }
                     
                     // Show/hide scroll to bottom button
-                    // Show when scrolled more than 300px from bottom
-                    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-                    showScrollToBottom.value = distanceFromBottom > 300
+                    // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
+                    showScrollToBottom.value = scrollTop > 300
                 }
 
                 const scrollToBottom = (immediate = false) => {
@@ -1820,7 +1815,8 @@
                     
                     const doScroll = () => {
                         if (messagesContainer.value) {
-                            messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+                            // With flex-col-reverse: scrollTop=0 is the bottom (newest messages)
+                            messagesContainer.value.scrollTop = 0
                         }
                     }
                     
@@ -1899,7 +1895,10 @@
                     if (index === 0) return true
                     const prevMsg = sortedMessages.value[index - 1]
                     const currMsg = sortedMessages.value[index]
-                    return moment(prevMsg.date).format('YYYY-MM-DD') !== moment(currMsg.date).format('YYYY-MM-DD')
+                    // Parse as UTC and convert to viewer timezone for correct date boundaries
+                    const prevDate = moment.utc(prevMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                    const currDate = moment.utc(currMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                    return prevDate !== currDate
                 }
 
                 const getChatName = (chat) => {
@@ -1977,11 +1976,13 @@
                 }
 
                 const formatDateFull = (dateStr) => {
-                    return moment(dateStr).format('MMMM D, YYYY')
+                    // Parse as UTC (DB stores UTC) then convert to viewer timezone
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('MMMM D, YYYY')
                 }
 
                 const formatTime = (dateStr) => {
-                    return moment(dateStr).format('HH:mm')
+                    // Parse as UTC (DB stores UTC) then convert to viewer timezone
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
                 }
 
                 const formatReactionEmoji = (emoji) => {
