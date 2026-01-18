@@ -1117,14 +1117,19 @@
 
                 // Auth check on mount
                 onMounted(async () => {
+                    console.log('[DEBUG] onMounted started')
                     try {
+                        console.log('[DEBUG] Fetching /api/auth/check...')
                         const res = await fetch('/api/auth/check', {
                             credentials: 'include'
                         })
+                        console.log('[DEBUG] Fetch response:', res.status, res.ok)
                         if (res.ok) {
                             const data = await res.json()
+                            console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
+                            console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
                                 await loadChats()
@@ -1133,7 +1138,7 @@
                             }
                         } else {
                             // If status endpoint fails, assume no auth required
-                            console.warn('Failed to get auth status, assuming no auth required')
+                            console.warn('[DEBUG] Failed to get auth status, res.ok=false, assuming no auth required')
                             authRequired.value = false
                             isAuthenticated.value = true
                             await loadChats()
@@ -1141,7 +1146,7 @@
                         }
                     } catch (e) {
                         // On error, assume no auth required to allow access
-                        console.error('Auth status error', e)
+                        console.error('[DEBUG] Auth status error (catch):', e)
                         authRequired.value = false
                         isAuthenticated.value = true
                         await loadChats()
