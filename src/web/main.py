@@ -365,11 +365,15 @@ async def read_root():
 @app.get("/api/auth/check")
 async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Check current authentication status."""
-    if not AUTH_ENABLED:
-        return {"authenticated": True, "auth_required": False}
+    # No caching for auth check
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
     
-    is_valid = auth_cookie and auth_cookie == AUTH_TOKEN
-    return {"authenticated": is_valid, "auth_required": True}
+    if not AUTH_ENABLED:
+        return JSONResponse({"authenticated": True, "auth_required": False}, headers=headers)
+    
+    # Explicitly return bool to avoid null in JSON response
+    is_valid = bool(auth_cookie and auth_cookie == AUTH_TOKEN)
+    return JSONResponse({"authenticated": is_valid, "auth_required": True}, headers=headers)
 
 
 @app.post("/api/login")

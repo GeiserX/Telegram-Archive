@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.5] - 2026-01-18
+
+### Fixed
+- Auth check endpoint returning `null` instead of `false` when no cookie present
+- Added `Cache-Control: no-store` header to auth check to prevent caching issues
+- Purged Cloudflare cache
+
 ## [5.0.4] - 2026-01-18
 
 ### Fixed
