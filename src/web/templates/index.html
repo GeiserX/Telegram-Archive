@@ -877,6 +877,58 @@
                 </div>
             </div>
         </div>
+        
+        <!-- Lightbox Modal for Images -->
+        <div v-if="lightboxOpen" 
+            class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center"
+            @click.self="closeLightbox">
+            
+            <!-- Close Button -->
+            <button @click="closeLightbox" 
+                class="absolute top-4 right-4 z-60 p-2 text-white/70 hover:text-white transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+            
+            <!-- Download Button -->
+            <a v-if="lightboxMedia" :href="getMediaUrl(lightboxMedia)" download
+                class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+            </a>
+            
+            <!-- Previous Button -->
+            <button v-if="lightboxIndex > 0" @click.stop="lightboxPrev"
+                class="absolute left-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </button>
+            
+            <!-- Next Button -->
+            <button v-if="lightboxIndex < mediaMessages.length - 1" @click.stop="lightboxNext"
+                class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </button>
+            
+            <!-- Image -->
+            <img v-if="lightboxMedia" 
+                :src="getMediaUrl(lightboxMedia)" 
+                class="max-h-[90vh] max-w-[90vw] object-contain"
+                @click.stop>
+            
+            <!-- Image Info -->
+            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
+                {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
+                <span v-if="mediaMessages.length > 1" class="ml-2 opacity-70">
+                    {{ lightboxIndex + 1 }} / {{ mediaMessages.length }}
+                </span>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -944,6 +996,19 @@
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
+                
+                // Lightbox state
+                const lightboxOpen = ref(false)
+                const lightboxMedia = ref(null)  // Current media being viewed
+                const lightboxIndex = ref(0)    // Index in mediaMessages array
+                
+                // Get all media messages in current chat for navigation
+                const mediaMessages = computed(() => {
+                    return messages.value.filter(m => 
+                        m.media_path && (m.media_type === 'photo' || m.media_type === 'video' || 
+                        (m.media_type === 'document' && isImageDocument(m)))
+                    ).sort((a, b) => new Date(a.date) - new Date(b.date))  // Oldest first for intuitive prev/next
+                })
                 
                 const loadChats = async (append = false) => {
                     if (!append) {
@@ -2136,7 +2201,43 @@
                 }
 
                 const openMedia = (msg) => {
-                    window.open(getMediaUrl(msg), '_blank')
+                    // Open lightbox for images, direct link for other media
+                    if (msg.media_type === 'photo' || (msg.media_type === 'document' && isImageDocument(msg))) {
+                        lightboxMedia.value = msg
+                        lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
+                        lightboxOpen.value = true
+                        // Add keyboard listener
+                        document.addEventListener('keydown', handleLightboxKeydown)
+                    } else {
+                        window.open(getMediaUrl(msg), '_blank')
+                    }
+                }
+                
+                const closeLightbox = () => {
+                    lightboxOpen.value = false
+                    lightboxMedia.value = null
+                    document.removeEventListener('keydown', handleLightboxKeydown)
+                }
+                
+                const lightboxPrev = () => {
+                    if (lightboxIndex.value > 0) {
+                        lightboxIndex.value--
+                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                    }
+                }
+                
+                const lightboxNext = () => {
+                    if (lightboxIndex.value < mediaMessages.value.length - 1) {
+                        lightboxIndex.value++
+                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                    }
+                }
+                
+                const handleLightboxKeydown = (e) => {
+                    if (!lightboxOpen.value) return
+                    if (e.key === 'Escape') closeLightbox()
+                    else if (e.key === 'ArrowLeft') lightboxPrev()
+                    else if (e.key === 'ArrowRight') lightboxNext()
                 }
 
                 const linkifyText = (text) => {
@@ -2363,6 +2464,14 @@
                     handleImageError,
                     handleMediaError,
                     openMedia,
+                    // Lightbox
+                    lightboxOpen,
+                    lightboxMedia,
+                    lightboxIndex,
+                    mediaMessages,
+                    closeLightbox,
+                    lightboxPrev,
+                    lightboxNext,
                     linkifyText,
                     scrollToMessage,
                     messagesContainer,
