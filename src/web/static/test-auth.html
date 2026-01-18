@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth Test</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; padding: 20px; background: #1a1a2e; color: white; }
+        pre { background: #2a2a4e; padding: 10px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+        .success { color: #4ade80; }
+        .error { color: #f87171; }
+        button { background: #3b82f6; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; cursor: pointer; margin: 5px; }
+        button:active { background: #2563eb; }
+        #log { max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>iOS Safari Auth Test</h1>
+    <p>Device: <strong id="device"></strong></p>
+    <p>Time: <strong id="time"></strong></p>
+    
+    <div style="margin: 20px 0;">
+        <button onclick="testAuthCheck()">Test /api/auth/check</button>
+        <button onclick="testLogin()">Test Login</button>
+        <button onclick="clearLogs()">Clear</button>
+    </div>
+    
+    <h2>Log:</h2>
+    <pre id="log"></pre>
+    
+    <script>
+        const log = (msg, type = '') => {
+            const logEl = document.getElementById('log');
+            const time = new Date().toISOString().split('T')[1].split('.')[0];
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+            logEl.innerHTML += `<span class="${className}">[${time}] ${msg}</span>\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        };
+        
+        document.getElementById('device').textContent = navigator.userAgent;
+        document.getElementById('time').textContent = new Date().toISOString();
+        
+        async function testAuthCheck() {
+            log('=== Testing /api/auth/check ===');
+            try {
+                log('Sending fetch with credentials: include...');
+                const res = await fetch('/api/auth/check', {
+                    credentials: 'include'
+                });
+                log(`Response status: ${res.status} (ok: ${res.ok})`);
+                log(`Response headers: ${JSON.stringify([...res.headers.entries()])}`);
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    log(`Response body: ${JSON.stringify(data)}`, 'success');
+                    log(`auth_required type: ${typeof data.auth_required}, value: ${data.auth_required}`);
+                    log(`authenticated type: ${typeof data.authenticated}, value: ${data.authenticated}`);
+                    log(`!!data.auth_required = ${!!data.auth_required}`);
+                    log(`!!data.authenticated = ${!!data.authenticated}`);
+                } else {
+                    log(`Fetch returned not ok: ${res.status} ${res.statusText}`, 'error');
+                }
+            } catch (e) {
+                log(`Error: ${e.message}`, 'error');
+                log(`Error stack: ${e.stack}`, 'error');
+            }
+        }
+        
+        async function testLogin() {
+            log('=== Testing /api/login ===');
+            try {
+                const body = JSON.stringify({username: 'pasta', password: 'gansa'});
+                log(`Sending POST with body: ${body}`);
+                
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: body
+                });
+                
+                log(`Response status: ${res.status} (ok: ${res.ok})`);
+                log(`Response headers: ${JSON.stringify([...res.headers.entries()])}`);
+                
+                const data = await res.json();
+                log(`Response body: ${JSON.stringify(data)}`, res.ok ? 'success' : 'error');
+                
+                log('Now testing /api/auth/check with cookie...');
+                await testAuthCheck();
+            } catch (e) {
+                log(`Error: ${e.message}`, 'error');
+            }
+        }
+        
+        function clearLogs() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // Auto-test on load
+        window.onload = () => {
+            log('Page loaded. UA: ' + navigator.userAgent.substring(0, 100) + '...');
+            testAuthCheck();
+        };
+    </script>
+</body>
+</html>
