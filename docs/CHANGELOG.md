@@ -6,6 +6,30 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-01-18
+
+### Fixed
+
+#### iOS Safari / In-App Browser Compatibility
+- **Critical**: Fixed JavaScript crash when `Notification` API is undefined (iOS Safari, in-app browsers)
+  - The Vue app would crash before auth check could run, showing "Authentication is disabled"
+  - Now uses `typeof Notification !== 'undefined'` check instead of optional chaining
+- **Fixed**: Auth check returning `null` instead of `false` when cookie is missing
+  - Python's `None and X` returns `None`, not `False` - now wrapped in `bool()`
+- Added `authCheckFailed` state with helpful message for in-app browser users
+
+#### Notification Improvements
+- Added "Notifications blocked" banner when push is subscribed but browser has denied permission
+- Users can unsubscribe from push directly from the banner
+
+### Added
+- **`AUTH_SESSION_DAYS`** - Configure authentication session duration (default: 30 days)
+- Auth test page at `/static/test-auth.html` for debugging (temporary)
+
+### Documentation
+- Added missing env vars: `AUTH_SESSION_DAYS`, `BATCH_SIZE`, `DATABASE_TIMEOUT`, `SESSION_NAME`
+- Updated mass operation protection docs to reflect actual behavior (rate limiting, not zero-footprint)
+
 ## [5.0.0] - 2026-01-18
 
 ### ⚠️ Major Release - Real-time Sync & Media Path Changes
