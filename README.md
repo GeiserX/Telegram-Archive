@@ -205,18 +205,68 @@ Features:
 | `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
 | `CHAT_TYPES` | `private,groups,channels` | Types to backup |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `BATCH_SIZE` | `100` | Messages per batch during backup |
+| `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
+| `SESSION_NAME` | `telegram_backup` | Telethon session file name |
+
+#### Viewer Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `VIEWER_USERNAME` | - | Web viewer username |
 | `VIEWER_PASSWORD` | - | Web viewer password |
+| `AUTH_SESSION_DAYS` | `30` | Days before re-authentication required |
 | `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
+| `VIEWER_TIMEZONE` | `Europe/Madrid` | Timezone for displayed timestamps |
+| `SHOW_STATS` | `true` | Show backup stats dropdown in header |
+
+#### Real-time Listener (v5.0+)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
-| `LISTEN_EDITS` | `true` | Apply text edits when listener is on (safe) |
-| `LISTEN_DELETIONS` | `true` | ⚠️ Delete from backup when listener is on (protected by zero-footprint) |
-| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Ops count that triggers protection |
-| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Detection window in seconds |
-| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | Seconds to buffer before applying |
-| `ENABLE_NOTIFICATIONS` | `false` | Enable browser push notifications in viewer |
+| `LISTEN_EDITS` | `true` | Apply text edits when listener is on |
+| `LISTEN_DELETIONS` | `true` | ⚠️ Mirror deletions (protected by rate limiting) |
+| `LISTEN_NEW_MESSAGES` | `true` | Save new messages in real-time |
+| `LISTEN_NEW_MESSAGES_MEDIA` | `false` | Download media immediately (vs scheduled backup) |
+| `LISTEN_CHAT_ACTIONS` | `true` | Track chat photo/title changes |
+| `LISTEN_ALBUMS` | `true` | Group album uploads together |
+| `PRIORITY_CHAT_IDS` | - | Process these chats FIRST in all operations |
+
+#### Mass Operation Protection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Operations before rate limiting triggers |
+| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Time window for counting operations |
+
+#### Notifications (v5.0+)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PUSH_NOTIFICATIONS` | `basic` | Notification mode: `off`, `basic`, `full` |
+| `VAPID_PRIVATE_KEY` | - | Custom VAPID private key (auto-generated if empty) |
+| `VAPID_PUBLIC_KEY` | - | Custom VAPID public key (auto-generated if empty) |
+| `VAPID_CONTACT` | `mailto:admin@example.com` | VAPID contact email |
+
+Push notification modes:
+- `off` - No notifications
+- `basic` - In-browser only (tab must be open)
+- `full` - Web Push (works even when browser closed)
+
+#### Backup Features
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEDUPLICATE_MEDIA` | `true` | Use symlinks to deduplicate identical media |
 | `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
 | `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
+| `STATS_CALCULATION_HOUR` | `3` | Hour (0-23) to recalculate backup stats |
+
+#### Chat Filtering
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
 | `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private chats |
@@ -263,56 +313,43 @@ Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as
 
 **⚠️ IMPORTANT: Backup Protection**
 
-By default, `LISTEN_DELETIONS=true` - deletions are synced but protected by **zero-footprint mass operation detection**. If a mass deletion is detected (>10 deletions in 30s), all pending deletions are discarded - your backup stays safe. Set to `false` if you want to keep ALL messages even when deleted on Telegram.
+By default, `LISTEN_DELETIONS=true` - deletions are synced but protected by **rate limiting**. If a mass deletion is detected (>10 deletions in 30s), the first 10 are applied but the remaining are blocked. Set to `false` if you want to keep ALL messages even when deleted on Telegram.
 
-Only set `LISTEN_DELETIONS=true` if you explicitly want to track deletions (see protection features below).
+### 🛡️ Mass Operation Rate Limiting
 
-### 🛡️ Zero-Footprint Mass Operation Protection
-
-Even if you enable `LISTEN_DELETIONS=true`, the system has **military-grade protection** against mass deletions and edits:
+When `LISTEN_DELETIONS=true`, a **sliding-window rate limiter** protects against mass deletion attacks:
 
 ```yaml
-- MASS_OPERATION_THRESHOLD=10       # Block if >10 operations (aggressive default)
-- MASS_OPERATION_WINDOW_SECONDS=30  # Detection window in seconds
-- MASS_OPERATION_BUFFER_DELAY=2.0   # Seconds to buffer before applying
+- MASS_OPERATION_THRESHOLD=10       # Max ops before rate limiting (default: 10)
+- MASS_OPERATION_WINDOW_SECONDS=30  # Time window for counting (default: 30s)
 ```
-
-All three values are configurable. Tune them based on your needs:
-- Lower threshold = more aggressive protection
-- Shorter window = faster detection but may catch normal activity
-- Longer buffer = more time to detect bursts but slightly delayed updates
 
 #### How It Works
 
-1. **Operations are BUFFERED** - Nothing is written to your database immediately
-2. **2-second delay** - All operations wait in a buffer before being applied
-3. **Burst detection** - If >10 operations arrive for a chat within the buffer window, it triggers protection
-4. **ZERO footprint** - When triggered, the ENTIRE buffer is discarded. No changes written. Your backup stays intact.
+1. **Operations apply immediately** - Normal usage (deleting a few messages) works instantly
+2. **Sliding window** - System tracks operations per chat in a time window
+3. **Rate limiting** - When threshold exceeded, chat is blocked for remainder of window
+4. **First N applied** - The first 10 operations ARE applied, remaining are blocked
 
-#### Example Attack Scenario
+#### Example: Mass Deletion Attack
 
-Someone clears their chat history (100 messages deleted at once):
+Someone deletes 50 messages in 10 seconds:
 ```
-🛡️ ZERO-FOOTPRINT PROTECTION ACTIVATED
+🛡️ RATE LIMIT TRIGGERED
    Chat: -1001234567890
-   Attack type: Mass deletion
-   Operations intercepted: 100
-   Data preserved: 100% (ZERO changes written to database)
-   Chat blocked until: 2026-01-14 12:35:00
+   Operations in 30s: 11 (max: 10)
+   First 10 were applied, remaining blocked
+   Chat blocked until: 2026-01-18 12:35:00
 ```
 
-**Result**: All 100 messages are still safely in your backup. The attacker's deletions had no effect.
+**Result**: First 10 deletions were applied, but the remaining 40 were blocked. Most of your backup is preserved.
 
-#### Why This Matters
+#### Complete Protection
 
-| Without Protection | With Protection |
-|-------------------|-----------------|
-| 10 deletions = 10 messages lost | 10 deletions = NOTHING lost |
-| Burst detected too late | Burst detected BEFORE any writes |
-| Partial data loss | Zero data loss |
-| Manual recovery needed | Automatic protection |
-
-This is the core philosophy: **your backup is sacred**. Even if you opt-in to deletion tracking, you're protected against mass operations that could wipe your data.
+For **zero deletions** from your backup, disable deletion sync entirely:
+```yaml
+- LISTEN_DELETIONS=false  # Deletions never affect your backup
+```
 
 #### Option 2: Batch Sync (One-time catch-up)
 
