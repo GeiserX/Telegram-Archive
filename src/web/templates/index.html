@@ -611,11 +611,6 @@
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
-                            <!-- Date Separator -->
-                            <div v-if="showDateSeparator(index)" class="date-separator">
-                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
-                            </div>
-
                             <!-- Message -->
                             <div class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
@@ -822,6 +817,11 @@
                                         {{ formatTime(msg.date) }}
                                     </div>
                                 </div>
+                            </div>
+                            
+                            <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
+                            <div v-if="showDateSeparator(index)" class="date-separator">
+                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
                             </div>
                         </template>
 
@@ -1892,13 +1892,19 @@
                 }
 
                 const showDateSeparator = (index) => {
-                    if (index === 0) return true
-                    const prevMsg = sortedMessages.value[index - 1]
+                    // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
+                    // Show separator when this is the last message of a day (next message is different day)
                     const currMsg = sortedMessages.value[index]
+                    const nextMsg = sortedMessages.value[index + 1]
+                    
                     // Parse as UTC and convert to viewer timezone for correct date boundaries
-                    const prevDate = moment.utc(prevMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
                     const currDate = moment.utc(currMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
-                    return prevDate !== currDate
+                    
+                    // Last message (oldest) always gets a separator above it
+                    if (!nextMsg) return true
+                    
+                    const nextDate = moment.utc(nextMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                    return currDate !== nextDate
                 }
 
                 const getChatName = (chat) => {
