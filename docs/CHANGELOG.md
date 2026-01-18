@@ -8,6 +8,9 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [5.0.5] - 2026-01-18
 
+### Added
+- **`AUTH_SESSION_DAYS`** - Configurable session duration for viewer auth (default: 30 days)
+
 ### Fixed
 - Auth check endpoint returning `null` instead of `false` when no cookie present
 - Added `Cache-Control: no-store` header to auth check to prevent caching issues
