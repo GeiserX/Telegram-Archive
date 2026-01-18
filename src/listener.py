@@ -434,6 +434,18 @@ class TelegramListener:
         
         return False
     
+    def _get_chat_type(self, entity) -> str:
+        """Determine chat type from Telethon entity."""
+        from telethon.tl.types import User as TelethonUser, Chat as TelethonChat, Channel
+        
+        if isinstance(entity, TelethonUser):
+            return 'private'
+        elif isinstance(entity, TelethonChat):
+            return 'group'
+        elif isinstance(entity, Channel):
+            return 'channel' if not entity.megagroup else 'group'
+        return 'unknown'
+    
     def _get_media_type(self, media) -> Optional[str]:
         """Get media type as string."""
         if isinstance(media, MessageMediaPhoto):
@@ -698,6 +710,19 @@ class TelegramListener:
                 
                 # Save the message to database
                 message = event.message
+                
+                # Ensure chat exists in database (prevents FK violation for new chats)
+                chat_entity = await event.get_chat()
+                if chat_entity:
+                    chat_data = {
+                        'id': chat_id,
+                        'type': self._get_chat_type(chat_entity),
+                        'title': getattr(chat_entity, 'title', None),
+                        'username': getattr(chat_entity, 'username', None),
+                        'first_name': getattr(chat_entity, 'first_name', None),
+                        'last_name': getattr(chat_entity, 'last_name', None),
+                    }
+                    await self.db.upsert_chat(chat_data)
                 
                 # Save sender information if available
                 if message.sender and isinstance(message.sender, User):

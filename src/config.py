@@ -83,6 +83,9 @@ class Config:
         
         # Logging
         log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+        # Handle common alias: WARN -> WARNING (Python uses WARNING, not WARN)
+        if log_level == 'WARN':
+            log_level = 'WARNING'
         self.log_level = getattr(logging, log_level, logging.INFO)
         
         # Derived paths

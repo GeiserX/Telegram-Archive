@@ -3,8 +3,12 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="apple-touch-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -16,8 +20,25 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
+        /* iOS Safe Area Support */
+        :root {
+            --sat: env(safe-area-inset-top, 0px);
+            --sar: env(safe-area-inset-right, 0px);
+            --sab: env(safe-area-inset-bottom, 0px);
+            --sal: env(safe-area-inset-left, 0px);
+        }
+        
+        html {
+            background-color: #0f172a;
+        }
+        
         body {
             font-family: 'Inter', sans-serif;
+            padding-top: var(--sat);
+            padding-bottom: var(--sab);
+            padding-left: var(--sal);
+            padding-right: var(--sar);
+            background-color: #0f172a;
         }
 
         /* Custom Scrollbar */
@@ -510,8 +531,8 @@
                 <template v-else>
                     <!-- Chat Header -->
                     <div
-                        class="p-4 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
-                        <div class="flex items-center gap-4">
+                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
+                        <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="selectedChat = null"
                                 class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
@@ -521,9 +542,9 @@
                                 </svg>
                             </button>
                             <div
-                                class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden relative">
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
-                                    class="w-full h-full object-cover" @error="selectedChat.avatar_url = null"
+                                    class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
                                     :alt="getChatName(selectedChat)">
                                 <template v-else-if="isDeletedChat(selectedChat)">
                                     <svg class="w-6 h-6 opacity-80" fill="none" stroke="currentColor"
@@ -538,9 +559,9 @@
                                     {{ getInitials(selectedChat) }}
                                 </template>
                             </div>
-                            <div>
-                                <h2 class="font-bold text-lg">{{ getChatName(selectedChat) }}</h2>
-                                <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+                            <div class="min-w-0 flex-1 max-w-[180px] sm:max-w-xs">
+                                <h2 class="font-bold text-base sm:text-lg truncate">{{ getChatName(selectedChat) }}</h2>
+                                <p class="text-xs text-tg-muted truncate">{{ selectedChat.type }}</p>
                             </div>
                             <!-- Per-Chat Stats -->
                             <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
@@ -557,24 +578,24 @@
                             </div>
                         </div>
 
-                        <div class="flex items-center gap-2">
-                            <!-- Search Bar -->
-                            <div class="relative w-64">
+                        <div class="flex items-center gap-1 sm:gap-2 shrink-0">
+                            <!-- Search Bar - responsive width -->
+                            <div class="relative w-28 sm:w-48 md:w-64">
                                 <input v-model="messageSearchQuery" @input="searchMessages" type="text"
-                                    placeholder="Search in chat..."
-                                    class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none"
+                                    placeholder="Search..."
+                                    class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
                             </div>
 
-                            <!-- Export Button -->
+                            <!-- Export Button - always visible -->
                             <button @click="exportChat"
-                                class="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                                 </svg>
@@ -582,19 +603,14 @@
                         </div>
                     </div>
 
-                    <!-- Messages -->
+                    <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
                     <div class="flex-1 relative overflow-hidden">
-                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 space-y-1" @scroll="handleScroll">
+                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 flex flex-col-reverse gap-1" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
-                            <!-- Date Separator -->
-                            <div v-if="showDateSeparator(index)" class="date-separator">
-                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
-                            </div>
-
                             <!-- Message -->
                             <div class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
@@ -725,12 +741,24 @@
                                             playsinline @click="openMedia(msg)">
                                         </video>
 
-                                        <!-- Videos -->
-                                        <video v-else-if="msg.media_type === 'video'" controls preload="none"
-                                            class="rounded-lg max-h-64 w-full"
-                                            @error="handleMediaError($event, msg)">
-                                            <source :src="getMediaUrl(msg)" type="video/mp4">
-                                        </video>
+                                        <!-- Videos - click to open in lightbox -->
+                                        <div v-else-if="msg.media_type === 'video'" 
+                                            class="relative cursor-pointer group"
+                                            @click="openMedia(msg)">
+                                            <video preload="metadata"
+                                                class="rounded-lg max-h-64 w-full pointer-events-none"
+                                                @error="handleMediaError($event, msg)">
+                                                <source :src="getMediaUrl(msg)" type="video/mp4">
+                                            </video>
+                                            <!-- Play overlay -->
+                                            <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
+                                                <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                                                    <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                                        <path d="M8 5v14l11-7z"/>
+                                                    </svg>
+                                                </div>
+                                            </div>
+                                        </div>
 
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media_type === 'sticker'" class="max-w-[200px]">
@@ -802,6 +830,11 @@
                                     </div>
                                 </div>
                             </div>
+                            
+                            <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
+                            <div v-if="showDateSeparator(index)" class="date-separator">
+                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
+                            </div>
                         </template>
 
                         <div v-if="loading && messages.length > 0" class="text-center py-2 text-tg-muted text-sm">
@@ -854,6 +887,66 @@
                         Jump
                     </button>
                 </div>
+            </div>
+        </div>
+        
+        <!-- Lightbox Modal for Images -->
+        <div v-if="lightboxOpen" 
+            class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center"
+            @click.self="closeLightbox">
+            
+            <!-- Close Button -->
+            <button @click="closeLightbox" 
+                class="absolute top-4 right-4 z-60 p-2 text-white/70 hover:text-white transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+            
+            <!-- Download Button -->
+            <a v-if="lightboxMedia" :href="getMediaUrl(lightboxMedia)" download
+                class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+            </a>
+            
+            <!-- Previous Button -->
+            <button v-if="lightboxIndex > 0" @click.stop="lightboxPrev"
+                class="absolute left-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </button>
+            
+            <!-- Next Button -->
+            <button v-if="lightboxIndex < mediaMessages.length - 1" @click.stop="lightboxNext"
+                class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </button>
+            
+            <!-- Image -->
+            <img v-if="lightboxMedia && isLightboxImage(lightboxMedia)" 
+                :src="getMediaUrl(lightboxMedia)" 
+                class="max-h-[90vh] max-w-[90vw] object-contain"
+                @click.stop>
+            
+            <!-- Video -->
+            <video v-else-if="lightboxMedia && isLightboxVideo(lightboxMedia)"
+                :src="getMediaUrl(lightboxMedia)"
+                class="max-h-[90vh] max-w-[90vw] object-contain"
+                controls autoplay
+                @click.stop>
+            </video>
+            
+            <!-- Media Info -->
+            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
+                {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
+                <span v-if="mediaMessages.length > 1" class="ml-2 opacity-70">
+                    {{ lightboxIndex + 1 }} / {{ mediaMessages.length }}
+                </span>
             </div>
         </div>
     </div>
@@ -923,6 +1016,33 @@
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
+                
+                // Lightbox state
+                const lightboxOpen = ref(false)
+                const lightboxMedia = ref(null)  // Current media being viewed
+                const lightboxIndex = ref(0)    // Index in mediaMessages array
+                
+                // Get all viewable media messages (photos, videos, animations) for lightbox navigation
+                const mediaMessages = computed(() => {
+                    return messages.value.filter(m => 
+                        m.media_path && (
+                            m.media_type === 'photo' || 
+                            m.media_type === 'video' || 
+                            m.media_type === 'animation' ||
+                            (m.media_type === 'document' && isImageDocument(m))
+                        )
+                    ).sort((a, b) => new Date(a.date) - new Date(b.date))  // Oldest first for intuitive prev/next
+                })
+                
+                // Check if media should show as image in lightbox
+                const isLightboxImage = (msg) => {
+                    return msg.media_type === 'photo' || (msg.media_type === 'document' && isImageDocument(msg))
+                }
+                
+                // Check if media should show as video in lightbox
+                const isLightboxVideo = (msg) => {
+                    return msg.media_type === 'video' || msg.media_type === 'animation'
+                }
                 
                 const loadChats = async (append = false) => {
                     if (!append) {
@@ -1545,10 +1665,10 @@
                 })
 
                 const sortedMessages = computed(() => {
-                    // Sort messages by date (oldest first) for chronological display
-                    // Note: Can't just reverse since jumpToDate may add messages out of order
+                    // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
+                    // This gives instant "scroll to bottom" experience on mobile
                     return [...messages.value].sort((a, b) => 
-                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                        new Date(b.date).getTime() - new Date(a.date).getTime()
                     )
                 })
                 
@@ -1776,32 +1896,42 @@
 
                 const handleScroll = (e) => {
                     const { scrollTop, scrollHeight, clientHeight } = e.target
-                    // Load more when scrolling near top (for older messages)
-                    if (scrollTop < 100 && !loading.value && hasMore.value) {
-                        const previousHeight = scrollHeight
-                        loadMessages().then(() => {
-                            // Maintain scroll position
-                            nextTick(() => {
-                                const newHeight = messagesContainer.value.scrollHeight
-                                messagesContainer.value.scrollTop = scrollTop + (newHeight - previousHeight)
-                            })
-                        })
+                    // With flex-col-reverse: scrollTop=0 is bottom (newest), large scrollTop is top (oldest)
+                    const distanceFromTop = scrollHeight - scrollTop - clientHeight
+                    
+                    // Load more when scrolling near visual top (older messages)
+                    if (distanceFromTop < 100 && !loading.value && hasMore.value) {
+                        loadMessages()
                     }
                     
                     // Show/hide scroll to bottom button
-                    // Show when scrolled more than 300px from bottom
-                    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-                    showScrollToBottom.value = distanceFromBottom > 300
+                    // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
+                    showScrollToBottom.value = scrollTop > 300
                 }
 
-                const scrollToBottom = () => {
-                    if (messagesContainer.value) {
-                        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+                const scrollToBottom = (immediate = false) => {
+                    if (!messagesContainer.value) return
+                    
+                    const doScroll = () => {
+                        if (messagesContainer.value) {
+                            // With flex-col-reverse: scrollTop=0 is the bottom (newest messages)
+                            messagesContainer.value.scrollTop = 0
+                        }
+                    }
+                    
+                    if (immediate) {
+                        doScroll()
+                    } else {
+                        // Multiple scroll attempts to handle dynamic content (images loading)
+                        doScroll()
+                        requestAnimationFrame(doScroll)
+                        setTimeout(doScroll, 100)
+                        setTimeout(doScroll, 300)
                     }
                 }
 
                 const scrollToLatest = () => {
-                    scrollToBottom()
+                    scrollToBottom(true)
                     showScrollToBottom.value = false
                 }
 
@@ -1861,10 +1991,19 @@
                 }
 
                 const showDateSeparator = (index) => {
-                    if (index === 0) return true
-                    const prevMsg = sortedMessages.value[index - 1]
+                    // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
+                    // Show separator when this is the last message of a day (next message is different day)
                     const currMsg = sortedMessages.value[index]
-                    return moment(prevMsg.date).format('YYYY-MM-DD') !== moment(currMsg.date).format('YYYY-MM-DD')
+                    const nextMsg = sortedMessages.value[index + 1]
+                    
+                    // Parse as UTC and convert to viewer timezone for correct date boundaries
+                    const currDate = moment.utc(currMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                    
+                    // Last message (oldest) always gets a separator above it
+                    if (!nextMsg) return true
+                    
+                    const nextDate = moment.utc(nextMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                    return currDate !== nextDate
                 }
 
                 const getChatName = (chat) => {
@@ -1942,11 +2081,13 @@
                 }
 
                 const formatDateFull = (dateStr) => {
-                    return moment(dateStr).format('MMMM D, YYYY')
+                    // Parse as UTC (DB stores UTC) then convert to viewer timezone
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('MMMM D, YYYY')
                 }
 
                 const formatTime = (dateStr) => {
-                    return moment(dateStr).format('HH:mm')
+                    // Parse as UTC (DB stores UTC) then convert to viewer timezone
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
                 }
 
                 const formatReactionEmoji = (emoji) => {
@@ -2094,7 +2235,44 @@
                 }
 
                 const openMedia = (msg) => {
-                    window.open(getMediaUrl(msg), '_blank')
+                    // Open lightbox for images and videos, direct link for other media
+                    if (msg.media_type === 'photo' || msg.media_type === 'video' || msg.media_type === 'animation' ||
+                        (msg.media_type === 'document' && isImageDocument(msg))) {
+                        lightboxMedia.value = msg
+                        lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
+                        lightboxOpen.value = true
+                        // Add keyboard listener
+                        document.addEventListener('keydown', handleLightboxKeydown)
+                    } else {
+                        window.open(getMediaUrl(msg), '_blank')
+                    }
+                }
+                
+                const closeLightbox = () => {
+                    lightboxOpen.value = false
+                    lightboxMedia.value = null
+                    document.removeEventListener('keydown', handleLightboxKeydown)
+                }
+                
+                const lightboxPrev = () => {
+                    if (lightboxIndex.value > 0) {
+                        lightboxIndex.value--
+                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                    }
+                }
+                
+                const lightboxNext = () => {
+                    if (lightboxIndex.value < mediaMessages.value.length - 1) {
+                        lightboxIndex.value++
+                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                    }
+                }
+                
+                const handleLightboxKeydown = (e) => {
+                    if (!lightboxOpen.value) return
+                    if (e.key === 'Escape') closeLightbox()
+                    else if (e.key === 'ArrowLeft') lightboxPrev()
+                    else if (e.key === 'ArrowRight') lightboxNext()
                 }
 
                 const linkifyText = (text) => {
@@ -2321,6 +2499,16 @@
                     handleImageError,
                     handleMediaError,
                     openMedia,
+                    // Lightbox
+                    lightboxOpen,
+                    lightboxMedia,
+                    lightboxIndex,
+                    mediaMessages,
+                    closeLightbox,
+                    lightboxPrev,
+                    lightboxNext,
+                    isLightboxImage,
+                    isLightboxVideo,
                     linkifyText,
                     scrollToMessage,
                     messagesContainer,
