@@ -363,7 +363,10 @@ if os.path.exists(config.media_path):
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the main application page."""
-    return FileResponse(templates_dir / "index.html")
+    return FileResponse(
+        templates_dir / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"}
+    )
 
 
 @app.get("/api/auth/check")
