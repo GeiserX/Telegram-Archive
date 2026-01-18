@@ -362,10 +362,18 @@ if os.path.exists(config.media_path):
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """Serve the main application page."""
+    """Serve the main application page.
+    
+    Uses aggressive no-cache headers to prevent Safari and other browsers
+    from serving stale cached versions with old JavaScript.
+    """
     return FileResponse(
         templates_dir / "index.html",
-        headers={"Cache-Control": "no-cache, must-revalidate"}
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
     )
 
 
