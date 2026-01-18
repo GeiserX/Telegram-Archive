@@ -1815,14 +1815,28 @@
                     showScrollToBottom.value = distanceFromBottom > 300
                 }
 
-                const scrollToBottom = () => {
-                    if (messagesContainer.value) {
-                        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+                const scrollToBottom = (immediate = false) => {
+                    if (!messagesContainer.value) return
+                    
+                    const doScroll = () => {
+                        if (messagesContainer.value) {
+                            messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+                        }
+                    }
+                    
+                    if (immediate) {
+                        doScroll()
+                    } else {
+                        // Multiple scroll attempts to handle dynamic content (images loading)
+                        doScroll()
+                        requestAnimationFrame(doScroll)
+                        setTimeout(doScroll, 100)
+                        setTimeout(doScroll, 300)
                     }
                 }
 
                 const scrollToLatest = () => {
-                    scrollToBottom()
+                    scrollToBottom(true)
                     showScrollToBottom.value = false
                 }
 
