@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.9] - 2026-01-18
+
+### Fixed
+- Added "Loading..." fallback visible before Vue mounts (helps debug iOS Safari issues)
+- Restored "Authentication is disabled" message when auth is not required
+- Restored conditional form display based on auth state
+
 ## [5.0.8] - 2026-01-18
 
 ### Fixed

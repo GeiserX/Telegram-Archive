@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.8 -->
+    <!-- v5.0.9 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -231,9 +231,12 @@
 </head>
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
-    <div id="app" class="w-full h-full">
+    <!-- Fallback shown if Vue fails to load - hidden once Vue mounts via [v-cloak] -->
+    <style>[v-cloak] > * { display: none; } [v-cloak]::before { content: "Loading..."; display: flex; justify-content: center; align-items: center; height: 100vh; font-size: 1.5rem; }</style>
+    
+    <div id="app" class="w-full h-full" v-cloak>
         <!-- Login Page - shown when not authenticated -->
-        <div v-show="!isAuthenticated" class="w-full h-full flex items-center justify-center">
+        <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
                 class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/20">
                 <!-- Telegram Logo -->
@@ -247,12 +250,15 @@
                 <p class="text-sm text-blue-100 mb-8 text-center" v-if="authCheckFailed">
                     ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
                 </p>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="!authRequired">
+                    Authentication is disabled
+                </p>
                 <p class="text-sm text-blue-100 mb-8 text-center" v-else>
                     Sign in to access your backup
                 </p>
 
-                <!-- Always show login form when not authenticated - handles edge cases -->
-                <form @submit.prevent="performLogin" class="space-y-5">
+                <!-- Always show login form when auth is required -->
+                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
