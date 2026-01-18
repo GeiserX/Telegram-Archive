@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.8] - 2026-01-18
+
+### Fixed
+- Changed `v-if` to `v-show` for login visibility (more Safari-friendly)
+
 ## [5.0.7] - 2026-01-18
 
 ### Fixed
