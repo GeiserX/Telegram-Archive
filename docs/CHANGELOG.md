@@ -21,6 +21,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 - iOS Safe Area support (`env(safe-area-inset-*)`) for notch/Dynamic Island devices
 - `apple-mobile-web-app-capable` meta tag for PWA-like experience
 - Responsive header padding (`px-2 py-2` on mobile, `px-4 py-3` on desktop)
+- Improved scroll-to-bottom reliability with multiple attempts (handles dynamic content/images)
 
 ## [5.1.0] - 2026-01-18
 
