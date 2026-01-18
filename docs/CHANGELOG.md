@@ -53,10 +53,10 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 - **Optional custom VAPID keys** via `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CONTACT`
 
 #### Migration Scripts
-- **`scripts/migrate_media_paths.py`** - ⚠️ **HIGHLY RECOMMENDED** - Normalizes media folder names to use marked IDs
-- **`scripts/update_media_sizes.py`** - ⚠️ **HIGHLY RECOMMENDED** - Populates file_size for accurate stats
-- **`scripts/detect_albums.py`** - Detect albums in existing backups for album grid display
-- **`scripts/deduplicate_media.py`** - Global deduplication using symlinks (saves disk space)
+- **`scripts/migrate_media_paths.py`** - ⚠️ **REQUIRED** - Normalizes media folder names to use marked IDs
+- **`scripts/update_media_sizes.py`** - ⚠️ **REQUIRED** - Populates file_size for accurate stats
+- **`scripts/detect_albums.py`** - ⚠️ **HIGHLY RECOMMENDED** - Detect albums in existing backups for album grid display
+- **`scripts/deduplicate_media.py`** - ⚠️ **HIGHLY RECOMMENDED** - Global deduplication using symlinks (saves disk space)
 - **`scripts/restore_chat.py`** - Repost archived messages to Telegram
 
 ### Changed
@@ -77,14 +77,17 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 
 1. **Run migration scripts** (inside Docker container):
    ```bash
-   # 1. Normalize media paths (HIGHLY RECOMMENDED)
+   # 1. Normalize media paths (REQUIRED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.migrate_media_paths
    
-   # 2. Update file sizes for accurate stats (HIGHLY RECOMMENDED)
+   # 2. Update file sizes for accurate stats (REQUIRED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.update_media_sizes
    
-   # 3. Detect albums for grid display (optional but recommended)
+   # 3. Detect albums for grid display (HIGHLY RECOMMENDED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.detect_albums
+   
+   # 4. Deduplicate media files (HIGHLY RECOMMENDED)
+   docker run --rm -e DB_TYPE=postgresql ... python -m scripts.deduplicate_media
    ```
 
 2. **Update docker-compose.yml** with new env variables (see README)
