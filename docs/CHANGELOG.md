@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.7] - 2026-01-18
+
+### Fixed
+- **Login form always shows** - Removed "Authentication is disabled" message entirely. Login form now always displays when not authenticated, regardless of cache state. This is the definitive fix for Safari caching issues.
+
 ## [5.0.6] - 2026-01-18
 
 ### Fixed
