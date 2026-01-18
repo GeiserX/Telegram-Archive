@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.7 -->
+    <!-- v5.0.8 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -232,8 +232,8 @@
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
     <div id="app" class="w-full h-full">
-        <!-- Login Page -->
-        <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
+        <!-- Login Page - shown when not authenticated -->
+        <div v-show="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
                 class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/20">
                 <!-- Telegram Logo -->
