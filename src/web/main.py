@@ -384,11 +384,17 @@ async def login(request: Request):
 
         if username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
             response = JSONResponse({"success": True})
+            # Detect if request is over HTTPS (via X-Forwarded-Proto or URL scheme)
+            is_https = (
+                request.url.scheme == "https" or
+                request.headers.get("x-forwarded-proto", "").lower() == "https"
+            )
             response.set_cookie(
                 key=AUTH_COOKIE_NAME,
                 value=AUTH_TOKEN,
                 httponly=True,
-                samesite="lax",
+                secure=is_https,  # Required for iOS Safari on HTTPS
+                samesite="lax" if is_https else "lax",
                 max_age=30 * 24 * 60 * 60,  # 30 days
             )
             return response
