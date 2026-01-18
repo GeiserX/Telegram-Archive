@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.5-fix1 -->
+    <!-- v5.0.5-fix2 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -877,7 +877,7 @@
                 const messagesContainer = ref(null)
                 const scrollAnchor = ref(null)
                 const isAuthenticated = ref(false)
-                const authRequired = ref(false)
+                const authRequired = ref(true)  // Default to true so login form shows while checking
                 const authCheckFailed = ref(false)
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
@@ -1139,13 +1139,18 @@
                 // Auth check on mount
                 onMounted(async () => {
                     try {
+                        console.log('[Auth] Checking authentication...')
                         const res = await fetch('/api/auth/check', {
                             credentials: 'include'
                         })
+                        console.log('[Auth] Response status:', res.status, 'ok:', res.ok)
                         if (res.ok) {
                             const data = await res.json()
-                            authRequired.value = !!data.auth_required
+                            console.log('[Auth] Response data:', JSON.stringify(data))
+                            // Only set authRequired to false if server explicitly says so
+                            authRequired.value = data.auth_required !== false
                             isAuthenticated.value = !!data.authenticated
+                            console.log('[Auth] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
                                 await loadChats()
@@ -1154,19 +1159,20 @@
                             }
                         } else {
                             // If status endpoint fails, show login form with warning
-                            console.warn('Failed to get auth status, showing login form')
+                            console.warn('[Auth] Failed to get auth status, showing login form')
                             authCheckFailed.value = true
-                            authRequired.value = true  // Show login form
+                            authRequired.value = true
                             isAuthenticated.value = false
                         }
                     } catch (e) {
                         // On network error, show login form with warning  
-                        console.error('Auth status error', e)
+                        console.error('[Auth] Error:', e)
                         authCheckFailed.value = true
-                        authRequired.value = true  // Show login form
+                        authRequired.value = true
                         isAuthenticated.value = false
                     } finally {
                         loadingAuth.value = false
+                        console.log('[Auth] Final state - authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
                     }
                     
                     // Initialize WebSocket and notifications (v5.0)
