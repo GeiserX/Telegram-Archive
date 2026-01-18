@@ -6,6 +6,14 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.3] - 2026-01-18
+
+### Fixed
+- Safari auth broken by SameSite=None - now uses conditional SameSite based on browser type
+- Regular browsers (Safari, Chrome, etc.) use SameSite=Lax (more compatible)
+- In-app browsers (Telegram, Instagram, etc.) detected via User-Agent and use SameSite=None
+- Old conflicting cookies are deleted before setting new ones
+
 ## [5.0.2] - 2026-01-18
 
 ### Fixed
