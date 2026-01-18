@@ -321,7 +321,8 @@ app.add_middleware(
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
-AUTH_COOKIE_NAME = "viewer_auth"
+# Cookie name versioned to avoid conflicts with old cookies from previous versions
+AUTH_COOKIE_NAME = "viewer_auth_v3"
 AUTH_TOKEN = None
 
 if AUTH_ENABLED:
@@ -371,22 +372,6 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
     return {"authenticated": is_valid, "auth_required": True}
 
 
-def _is_in_app_browser(user_agent: str) -> bool:
-    """Detect if request is from an in-app browser (Telegram, Instagram, etc.)."""
-    ua_lower = user_agent.lower()
-    in_app_indicators = [
-        'telegram',      # Telegram in-app browser
-        'instagram',     # Instagram in-app
-        'fban',          # Facebook app
-        'fbav',          # Facebook app version
-        'twitter',       # Twitter/X in-app
-        'line/',         # LINE app
-        'wv)',           # Android WebView
-        'webview',       # Generic webview
-    ]
-    return any(indicator in ua_lower for indicator in in_app_indicators)
-
-
 @app.post("/api/login")
 async def login(request: Request):
     """Authenticate viewer user."""
@@ -401,38 +386,23 @@ async def login(request: Request):
         if username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
             response = JSONResponse({"success": True})
             
-            # Detect HTTPS
+            # Detect HTTPS (via reverse proxy header or direct)
             is_https = (
                 request.url.scheme == "https" or
                 request.headers.get("x-forwarded-proto", "").lower() == "https"
             )
             
-            # Detect in-app browser
-            user_agent = request.headers.get("user-agent", "")
-            is_in_app = _is_in_app_browser(user_agent)
-            
-            # First, delete any existing cookie with potentially conflicting attributes
-            # This clears old cookies that may have different SameSite values
-            response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
-            
-            # Cookie strategy:
-            # - In-app browsers need SameSite=None (they're third-party context)
-            # - Regular browsers work best with SameSite=Lax
-            # - Both need Secure=True for HTTPS
-            samesite_value = "none" if (is_https and is_in_app) else "lax"
-            
+            # Simple cookie strategy: SameSite=Lax works for same-site requests
+            # Using versioned cookie name (viewer_auth_v3) avoids conflicts with old cookies
             response.set_cookie(
                 key=AUTH_COOKIE_NAME,
                 value=AUTH_TOKEN,
                 httponly=True,
                 secure=is_https,
-                samesite=samesite_value,
+                samesite="lax",
                 max_age=30 * 24 * 60 * 60,  # 30 days
                 path="/",
             )
-            
-            if is_in_app:
-                logger.info(f"Login from in-app browser: {user_agent[:50]}...")
             
             return response
         raise HTTPException(status_code=401, detail="Invalid credentials")

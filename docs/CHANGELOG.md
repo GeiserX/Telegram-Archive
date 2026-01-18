@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.4] - 2026-01-18
+
+### Fixed
+- Auth cookie renamed to `viewer_auth_v3` to avoid conflicts with old cached cookies
+- Simplified cookie strategy: always use SameSite=Lax (most compatible)
+- This allows login without clearing browser cookies
+
 ## [5.0.3] - 2026-01-18
 
 ### Fixed
