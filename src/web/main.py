@@ -371,7 +371,7 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
     if not AUTH_ENABLED:
         return {"authenticated": True, "auth_required": False}
     
-    is_valid = auth_cookie and auth_cookie == AUTH_TOKEN
+    is_valid = bool(auth_cookie and auth_cookie == AUTH_TOKEN)
     return {"authenticated": is_valid, "auth_required": True}
 
 
