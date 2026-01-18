@@ -4,12 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.11 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -231,11 +227,8 @@
 </head>
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
-    <!-- Fallback shown if Vue fails to load - hidden once Vue mounts via [v-cloak] -->
-    <style>[v-cloak] > * { display: none; } [v-cloak]::before { content: "Loading..."; display: flex; justify-content: center; align-items: center; height: 100vh; font-size: 1.5rem; }</style>
-    
-    <div id="app" class="w-full h-full" v-cloak>
-        <!-- Login Page - shown when not authenticated -->
+    <div id="app" class="w-full h-full">
+        <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
                 class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/20">
@@ -247,15 +240,14 @@
                 </div>
 
                 <h1 class="text-3xl font-bold mb-2 text-center text-white">Telegram Archive</h1>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-if="authCheckFailed">
-                    ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
-                </p>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-else>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-if="authRequired">
                     Sign in to access your backup
                 </p>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else>
+                    Authentication is currently disabled
+                </p>
 
-                <!-- Always show login form -->
-                <form @submit.prevent="performLogin" class="space-y-5">
+                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
@@ -397,22 +389,6 @@
                         <button @click="requestNotificationPermission()" 
                             class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
                             Enable
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- Notifications Blocked Banner (shows when permission is 'denied' and user had subscribed) -->
-                <div v-if="pushEnabled && notificationsSupported && notificationPermission === 'denied' && pushSubscribed" 
-                    class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
-                    <div class="flex items-center gap-2 text-amber-200 text-sm">
-                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path>
-                        </svg>
-                        <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
-                        <button @click="unsubscribeFromPush()" 
-                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
-                            Unsubscribe
                         </button>
                     </div>
                 </div>
@@ -881,8 +857,7 @@
                 const messagesContainer = ref(null)
                 const scrollAnchor = ref(null)
                 const isAuthenticated = ref(false)
-                const authRequired = ref(true)  // Default to true so login form shows while checking
-                const authCheckFailed = ref(false)
+                const authRequired = ref(false)
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
@@ -1143,20 +1118,13 @@
                 // Auth check on mount
                 onMounted(async () => {
                     try {
-                        console.log('[Auth] Checking authentication...')
-                        // Add cache-busting timestamp to prevent iOS Safari from caching
-                        const res = await fetch(`/api/auth/check?_=${Date.now()}`, {
-                            credentials: 'include',
-                            cache: 'no-store'
+                        const res = await fetch('/api/auth/check', {
+                            credentials: 'include'
                         })
-                        console.log('[Auth] Response status:', res.status, 'ok:', res.ok)
                         if (res.ok) {
                             const data = await res.json()
-                            console.log('[Auth] Response data:', JSON.stringify(data))
-                            // Only set authRequired to false if server explicitly says so
-                            authRequired.value = data.auth_required !== false
+                            authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
-                            console.log('[Auth] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
                                 await loadChats()
@@ -1164,21 +1132,23 @@
                                 setupInfiniteScroll()
                             }
                         } else {
-                            // If status endpoint fails, show login form with warning
-                            console.warn('[Auth] Failed to get auth status, showing login form')
-                            authCheckFailed.value = true
-                            authRequired.value = true
-                            isAuthenticated.value = false
+                            // If status endpoint fails, assume no auth required
+                            console.warn('Failed to get auth status, assuming no auth required')
+                            authRequired.value = false
+                            isAuthenticated.value = true
+                            await loadChats()
+                            setupInfiniteScroll()
                         }
                     } catch (e) {
-                        // On network error, show login form with warning  
-                        console.error('[Auth] Error:', e)
-                        authCheckFailed.value = true
-                        authRequired.value = true
-                        isAuthenticated.value = false
+                        // On error, assume no auth required to allow access
+                        console.error('Auth status error', e)
+                        authRequired.value = false
+                        isAuthenticated.value = true
+                        await loadChats()
+                        await loadStats()
+                        setupInfiniteScroll()
                     } finally {
                         loadingAuth.value = false
-                        console.log('[Auth] Final state - authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
                     }
                     
                     // Initialize WebSocket and notifications (v5.0)
@@ -2329,7 +2299,6 @@
                     // Auth
                     isAuthenticated,
                     authRequired,
-                    authCheckFailed,
                     loadingAuth,
                     loginForm,
                     loginError,

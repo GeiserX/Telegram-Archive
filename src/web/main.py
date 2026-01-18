@@ -321,19 +321,14 @@ app.add_middleware(
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
-# Cookie name versioned to avoid conflicts with old cookies from previous versions
-AUTH_COOKIE_NAME = "viewer_auth_v3"
+AUTH_COOKIE_NAME = "viewer_auth"
 AUTH_TOKEN = None
-
-# Session duration in days (default: 30 days)
-AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
-AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 
 if AUTH_ENABLED:
     AUTH_TOKEN = hashlib.sha256(
         f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode("utf-8")
     ).hexdigest()
-    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
+    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME})")
 else:
     logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
 
@@ -361,44 +356,19 @@ if os.path.exists(config.media_path):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request, v: str | None = None):
-    """Serve the main application page.
-    
-    Uses aggressive no-cache headers to prevent Safari and other browsers
-    from serving stale cached versions with old JavaScript.
-    
-    If no version parameter, redirects to add one (cache-busting for iOS Safari).
-    """
-    # Current version - update this when deploying new versions
-    CURRENT_VERSION = "5.0.11"
-    
-    # If no version param or wrong version, redirect to add it (forces cache bypass)
-    if v != CURRENT_VERSION:
-        from starlette.responses import RedirectResponse
-        return RedirectResponse(url=f"/?v={CURRENT_VERSION}", status_code=302)
-    
-    return FileResponse(
-        templates_dir / "index.html",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        }
-    )
+async def read_root():
+    """Serve the main application page."""
+    return FileResponse(templates_dir / "index.html")
 
 
 @app.get("/api/auth/check")
 async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Check current authentication status."""
-    # No caching for auth check
-    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
-    
     if not AUTH_ENABLED:
-        return JSONResponse({"authenticated": True, "auth_required": False}, headers=headers)
+        return {"authenticated": True, "auth_required": False}
     
-    # Explicitly return bool to avoid null in JSON response
-    is_valid = bool(auth_cookie and auth_cookie == AUTH_TOKEN)
-    return JSONResponse({"authenticated": is_valid, "auth_required": True}, headers=headers)
+    is_valid = auth_cookie and auth_cookie == AUTH_TOKEN
+    return {"authenticated": is_valid, "auth_required": True}
 
 
 @app.post("/api/login")
@@ -414,25 +384,13 @@ async def login(request: Request):
 
         if username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
             response = JSONResponse({"success": True})
-            
-            # Detect HTTPS (via reverse proxy header or direct)
-            is_https = (
-                request.url.scheme == "https" or
-                request.headers.get("x-forwarded-proto", "").lower() == "https"
-            )
-            
-            # Simple cookie strategy: SameSite=Lax works for same-site requests
-            # Using versioned cookie name (viewer_auth_v3) avoids conflicts with old cookies
             response.set_cookie(
                 key=AUTH_COOKIE_NAME,
                 value=AUTH_TOKEN,
                 httponly=True,
-                secure=is_https,
                 samesite="lax",
-                max_age=AUTH_SESSION_SECONDS,  # Configurable via AUTH_SESSION_DAYS
-                path="/",
+                max_age=30 * 24 * 60 * 60,  # 30 days
             )
-            
             return response
         raise HTTPException(status_code=401, detail="Invalid credentials")
     except HTTPException:
