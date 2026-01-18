@@ -6,6 +6,40 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-01-18
+
+### Fixed
+
+#### Critical Bug Fixes
+- **`get_statistics` missing** - Fixed `AttributeError: 'DatabaseAdapter' object has no attribute 'get_statistics'` at end of backup (#23)
+- **FK violation on new chats** - Listener now creates chat record before inserting messages, fixing foreign key violations when adding new `PRIORITY_CHAT_IDS` (#25)
+- **VIEWER_TIMEZONE not applied** - Times were showing in UTC instead of configured timezone; now properly converts from UTC to viewer timezone (#24)
+- **LOG_LEVEL=WARN not working** - Added alias mapping from `WARN` to `WARNING` for Python compatibility (#26)
+- **Date separators position** - Fixed date separators appearing at wrong position with flex-col-reverse layout
+
+#### Mobile UI Improvements (iOS/Android)
+- **Avatar distortion** - Chat avatars were rendering as ellipsoids on mobile; now perfectly round with `aspect-square` and `shrink-0`
+- **Chat name overflow** - Long channel names caused massive header bars; now truncated with `max-width` on mobile
+- **Search bar too wide** - Reduced from fixed 256px to responsive `w-28 sm:w-48 md:w-64`
+- **Export button hidden** - Was pushed off-screen on small devices; now always visible with compact sizing
+- **White status bar strips** - Added `theme-color` meta tag and safe area insets for proper iOS status bar theming
+
+### Added
+
+#### Integrated Media Lightbox
+- **Image lightbox** - Click images to view fullscreen instead of opening new tab
+- **Video lightbox** - Videos now open in integrated player with autoplay
+- **Media navigation** - Navigate between all media (photos, videos, GIFs) with arrow keys or buttons
+- **Keyboard shortcuts** - `←`/`→` to navigate, `Esc` to close
+- **Play button overlay** - Video thumbnails show play button for clear affordance
+- **Download button** - Download media directly from lightbox
+
+#### Performance & UX
+- **flex-col-reverse scroll** - Messages container uses CSS-based instant scroll-to-bottom (no JS hacks, better mobile performance)
+- iOS Safe Area support (`env(safe-area-inset-*)`) for notch/Dynamic Island devices
+- `apple-mobile-web-app-capable` meta tag for PWA-like experience
+- Responsive header padding (`px-2 py-2` on mobile, `px-4 py-3` on desktop)
+
 ## [5.1.0] - 2026-01-18
 
 ### Fixed

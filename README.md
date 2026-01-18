@@ -204,7 +204,7 @@ Features:
 | `DOWNLOAD_MEDIA` | `true` | Download media files |
 | `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
 | `CHAT_TYPES` | `private,groups,channels` | Types to backup |
-| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR`) |
 | `BATCH_SIZE` | `100` | Messages per batch during backup |
 | `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
 | `SESSION_NAME` | `telegram_backup` | Telethon session file name |
