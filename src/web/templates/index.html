@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
-    <!-- v5.0.9 -->
+    <!-- v5.0.10 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
@@ -1147,8 +1147,10 @@
                 onMounted(async () => {
                     try {
                         console.log('[Auth] Checking authentication...')
-                        const res = await fetch('/api/auth/check', {
-                            credentials: 'include'
+                        // Add cache-busting timestamp to prevent iOS Safari from caching
+                        const res = await fetch(`/api/auth/check?_=${Date.now()}`, {
+                            credentials: 'include',
+                            cache: 'no-store'
                         })
                         console.log('[Auth] Response status:', res.status, 'ok:', res.ok)
                         if (res.ok) {
