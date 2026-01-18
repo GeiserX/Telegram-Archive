@@ -361,12 +361,22 @@ if os.path.exists(config.media_path):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root():
+async def read_root(request: Request, v: str | None = None):
     """Serve the main application page.
     
     Uses aggressive no-cache headers to prevent Safari and other browsers
     from serving stale cached versions with old JavaScript.
+    
+    If no version parameter, redirects to add one (cache-busting for iOS Safari).
     """
+    # Current version - update this when deploying new versions
+    CURRENT_VERSION = "5.0.10"
+    
+    # If no version param or wrong version, redirect to add it (forces cache bypass)
+    if v != CURRENT_VERSION:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=f"/?v={CURRENT_VERSION}", status_code=302)
+    
     return FileResponse(
         templates_dir / "index.html",
         headers={

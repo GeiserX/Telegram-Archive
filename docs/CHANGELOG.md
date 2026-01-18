@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.10] - 2026-01-18
+
+### Fixed
+- **iOS Safari cache bypass** - Server now redirects to `/?v=VERSION` to force cache invalidation. iOS Safari ignores no-cache headers but respects URL changes.
+- Added `cache: 'no-store'` and timestamp to auth check fetch call
+
 ## [5.0.9] - 2026-01-18
 
 ### Fixed
