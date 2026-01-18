@@ -3,8 +3,12 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="apple-touch-icon" href="/static/favicon.ico">
     <title>Telegram Archive</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -16,8 +20,25 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
+        /* iOS Safe Area Support */
+        :root {
+            --sat: env(safe-area-inset-top, 0px);
+            --sar: env(safe-area-inset-right, 0px);
+            --sab: env(safe-area-inset-bottom, 0px);
+            --sal: env(safe-area-inset-left, 0px);
+        }
+        
+        html {
+            background-color: #0f172a;
+        }
+        
         body {
             font-family: 'Inter', sans-serif;
+            padding-top: var(--sat);
+            padding-bottom: var(--sab);
+            padding-left: var(--sal);
+            padding-right: var(--sar);
+            background-color: #0f172a;
         }
 
         /* Custom Scrollbar */
@@ -510,8 +531,8 @@
                 <template v-else>
                     <!-- Chat Header -->
                     <div
-                        class="p-4 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
-                        <div class="flex items-center gap-4">
+                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
+                        <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="selectedChat = null"
                                 class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
@@ -521,9 +542,9 @@
                                 </svg>
                             </button>
                             <div
-                                class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden relative">
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
-                                    class="w-full h-full object-cover" @error="selectedChat.avatar_url = null"
+                                    class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
                                     :alt="getChatName(selectedChat)">
                                 <template v-else-if="isDeletedChat(selectedChat)">
                                     <svg class="w-6 h-6 opacity-80" fill="none" stroke="currentColor"
@@ -538,9 +559,9 @@
                                     {{ getInitials(selectedChat) }}
                                 </template>
                             </div>
-                            <div>
-                                <h2 class="font-bold text-lg">{{ getChatName(selectedChat) }}</h2>
-                                <p class="text-xs text-tg-muted">{{ selectedChat.type }}</p>
+                            <div class="min-w-0 flex-1 max-w-[180px] sm:max-w-xs">
+                                <h2 class="font-bold text-base sm:text-lg truncate">{{ getChatName(selectedChat) }}</h2>
+                                <p class="text-xs text-tg-muted truncate">{{ selectedChat.type }}</p>
                             </div>
                             <!-- Per-Chat Stats -->
                             <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
@@ -557,24 +578,24 @@
                             </div>
                         </div>
 
-                        <div class="flex items-center gap-2">
-                            <!-- Search Bar -->
-                            <div class="relative w-64">
+                        <div class="flex items-center gap-1 sm:gap-2 shrink-0">
+                            <!-- Search Bar - responsive width -->
+                            <div class="relative w-28 sm:w-48 md:w-64">
                                 <input v-model="messageSearchQuery" @input="searchMessages" type="text"
-                                    placeholder="Search in chat..."
-                                    class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none"
+                                    placeholder="Search..."
+                                    class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
                             </div>
 
-                            <!-- Export Button -->
+                            <!-- Export Button - always visible -->
                             <button @click="exportChat"
-                                class="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                                 </svg>

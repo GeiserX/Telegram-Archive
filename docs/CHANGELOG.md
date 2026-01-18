@@ -6,6 +6,22 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-01-18
+
+### Fixed
+
+#### Mobile UI Improvements (iOS/Android)
+- **Avatar distortion** - Chat avatars were rendering as ellipsoids on mobile; now perfectly round with `aspect-square` and `shrink-0`
+- **Chat name overflow** - Long channel names caused massive header bars; now truncated with `max-width` on mobile
+- **Search bar too wide** - Reduced from fixed 256px to responsive `w-28 sm:w-48 md:w-64`
+- **Export button hidden** - Was pushed off-screen on small devices; now always visible with compact sizing
+- **White status bar strips** - Added `theme-color` meta tag and safe area insets for proper iOS status bar theming
+
+### Added
+- iOS Safe Area support (`env(safe-area-inset-*)`) for notch/Dynamic Island devices
+- `apple-mobile-web-app-capable` meta tag for PWA-like experience
+- Responsive header padding (`px-2 py-2` on mobile, `px-4 py-3` on desktop)
+
 ## [5.1.0] - 2026-01-18
 
 ### Fixed
