@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.6] - 2026-01-18
+
+### Fixed
+- **Safari cache bug causing "Authentication is disabled"** - Safari was serving cached old HTML from before v5.0.0 where `authRequired` defaulted to `false`. Added aggressive cache-prevention headers (`Cache-Control: no-store`, `Pragma: no-cache`, `Expires: 0`) and HTML meta tags to force browsers to always fetch fresh content.
+
 ## [5.0.5] - 2026-01-18
 
 ### Added
