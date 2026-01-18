@@ -324,11 +324,15 @@ AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
 AUTH_COOKIE_NAME = "viewer_auth"
 AUTH_TOKEN = None
 
+# Session duration in days (default: 30 days)
+AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
+AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
+
 if AUTH_ENABLED:
     AUTH_TOKEN = hashlib.sha256(
         f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode("utf-8")
     ).hexdigest()
-    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME})")
+    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
 else:
     logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
 
@@ -389,7 +393,7 @@ async def login(request: Request):
                 value=AUTH_TOKEN,
                 httponly=True,
                 samesite="lax",
-                max_age=30 * 24 * 60 * 60,  # 30 days
+                max_age=AUTH_SESSION_SECONDS,  # Configurable via AUTH_SESSION_DAYS
             )
             return response
         raise HTTPException(status_code=401, detail="Invalid credentials")
