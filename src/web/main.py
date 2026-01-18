@@ -389,12 +389,14 @@ async def login(request: Request):
                 request.url.scheme == "https" or
                 request.headers.get("x-forwarded-proto", "").lower() == "https"
             )
+            # SameSite=None required for in-app browsers (Telegram, etc.) but needs Secure
+            # SameSite=Lax for HTTP (local dev) since None requires Secure
             response.set_cookie(
                 key=AUTH_COOKIE_NAME,
                 value=AUTH_TOKEN,
                 httponly=True,
-                secure=is_https,  # Required for iOS Safari on HTTPS
-                samesite="lax" if is_https else "lax",
+                secure=is_https,
+                samesite="none" if is_https else "lax",
                 max_age=30 * 24 * 60 * 60,  # 30 days
             )
             return response

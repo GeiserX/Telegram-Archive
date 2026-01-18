@@ -243,11 +243,14 @@
                 <p class="text-sm text-blue-100 mb-8 text-center" v-if="authRequired">
                     Sign in to access your backup
                 </p>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="authCheckFailed">
+                    ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
+                </p>
                 <p class="text-sm text-blue-100 mb-8 text-center" v-else>
-                    Authentication is currently disabled
+                    Authentication is disabled
                 </p>
 
-                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired">
+                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
@@ -389,6 +392,22 @@
                         <button @click="requestNotificationPermission()" 
                             class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
                             Enable
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Notifications Blocked Banner (shows when permission is 'denied' and user had subscribed) -->
+                <div v-if="pushEnabled && notificationsSupported && notificationPermission === 'denied' && pushSubscribed" 
+                    class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
+                    <div class="flex items-center gap-2 text-amber-200 text-sm">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path>
+                        </svg>
+                        <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
+                        <button @click="unsubscribeFromPush()" 
+                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
+                            Unsubscribe
                         </button>
                     </div>
                 </div>
@@ -858,6 +877,7 @@
                 const scrollAnchor = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
+                const authCheckFailed = ref(false)
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
@@ -1132,21 +1152,18 @@
                                 setupInfiniteScroll()
                             }
                         } else {
-                            // If status endpoint fails, assume no auth required
-                            console.warn('Failed to get auth status, assuming no auth required')
-                            authRequired.value = false
-                            isAuthenticated.value = true
-                            await loadChats()
-                            setupInfiniteScroll()
+                            // If status endpoint fails, show login form with warning
+                            console.warn('Failed to get auth status, showing login form')
+                            authCheckFailed.value = true
+                            authRequired.value = true  // Show login form
+                            isAuthenticated.value = false
                         }
                     } catch (e) {
-                        // On error, assume no auth required to allow access
+                        // On network error, show login form with warning  
                         console.error('Auth status error', e)
-                        authRequired.value = false
-                        isAuthenticated.value = true
-                        await loadChats()
-                        await loadStats()
-                        setupInfiniteScroll()
+                        authCheckFailed.value = true
+                        authRequired.value = true  // Show login form
+                        isAuthenticated.value = false
                     } finally {
                         loadingAuth.value = false
                     }
@@ -2299,6 +2316,7 @@
                     // Auth
                     isAuthenticated,
                     authRequired,
+                    authCheckFailed,
                     loadingAuth,
                     loginForm,
                     loginError,
