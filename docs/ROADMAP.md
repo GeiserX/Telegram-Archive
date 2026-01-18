@@ -6,26 +6,23 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
-## v5.0.0 - Real-time Sync & High-Performance Viewer (In Progress)
+## Near-term Improvements
 
-**Status:** PR #11 in testing
+### Notification System
+- [ ] Detect when user has blocked notifications at OS/browser level
+- [ ] Auto-disable push subscriptions for blocked users (avoid wasted resources)
+- [ ] Notification preferences per chat (mute specific chats)
 
-### Core Features
-- [x] Real-time listener mode (ENABLE_LISTENER)
-- [x] Instant message/edit/deletion sync
-- [x] Rate-limiting protection against mass operations
-- [x] Shared TelegramClient (prevents session locking)
-- [x] Per-chat statistics in viewer
-- [x] Server-side chat search
-- [x] Cursor-based pagination (O(1) performance)
-- [x] WebSocket real-time updates (PostgreSQL LISTEN/NOTIFY)
-- [x] Album/grouped media display
-- [x] Chat restore script (scripts/restore_chat.py)
+### Mass Operation Protection
+- [ ] True zero-footprint mode: buffer ALL operations before applying
+- [ ] Configurable "suspicious activity" alerts (email/webhook)
+- [ ] Undo window for deletions (soft-delete with recovery period)
 
-### Remaining
-- [ ] Final testing on production data
-- [ ] Documentation updates
-- [ ] Release
+### Viewer Polish
+- [ ] Custom themes (light mode, OLED dark, Telegram classic)
+- [ ] Sticker/animated emoji display
+- [ ] Message reactions display
+- [ ] Voice message player with waveform
 
 ---
 
@@ -109,12 +106,10 @@ AUDIT_LOG_RETENTION=forever
 
 ## Future Ideas
 
-### Viewer Enhancements
-- [ ] Full-text search across all messages
-- [ ] Message reactions display
-- [ ] Chat statistics dashboard
-- [ ] Custom themes
-- [ ] Sticker/animated emoji support
+### Search & Discovery
+- [ ] Full-text search across all messages (Elasticsearch/Meilisearch)
+- [ ] Semantic search (find by meaning, not just keywords)
+- [ ] Advanced filters: date range, media type, sender
 
 ### Backup Features
 - [ ] Multi-account support (backup multiple Telegram accounts)
@@ -123,16 +118,24 @@ AUDIT_LOG_RETENTION=forever
 - [ ] Incremental backup compression
 - [ ] Backup scheduling presets (conservative, aggressive)
 
-### Integrations
+### Export & Integrations
 - [ ] REST API for external integrations
 - [ ] Webhooks for new message notifications
 - [ ] Export formats: HTML archive, PDF, MBOX
 - [ ] Scheduled backup reports (email/Slack)
+- [ ] Import from other backup formats
 
-### Mobile
+### Mobile Experience
 - [ ] Progressive Web App (PWA) support
 - [ ] Mobile-optimized viewer interface
 - [ ] Offline viewing capability
+- [ ] iOS/Android native app wrapper
+
+### AI Features
+- [ ] Chat summarization
+- [ ] Auto-tagging and categorization
+- [ ] Sentiment analysis dashboard
+- [ ] Translation on-demand
 
 ---
 

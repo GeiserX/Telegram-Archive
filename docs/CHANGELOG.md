@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.0.2] - 2026-01-18
+
+### Fixed
+- In-app browser auth (Telegram, etc.) - changed cookie `SameSite=Lax` to `SameSite=None` for cross-site contexts
+- Better error message when auth check fails in restricted browsers
+- Push subscriptions now cleaned up when user blocks notifications at OS/browser level (403 handling)
+
+### Added
+- Warning banner when notifications are blocked but subscription exists
+- Helpful message for users accessing from in-app browsers
+
 ## [5.0.1] - 2026-01-18
 
 ### Fixed
@@ -28,11 +39,12 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
 - **`LISTEN_CHAT_ACTIONS`** - Track chat photo/title changes, member joins/leaves
 - **`LISTEN_ALBUMS`** - Detect and group album uploads together
 
-#### Zero-Footprint Mass Operation Protection
+#### Mass Operation Rate Limiting
 - **Sliding-window rate limiter** protects against mass edit/deletion attacks
-- **`MASS_OPERATION_THRESHOLD`** - Operations before protection triggers (default: 10)
+- **`MASS_OPERATION_THRESHOLD`** - Max operations per chat before blocking (default: 10)
 - **`MASS_OPERATION_WINDOW_SECONDS`** - Time window for counting operations (default: 30)
-- When triggered, **ALL pending operations are discarded** - zero changes to your backup
+- First N operations are applied, then chat is blocked for remainder of window
+- To prevent ANY deletions from affecting your backup, set `LISTEN_DELETIONS=false`
 
 #### Priority Chats
 - **`PRIORITY_CHAT_IDS`** - Process these chats FIRST in all backup/sync operations

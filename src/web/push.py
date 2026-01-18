@@ -290,6 +290,10 @@ class PushNotificationManager:
                     # Subscription expired or unsubscribed
                     failed_endpoints.append(sub['endpoint'])
                     logger.debug(f"Push subscription expired: {sub['endpoint'][:50]}...")
+                elif e.response and e.response.status_code == 403:
+                    # Permission denied - user blocked notifications
+                    failed_endpoints.append(sub['endpoint'])
+                    logger.info(f"Push blocked by user (403): {sub['endpoint'][:50]}...")
                 else:
                     logger.warning(f"Push notification failed: {e}")
             except Exception as e:
