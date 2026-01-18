@@ -243,11 +243,14 @@
                 <p class="text-sm text-blue-100 mb-8 text-center" v-if="authRequired">
                     Sign in to access your backup
                 </p>
+                <p class="text-sm text-amber-200 mb-8 text-center" v-else-if="authCheckFailed">
+                    ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
+                </p>
                 <p class="text-sm text-blue-100 mb-8 text-center" v-else>
-                    Authentication is currently disabled
+                    Authentication is disabled
                 </p>
 
-                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired">
+                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
@@ -389,6 +392,22 @@
                         <button @click="requestNotificationPermission()" 
                             class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
                             Enable
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Notification Blocked Banner (shows when push is subscribed but notifications blocked) -->
+                <div v-if="notificationsBlocked && pushSubscribed" 
+                    class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
+                    <div class="flex items-center gap-2 text-amber-200 text-sm">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>
+                        <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
+                        <button @click="unsubscribeFromPush()" 
+                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
+                            Unsubscribe
                         </button>
                     </div>
                 </div>
@@ -858,6 +877,7 @@
                 const scrollAnchor = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
+                const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
@@ -875,7 +895,11 @@
                 // WebSocket and Notifications (v5.0)
                 const notificationsEnabled = ref(false)
                 const notificationsSupported = ref('Notification' in window)
-                const notificationPermission = ref(Notification?.permission || 'denied')
+                // Use typeof check to avoid ReferenceError in iOS Safari/in-app browsers
+                const notificationPermission = ref(
+                    typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+                )
+                const notificationsBlocked = ref(false)  // Browser/OS blocked notifications
                 const pushEnabled = ref(false)  // Web Push (works when tab closed)
                 const pushSubscribed = ref(false)  // Currently subscribed to push
                 const pushVapidKey = ref(null)  // VAPID public key for push subscription
@@ -1137,21 +1161,16 @@
                                 setupInfiniteScroll()
                             }
                         } else {
-                            // If status endpoint fails, assume no auth required
-                            console.warn('[DEBUG] Failed to get auth status, res.ok=false, assuming no auth required')
-                            authRequired.value = false
-                            isAuthenticated.value = true
-                            await loadChats()
-                            setupInfiniteScroll()
+                            // If status endpoint returns non-2xx, mark auth check as failed
+                            console.warn('[DEBUG] Auth check failed: HTTP', res.status)
+                            authCheckFailed.value = true
+                            // Still show login form so user can try
                         }
                     } catch (e) {
-                        // On error, assume no auth required to allow access
-                        console.error('[DEBUG] Auth status error (catch):', e)
-                        authRequired.value = false
-                        isAuthenticated.value = true
-                        await loadChats()
-                        await loadStats()
-                        setupInfiniteScroll()
+                        // On network error, mark as failed (likely in-app browser issue)
+                        console.error('[DEBUG] Auth check error:', e.message)
+                        authCheckFailed.value = true
+                        // Show login form so user can try
                     } finally {
                         loadingAuth.value = false
                     }
@@ -1300,6 +1319,12 @@
                                 if (pushSubscription) {
                                     pushSubscribed.value = true
                                     console.log('[Push] Already subscribed')
+                                    
+                                    // Check if browser has blocked notifications
+                                    if (notificationPermission.value === 'denied') {
+                                        notificationsBlocked.value = true
+                                        console.log('[Push] ⚠️ Subscribed but notifications blocked by browser')
+                                    }
                                 }
                             }
                         } catch (e) {
@@ -2304,6 +2329,7 @@
                     // Auth
                     isAuthenticated,
                     authRequired,
+                    authCheckFailed,
                     loadingAuth,
                     loginForm,
                     loginError,
@@ -2356,6 +2382,7 @@
                     notificationsEnabled,
                     notificationsSupported,
                     notificationPermission,
+                    notificationsBlocked,
                     pushEnabled,
                     pushSubscribed,
                     requestNotificationPermission,
