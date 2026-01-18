@@ -741,12 +741,24 @@
                                             playsinline @click="openMedia(msg)">
                                         </video>
 
-                                        <!-- Videos -->
-                                        <video v-else-if="msg.media_type === 'video'" controls preload="none"
-                                            class="rounded-lg max-h-64 w-full"
-                                            @error="handleMediaError($event, msg)">
-                                            <source :src="getMediaUrl(msg)" type="video/mp4">
-                                        </video>
+                                        <!-- Videos - click to open in lightbox -->
+                                        <div v-else-if="msg.media_type === 'video'" 
+                                            class="relative cursor-pointer group"
+                                            @click="openMedia(msg)">
+                                            <video preload="metadata"
+                                                class="rounded-lg max-h-64 w-full pointer-events-none"
+                                                @error="handleMediaError($event, msg)">
+                                                <source :src="getMediaUrl(msg)" type="video/mp4">
+                                            </video>
+                                            <!-- Play overlay -->
+                                            <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
+                                                <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                                                    <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                                        <path d="M8 5v14l11-7z"/>
+                                                    </svg>
+                                                </div>
+                                            </div>
+                                        </div>
 
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media_type === 'sticker'" class="max-w-[200px]">
@@ -916,12 +928,20 @@
             </button>
             
             <!-- Image -->
-            <img v-if="lightboxMedia" 
+            <img v-if="lightboxMedia && isLightboxImage(lightboxMedia)" 
                 :src="getMediaUrl(lightboxMedia)" 
                 class="max-h-[90vh] max-w-[90vw] object-contain"
                 @click.stop>
             
-            <!-- Image Info -->
+            <!-- Video -->
+            <video v-else-if="lightboxMedia && isLightboxVideo(lightboxMedia)"
+                :src="getMediaUrl(lightboxMedia)"
+                class="max-h-[90vh] max-w-[90vw] object-contain"
+                controls autoplay
+                @click.stop>
+            </video>
+            
+            <!-- Media Info -->
             <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
                 {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
                 <span v-if="mediaMessages.length > 1" class="ml-2 opacity-70">
@@ -1002,13 +1022,27 @@
                 const lightboxMedia = ref(null)  // Current media being viewed
                 const lightboxIndex = ref(0)    // Index in mediaMessages array
                 
-                // Get all media messages in current chat for navigation
+                // Get all viewable media messages (photos, videos, animations) for lightbox navigation
                 const mediaMessages = computed(() => {
                     return messages.value.filter(m => 
-                        m.media_path && (m.media_type === 'photo' || m.media_type === 'video' || 
-                        (m.media_type === 'document' && isImageDocument(m)))
+                        m.media_path && (
+                            m.media_type === 'photo' || 
+                            m.media_type === 'video' || 
+                            m.media_type === 'animation' ||
+                            (m.media_type === 'document' && isImageDocument(m))
+                        )
                     ).sort((a, b) => new Date(a.date) - new Date(b.date))  // Oldest first for intuitive prev/next
                 })
+                
+                // Check if media should show as image in lightbox
+                const isLightboxImage = (msg) => {
+                    return msg.media_type === 'photo' || (msg.media_type === 'document' && isImageDocument(msg))
+                }
+                
+                // Check if media should show as video in lightbox
+                const isLightboxVideo = (msg) => {
+                    return msg.media_type === 'video' || msg.media_type === 'animation'
+                }
                 
                 const loadChats = async (append = false) => {
                     if (!append) {
@@ -2201,8 +2235,9 @@
                 }
 
                 const openMedia = (msg) => {
-                    // Open lightbox for images, direct link for other media
-                    if (msg.media_type === 'photo' || (msg.media_type === 'document' && isImageDocument(msg))) {
+                    // Open lightbox for images and videos, direct link for other media
+                    if (msg.media_type === 'photo' || msg.media_type === 'video' || msg.media_type === 'animation' ||
+                        (msg.media_type === 'document' && isImageDocument(msg))) {
                         lightboxMedia.value = msg
                         lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
                         lightboxOpen.value = true
@@ -2472,6 +2507,8 @@
                     closeLightbox,
                     lightboxPrev,
                     lightboxNext,
+                    isLightboxImage,
+                    isLightboxVideo,
                     linkifyText,
                     scrollToMessage,
                     messagesContainer,
