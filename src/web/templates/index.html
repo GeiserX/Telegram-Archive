@@ -611,8 +611,8 @@
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
-                            <!-- Message -->
-                            <div class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <!-- Message (hide duplicate album messages - only show first in group) -->
+                            <div v-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
@@ -832,7 +832,7 @@
                             </div>
                             
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
-                            <div v-if="showDateSeparator(index)" class="date-separator">
+                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
                                 <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
                             </div>
                         </template>
@@ -1984,10 +1984,16 @@
                 }
 
                 const showSenderName = (index) => {
-                    if (index === 0) return true
-                    const prevMsg = sortedMessages.value[index - 1]
+                    // With flex-col-reverse: index 0 = newest (bottom), higher index = older (top)
+                    // Show sender name at TOP of each sender's sequence (oldest message from sender)
+                    // Check if message ABOVE (index + 1, older) is from different sender
                     const currMsg = sortedMessages.value[index]
-                    return prevMsg.sender_id !== currMsg.sender_id
+                    const olderMsg = sortedMessages.value[index + 1]
+                    
+                    // Last message (oldest, at top) always shows name
+                    if (!olderMsg) return true
+                    
+                    return olderMsg.sender_id !== currMsg.sender_id
                 }
 
                 const showDateSeparator = (index) => {
