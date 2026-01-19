@@ -21,6 +21,7 @@ from typing import Optional, List, AsyncGenerator, Set, Dict
 from pathlib import Path
 import hashlib
 import json
+from urllib.parse import quote
 
 from ..config import Config
 from ..db import DatabaseAdapter, init_database, close_database, get_db_manager
@@ -814,13 +815,18 @@ async def export_chat(chat_id: int):
                 if not first:
                     yield ',\n'
                 first = False
-                yield json.dumps(msg)
+                # Ensure UTF-8 encoding for non-Latin characters
+                yield json.dumps(msg, ensure_ascii=False)
             yield '\n]'
         
+        # RFC 5987 encoding for non-ASCII filenames
+        encoded_filename = quote(filename)
         return StreamingResponse(
             iter_json(),
-            media_type="application/json",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
         )
     except HTTPException:
         raise

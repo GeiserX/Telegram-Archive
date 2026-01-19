@@ -820,7 +820,8 @@ class TelegramListener:
                 if event.new_photo:
                     action_type = 'photo_changed'
                     logger.info(f"📷 Chat photo changed: chat={chat_id}")
-                elif event.photo_removed:
+                elif getattr(event, 'photo', None) is None and not event.new_photo:
+                    # Photo removed - Telethon doesn't have photo_removed attr in all versions
                     action_type = 'photo_removed'
                     logger.info(f"📷 Chat photo removed: chat={chat_id}")
                 elif event.new_title:
@@ -890,6 +891,21 @@ class TelegramListener:
                 # If LISTEN_NEW_MESSAGES is enabled, save each message in the album
                 if self.config.listen_new_messages:
                     for message in event.messages:
+                        # Get actual media type (photo/video) instead of generic 'album'
+                        media_type = self._get_media_type(message.media) if message.media else None
+                        media_path = None
+                        media_id = None
+                        
+                        # Download media if enabled
+                        if media_type and self.config.listen_new_messages_media and self.config.download_media:
+                            try:
+                                media_path = await self._download_media(message, chat_id)
+                                if media_path:
+                                    media_id = f"{chat_id}_{message.id}_{media_type}"
+                                    logger.debug(f"📎 Downloaded album media: {media_path}")
+                            except Exception as e:
+                                logger.warning(f"Failed to download album media for message {message.id}: {e}")
+                        
                         message_data = {
                             'id': message.id,
                             'chat_id': chat_id,
@@ -900,10 +916,10 @@ class TelegramListener:
                             'reply_to_text': None,
                             'forward_from_id': None,
                             'edit_date': message.edit_date,
-                            'media_type': 'album',  # Mark as album for special handling
-                            'media_id': None,  # Media handled by scheduled backup
-                            'media_path': None,
-                            'raw_data': {'grouped_id': message.grouped_id} if message.grouped_id else {},
+                            'media_type': media_type,
+                            'media_id': media_id,
+                            'media_path': media_path,
+                            'raw_data': {'grouped_id': str(message.grouped_id)} if message.grouped_id else {},
                             'is_outgoing': 1 if message.out else 0
                         }
                         await self.db.insert_message(message_data)

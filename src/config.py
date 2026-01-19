@@ -209,6 +209,12 @@ class Config:
         # Default: 03:00 (3am) in the configured viewer timezone
         self.stats_calculation_hour = int(os.getenv('STATS_CALCULATION_HOUR', '3'))
         
+        # Avatar refresh interval in hours
+        # Re-check and download avatars if existing file is older than this
+        # Set to 0 to disable periodic refresh (only download new/changed photos)
+        # Default: 24 hours
+        self.avatar_refresh_hours = int(os.getenv('AVATAR_REFRESH_HOURS', '24'))
+        
         # Show stats in viewer UI
         # When disabled, hides the stats dropdown next to "Telegram Archive" title
         # Useful for restricted viewers where you don't want to expose total counts

@@ -6,6 +6,24 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-01-19
+
+### Fixed
+
+#### Bug Fixes
+- **Long message notification error** (#36) - Truncate notification payload to avoid PostgreSQL NOTIFY 8KB limit
+- **Non-Latin export encoding** (#34) - JSON export now uses UTF-8 encoding with RFC 5987 filename encoding
+- **ChatAction photo_removed error** (#28) - Fixed `AttributeError: 'Event' object has no attribute 'photo_removed'`
+- **Album grouping flaky** (#29) - Albums now save correct media_type (photo/video) instead of generic 'album'
+- **Album media not downloading** (#31) - Album handler now downloads media when `LISTEN_NEW_MESSAGES_MEDIA=true`
+- **Sender name position** - Fixed sender names appearing at bottom instead of top with flex-col-reverse layout
+
+### Added
+- **`AVATAR_REFRESH_HOURS`** - Configurable avatar refresh interval (default: 24h). Re-checks avatars periodically to catch updates (#35)
+
+### Changed
+- Improved documentation for chat filtering options (`GLOBAL_INCLUDE_CHAT_IDS` vs type-specific) (#33)
+
 ## [5.2.0] - 2026-01-18
 
 ### Fixed

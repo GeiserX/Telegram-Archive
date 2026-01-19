@@ -863,10 +863,15 @@ class TelegramBackup:
         and we never delete older ones. This way, if a user removes their
         photo later, we still keep at least one historical copy.
         
+        Periodic refresh: If AVATAR_REFRESH_HOURS is set (default 24), existing
+        avatars older than that will be re-checked and re-downloaded if changed.
+        
         Args:
             entity: Telegram entity (User, Chat, Channel)
             marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
+        import time
+        
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
         
@@ -896,8 +901,22 @@ class TelegramBackup:
         file_name = f"{file_id}_{photo_id}.jpg"
         file_path = os.path.join(base_dir, file_name)
 
-        # If we've already downloaded this exact photo, skip
-        if os.path.exists(file_path):
+        # Check if we need to download
+        should_download = False
+        
+        if not os.path.exists(file_path):
+            # File doesn't exist - always download
+            should_download = True
+        elif self.config.avatar_refresh_hours > 0:
+            # File exists - check if it's older than refresh interval
+            file_mtime = os.path.getmtime(file_path)
+            age_hours = (time.time() - file_mtime) / 3600
+            if age_hours > self.config.avatar_refresh_hours:
+                # File is stale - re-download to check for updates
+                should_download = True
+                logger.debug(f"Avatar for {file_id} is {age_hours:.1f}h old, refreshing")
+        
+        if not should_download:
             return
 
         try:

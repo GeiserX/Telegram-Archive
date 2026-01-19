@@ -208,6 +208,7 @@ Features:
 | `BATCH_SIZE` | `100` | Messages per batch during backup |
 | `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
 | `SESSION_NAME` | `telegram_backup` | Telethon session file name |
+| `AVATAR_REFRESH_HOURS` | `24` | Re-check avatars if older than this (0=disable) |
 
 #### Viewer Configuration
 
@@ -267,14 +268,23 @@ Push notification modes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally |
-| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally |
-| `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private chats |
-| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist private chats |
-| `GROUPS_INCLUDE_CHAT_IDS` | - | Whitelist group chats |
-| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist group chats |
-| `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels |
-| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels |
+| `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally (any type) |
+| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally (any type) |
+| `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private/DM chats only |
+| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist private/DM chats only |
+| `GROUPS_INCLUDE_CHAT_IDS` | - | Whitelist group chats only |
+| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist group chats only |
+| `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels only |
+| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels only |
+
+**How filtering works** (priority order):
+1. `GLOBAL_EXCLUDE` → Skip (blacklist wins)
+2. Type-specific exclude → Skip
+3. `GLOBAL_INCLUDE` → Backup (works for ANY chat type)
+4. Type-specific include → Backup (only for that type)
+5. `CHAT_TYPES` filter → Backup if type matches
+
+**GLOBAL vs Type-specific**: `GLOBAL_INCLUDE_CHAT_IDS` backs up a chat regardless of its type. Type-specific includes (e.g., `PRIVATE_INCLUDE_CHAT_IDS`) only apply to chats of that type. The chat type is auto-detected from Telegram.
 
 #### Chat ID Format
 

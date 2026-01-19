@@ -90,6 +90,15 @@ class RealtimeNotifier:
         if not self._initialized:
             await self.init()
         
+        # Truncate message text to avoid PostgreSQL NOTIFY 8KB limit
+        # The viewer fetches full content via API, so truncation is fine
+        if 'message' in data and isinstance(data['message'], dict):
+            msg = data['message']
+            if 'text' in msg and msg.get('text') and len(msg['text']) > 500:
+                data = data.copy()
+                data['message'] = msg.copy()
+                data['message']['text'] = msg['text'][:500] + '…'
+        
         payload = {
             "type": notification_type.value,
             "chat_id": chat_id,
