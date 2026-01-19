@@ -51,7 +51,7 @@ async def normalize_grouped_ids(dry_run: bool = False):
             AND raw_data::text NOT LIKE '%"grouped_id": "%'
         """
         
-        async with db.async_session_factory() as session:
+        async with db.db_manager.async_session_factory() as session:
             from sqlalchemy import text
             result = await session.execute(text(query))
             rows = result.fetchall()
@@ -77,7 +77,7 @@ async def normalize_grouped_ids(dry_run: bool = False):
         updated = 0
         errors = 0
         
-        async with db.async_session_factory() as session:
+        async with db.db_manager.async_session_factory() as session:
             from sqlalchemy import text
             
             for row in rows:
