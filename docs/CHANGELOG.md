@@ -6,6 +6,18 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-01-20
+
+### Added
+- **Forwarded message info** - Shows the original sender's name for forwarded messages (resolved from Telegram when possible)
+- **Channel post author** - Shows the post author (signature) for channel messages when enabled in the channel
+
+### Fixed
+- **Avatar refresh not working** (#35) - Simplified avatar logic to always update on each backup. Removed `AVATAR_REFRESH_HOURS` config (was unreliable)
+
+### Removed
+- `AVATAR_REFRESH_HOURS` environment variable - Avatars now update on every backup run automatically
+
 ## [5.3.1] - 2026-01-20
 
 ### Fixed
@@ -33,9 +45,6 @@ docker exec telegram-backup python scripts/normalize_grouped_ids.py            #
 - **Album grouping flaky** (#29) - Albums now save correct media_type (photo/video) instead of generic 'album'
 - **Album media not downloading** (#31) - Album handler now downloads media when `LISTEN_NEW_MESSAGES_MEDIA=true`
 - **Sender name position** - Fixed sender names appearing at bottom instead of top with flex-col-reverse layout
-
-### Added
-- **`AVATAR_REFRESH_HOURS`** - Configurable avatar refresh interval (default: 24h). Re-checks avatars periodically to catch updates (#35)
 
 ### Changed
 - Improved documentation for chat filtering options (`GLOBAL_INCLUDE_CHAT_IDS` vs type-specific) (#33)

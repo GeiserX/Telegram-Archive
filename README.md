@@ -8,25 +8,46 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 
 ## Features
 
-✨ **Incremental Backups** - Only downloads new messages since last backup  
-⚡ **Real-time Sync** - Track edits and deletions instantly with listener mode (v4.1+)  
-📅 **Scheduled Execution** - Configurable cron schedule  
-🐳 **Docker Ready** - Easy deployment with Docker Compose  
-🌐 **Web Viewer** - Browse chats with Telegram-like UI (mobile-friendly)  
-🔐 **Restricted Viewer** - Share specific chats via `DISPLAY_CHAT_IDS`  
-🎵 **Voice/Audio Player** - Play audio messages in browser  
-📤 **Chat Export** - Export chat history to JSON  
-🎬 **GIF Autoplay** - Animated GIFs play when visible  
-📁 **Media Support** - Photos, videos, documents, stickers  
-🔒 **Secure** - Optional authentication, runs as non-root  
-🗄️ **Multiple Databases** - SQLite (default) or PostgreSQL support (v3.0+)  
+### 📦 Backup Engine
+- **Incremental backups** — Only downloads new messages since last backup
+- **Scheduled execution** — Configurable cron schedule (default: every 6 hours)
+- **Real-time listener** — Catch edits, deletions, and new messages instantly between backups
+- **Album support** — Groups photos/videos sent together as albums
+- **Service messages** — Tracks group photo changes, title changes, user joins/leaves
+- **Forwarded message info** — Shows original sender name for forwarded messages
+- **Channel signatures** — Displays post author when channels have signatures enabled
+- **Media deduplication** — Symlinks identical files to save disk space
+- **Avatars always fresh** — Profile photos updated on every backup run
+
+### 🎬 Media Support
+- Photos, videos, documents, stickers, GIFs
+- Voice messages and audio files with in-browser player
+- Polls with vote counts and results
+- Configurable size limits and selective download
+
+### 🌐 Web Viewer
+- **Telegram-like dark UI** — Feels like the real app
+- **Mobile-friendly** — Responsive design with iOS/Android optimizations
+- **Integrated lightbox** — View photos and videos without leaving the page
+- **Keyboard navigation** — Arrow keys to browse media, Esc to close
+- **Real-time updates** — WebSocket sync shows new messages instantly
+- **Push notifications** — Get notified even when browser is closed
+- **Chat search** — Find messages by text content
+- **JSON export** — Download chat history with date range filters
+
+### 🔒 Security & Privacy
+- **Optional authentication** — Password-protect your viewer
+- **Restricted sharing** — Share specific chats via `DISPLAY_CHAT_IDS`
+- **Mass deletion protection** — Rate limiting prevents accidental data loss
+- **Runs as non-root** — Docker best practices
+
+### 🗄️ Database
+- **SQLite** (default) — Zero config, single file
+- **PostgreSQL** — For larger deployments with real-time LISTEN/NOTIFY
 
 ## 🗺️ Roadmap
 
-See **[docs/ROADMAP.md](docs/ROADMAP.md)** for:
-- Complete version history with all features and fixes
-- Planned features for v5.0 and beyond
-- Future roadmap items
+See **[docs/CHANGELOG.md](docs/CHANGELOG.md)** for complete version history.
 
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
@@ -160,7 +181,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:v4.1.0
+    image: drumsergio/telegram-archive-viewer:latest
     ports:
       - "8000:8000"
     environment:
@@ -175,14 +196,6 @@ services:
 ```
 
 Browse your backups at **http://localhost:8000**
-
-Features:
-- Telegram-like dark UI
-- Photo/video viewer
-- Voice note player
-- Chat search
-- Export to JSON
-- Mobile-friendly layout
 
 ## Configuration
 
@@ -208,7 +221,6 @@ Features:
 | `BATCH_SIZE` | `100` | Messages per batch during backup |
 | `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
 | `SESSION_NAME` | `telegram_backup` | Telethon session file name |
-| `AVATAR_REFRESH_HOURS` | `24` | Re-check avatars if older than this (0=disable) |
 
 #### Viewer Configuration
 
@@ -419,15 +431,6 @@ Telegram Archive supports both SQLite and PostgreSQL.
 ## ⚠️ Upgrading
 
 For detailed upgrade instructions, breaking changes, and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
-
-### Quick Reference
-
-| From | To | Action Required |
-|------|-----|-----------------|
-| v4.0.5 | v4.0.6+ | **Migration required** - see CHANGELOG |
-| v3.x | v4.0 | Update image names in docker-compose |
-| v2.x | v3.0 | Just pull and restart |
-| Fresh install | Any | No migration needed |
 
 ## CLI Commands
 
