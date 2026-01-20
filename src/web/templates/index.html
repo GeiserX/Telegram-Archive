@@ -635,6 +635,13 @@
                                         <div class="truncate opacity-70">{{ msg.reply_to_text || 'Message' }}</div>
                                     </div>
 
+                                    <!-- Forwarded Message Info -->
+                                    <div v-if="msg.forward_from_id || getForwardName(msg)"
+                                        class="border-l-2 border-green-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2">
+                                        <div class="font-semibold text-green-400 mb-0.5">Forwarded from</div>
+                                        <div class="truncate opacity-90">{{ getForwardName(msg) }}</div>
+                                    </div>
+
                                     <!-- Polls -->
                                     <div v-if="msg.media_type === 'poll' && msg.raw_data && msg.raw_data.poll"
                                         class="mb-2 w-full max-w-sm bg-black/20 rounded-lg p-3">
@@ -1963,12 +1970,29 @@
                 }
 
                 const getSenderName = (msg) => {
+                    // For channels, show post_author (signature) if available
+                    if (msg.raw_data && msg.raw_data.post_author) {
+                        return msg.raw_data.post_author
+                    }
                     if (msg.first_name || msg.last_name) {
                         return `${msg.first_name || ''} ${msg.last_name || ''}`.trim()
                     }
                     if (msg.username) return msg.username
                     if (msg.sender_id) return `User ${msg.sender_id}`
                     return 'Deleted Account'
+                }
+
+                // Get name for forwarded message source
+                const getForwardName = (msg) => {
+                    // First check raw_data for the resolved name
+                    if (msg.raw_data && msg.raw_data.forward_from_name) {
+                        return msg.raw_data.forward_from_name
+                    }
+                    // Fall back to ID if we have one
+                    if (msg.forward_from_id) {
+                        return `ID: ${msg.forward_from_id}`
+                    }
+                    return null
                 }
 
                 const isDeletedChat = (chat) => {
@@ -2498,6 +2522,7 @@
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
+                    getForwardName,
                     showSenderName,
                     showDateSeparator,
                     // Album support

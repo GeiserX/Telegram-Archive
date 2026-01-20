@@ -208,7 +208,6 @@ Features:
 | `BATCH_SIZE` | `100` | Messages per batch during backup |
 | `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
 | `SESSION_NAME` | `telegram_backup` | Telethon session file name |
-| `AVATAR_REFRESH_HOURS` | `24` | Re-check avatars if older than this (0=disable) |
 
 #### Viewer Configuration
 
