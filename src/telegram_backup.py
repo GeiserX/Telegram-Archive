@@ -749,6 +749,31 @@ class TelegramBackup:
         if message.grouped_id:
             message_data['raw_data']['grouped_id'] = str(message.grouped_id)
         
+        # Capture forwarded message info (name of original sender)
+        if message.fwd_from:
+            fwd = message.fwd_from
+            # fwd_from.from_name is set when forwarding from hidden users or deleted accounts
+            if fwd.from_name:
+                message_data['raw_data']['forward_from_name'] = fwd.from_name
+            elif fwd.from_id:
+                # Try to resolve the name from the entity
+                try:
+                    fwd_entity = await self.client.get_entity(fwd.from_id)
+                    if hasattr(fwd_entity, 'title'):
+                        message_data['raw_data']['forward_from_name'] = fwd_entity.title
+                    elif hasattr(fwd_entity, 'first_name'):
+                        name = fwd_entity.first_name or ''
+                        if fwd_entity.last_name:
+                            name += ' ' + fwd_entity.last_name
+                        message_data['raw_data']['forward_from_name'] = name.strip()
+                except Exception:
+                    # Can't resolve - will fall back to ID in viewer
+                    pass
+        
+        # Capture channel post author (signature) if available
+        if hasattr(message, 'post_author') and message.post_author:
+            message_data['raw_data']['post_author'] = message.post_author
+        
         # Get reply text if this is a reply
         if message.reply_to_msg_id and message.reply_to:
             reply_msg = message.reply_to
@@ -857,21 +882,15 @@ class TelegramBackup:
 
     async def _ensure_profile_photo(self, entity, marked_id: int = None) -> None:
         """
-        Download and keep a copy of the profile photo for users and chats.
+        Download the current profile photo for users and chats.
 
-        We only ever add new files when Telegram reports a different photo,
-        and we never delete older ones. This way, if a user removes their
-        photo later, we still keep at least one historical copy.
-        
-        Periodic refresh: If AVATAR_REFRESH_HOURS is set (default 24), existing
-        avatars older than that will be re-checked and re-downloaded if changed.
+        Downloads the profile photo on every backup run to ensure avatars
+        stay up-to-date. Uses a simple naming scheme based on entity ID only.
         
         Args:
             entity: Telegram entity (User, Chat, Channel)
             marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
-        import time
-        
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
         
@@ -896,28 +915,10 @@ class TelegramBackup:
         os.makedirs(base_dir, exist_ok=True)
 
         # Use marked_id for consistent naming (matches what DB uses)
-        # For users, marked_id equals entity.id. For groups/channels, it's negative.
+        # Simple naming: just use ID.jpg - always overwrite with latest
         file_id = marked_id if marked_id is not None else entity.id
-        file_name = f"{file_id}_{photo_id}.jpg"
+        file_name = f"{file_id}.jpg"
         file_path = os.path.join(base_dir, file_name)
-
-        # Check if we need to download
-        should_download = False
-        
-        if not os.path.exists(file_path):
-            # File doesn't exist - always download
-            should_download = True
-        elif self.config.avatar_refresh_hours > 0:
-            # File exists - check if it's older than refresh interval
-            file_mtime = os.path.getmtime(file_path)
-            age_hours = (time.time() - file_mtime) / 3600
-            if age_hours > self.config.avatar_refresh_hours:
-                # File is stale - re-download to check for updates
-                should_download = True
-                logger.debug(f"Avatar for {file_id} is {age_hours:.1f}h old, refreshing")
-        
-        if not should_download:
-            return
 
         try:
             result = await self.client.download_profile_photo(
@@ -926,7 +927,7 @@ class TelegramBackup:
                 download_big=False  # Small size is usually sufficient
             )
             if result:
-                logger.info(f"📷 Downloaded avatar: {file_path}")
+                logger.debug(f"📷 Updated avatar: {file_path}")
         except Exception as e:
             logger.warning(f"Failed to download avatar for {entity.id}: {e}")
     
