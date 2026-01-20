@@ -547,9 +547,39 @@ class TelegramListener:
             file_name = self._get_media_filename(message, media_type, telegram_file_id)
             file_path = os.path.join(chat_media_dir, file_name)
             
-            # Download if not already exists
-            if not os.path.exists(file_path):
-                await self.client.download_media(message, file_path)
+            # Download with deduplication if enabled
+            if getattr(self.config, 'deduplicate_media', True):
+                # Global deduplication: use _shared directory for actual files
+                shared_dir = os.path.join(self.config.media_path, '_shared')
+                os.makedirs(shared_dir, exist_ok=True)
+                shared_file_path = os.path.join(shared_dir, file_name)
+                
+                if not os.path.exists(file_path):
+                    if os.path.exists(shared_file_path):
+                        # File exists in shared - create symlink
+                        try:
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                            logger.debug(f"🔗 Created symlink for deduplicated media: {file_name}")
+                        except OSError as e:
+                            logger.warning(f"Symlink failed, downloading copy: {e}")
+                            await self.client.download_media(message, file_path)
+                    else:
+                        # First time seeing this file - download to shared and create symlink
+                        await self.client.download_media(message, shared_file_path)
+                        logger.debug(f"📥 Downloaded media to shared: {file_name}")
+                        
+                        try:
+                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            os.symlink(rel_path, file_path)
+                        except OSError as e:
+                            logger.warning(f"Symlink failed, using direct path: {e}")
+                            import shutil
+                            shutil.move(shared_file_path, file_path)
+            else:
+                # No deduplication - download directly
+                if not os.path.exists(file_path):
+                    await self.client.download_media(message, file_path)
             
             # Return the path as stored in DB (relative to media root)
             return f"{self.config.media_path}/{chat_id}/{file_name}"
