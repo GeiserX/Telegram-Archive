@@ -49,11 +49,6 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 
 See **[docs/CHANGELOG.md](docs/CHANGELOG.md)** for complete version history.
 
-**Coming soon:**
-- Search improvements (date filters, sender filters)
-- Media gallery view
-- Backup scheduling UI
-
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
 ## 📸 Screenshots
