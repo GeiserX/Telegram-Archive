@@ -840,6 +840,66 @@ class TelegramListener:
                     action_type = 'user_kicked'
                     logger.debug(f"👤 User kicked: chat={chat_id}")
                 
+                # Save service message for display in viewer
+                if action_type:
+                    try:
+                        # Get actor info if available
+                        actor_id = None
+                        actor_name = None
+                        if hasattr(event, 'user_id') and event.user_id:
+                            actor_id = event.user_id
+                            try:
+                                actor = await self.client.get_entity(event.user_id)
+                                actor_name = getattr(actor, 'first_name', '') or getattr(actor, 'title', '')
+                                if hasattr(actor, 'last_name') and actor.last_name:
+                                    actor_name += f" {actor.last_name}"
+                            except:
+                                pass
+                        
+                        # Build service message text
+                        service_text = None
+                        if action_type == 'photo_changed':
+                            service_text = f"{actor_name or 'Someone'} changed the group photo" if actor_name else "Group photo was changed"
+                        elif action_type == 'photo_removed':
+                            service_text = f"{actor_name or 'Someone'} removed the group photo" if actor_name else "Group photo was removed"
+                        elif action_type == 'title_changed':
+                            service_text = f"{actor_name or 'Someone'} changed the group name to \"{event.new_title}\""
+                        elif action_type == 'user_joined':
+                            service_text = f"{actor_name or 'Someone'} joined the group"
+                        elif action_type == 'user_left':
+                            service_text = f"{actor_name or 'Someone'} left the group"
+                        elif action_type == 'user_added':
+                            service_text = f"{actor_name or 'Someone'} was added to the group"
+                        elif action_type == 'user_kicked':
+                            service_text = f"{actor_name or 'Someone'} was removed from the group"
+                        
+                        if service_text:
+                            # Generate unique message ID for service messages
+                            # Use negative ID to avoid collision with real messages
+                            import time
+                            service_msg_id = -int(time.time() * 1000) % 2147483647
+                            
+                            message_data = {
+                                'id': service_msg_id,
+                                'chat_id': chat_id,
+                                'sender_id': actor_id,
+                                'date': datetime.now(),
+                                'text': service_text,
+                                'reply_to_msg_id': None,
+                                'reply_to_text': None,
+                                'forward_from_id': None,
+                                'edit_date': None,
+                                'media_type': 'service',
+                                'media_id': None,
+                                'media_path': None,
+                                'raw_data': {'action_type': action_type, 'new_title': event.new_title if action_type == 'title_changed' else None},
+                                'is_outgoing': 0
+                            }
+                            await self.db.insert_message(message_data)
+                            logger.info(f"📌 Service message saved: {service_text}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save service message: {e}")
+                
                 # Update chat info if photo or title changed
                 if action_type in ('photo_changed', 'title_changed'):
                     # Get full entity for update

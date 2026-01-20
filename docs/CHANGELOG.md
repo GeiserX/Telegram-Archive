@@ -6,6 +6,22 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-01-20
+
+### Fixed
+- **Album duplicates showing** - Fixed `grouped_id` comparison (string vs integer) causing albums to show duplicate placeholder messages. Added `getGroupedId()` helper that converts to string for consistent comparison.
+
+### Added
+- **Service messages** - Chat actions (photo changed, title changed, user joined/left) now display as centered service messages in the viewer, like the real Telegram client
+- **`scripts/normalize_grouped_ids.py`** - Migration script to normalize old `grouped_id` values to strings. Run with `--dry-run` to preview changes.
+
+### Upgrade Notes
+If you have existing albums showing as duplicates, run the migration script:
+```bash
+docker exec telegram-backup python scripts/normalize_grouped_ids.py --dry-run  # Preview
+docker exec telegram-backup python scripts/normalize_grouped_ids.py            # Apply
+```
+
 ## [5.3.0] - 2026-01-19
 
 ### Fixed

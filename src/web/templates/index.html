@@ -611,8 +611,15 @@
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
-                            <!-- Message (hide duplicate album messages - only show first in group) -->
-                            <div v-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <!-- Service Message (chat actions like photo changed, user joined, etc) -->
+                            <div v-if="msg.media_type === 'service'" class="flex justify-center my-2">
+                                <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
+                                    style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
+                                    {{ msg.text }}
+                                </div>
+                            </div>
+                            <!-- Regular Message (hide duplicate album messages - only show first in group) -->
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
@@ -1673,23 +1680,29 @@
                 })
                 
                 // Group consecutive messages that belong to an album (same grouped_id)
+                // Note: grouped_id may be string or number depending on source, so compare as strings
+                const getGroupedId = (msg) => {
+                    const gid = msg.raw_data?.grouped_id
+                    return gid != null ? String(gid) : null
+                }
+                
                 const getAlbumForMessage = (msg) => {
-                    const groupedId = msg.raw_data?.grouped_id
+                    const groupedId = getGroupedId(msg)
                     if (!groupedId) return null
                     
-                    // Find all messages in this album
-                    return sortedMessages.value.filter(m => m.raw_data?.grouped_id === groupedId)
+                    // Find all messages in this album (compare as strings)
+                    return sortedMessages.value.filter(m => getGroupedId(m) === groupedId)
                 }
                 
                 // Check if this message is the first in its album (render the album here)
                 const isFirstInAlbum = (msg, index) => {
-                    const groupedId = msg.raw_data?.grouped_id
+                    const groupedId = getGroupedId(msg)
                     if (!groupedId) return false
                     
                     // Check if previous message has same grouped_id
                     if (index > 0) {
                         const prevMsg = sortedMessages.value[index - 1]
-                        if (prevMsg.raw_data?.grouped_id === groupedId) {
+                        if (getGroupedId(prevMsg) === groupedId) {
                             return false  // Not first, skip rendering here
                         }
                     }
@@ -1698,7 +1711,7 @@
                 
                 // Check if this message should be hidden (it's part of album but not first)
                 const isHiddenAlbumMessage = (msg, index) => {
-                    const groupedId = msg.raw_data?.grouped_id
+                    const groupedId = getGroupedId(msg)
                     if (!groupedId) return false
                     return !isFirstInAlbum(msg, index)
                 }
