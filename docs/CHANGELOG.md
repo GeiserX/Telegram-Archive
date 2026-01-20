@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.3.3] - 2026-01-20
+
+### Fixed
+- **Listener media deduplication** - Real-time listener now uses the same deduplication logic as scheduled backups, creating symlinks to `_shared` directory instead of downloading duplicates
+
 ## [5.3.2] - 2026-01-20
 
 ### Added
