@@ -137,7 +137,7 @@ class PushNotificationManager:
             from sqlalchemy.dialects.sqlite import insert as sqlite_insert
             from src.db.models import PushSubscription
             
-            async with self.db._session_factory() as session:
+            async with self.db.db_manager.async_session_factory() as session:
                 # Check if subscription already exists
                 result = await session.execute(
                     select(PushSubscription).where(PushSubscription.endpoint == endpoint)
@@ -177,7 +177,7 @@ class PushNotificationManager:
             from sqlalchemy import delete
             from src.db.models import PushSubscription
             
-            async with self.db._session_factory() as session:
+            async with self.db.db_manager.async_session_factory() as session:
                 await session.execute(
                     delete(PushSubscription).where(PushSubscription.endpoint == endpoint)
                 )
@@ -201,7 +201,7 @@ class PushNotificationManager:
             from sqlalchemy import select, or_
             from src.db.models import PushSubscription
             
-            async with self.db._session_factory() as session:
+            async with self.db.db_manager.async_session_factory() as session:
                 query = select(PushSubscription)
                 
                 if chat_id is not None:
