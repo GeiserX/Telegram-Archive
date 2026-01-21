@@ -453,11 +453,14 @@ class TelegramListener:
         Called when a photo_changed event is detected to immediately
         update the avatar without waiting for the next scheduled backup.
         """
+        from telethon.tl.types import ChatPhotoEmpty, UserProfilePhotoEmpty
+        
         try:
-            # Determine entity ID (handle marked IDs)
-            entity_id = abs(chat_id)
-            if entity_id > 1000000000000:
-                entity_id = entity_id - 1000000000000
+            # Check if entity has a photo
+            photo = getattr(entity, "photo", None)
+            if photo is None or isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
+                logger.debug(f"No avatar set for {chat_id}")
+                return
             
             # Determine target directory based on entity type
             if isinstance(entity, User):
@@ -467,7 +470,8 @@ class TelegramListener:
             
             os.makedirs(base_dir, exist_ok=True)
             
-            file_name = f"{entity_id}.jpg"
+            # Use chat_id for file name (consistent with backup)
+            file_name = f"{chat_id}.jpg"
             file_path = os.path.join(base_dir, file_name)
             
             result = await self.client.download_profile_photo(
