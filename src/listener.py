@@ -446,6 +446,42 @@ class TelegramListener:
             return 'channel' if not entity.megagroup else 'group'
         return 'unknown'
     
+    async def _download_avatar(self, entity, chat_id: int) -> None:
+        """
+        Download the current profile photo/avatar for a chat or user.
+        
+        Called when a photo_changed event is detected to immediately
+        update the avatar without waiting for the next scheduled backup.
+        """
+        try:
+            # Determine entity ID (handle marked IDs)
+            entity_id = abs(chat_id)
+            if entity_id > 1000000000000:
+                entity_id = entity_id - 1000000000000
+            
+            # Determine target directory based on entity type
+            if isinstance(entity, User):
+                base_dir = os.path.join(self.config.media_path, "avatars", "users")
+            else:
+                base_dir = os.path.join(self.config.media_path, "avatars", "chats")
+            
+            os.makedirs(base_dir, exist_ok=True)
+            
+            file_name = f"{entity_id}.jpg"
+            file_path = os.path.join(base_dir, file_name)
+            
+            result = await self.client.download_profile_photo(
+                entity,
+                file=file_path,
+                download_big=False
+            )
+            if result:
+                logger.info(f"📷 Avatar downloaded: {file_path}")
+            else:
+                logger.debug(f"No avatar available for {chat_id}")
+        except Exception as e:
+            logger.warning(f"Failed to download avatar for {chat_id}: {e}")
+    
     def _get_media_type(self, media) -> Optional[str]:
         """Get media type as string."""
         if isinstance(media, MessageMediaPhoto):
@@ -945,6 +981,10 @@ class TelegramListener:
                             }
                             await self.db.upsert_chat(chat_data)
                             logger.info(f"✅ Chat {chat_id} metadata updated")
+                            
+                            # Download new avatar if photo changed
+                            if action_type == 'photo_changed':
+                                await self._download_avatar(entity, chat_id)
                     except Exception as e:
                         logger.warning(f"Failed to update chat metadata for {chat_id}: {e}")
                         
