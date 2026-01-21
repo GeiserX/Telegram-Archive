@@ -891,18 +891,18 @@ class TelegramBackup:
             entity: Telegram entity (User, Chat, Channel)
             marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
+        from telethon.tl.types import ChatPhotoEmpty, UserProfilePhotoEmpty
+        
         # Some entities (e.g. Deleted Account) may not have a photo attribute
         photo = getattr(entity, "photo", None)
         
-        # For channels/groups, the photo might be a ChatPhoto object
-        # Check for photo_id attribute which indicates a valid photo
+        # Skip if no photo or if it's an empty photo type
         if photo is None:
             return
         
-        # ChatPhotoEmpty has no photo_id, skip these
-        # Note: photo_id can be 0 for some entities, treat it as invalid
-        photo_id = getattr(photo, "photo_id", None)
-        if not photo_id:  # None, 0, or empty
+        # Check for empty photo types (ChatPhotoEmpty, UserProfilePhotoEmpty)
+        # These indicate the entity has no profile photo set
+        if isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
             return
 
         # Determine target directory based on entity type
@@ -927,7 +927,7 @@ class TelegramBackup:
                 download_big=False  # Small size is usually sufficient
             )
             if result:
-                logger.debug(f"📷 Updated avatar: {file_path}")
+                logger.info(f"📷 Avatar downloaded: {file_path}")
         except Exception as e:
             logger.warning(f"Failed to download avatar for {entity.id}: {e}")
     
