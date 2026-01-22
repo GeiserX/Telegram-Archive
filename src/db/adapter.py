@@ -972,6 +972,11 @@ class DatabaseAdapter:
             for avatar_type in ['chats', 'users']:
                 avatar_pattern = os.path.join(media_base_path, 'avatars', avatar_type, f'{chat_id}_*.jpg')
                 avatar_files = glob.glob(avatar_pattern)
+
+                # Legacy fallback: remove old <chat_id>.jpg files as well
+                legacy_avatar = os.path.join(media_base_path, 'avatars', avatar_type, f'{chat_id}.jpg')
+                if os.path.exists(legacy_avatar):
+                    avatar_files.append(legacy_avatar)
                 for avatar_file in avatar_files:
                     try:
                         os.remove(avatar_file)
@@ -1282,4 +1287,3 @@ class DatabaseAdapter:
     async def close(self) -> None:
         """Close database connections."""
         await self.db_manager.close()
-
