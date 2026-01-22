@@ -1,8 +1,14 @@
 """Tests for database viewer functionality."""
 
-import unittest
 import asyncio
+import os
+import tempfile
+import unittest
 from unittest.mock import Mock, patch, AsyncMock
+
+os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_backup_"))
+
+from src.web import main as web_main
 
 
 class TestDatabaseViewer(unittest.TestCase):
@@ -44,6 +50,47 @@ class TestDatabaseViewer(unittest.TestCase):
         chat_type = 'group'
         expected_folder = 'users' if chat_type == 'private' else 'chats'
         self.assertEqual(expected_folder, 'chats')
+
+
+class TestAvatarPathLookup(unittest.TestCase):
+    """Test avatar path discovery in web viewer."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_media_path = web_main.config.media_path
+        web_main.config.media_path = self.temp_dir.name
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+
+    def tearDown(self):
+        web_main.config.media_path = self.original_media_path
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+        self.temp_dir.cleanup()
+
+    def _touch_avatar(self, path: str, mtime: int) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as avatar_file:
+            avatar_file.write("x")
+        os.utime(path, (mtime, mtime))
+
+    def test_prefers_new_format_and_falls_back_to_legacy(self):
+        """New `<chat_id>_<photo_id>.jpg` is preferred; legacy files still resolve."""
+        chat_id = 123456
+        avatars_dir = os.path.join(self.temp_dir.name, "avatars", "users")
+
+        legacy_avatar = os.path.join(avatars_dir, f"{chat_id}.jpg")
+        self._touch_avatar(legacy_avatar, mtime=100)
+
+        new_avatar = os.path.join(avatars_dir, f"{chat_id}_999.jpg")
+        self._touch_avatar(new_avatar, mtime=200)
+
+        path = web_main._find_avatar_path(chat_id, "private")
+        self.assertEqual(path, f"avatars/users/{chat_id}_999.jpg")
+
+        os.remove(new_avatar)
+        path = web_main._find_avatar_path(chat_id, "private")
+        self.assertEqual(path, f"avatars/users/{chat_id}.jpg")
 
 
 class TestAsyncDatabaseAdapter(unittest.TestCase):
