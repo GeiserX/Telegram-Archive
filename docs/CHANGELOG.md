@@ -6,6 +6,25 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.3.7] - 2026-01-22
+
+### Fixed
+- **Avatar filename mismatch** (#35, #41) - Avatars are now saved as `{chat_id}_{photo_id}.jpg` to match what the viewer expects. Previously saved as `{chat_id}.jpg` which caused avatars to not display.
+
+### Added
+- **`scripts/cleanup_legacy_avatars.py`** - Utility script to remove old `{chat_id}.jpg` avatar files after they've been replaced by the new format. Run with `--dry-run` to preview changes.
+
+### Changed
+- **Shared avatar utility** - Avatar path generation moved to `src/avatar_utils.py` for consistency between backup and listener
+- **Skip redundant downloads** - Avatars are only downloaded when the file doesn't exist or is empty
+
+### Upgrade Notes
+Legacy avatar files (`{chat_id}.jpg`) are still supported via fallback. To clean up old files after new-format avatars are downloaded:
+```bash
+docker exec telegram-backup python scripts/cleanup_legacy_avatars.py --dry-run  # Preview
+docker exec telegram-backup python scripts/cleanup_legacy_avatars.py            # Apply
+```
+
 ## [5.3.3] - 2026-01-20
 
 ### Fixed
