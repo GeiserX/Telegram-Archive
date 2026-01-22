@@ -25,6 +25,7 @@ from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument, Mes
 from telethon.utils import get_peer_id
 
 from .config import Config
+from .avatar_utils import get_avatar_paths
 from .db import DatabaseAdapter, create_adapter
 from .realtime import RealtimeNotifier, NotificationType
 
@@ -453,34 +454,27 @@ class TelegramListener:
         Called when a photo_changed event is detected to immediately
         update the avatar without waiting for the next scheduled backup.
         """
-        from telethon.tl.types import ChatPhotoEmpty, UserProfilePhotoEmpty
-        
         try:
-            # Check if entity has a photo
-            photo = getattr(entity, "photo", None)
-            if photo is None or isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
+            avatar_path, _legacy_path = get_avatar_paths(self.config.media_path, entity, chat_id)
+
+            if avatar_path is None:
                 logger.debug(f"No avatar set for {chat_id}")
                 return
-            
-            # Determine target directory based on entity type
-            if isinstance(entity, User):
-                base_dir = os.path.join(self.config.media_path, "avatars", "users")
-            else:
-                base_dir = os.path.join(self.config.media_path, "avatars", "chats")
-            
-            os.makedirs(base_dir, exist_ok=True)
-            
-            # Use chat_id for file name (consistent with backup)
-            file_name = f"{chat_id}.jpg"
-            file_path = os.path.join(base_dir, file_name)
-            
+
+            needs_download = (
+                not os.path.exists(avatar_path) or os.path.getsize(avatar_path) == 0
+            )
+
+            if not needs_download:
+                return
+
             result = await self.client.download_profile_photo(
                 entity,
-                file=file_path,
+                file=avatar_path,
                 download_big=False
             )
             if result:
-                logger.info(f"📷 Avatar downloaded: {file_path}")
+                logger.info(f"📷 Avatar downloaded: {avatar_path}")
             else:
                 logger.debug(f"No avatar available for {chat_id}")
         except Exception as e:
