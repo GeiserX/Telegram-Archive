@@ -17,7 +17,7 @@ import logging
 import glob
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Optional, List, AsyncGenerator, Set, Dict
+from typing import Optional, List, AsyncGenerator, Set, Dict, TYPE_CHECKING
 from pathlib import Path
 import hashlib
 import json
@@ -26,7 +26,9 @@ from urllib.parse import quote
 from ..config import Config
 from ..db import DatabaseAdapter, init_database, close_database, get_db_manager
 from ..realtime import RealtimeListener
-from .push import PushNotificationManager
+
+if TYPE_CHECKING:
+    from .push import PushNotificationManager
 
 # Register MIME types for audio files (required for StaticFiles to serve with correct Content-Type)
 import mimetypes
@@ -160,7 +162,7 @@ stats_task: Optional[asyncio.Task] = None
 realtime_listener: Optional[RealtimeListener] = None
 
 # Push notification manager (Web Push API)
-push_manager: Optional[PushNotificationManager] = None
+push_manager: Optional["PushNotificationManager"] = None
 
 
 async def handle_realtime_notification(payload: dict):
@@ -280,6 +282,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize Web Push notifications (if enabled)
     global push_manager
     if config.push_notifications == 'full':
+        from .push import PushNotificationManager
         push_manager = PushNotificationManager(db, config)
         push_enabled = await push_manager.initialize()
         if push_enabled:
@@ -421,6 +424,11 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
     # Look for avatar file matching chat_id
     pattern = os.path.join(avatar_dir, f'{chat_id}_*.jpg')
     matches = glob.glob(pattern)
+
+    # Legacy fallback: files saved without photo_id suffix
+    legacy_path = os.path.join(avatar_dir, f'{chat_id}.jpg')
+    if os.path.exists(legacy_path):
+        matches.append(legacy_path)
     
     if matches:
         # Return the most recently modified avatar (newest profile photo)

@@ -23,6 +23,7 @@ from telethon.tl.types import (
 from telethon.utils import get_peer_id
 
 from .config import Config
+from .avatar_utils import get_avatar_paths
 from .db import DatabaseAdapter, create_adapter
 
 logger = logging.getLogger(__name__)
@@ -885,51 +886,39 @@ class TelegramBackup:
         Download the current profile photo for users and chats.
 
         Downloads the profile photo on every backup run to ensure avatars
-        stay up-to-date. Uses a simple naming scheme based on entity ID only.
+        stay up-to-date. Files are named `<chat_id>_<photo_id>.jpg` so the
+        viewer can pick the freshest version.
         
         Args:
             entity: Telegram entity (User, Chat, Channel)
             marked_id: The marked chat ID (negative for groups/channels) for consistent file naming
         """
-        from telethon.tl.types import ChatPhotoEmpty, UserProfilePhotoEmpty
-        
-        # Some entities (e.g. Deleted Account) may not have a photo attribute
-        photo = getattr(entity, "photo", None)
-        
-        # Skip if no photo or if it's an empty photo type
-        if photo is None:
+        file_id = marked_id if marked_id is not None else self._get_marked_id(entity)
+        avatar_path, _legacy_path = get_avatar_paths(self.config.media_path, entity, file_id)
+
+        # Nothing to download (no avatar set)
+        if avatar_path is None:
+            logger.debug(f"No avatar available for {file_id}")
             return
-        
-        # Check for empty photo types (ChatPhotoEmpty, UserProfilePhotoEmpty)
-        # These indicate the entity has no profile photo set
-        if isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
-            return
-
-        # Determine target directory based on entity type
-        if isinstance(entity, User):
-            base_dir = os.path.join(self.config.media_path, "avatars", "users")
-        else:
-            # Covers Chat and Channel (groups, supergroups, channels)
-            base_dir = os.path.join(self.config.media_path, "avatars", "chats")
-
-        os.makedirs(base_dir, exist_ok=True)
-
-        # Use marked_id for consistent naming (matches what DB uses)
-        # Simple naming: just use ID.jpg - always overwrite with latest
-        file_id = marked_id if marked_id is not None else entity.id
-        file_name = f"{file_id}.jpg"
-        file_path = os.path.join(base_dir, file_name)
 
         try:
+            # Avoid redundant downloads when we already have the current photo
+            needs_download = (
+                not os.path.exists(avatar_path) or os.path.getsize(avatar_path) == 0
+            )
+
+            if not needs_download:
+                return
+
             result = await self.client.download_profile_photo(
                 entity, 
-                file=file_path,
+                file=avatar_path,
                 download_big=False  # Small size is usually sufficient
             )
             if result:
-                logger.info(f"📷 Avatar downloaded: {file_path}")
+                logger.info(f"📷 Avatar downloaded: {avatar_path}")
         except Exception as e:
-            logger.warning(f"Failed to download avatar for {entity.id}: {e}")
+            logger.warning(f"Failed to download avatar for {file_id}: {e}")
     
     async def _process_media(self, message: Message, chat_id: int) -> Optional[dict]:
         """
