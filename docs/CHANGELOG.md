@@ -467,13 +467,13 @@ v4.0.5 had a bug where chats were stored with positive IDs while messages used n
 
    **PostgreSQL:**
    ```bash
-   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids.sql
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/scripts/migrate_to_marked_ids.sql
    docker exec -i <postgres-container> psql -U telegram -d telegram_backup < migrate_to_marked_ids.sql
    ```
 
    **SQLite:**
    ```bash
-   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/migrate_to_marked_ids_sqlite.sql
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/scripts/migrate_to_marked_ids_sqlite.sql
    sqlite3 /path/to/telegram_backup.db < migrate_to_marked_ids_sqlite.sql
    ```
 
