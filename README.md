@@ -428,9 +428,51 @@ Telegram Archive supports both SQLite and PostgreSQL.
 4. Uncomment `depends_on` in backup and viewer services
 5. Run `docker-compose up -d`
 
-## ⚠️ Upgrading
+## Updating to Latest Version
 
-For detailed upgrade instructions, breaking changes, and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
+### Using Pre-built Images (Recommended)
+
+If you're using the default `docker-compose.yml` with images from Docker Hub:
+
+```bash
+# Pull latest images and recreate containers
+docker compose pull
+docker compose up -d
+```
+
+Or in one command:
+```bash
+docker compose up -d --pull always
+```
+
+> **Note:** Running `git pull` only updates source code, not Docker images. You must use `docker compose pull` to get new container versions.
+
+### Building from Source
+
+If you've modified the code or prefer building locally:
+
+```bash
+git pull
+docker build -t drumsergio/telegram-archive:latest .
+docker build -t drumsergio/telegram-archive-viewer:latest -f Dockerfile.viewer .
+docker compose up -d
+```
+
+### Pinning Versions
+
+For production stability, pin to specific versions instead of `latest`:
+
+```yaml
+services:
+  telegram-backup:
+    image: drumsergio/telegram-archive:v5.3.7  # Pin to specific version
+```
+
+Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available versions.
+
+## ⚠️ Upgrading (Breaking Changes)
+
+For major version upgrades with breaking changes and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
 
 ## CLI Commands
 
