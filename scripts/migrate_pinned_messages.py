@@ -8,21 +8,22 @@ import asyncio
 import os
 import sys
 
-# Add /app to path so we can import from src
+# Ensure /app is in path
 sys.path.insert(0, '/app')
 
 from telethon import TelegramClient
 from sqlalchemy import select, update
 
-# Import using the same pattern as the main app
-from src.db.manager import DatabaseManager
+# Import from the db package
+from src.db import DatabaseManager, init_database
 from src.db.models import Chat as ChatModel
 
 
 async def migrate_pinned_messages():
-    # Initialize database
-    db_manager = DatabaseManager()
-    await db_manager.initialize()
+    # Initialize database using the app's init function
+    await init_database()
+    from src.db import get_db_manager
+    db_manager = await get_db_manager()
     
     # Initialize Telegram client
     api_id = int(os.environ.get('TELEGRAM_API_ID', 0))
