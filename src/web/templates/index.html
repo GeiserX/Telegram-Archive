@@ -2100,23 +2100,12 @@
 
                 const handleScroll = (e) => {
                     const { scrollTop } = e.target
-                    console.log(`[Scroll Event] scrollTop=${scrollTop}`)
                     
                     // Show/hide scroll to bottom button
-                    // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
-                    const shouldShow = scrollTop > 300
-                    showScrollToBottom.value = shouldShow
+                    // With flex-col-reverse: scrollTop is NEGATIVE when scrolled up from bottom
+                    // scrollTop=0 is at bottom (newest), scrollTop=-1000 means scrolled up 1000px
+                    showScrollToBottom.value = scrollTop < -300
                 }
-                
-                // Debug: Watch for messagesContainer changes and add native listener
-                watch(messagesContainer, (el) => {
-                    if (el) {
-                        console.log('[Debug] messagesContainer mounted, adding native scroll listener')
-                        el.addEventListener('scroll', (e) => {
-                            console.log('[Native Scroll] scrollTop=' + el.scrollTop)
-                        })
-                    }
-                })
                 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
                 const loadMoreMessages = () => {
