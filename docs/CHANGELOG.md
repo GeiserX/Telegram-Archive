@@ -26,6 +26,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ### Fixed
 - **Auto-load older messages** - Replaced manual "Load older messages" button with automatic Intersection Observer loading
 - **Telegram-style loading spinner** - Shows spinning indicator while fetching older messages
+- **Alembic migrations auto-run** - Docker image now includes Alembic and runs migrations automatically on startup for PostgreSQL
 
 ### Upgrade Notes
 
