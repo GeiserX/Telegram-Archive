@@ -192,6 +192,20 @@
             height: 24px;
         }
 
+        /* Loading Spinner (Telegram-style) */
+        .loading-spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #60a5fa;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         /* Clickable Links */
         .message-text a {
             color: #60a5fa;
@@ -908,17 +922,13 @@
                             </div>
                         </template>
 
-                        <div v-if="loading && messages.length > 0" class="text-center py-2 text-tg-muted text-sm">
-                            Loading more...
+                        <!-- Loading indicator (Telegram-style) - appears at visual top when loading older messages -->
+                        <div v-if="loading && messages.length > 0" class="flex justify-center py-4">
+                            <div class="loading-spinner"></div>
                         </div>
 
-                        <!-- Load More Button (appears at visual top for older messages) -->
-                        <div v-if="hasMore && !loading && messages.length > 0" class="text-center py-3">
-                            <button @click="loadMoreMessages" 
-                                class="px-4 py-2 bg-tg-accent/20 hover:bg-tg-accent/30 text-tg-accent rounded-lg text-sm transition">
-                                Load older messages
-                            </button>
-                        </div>
+                        <!-- Scroll sentinel for intersection observer - triggers loading when visible -->
+                        <div v-if="hasMore && !loading && messages.length > 0" ref="loadMoreSentinel" class="h-1"></div>
                         
                         <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
                             Beginning of chat history
@@ -1051,6 +1061,7 @@
                 const hasMore = ref(true)
                 const messagesContainer = ref(null)
                 const scrollAnchor = ref(null)
+                const loadMoreSentinel = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
@@ -1094,6 +1105,7 @@
                 const loadingMoreChats = ref(false)
                 const infiniteScrollSentinel = ref(null)
                 let infiniteScrollObserver = null
+                let messagesScrollObserver = null  // Observer for loading older messages
                 
                 // Server-side search
                 const searchResults = ref([])
@@ -1218,7 +1230,7 @@
                     }, 300) // 300ms debounce
                 }
                 
-                // Setup infinite scroll observer
+                // Setup infinite scroll observer for chats
                 const setupInfiniteScroll = () => {
                     if (infiniteScrollObserver) {
                         infiniteScrollObserver.disconnect()
@@ -1237,6 +1249,34 @@
                     nextTick(() => {
                         if (infiniteScrollSentinel.value) {
                             infiniteScrollObserver.observe(infiniteScrollSentinel.value)
+                        }
+                    })
+                }
+                
+                // Setup observer for loading older messages (Telegram-style auto-load)
+                const setupMessagesScrollObserver = () => {
+                    if (messagesScrollObserver) {
+                        messagesScrollObserver.disconnect()
+                    }
+                    
+                    messagesScrollObserver = new IntersectionObserver(
+                        (entries) => {
+                            // When sentinel becomes visible, load more messages
+                            if (entries[0].isIntersecting && hasMore.value && !loading.value) {
+                                console.log('>>> Loading more messages (sentinel visible)')
+                                loadMessages()
+                            }
+                        },
+                        { 
+                            root: messagesContainer.value,
+                            rootMargin: '200px'  // Start loading before reaching the top
+                        }
+                    )
+                    
+                    // Observe the sentinel when it's in DOM
+                    nextTick(() => {
+                        if (loadMoreSentinel.value) {
+                            messagesScrollObserver.observe(loadMoreSentinel.value)
                         }
                     })
                 }
@@ -1905,6 +1945,8 @@
                     await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
                     await nextTick()
                     scrollToBottom()
+                    // Setup observer for auto-loading older messages
+                    setupMessagesScrollObserver()
                     // Start auto-refresh for new messages
                     startMessageRefresh()
                 }
@@ -2041,6 +2083,11 @@
                         console.error("Failed to load messages", e)
                     } finally {
                         loading.value = false
+                        // Re-observe the sentinel after DOM updates (Vue recreates the element)
+                        await nextTick()
+                        if (messagesScrollObserver && loadMoreSentinel.value) {
+                            messagesScrollObserver.observe(loadMoreSentinel.value)
+                        }
                     }
                 }
 
@@ -2052,20 +2099,7 @@
                 }
 
                 const handleScroll = (e) => {
-                    const { scrollTop, scrollHeight, clientHeight } = e.target
-                    // With flex-col-reverse: scrollTop=0 is bottom (newest), large scrollTop is top (oldest)
-                    const distanceFromTop = scrollHeight - scrollTop - clientHeight
-                    
-                    // Debug: log scroll values
-                    console.log(`Scroll: scrollTop=${scrollTop.toFixed(0)}, distanceFromTop=${distanceFromTop.toFixed(0)}, loading=${loading.value}, hasMore=${hasMore.value}`)
-                    
-                    // Load more when scrolling near visual top (older messages)
-                    // With flex-col-reverse, high scrollTop = near oldest messages
-                    // distanceFromTop < threshold means we're near the visual top
-                    if (distanceFromTop < 200 && !loading.value && hasMore.value) {
-                        console.log('>>> Loading more messages (auto-scroll triggered)')
-                        loadMessages()
-                    }
+                    const { scrollTop } = e.target
                     
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
@@ -2740,6 +2774,7 @@
                     hasMoreChats,
                     loadingMoreChats,
                     infiniteScrollSentinel,
+                    loadMoreSentinel,
                     // Search
                     searchResults,
                     searchLoading,
