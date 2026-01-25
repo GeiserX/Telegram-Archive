@@ -32,6 +32,7 @@ class Chat(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     description: Mapped[Optional[str]] = mapped_column(Text)
     participants_count: Mapped[Optional[int]] = mapped_column(Integer)
+    pinned_message_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # ID of pinned message in this chat
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())

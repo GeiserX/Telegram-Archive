@@ -562,6 +562,21 @@ async def get_messages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/chats/{chat_id}/pinned", dependencies=[Depends(require_auth)])
+async def get_pinned_message(chat_id: int):
+    """Get the pinned message for a chat, if any."""
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        pinned = await db.get_pinned_message(chat_id)
+        return pinned  # Returns None if no pinned message
+    except Exception as e:
+        logger.error(f"Error fetching pinned message: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/stats", dependencies=[Depends(require_auth)])
 async def get_stats():
     """Get cached backup statistics (fast, calculated daily)."""

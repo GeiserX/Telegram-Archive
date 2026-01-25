@@ -1198,6 +1198,11 @@ class TelegramBackup:
             chat_data['title'] = entity.title
             chat_data['username'] = entity.username
         
+        # Extract pinned message ID (available for groups and channels)
+        pinned_msg_id = getattr(entity, 'pinned_msg_id', None)
+        if pinned_msg_id:
+            chat_data['pinned_message_id'] = pinned_msg_id
+        
         return chat_data
     
     def _extract_user_data(self, user) -> Optional[dict]:

@@ -603,6 +603,26 @@
                         </div>
                     </div>
 
+                    <!-- Pinned Message Banner -->
+                    <div v-if="pinnedMessage" 
+                        @click="scrollToMessage(pinnedMessage.id)"
+                        class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 cursor-pointer hover:bg-tg-sidebar transition flex items-center gap-3">
+                        <div class="text-blue-400">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M5.5 3.5a2 2 0 00-2 2v11a2 2 0 002 2h9a2 2 0 002-2v-11a2 2 0 00-2-2h-9zm2.5 4a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h5a.5.5 0 010 1h-5a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" clip-rule="evenodd"/>
+                            </svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-xs text-blue-400 font-semibold mb-0.5">Pinned Message</div>
+                            <div class="text-sm text-gray-300 truncate">
+                                {{ pinnedMessage.text || (pinnedMessage.media_type ? `[${pinnedMessage.media_type}]` : 'Message') }}
+                            </div>
+                        </div>
+                        <div class="text-xs text-tg-muted">
+                            {{ formatTime(pinnedMessage.date) }}
+                        </div>
+                    </div>
+
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
                     <div class="flex-1 relative overflow-hidden">
                     <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 flex flex-col-reverse gap-1" @scroll="handleScroll">
@@ -853,6 +873,18 @@
 
                         <div v-if="loading && messages.length > 0" class="text-center py-2 text-tg-muted text-sm">
                             Loading more...
+                        </div>
+
+                        <!-- Load More Button (appears at visual top for older messages) -->
+                        <div v-if="hasMore && !loading && messages.length > 0" class="text-center py-3">
+                            <button @click="loadMoreMessages" 
+                                class="px-4 py-2 bg-tg-accent/20 hover:bg-tg-accent/30 text-tg-accent rounded-lg text-sm transition">
+                                Load older messages
+                            </button>
+                        </div>
+                        
+                        <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
+                            Beginning of chat history
                         </div>
 
                         <div ref="scrollAnchor"></div>
@@ -1743,6 +1775,25 @@
                 // Per-chat statistics
                 const chatStats = ref(null)
                 
+                // Pinned message for current chat
+                const pinnedMessage = ref(null)
+                
+                const loadPinnedMessage = async (chatId) => {
+                    try {
+                        const res = await fetch(`/api/chats/${chatId}/pinned`, {
+                            credentials: 'include'
+                        })
+                        if (res.ok) {
+                            pinnedMessage.value = await res.json()
+                        } else {
+                            pinnedMessage.value = null
+                        }
+                    } catch (e) {
+                        console.error('Failed to load pinned message:', e)
+                        pinnedMessage.value = null
+                    }
+                }
+                
                 const loadChatStats = async (chatId) => {
                     try {
                         const res = await fetch(`/api/chats/${chatId}/stats`, {
@@ -1764,8 +1815,10 @@
                     hasMore.value = true
                     messageSearchQuery.value = ''
                     chatStats.value = null  // Reset stats when changing chat
+                    pinnedMessage.value = null  // Reset pinned message when changing chat
                     await loadMessages()
                     await loadChatStats(chat.id)  // Load stats for this chat
+                    await loadPinnedMessage(chat.id)  // Load pinned message for this chat
                     await nextTick()
                     scrollToBottom()
                     // Start auto-refresh for new messages
@@ -1920,13 +1973,21 @@
                     const distanceFromTop = scrollHeight - scrollTop - clientHeight
                     
                     // Load more when scrolling near visual top (older messages)
-                    if (distanceFromTop < 100 && !loading.value && hasMore.value) {
+                    // Increased threshold from 100 to 200 for better UX
+                    if (distanceFromTop < 200 && !loading.value && hasMore.value) {
                         loadMessages()
                     }
                     
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
                     showScrollToBottom.value = scrollTop > 300
+                }
+                
+                // Manual load more function (fallback for when infinite scroll doesn't trigger)
+                const loadMoreMessages = () => {
+                    if (!loading.value && hasMore.value) {
+                        loadMessages()
+                    }
                 }
 
                 const scrollToBottom = (immediate = false) => {
@@ -2519,6 +2580,7 @@
                     isGroup,
                     selectChat,
                     chatStats,
+                    pinnedMessage,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
@@ -2610,6 +2672,9 @@
                     // Scroll to bottom
                     showScrollToBottom,
                     scrollToLatest,
+                    // Message pagination
+                    hasMore,
+                    loadMoreMessages,
                     // Notifications (v5.0)
                     notificationsEnabled,
                     notificationsSupported,

@@ -173,6 +173,7 @@ class DatabaseAdapter:
                 'phone': chat_data.get('phone'),
                 'description': chat_data.get('description'),
                 'participants_count': chat_data.get('participants_count'),
+                'pinned_message_id': chat_data.get('pinned_message_id'),
                 'updated_at': datetime.utcnow(),
             }
             
@@ -189,6 +190,7 @@ class DatabaseAdapter:
                         'phone': stmt.excluded.phone,
                         'description': stmt.excluded.description,
                         'participants_count': stmt.excluded.participants_count,
+                        'pinned_message_id': stmt.excluded.pinned_message_id,
                         'updated_at': datetime.utcnow(),
                     }
                 )
@@ -205,6 +207,7 @@ class DatabaseAdapter:
                         'phone': stmt.excluded.phone,
                         'description': stmt.excluded.description,
                         'participants_count': stmt.excluded.participants_count,
+                        'pinned_message_id': stmt.excluded.pinned_message_id,
                         'updated_at': datetime.utcnow(),
                     }
                 )
@@ -1200,7 +1203,58 @@ class DatabaseAdapter:
                 'phone': chat.phone,
                 'description': chat.description,
                 'participants_count': chat.participants_count,
+                'pinned_message_id': chat.pinned_message_id,
             }
+    
+    async def get_pinned_message(self, chat_id: int) -> Optional[Dict[str, Any]]:
+        """Get the pinned message for a chat with user and media info."""
+        async with self.db_manager.async_session_factory() as session:
+            # First get the pinned message ID from the chat
+            chat_result = await session.execute(
+                select(Chat.pinned_message_id).where(Chat.id == chat_id)
+            )
+            pinned_id = chat_result.scalar_one_or_none()
+            
+            if not pinned_id:
+                return None
+            
+            # Get the message with user info
+            stmt = (
+                select(
+                    Message,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Media.file_name.label('media_file_name'),
+                    Media.mime_type.label('media_mime_type'),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Media, Message.media_id == Media.id)
+                .where(Message.chat_id == chat_id)
+                .where(Message.id == pinned_id)
+            )
+            
+            result = await session.execute(stmt)
+            row = result.first()
+            
+            if not row:
+                return None
+            
+            msg = self._message_to_dict(row.Message)
+            msg['first_name'] = row.first_name
+            msg['last_name'] = row.last_name
+            msg['username'] = row.username
+            msg['media_file_name'] = row.media_file_name
+            msg['media_mime_type'] = row.media_mime_type
+            
+            # Parse raw_data JSON
+            if msg.get('raw_data'):
+                try:
+                    msg['raw_data'] = json.loads(msg['raw_data'])
+                except:
+                    msg['raw_data'] = {}
+            
+            return msg
     
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get a user by ID."""
