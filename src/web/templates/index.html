@@ -1972,9 +1972,14 @@
                     // With flex-col-reverse: scrollTop=0 is bottom (newest), large scrollTop is top (oldest)
                     const distanceFromTop = scrollHeight - scrollTop - clientHeight
                     
+                    // Debug: log scroll values
+                    console.log(`Scroll: scrollTop=${scrollTop.toFixed(0)}, distanceFromTop=${distanceFromTop.toFixed(0)}, loading=${loading.value}, hasMore=${hasMore.value}`)
+                    
                     // Load more when scrolling near visual top (older messages)
-                    // Increased threshold from 100 to 200 for better UX
+                    // With flex-col-reverse, high scrollTop = near oldest messages
+                    // distanceFromTop < threshold means we're near the visual top
                     if (distanceFromTop < 200 && !loading.value && hasMore.value) {
+                        console.log('>>> Loading more messages (auto-scroll triggered)')
                         loadMessages()
                     }
                     
