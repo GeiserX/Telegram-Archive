@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
 One-time migration script to populate pinned_message_id for existing chats.
-Run inside the backup container: docker exec -it telegram-backup-annais python /app/scripts/migrate_pinned_messages.py
+Run inside the backup container: 
+  docker exec -it telegram-backup-annais python /app/scripts/migrate_pinned_messages.py
 """
 import asyncio
 import os
 import sys
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add /app to path so we can import from src
+sys.path.insert(0, '/app')
 
 from telethon import TelegramClient
-from telethon.tl.types import Channel, Chat, User as TelegramUser
-from db.manager import DatabaseManager
-from db.models import Chat as ChatModel
-from sqlalchemy import update
+from sqlalchemy import select, update
+
+# Import using the same pattern as the main app
+from src.db.manager import DatabaseManager
+from src.db.models import Chat as ChatModel
 
 
 async def migrate_pinned_messages():
@@ -25,12 +27,15 @@ async def migrate_pinned_messages():
     # Initialize Telegram client
     api_id = int(os.environ.get('TELEGRAM_API_ID', 0))
     api_hash = os.environ.get('TELEGRAM_API_HASH', '')
-    session_path = os.path.join(os.environ.get('SESSION_PATH', '/data/session'), 'telegram_backup')
+    session_name = os.environ.get('SESSION_NAME', 'telegram_backup')
+    session_dir = os.environ.get('SESSION_PATH', '/data/session')
+    session_path = os.path.join(session_dir, session_name)
     
     if not api_id or not api_hash:
         print("Error: TELEGRAM_API_ID and TELEGRAM_API_HASH must be set")
         return
     
+    print(f"Using session: {session_path}")
     client = TelegramClient(session_path, api_id, api_hash)
     await client.start()
     
@@ -38,8 +43,9 @@ async def migrate_pinned_messages():
     
     # Get all chats from database
     async with db_manager.async_session_factory() as session:
-        from sqlalchemy import select
-        result = await session.execute(select(ChatModel.id, ChatModel.title, ChatModel.pinned_message_id))
+        result = await session.execute(
+            select(ChatModel.id, ChatModel.title, ChatModel.pinned_message_id)
+        )
         chats = result.all()
     
     print(f"Found {len(chats)} chats in database")
@@ -49,6 +55,8 @@ async def migrate_pinned_messages():
     errors = 0
     
     for chat_id, title, current_pinned in chats:
+        display_title = (title or str(chat_id))[:40]
+        
         if current_pinned is not None:
             skipped += 1
             continue
@@ -66,13 +74,14 @@ async def migrate_pinned_messages():
                         .values(pinned_message_id=pinned_msg_id)
                     )
                     await session.commit()
-                print(f"✓ {title[:40]}: pinned message #{pinned_msg_id}")
+                print(f"✓ {display_title}: pinned message #{pinned_msg_id}")
                 updated += 1
             else:
                 skipped += 1
                 
         except Exception as e:
-            print(f"✗ {title[:40]}: {e}")
+            error_msg = str(e)[:50]
+            print(f"✗ {display_title}: {error_msg}")
             errors += 1
     
     await client.disconnect()
