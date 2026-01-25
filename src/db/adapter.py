@@ -406,6 +406,7 @@ class DatabaseAdapter:
                     'media_path': m.get('media_path'),
                     'raw_data': self._serialize_raw_data(m.get('raw_data', {})),
                     'is_outgoing': m.get('is_outgoing', 0),
+                    'is_pinned': m.get('is_pinned', 0),
                 }
                 
                 if self._is_sqlite:
@@ -601,6 +602,7 @@ class DatabaseAdapter:
             'raw_data': message.raw_data,
             'created_at': message.created_at,
             'is_outgoing': message.is_outgoing,
+            'is_pinned': message.is_pinned,
         }
     
     async def get_chat_stats(self, chat_id: int) -> Dict[str, Any]:
@@ -1201,6 +1203,99 @@ class DatabaseAdapter:
                 'description': chat.description,
                 'participants_count': chat.participants_count,
             }
+    
+    async def get_pinned_messages(self, chat_id: int) -> List[Dict[str, Any]]:
+        """Get all pinned messages for a chat, ordered by date descending (newest first)."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(
+                    Message,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Media.file_name.label('media_file_name'),
+                    Media.mime_type.label('media_mime_type'),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Media, Message.media_id == Media.id)
+                .where(Message.chat_id == chat_id)
+                .where(Message.is_pinned == 1)
+                .order_by(Message.date.desc())
+            )
+            
+            result = await session.execute(stmt)
+            rows = result.all()
+            
+            messages = []
+            for row in rows:
+                msg = self._message_to_dict(row.Message)
+                msg['first_name'] = row.first_name
+                msg['last_name'] = row.last_name
+                msg['username'] = row.username
+                msg['media_file_name'] = row.media_file_name
+                msg['media_mime_type'] = row.media_mime_type
+                
+                # Parse raw_data JSON
+                if msg.get('raw_data'):
+                    try:
+                        msg['raw_data'] = json.loads(msg['raw_data'])
+                    except:
+                        msg['raw_data'] = {}
+                
+                messages.append(msg)
+            
+            return messages
+    
+    async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: List[int]) -> None:
+        """
+        Sync pinned messages for a chat.
+        
+        Sets is_pinned=1 for messages in the list and is_pinned=0 for all others.
+        This ensures the database reflects the current state of pinned messages.
+        
+        Args:
+            chat_id: Chat ID
+            pinned_message_ids: List of message IDs that are currently pinned
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # First, unpin all messages in this chat
+            await session.execute(
+                update(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.is_pinned == 1)
+                .values(is_pinned=0)
+            )
+            
+            # Then, pin the specified messages (if any exist in our database)
+            if pinned_message_ids:
+                await session.execute(
+                    update(Message)
+                    .where(Message.chat_id == chat_id)
+                    .where(Message.id.in_(pinned_message_ids))
+                    .values(is_pinned=1)
+                )
+            
+            await session.commit()
+    
+    async def update_message_pinned(self, chat_id: int, message_id: int, is_pinned: bool) -> None:
+        """
+        Update the pinned status of a single message.
+        
+        Used by the real-time listener when pin/unpin events are received.
+        
+        Args:
+            chat_id: Chat ID
+            message_id: Message ID
+            is_pinned: Whether the message is pinned
+        """
+        async with self.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.id == message_id)
+                .values(is_pinned=1 if is_pinned else 0)
+            )
+            await session.commit()
     
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get a user by ID."""
