@@ -563,17 +563,17 @@ async def get_messages(
 
 
 @app.get("/api/chats/{chat_id}/pinned", dependencies=[Depends(require_auth)])
-async def get_pinned_message(chat_id: int):
-    """Get the pinned message for a chat, if any."""
+async def get_pinned_messages(chat_id: int):
+    """Get all pinned messages for a chat, ordered by date descending (newest first)."""
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
     
     try:
-        pinned = await db.get_pinned_message(chat_id)
-        return pinned  # Returns None if no pinned message
+        pinned_messages = await db.get_pinned_messages(chat_id)
+        return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
-        logger.error(f"Error fetching pinned message: {e}", exc_info=True)
+        logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

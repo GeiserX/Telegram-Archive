@@ -603,17 +603,27 @@
                         </div>
                     </div>
 
-                    <!-- Pinned Message Banner -->
+                    <!-- Pinned Message Banner (click to scroll and cycle through pinned messages) -->
                     <div v-if="pinnedMessage" 
-                        @click="scrollToMessage(pinnedMessage.id)"
+                        @click="handlePinnedClick"
                         class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 cursor-pointer hover:bg-tg-sidebar transition flex items-center gap-3">
-                        <div class="text-blue-400">
-                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M5.5 3.5a2 2 0 00-2 2v11a2 2 0 002 2h9a2 2 0 002-2v-11a2 2 0 00-2-2h-9zm2.5 4a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h5a.5.5 0 010 1h-5a.5.5 0 01-.5-.5zm0 2a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3a.5.5 0 01-.5-.5z" clip-rule="evenodd"/>
+                        <div class="text-blue-400 relative">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
                             </svg>
+                            <!-- Counter badge if multiple pinned messages -->
+                            <span v-if="pinnedMessages.length > 1" 
+                                class="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold">
+                                {{ currentPinnedIndex + 1 }}
+                            </span>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-xs text-blue-400 font-semibold mb-0.5">Pinned Message</div>
+                            <div class="text-xs text-blue-400 font-semibold mb-0.5 flex items-center gap-2">
+                                <span>Pinned Message</span>
+                                <span v-if="pinnedMessages.length > 1" class="text-tg-muted font-normal">
+                                    ({{ currentPinnedIndex + 1 }} of {{ pinnedMessages.length }})
+                                </span>
+                            </div>
                             <div class="text-sm text-gray-300 truncate">
                                 {{ pinnedMessage.text || (pinnedMessage.media_type ? `[${pinnedMessage.media_type}]` : 'Message') }}
                             </div>
@@ -1775,22 +1785,45 @@
                 // Per-chat statistics
                 const chatStats = ref(null)
                 
-                // Pinned message for current chat
-                const pinnedMessage = ref(null)
+                // Pinned messages for current chat (supports multiple pinned messages)
+                const pinnedMessages = ref([])  // Array of all pinned messages, newest first
+                const currentPinnedIndex = ref(0)  // Which pinned message is currently shown
                 
-                const loadPinnedMessage = async (chatId) => {
+                // Computed: current pinned message to display
+                const pinnedMessage = computed(() => {
+                    if (pinnedMessages.value.length === 0) return null
+                    return pinnedMessages.value[currentPinnedIndex.value] || pinnedMessages.value[0]
+                })
+                
+                // Load all pinned messages for a chat
+                const loadPinnedMessages = async (chatId) => {
                     try {
                         const res = await fetch(`/api/chats/${chatId}/pinned`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
-                            pinnedMessage.value = await res.json()
+                            const data = await res.json()
+                            pinnedMessages.value = Array.isArray(data) ? data : []
+                            currentPinnedIndex.value = 0  // Start with newest
                         } else {
-                            pinnedMessage.value = null
+                            pinnedMessages.value = []
                         }
                     } catch (e) {
-                        console.error('Failed to load pinned message:', e)
-                        pinnedMessage.value = null
+                        console.error('Failed to load pinned messages:', e)
+                        pinnedMessages.value = []
+                    }
+                }
+                
+                // Handle click on pinned message banner: scroll to message and cycle to next
+                const handlePinnedClick = () => {
+                    if (!pinnedMessage.value) return
+                    
+                    // Scroll to the current pinned message
+                    scrollToMessage(pinnedMessage.value.id)
+                    
+                    // Cycle to next pinned message (wrap around)
+                    if (pinnedMessages.value.length > 1) {
+                        currentPinnedIndex.value = (currentPinnedIndex.value + 1) % pinnedMessages.value.length
                     }
                 }
                 
@@ -1815,10 +1848,11 @@
                     hasMore.value = true
                     messageSearchQuery.value = ''
                     chatStats.value = null  // Reset stats when changing chat
-                    pinnedMessage.value = null  // Reset pinned message when changing chat
+                    pinnedMessages.value = []  // Reset pinned messages when changing chat
+                    currentPinnedIndex.value = 0
                     await loadMessages()
                     await loadChatStats(chat.id)  // Load stats for this chat
-                    await loadPinnedMessage(chat.id)  // Load pinned message for this chat
+                    await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
                     await nextTick()
                     scrollToBottom()
                     // Start auto-refresh for new messages
@@ -2586,6 +2620,9 @@
                     selectChat,
                     chatStats,
                     pinnedMessage,
+                    pinnedMessages,
+                    currentPinnedIndex,
+                    handlePinnedClick,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,

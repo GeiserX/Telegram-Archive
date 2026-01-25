@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-One-time migration script to populate pinned_message_id for existing chats.
-Run inside the backup container: 
-  docker exec -it telegram-backup-annais python /app/scripts/migrate_pinned_messages.py
+Migration script to populate is_pinned for existing messages.
+Uses Telegram's InputMessagesFilterPinned to efficiently fetch all pinned messages.
+
+Run inside the backup container:
+  docker exec -it telegram-backup-sergio python /app/scripts/migrate_pinned_messages.py
 """
 import asyncio
 import os
@@ -11,83 +13,104 @@ import sys
 # Ensure /app is in path
 sys.path.insert(0, '/app')
 
+import asyncpg
 from telethon import TelegramClient
-from sqlalchemy import select, update
-
-# Import from the db package
-from src.db import DatabaseManager, init_database
-from src.db.models import Chat as ChatModel
+from telethon.tl.types import InputMessagesFilterPinned
 
 
 async def migrate_pinned_messages():
-    # Initialize database using the app's init function
-    await init_database()
-    from src.db import get_db_manager
-    db_manager = await get_db_manager()
+    # DB connection
+    conn = await asyncpg.connect(
+        host=os.environ['POSTGRES_HOST'],
+        port=int(os.environ.get('POSTGRES_PORT', 5432)),
+        user=os.environ['POSTGRES_USER'],
+        password=os.environ['POSTGRES_PASSWORD'],
+        database=os.environ['POSTGRES_DB']
+    )
+    print("Connected to database")
     
-    # Initialize Telegram client
-    api_id = int(os.environ.get('TELEGRAM_API_ID', 0))
-    api_hash = os.environ.get('TELEGRAM_API_HASH', '')
-    session_name = os.environ.get('SESSION_NAME', 'telegram_backup')
-    session_dir = os.environ.get('SESSION_PATH', '/data/session')
-    session_path = os.path.join(session_dir, session_name)
+    # Ensure is_pinned column exists
+    try:
+        await conn.execute(
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_pinned INTEGER DEFAULT 0"
+        )
+        print("Ensured is_pinned column exists")
+    except Exception as e:
+        print(f"Column check: {e}")
     
-    if not api_id or not api_hash:
-        print("Error: TELEGRAM_API_ID and TELEGRAM_API_HASH must be set")
-        return
+    # Reset all is_pinned to 0 first (in case pinned messages changed)
+    reset_count = await conn.execute("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1")
+    print(f"Reset is_pinned for all messages")
     
-    print(f"Using session: {session_path}")
-    client = TelegramClient(session_path, api_id, api_hash)
+    # Telegram client
+    session_path = os.path.join(
+        os.environ.get('SESSION_PATH', '/data/session'),
+        os.environ.get('SESSION_NAME', 'telegram_backup')
+    )
+    client = TelegramClient(
+        session_path,
+        int(os.environ['TELEGRAM_API_ID']),
+        os.environ['TELEGRAM_API_HASH']
+    )
     await client.start()
-    
     print("Connected to Telegram")
     
     # Get all chats from database
-    async with db_manager.async_session_factory() as session:
-        result = await session.execute(
-            select(ChatModel.id, ChatModel.title, ChatModel.pinned_message_id)
-        )
-        chats = result.all()
+    rows = await conn.fetch("SELECT id, title, type FROM chats")
+    print(f"Found {len(rows)} chats to scan for pinned messages")
     
-    print(f"Found {len(chats)} chats in database")
+    total_updated = 0
+    chats_with_pinned = 0
     
-    updated = 0
-    skipped = 0
-    errors = 0
-    
-    for chat_id, title, current_pinned in chats:
-        display_title = (title or str(chat_id))[:40]
+    for row in rows:
+        chat_id, title, chat_type = row['id'], row['title'], row['type']
+        display = (title or str(chat_id))[:40]
         
-        if current_pinned is not None:
-            skipped += 1
+        # Skip private chats (they don't have pinned messages in the same way)
+        if chat_type in ('private', 'bot'):
             continue
-            
+        
         try:
-            # Get entity from Telegram
+            # Get all pinned messages using Telegram's filter
             entity = await client.get_entity(chat_id)
-            pinned_msg_id = getattr(entity, 'pinned_msg_id', None)
+            pinned_messages = await client.get_messages(
+                entity, 
+                filter=InputMessagesFilterPinned(),
+                limit=100  # Get up to 100 pinned messages per chat
+            )
             
-            if pinned_msg_id:
-                async with db_manager.async_session_factory() as session:
-                    await session.execute(
-                        update(ChatModel)
-                        .where(ChatModel.id == chat_id)
-                        .values(pinned_message_id=pinned_msg_id)
-                    )
-                    await session.commit()
-                print(f"✓ {display_title}: pinned message #{pinned_msg_id}")
-                updated += 1
-            else:
-                skipped += 1
+            if pinned_messages:
+                # Update is_pinned for these messages in the database
+                pinned_ids = [msg.id for msg in pinned_messages]
                 
+                # Batch update
+                result = await conn.execute(
+                    """
+                    UPDATE messages 
+                    SET is_pinned = 1 
+                    WHERE chat_id = $1 AND id = ANY($2::bigint[])
+                    """,
+                    chat_id, pinned_ids
+                )
+                
+                updated_count = int(result.split()[-1]) if result else 0
+                if updated_count > 0:
+                    print(f"✓ {display}: {updated_count} pinned messages")
+                    total_updated += updated_count
+                    chats_with_pinned += 1
+                    
         except Exception as e:
-            error_msg = str(e)[:50]
-            print(f"✗ {display_title}: {error_msg}")
-            errors += 1
+            err = str(e)[:60]
+            # Only print errors for channels/groups, not for inaccessible chats
+            if "Could not find" not in err and "No user has" not in err:
+                print(f"✗ {display}: {err}")
     
     await client.disconnect()
+    await conn.close()
     
-    print(f"\nDone! Updated: {updated}, Skipped: {skipped}, Errors: {errors}")
+    print(f"\nDone!")
+    print(f"  Chats with pinned messages: {chats_with_pinned}")
+    print(f"  Total pinned messages found: {total_updated}")
 
 
 if __name__ == '__main__':

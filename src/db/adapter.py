@@ -173,7 +173,6 @@ class DatabaseAdapter:
                 'phone': chat_data.get('phone'),
                 'description': chat_data.get('description'),
                 'participants_count': chat_data.get('participants_count'),
-                'pinned_message_id': chat_data.get('pinned_message_id'),
                 'updated_at': datetime.utcnow(),
             }
             
@@ -190,7 +189,6 @@ class DatabaseAdapter:
                         'phone': stmt.excluded.phone,
                         'description': stmt.excluded.description,
                         'participants_count': stmt.excluded.participants_count,
-                        'pinned_message_id': stmt.excluded.pinned_message_id,
                         'updated_at': datetime.utcnow(),
                     }
                 )
@@ -207,7 +205,6 @@ class DatabaseAdapter:
                         'phone': stmt.excluded.phone,
                         'description': stmt.excluded.description,
                         'participants_count': stmt.excluded.participants_count,
-                        'pinned_message_id': stmt.excluded.pinned_message_id,
                         'updated_at': datetime.utcnow(),
                     }
                 )
@@ -409,6 +406,7 @@ class DatabaseAdapter:
                     'media_path': m.get('media_path'),
                     'raw_data': self._serialize_raw_data(m.get('raw_data', {})),
                     'is_outgoing': m.get('is_outgoing', 0),
+                    'is_pinned': m.get('is_pinned', 0),
                 }
                 
                 if self._is_sqlite:
@@ -604,6 +602,7 @@ class DatabaseAdapter:
             'raw_data': message.raw_data,
             'created_at': message.created_at,
             'is_outgoing': message.is_outgoing,
+            'is_pinned': message.is_pinned,
         }
     
     async def get_chat_stats(self, chat_id: int) -> Dict[str, Any]:
@@ -1203,22 +1202,11 @@ class DatabaseAdapter:
                 'phone': chat.phone,
                 'description': chat.description,
                 'participants_count': chat.participants_count,
-                'pinned_message_id': chat.pinned_message_id,
             }
     
-    async def get_pinned_message(self, chat_id: int) -> Optional[Dict[str, Any]]:
-        """Get the pinned message for a chat with user and media info."""
+    async def get_pinned_messages(self, chat_id: int) -> List[Dict[str, Any]]:
+        """Get all pinned messages for a chat, ordered by date descending (newest first)."""
         async with self.db_manager.async_session_factory() as session:
-            # First get the pinned message ID from the chat
-            chat_result = await session.execute(
-                select(Chat.pinned_message_id).where(Chat.id == chat_id)
-            )
-            pinned_id = chat_result.scalar_one_or_none()
-            
-            if not pinned_id:
-                return None
-            
-            # Get the message with user info
             stmt = (
                 select(
                     Message,
@@ -1231,30 +1219,32 @@ class DatabaseAdapter:
                 .outerjoin(User, Message.sender_id == User.id)
                 .outerjoin(Media, Message.media_id == Media.id)
                 .where(Message.chat_id == chat_id)
-                .where(Message.id == pinned_id)
+                .where(Message.is_pinned == 1)
+                .order_by(Message.date.desc())
             )
             
             result = await session.execute(stmt)
-            row = result.first()
+            rows = result.all()
             
-            if not row:
-                return None
+            messages = []
+            for row in rows:
+                msg = self._message_to_dict(row.Message)
+                msg['first_name'] = row.first_name
+                msg['last_name'] = row.last_name
+                msg['username'] = row.username
+                msg['media_file_name'] = row.media_file_name
+                msg['media_mime_type'] = row.media_mime_type
+                
+                # Parse raw_data JSON
+                if msg.get('raw_data'):
+                    try:
+                        msg['raw_data'] = json.loads(msg['raw_data'])
+                    except:
+                        msg['raw_data'] = {}
+                
+                messages.append(msg)
             
-            msg = self._message_to_dict(row.Message)
-            msg['first_name'] = row.first_name
-            msg['last_name'] = row.last_name
-            msg['username'] = row.username
-            msg['media_file_name'] = row.media_file_name
-            msg['media_mime_type'] = row.media_mime_type
-            
-            # Parse raw_data JSON
-            if msg.get('raw_data'):
-                try:
-                    msg['raw_data'] = json.loads(msg['raw_data'])
-                except:
-                    msg['raw_data'] = {}
-            
-            return msg
+            return messages
     
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get a user by ID."""

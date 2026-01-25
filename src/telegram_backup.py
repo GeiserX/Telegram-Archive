@@ -743,7 +743,8 @@ class TelegramBackup:
             'media_id': None,
             'media_path': None,
             'raw_data': {},
-            'is_outgoing': 1 if message.out else 0
+            'is_outgoing': 1 if message.out else 0,
+            'is_pinned': 1 if getattr(message, 'pinned', False) else 0
         }
         
         # Capture grouped_id for album detection (multiple photos/videos sent together)
@@ -1197,11 +1198,6 @@ class TelegramBackup:
             chat_data['type'] = 'channel' if not entity.megagroup else 'group'
             chat_data['title'] = entity.title
             chat_data['username'] = entity.username
-        
-        # Extract pinned message ID (available for groups and channels)
-        pinned_msg_id = getattr(entity, 'pinned_msg_id', None)
-        if pinned_msg_id:
-            chat_data['pinned_message_id'] = pinned_msg_id
         
         return chat_data
     

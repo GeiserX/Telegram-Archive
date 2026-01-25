@@ -32,7 +32,6 @@ class Chat(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     description: Mapped[Optional[str]] = mapped_column(Text)
     participants_count: Mapped[Optional[int]] = mapped_column(Integer)
-    pinned_message_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # ID of pinned message in this chat
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())
@@ -62,6 +61,7 @@ class Message(Base):
     raw_data: Mapped[Optional[str]] = mapped_column(Text)  # JSON string
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     is_outgoing: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
+    is_pinned: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 - whether this message is pinned
     
     # Relationships
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
@@ -73,6 +73,8 @@ class Message(Base):
         Index('idx_messages_sender_id', 'sender_id'),
         # Composite index for fast pagination: WHERE chat_id = ? ORDER BY date DESC
         Index('idx_messages_chat_date_desc', 'chat_id', date.desc()),
+        # Index for finding pinned messages in a chat
+        Index('idx_messages_chat_pinned', 'chat_id', 'is_pinned'),
     )
 
 
