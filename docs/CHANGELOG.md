@@ -6,6 +6,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.4.1] - 2026-01-25
+
+### Fixed
+- **Scroll-to-bottom button not appearing** - Fixed detection logic for `flex-col-reverse` containers where `scrollTop` is negative when scrolled up
+
 ## [5.4.0] - 2026-01-25
 
 ### Added
