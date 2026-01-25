@@ -1246,6 +1246,57 @@ class DatabaseAdapter:
             
             return messages
     
+    async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: List[int]) -> None:
+        """
+        Sync pinned messages for a chat.
+        
+        Sets is_pinned=1 for messages in the list and is_pinned=0 for all others.
+        This ensures the database reflects the current state of pinned messages.
+        
+        Args:
+            chat_id: Chat ID
+            pinned_message_ids: List of message IDs that are currently pinned
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # First, unpin all messages in this chat
+            await session.execute(
+                update(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.is_pinned == 1)
+                .values(is_pinned=0)
+            )
+            
+            # Then, pin the specified messages (if any exist in our database)
+            if pinned_message_ids:
+                await session.execute(
+                    update(Message)
+                    .where(Message.chat_id == chat_id)
+                    .where(Message.id.in_(pinned_message_ids))
+                    .values(is_pinned=1)
+                )
+            
+            await session.commit()
+    
+    async def update_message_pinned(self, chat_id: int, message_id: int, is_pinned: bool) -> None:
+        """
+        Update the pinned status of a single message.
+        
+        Used by the real-time listener when pin/unpin events are received.
+        
+        Args:
+            chat_id: Chat ID
+            message_id: Message ID
+            is_pinned: Whether the message is pinned
+        """
+        async with self.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.id == message_id)
+                .values(is_pinned=1 if is_pinned else 0)
+            )
+            await session.commit()
+    
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get a user by ID."""
         async with self.db_manager.async_session_factory() as session:

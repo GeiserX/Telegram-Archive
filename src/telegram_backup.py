@@ -603,6 +603,9 @@ class TelegramBackup:
         if self.config.sync_deletions_edits:
             await self._sync_deletions_and_edits(chat_id, entity)
         
+        # Always sync pinned messages to keep them up-to-date
+        await self._sync_pinned_messages(chat_id, entity)
+        
         return len(messages)
 
     async def _sync_deletions_and_edits(self, chat_id: int, entity):
@@ -668,6 +671,43 @@ class TelegramBackup:
                 
         if total_deleted > 0 or total_updated > 0:
             logger.info(f"  → Sync result: {total_deleted} deleted, {total_updated} updated")
+    
+    async def _sync_pinned_messages(self, chat_id: int, entity) -> None:
+        """
+        Sync pinned messages for a chat.
+        
+        Fetches all currently pinned messages from Telegram using the
+        InputMessagesFilterPinned filter and updates the is_pinned field
+        in the database.
+        
+        This ensures pinned status is always up-to-date after each backup,
+        catching both newly pinned and unpinned messages.
+        
+        Args:
+            chat_id: Chat ID (marked format)
+            entity: Telegram entity
+        """
+        try:
+            from telethon.tl.types import InputMessagesFilterPinned
+            
+            # Fetch all pinned messages from Telegram (up to 100)
+            pinned_messages = await self.client.get_messages(
+                entity,
+                filter=InputMessagesFilterPinned(),
+                limit=100
+            )
+            
+            if pinned_messages:
+                pinned_ids = [msg.id for msg in pinned_messages]
+                await self.db.sync_pinned_messages(chat_id, pinned_ids)
+                logger.debug(f"  → Synced {len(pinned_ids)} pinned messages")
+            else:
+                # No pinned messages - clear any existing
+                await self.db.sync_pinned_messages(chat_id, [])
+                
+        except Exception as e:
+            # Don't fail the backup if pinned sync fails
+            logger.debug(f"  → Could not sync pinned messages: {e}")
     
     def _extract_forward_from_id(self, message: Message) -> Optional[int]:
         """
