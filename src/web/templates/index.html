@@ -2103,7 +2103,11 @@
                     
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop > 300 means we've scrolled up from newest
-                    showScrollToBottom.value = scrollTop > 300
+                    const shouldShow = scrollTop > 300
+                    if (shouldShow !== showScrollToBottom.value) {
+                        console.log(`[Scroll] scrollTop=${scrollTop.toFixed(0)}, showing button: ${shouldShow}`)
+                    }
+                    showScrollToBottom.value = shouldShow
                 }
                 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
