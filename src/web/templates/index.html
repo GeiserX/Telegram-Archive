@@ -603,10 +603,10 @@
                         </div>
                     </div>
 
-                    <!-- Pinned Message Banner -->
+                    <!-- Pinned Message Banner (only shown in normal view, not in pinned-only view) -->
                     <!-- Click on message content → scroll to message + cycle to next -->
-                    <!-- Click on pin icon (right side) → just cycle through without scrolling -->
-                    <div v-if="pinnedMessage" 
+                    <!-- Click on pin icon (right side) → open pinned messages view -->
+                    <div v-if="pinnedMessage && !showPinnedOnly" 
                         class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 flex items-center gap-3">
                         <!-- Pin icon on left -->
                         <div class="text-blue-400">
@@ -627,20 +627,36 @@
                                 {{ pinnedMessage.text || (pinnedMessage.media_type ? `[${pinnedMessage.media_type}]` : 'Message') }}
                             </div>
                         </div>
-                        <!-- Time + cycle button on right - click to just cycle (no scroll) -->
+                        <!-- Time + view all pinned button on right -->
                         <div class="flex items-center gap-2">
                             <div class="text-xs text-tg-muted">
                                 {{ formatTime(pinnedMessage.date) }}
                             </div>
-                            <!-- Cycle button (only shown if multiple pinned messages) -->
-                            <button v-if="pinnedMessages.length > 1"
-                                @click.stop="cyclePinned"
+                            <!-- Open pinned messages view button -->
+                            <button @click.stop="openPinnedView"
                                 class="w-6 h-6 flex items-center justify-center rounded-full bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 transition"
-                                :title="`Show next pinned (${currentPinnedIndex + 1}/${pinnedMessages.length})`">
+                                :title="`View all ${pinnedMessages.length} pinned messages`">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                                 </svg>
                             </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Pinned Messages View Header (shown when in pinned-only mode) -->
+                    <div v-if="showPinnedOnly" 
+                        class="px-4 py-3 bg-tg-sidebar border-b border-gray-700 flex items-center gap-3">
+                        <!-- Back button -->
+                        <button @click="closePinnedView"
+                            class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-gray-300 transition">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                        <!-- Title -->
+                        <div class="flex-1">
+                            <div class="text-base font-semibold text-white">Pinned Messages</div>
+                            <div class="text-xs text-tg-muted">{{ pinnedMessages.length }} messages</div>
                         </div>
                     </div>
 
@@ -1732,6 +1748,11 @@
                 })
 
                 const sortedMessages = computed(() => {
+                    // If in pinned-only view, show only pinned messages
+                    if (showPinnedOnly.value) {
+                        // pinnedMessages are already sorted by date descending from API
+                        return pinnedMessages.value
+                    }
                     // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
                     // This gives instant "scroll to bottom" experience on mobile
                     return [...messages.value].sort((a, b) => 
@@ -1798,9 +1819,10 @@
                 
                 // Pinned messages for current chat (supports multiple pinned messages)
                 const pinnedMessages = ref([])  // Array of all pinned messages, newest first
-                const currentPinnedIndex = ref(0)  // Which pinned message is currently shown
+                const currentPinnedIndex = ref(0)  // Which pinned message is currently shown in banner
+                const showPinnedOnly = ref(false)  // Whether we're in "pinned messages only" view
                 
-                // Computed: current pinned message to display
+                // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
                     if (pinnedMessages.value.length === 0) return null
                     return pinnedMessages.value[currentPinnedIndex.value] || pinnedMessages.value[0]
@@ -1829,6 +1851,12 @@
                 const handlePinnedClick = () => {
                     if (!pinnedMessage.value) return
                     
+                    // If we're in pinned-only view, just scroll to the message
+                    if (showPinnedOnly.value) {
+                        scrollToMessage(pinnedMessage.value.id)
+                        return
+                    }
+                    
                     // Scroll to the current pinned message
                     scrollToMessage(pinnedMessage.value.id)
                     
@@ -1838,11 +1866,14 @@
                     }
                 }
                 
-                // Just cycle to next pinned message (no scroll) - for the icon button
-                const cyclePinned = () => {
-                    if (pinnedMessages.value.length > 1) {
-                        currentPinnedIndex.value = (currentPinnedIndex.value + 1) % pinnedMessages.value.length
-                    }
+                // Open the "Pinned Messages Only" view
+                const openPinnedView = () => {
+                    showPinnedOnly.value = true
+                }
+                
+                // Close the "Pinned Messages Only" view, return to normal
+                const closePinnedView = () => {
+                    showPinnedOnly.value = false
                 }
                 
                 const loadChatStats = async (chatId) => {
@@ -1868,6 +1899,7 @@
                     chatStats.value = null  // Reset stats when changing chat
                     pinnedMessages.value = []  // Reset pinned messages when changing chat
                     currentPinnedIndex.value = 0
+                    showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     await loadMessages()
                     await loadChatStats(chat.id)  // Load stats for this chat
                     await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
@@ -2640,8 +2672,10 @@
                     pinnedMessage,
                     pinnedMessages,
                     currentPinnedIndex,
+                    showPinnedOnly,
                     handlePinnedClick,
-                    cyclePinned,
+                    openPinnedView,
+                    closePinnedView,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
