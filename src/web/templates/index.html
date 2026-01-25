@@ -603,21 +603,20 @@
                         </div>
                     </div>
 
-                    <!-- Pinned Message Banner (click to scroll and cycle through pinned messages) -->
+                    <!-- Pinned Message Banner -->
+                    <!-- Click on message content → scroll to message + cycle to next -->
+                    <!-- Click on pin icon (right side) → just cycle through without scrolling -->
                     <div v-if="pinnedMessage" 
-                        @click="handlePinnedClick"
-                        class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 cursor-pointer hover:bg-tg-sidebar transition flex items-center gap-3">
-                        <div class="text-blue-400 relative">
+                        class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 flex items-center gap-3">
+                        <!-- Pin icon on left -->
+                        <div class="text-blue-400">
                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                                 <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
                             </svg>
-                            <!-- Counter badge if multiple pinned messages -->
-                            <span v-if="pinnedMessages.length > 1" 
-                                class="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold">
-                                {{ currentPinnedIndex + 1 }}
-                            </span>
                         </div>
-                        <div class="flex-1 min-w-0">
+                        <!-- Message content - click to scroll and cycle -->
+                        <div class="flex-1 min-w-0 cursor-pointer hover:bg-white/5 -my-1 py-1 px-1 rounded transition"
+                            @click="handlePinnedClick">
                             <div class="text-xs text-blue-400 font-semibold mb-0.5 flex items-center gap-2">
                                 <span>Pinned Message</span>
                                 <span v-if="pinnedMessages.length > 1" class="text-tg-muted font-normal">
@@ -628,8 +627,20 @@
                                 {{ pinnedMessage.text || (pinnedMessage.media_type ? `[${pinnedMessage.media_type}]` : 'Message') }}
                             </div>
                         </div>
-                        <div class="text-xs text-tg-muted">
-                            {{ formatTime(pinnedMessage.date) }}
+                        <!-- Time + cycle button on right - click to just cycle (no scroll) -->
+                        <div class="flex items-center gap-2">
+                            <div class="text-xs text-tg-muted">
+                                {{ formatTime(pinnedMessage.date) }}
+                            </div>
+                            <!-- Cycle button (only shown if multiple pinned messages) -->
+                            <button v-if="pinnedMessages.length > 1"
+                                @click.stop="cyclePinned"
+                                class="w-6 h-6 flex items-center justify-center rounded-full bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 transition"
+                                :title="`Show next pinned (${currentPinnedIndex + 1}/${pinnedMessages.length})`">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
 
@@ -1814,7 +1825,7 @@
                     }
                 }
                 
-                // Handle click on pinned message banner: scroll to message and cycle to next
+                // Handle click on pinned message content: scroll to message and cycle to next
                 const handlePinnedClick = () => {
                     if (!pinnedMessage.value) return
                     
@@ -1822,6 +1833,13 @@
                     scrollToMessage(pinnedMessage.value.id)
                     
                     // Cycle to next pinned message (wrap around)
+                    if (pinnedMessages.value.length > 1) {
+                        currentPinnedIndex.value = (currentPinnedIndex.value + 1) % pinnedMessages.value.length
+                    }
+                }
+                
+                // Just cycle to next pinned message (no scroll) - for the icon button
+                const cyclePinned = () => {
                     if (pinnedMessages.value.length > 1) {
                         currentPinnedIndex.value = (currentPinnedIndex.value + 1) % pinnedMessages.value.length
                     }
@@ -2623,6 +2641,7 @@
                     pinnedMessages,
                     currentPinnedIndex,
                     handlePinnedClick,
+                    cyclePinned,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
