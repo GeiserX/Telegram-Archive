@@ -21,7 +21,7 @@ from typing import Optional, Set, Deque, Tuple, List, Dict, Any
 
 import os
 from telethon import TelegramClient, events
-from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument, MessageMediaContact, MessageMediaGeo, MessageMediaPoll
+from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument, MessageMediaContact, MessageMediaGeo, MessageMediaPoll, UpdatePinnedMessages, UpdatePinnedChannelMessages
 from telethon.utils import get_peer_id
 
 from .config import Config
@@ -1058,6 +1058,64 @@ class TelegramListener:
             except Exception as e:
                 self.stats['errors'] += 1
                 logger.error(f"Error in album handler: {e}", exc_info=True)
+        
+        # Pin/Unpin handler - tracks pinned message changes
+        @self.client.on(events.Raw(types=[UpdatePinnedMessages, UpdatePinnedChannelMessages]))
+        async def on_pinned_messages(event) -> None:
+            """
+            Handle pin/unpin events for messages.
+            
+            This catches when messages are pinned or unpinned in real-time
+            and updates the is_pinned field in the database.
+            """
+            try:
+                # Get chat ID based on the update type
+                if isinstance(event, UpdatePinnedChannelMessages):
+                    # For channels: channel_id needs -100 prefix
+                    chat_id = -1000000000000 - event.channel_id
+                    pinned_messages = event.messages  # List of message IDs that are pinned
+                    is_pinning = event.pinned  # True if pinning, False if unpinning
+                elif isinstance(event, UpdatePinnedMessages):
+                    # For groups/private chats: get peer ID
+                    peer = event.peer
+                    if hasattr(peer, 'user_id'):
+                        chat_id = peer.user_id
+                    elif hasattr(peer, 'chat_id'):
+                        chat_id = -peer.chat_id
+                    elif hasattr(peer, 'channel_id'):
+                        chat_id = -1000000000000 - peer.channel_id
+                    else:
+                        return
+                    pinned_messages = event.messages
+                    is_pinning = event.pinned
+                else:
+                    return
+                
+                if not self._should_process_chat(chat_id):
+                    return
+                
+                # Track stats
+                if 'pins' not in self.stats:
+                    self.stats['pins'] = 0
+                self.stats['pins'] += len(pinned_messages)
+                
+                # Update each message's pinned status
+                for msg_id in pinned_messages:
+                    await self.db.update_message_pinned(chat_id, msg_id, is_pinning)
+                
+                action = "📌 Pinned" if is_pinning else "📌 Unpinned"
+                logger.info(f"{action}: chat={chat_id} messages={pinned_messages}")
+                
+                # Notify viewer of the update
+                await self._notify_update('pin', {
+                    'chat_id': chat_id,
+                    'message_ids': pinned_messages,
+                    'pinned': is_pinning
+                })
+                
+            except Exception as e:
+                self.stats['errors'] += 1
+                logger.error(f"Error in pin handler: {e}", exc_info=True)
     
     
     async def run(self) -> None:

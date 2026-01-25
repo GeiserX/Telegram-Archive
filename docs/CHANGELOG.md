@@ -6,6 +6,42 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-01-25
+
+### Added
+
+#### Multiple Pinned Messages Support
+- **Pinned message banner** - Shows currently pinned message at the top of the chat, matching Telegram's UI
+- **Pin navigation** - Click the message content to scroll to that pinned message and cycle through others
+- **Pin count indicator** - Shows "(1 of N)" when multiple messages are pinned
+- **Pinned Messages view** - Click the list icon to view all pinned messages in a dedicated view
+- **Real-time pin sync** - Listener now catches pin/unpin events when `ENABLE_LISTENER=true`
+- **Automatic pin sync** - Pinned messages are synced on every backup (no manual migration needed)
+- **API endpoint** - `GET /api/chats/{chat_id}/pinned` returns all pinned messages
+
+#### Database
+- **`is_pinned` column** - New column on messages table to track pinned status
+- **Alembic migration** - Migration `004` adds the column and index automatically
+
+### Fixed
+- **Auto-load older messages** - Replaced manual "Load older messages" button with automatic Intersection Observer loading
+- **Telegram-style loading spinner** - Shows spinning indicator while fetching older messages
+
+### Upgrade Notes
+
+**Database Migration Required:**
+
+The migration runs automatically on startup. If you're using PostgreSQL, ensure the backup container has write access.
+
+After upgrading, pinned messages will be populated on the next backup run. If you want to populate them immediately without waiting for the next backup:
+
+```bash
+# Trigger a manual backup to sync pinned messages
+docker exec telegram-backup python -m src.main backup
+```
+
+If using the real-time listener (`ENABLE_LISTENER=true`), pin/unpin events will be captured automatically going forward.
+
 ## [5.3.7] - 2026-01-22
 
 ### Fixed
