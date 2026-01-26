@@ -171,6 +171,11 @@ async def handle_realtime_notification(payload: dict):
     chat_id = payload.get('chat_id')
     data = payload.get('data', {})
     
+    # Check if this chat is allowed (respects DISPLAY_CHAT_IDS restriction)
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        # This viewer is restricted to specific chats, ignore notifications for other chats
+        return
+    
     if notification_type == 'new_message':
         await ws_manager.broadcast_to_chat(chat_id, {
             "type": "new_message",
