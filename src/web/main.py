@@ -354,6 +354,26 @@ def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKI
 templates_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
 
+
+@app.get("/sw.js")
+async def serve_service_worker():
+    """
+    Serve the service worker from root path with proper headers.
+    
+    The Service-Worker-Allowed header allows the SW to have scope '/'
+    even though the file is served from /static/sw.js.
+    """
+    sw_path = static_dir / "sw.js"
+    if not sw_path.exists():
+        raise HTTPException(status_code=404, detail="Service worker not found")
+    
+    return FileResponse(
+        sw_path,
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"}
+    )
+
+
 # Mount static directory
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
