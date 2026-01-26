@@ -1553,8 +1553,8 @@
                     // Register service worker (required for both basic and push notifications)
                     if ('serviceWorker' in navigator && (notificationsEnabled.value || pushEnabled.value)) {
                         try {
-                            const registration = await navigator.serviceWorker.register('/static/sw.js')
-                            console.log('[SW] Service worker registered')
+                            const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+                            console.log('[SW] Service worker registered with scope:', registration.scope)
                             
                             // Check for existing push subscription
                             if (pushEnabled.value && 'PushManager' in window) {
@@ -1607,6 +1607,13 @@
                 }
                 
                 const subscribeToPush = async () => {
+                    console.log('[Push] Starting subscription...', {
+                        pushEnabled: pushEnabled.value,
+                        hasVapidKey: !!pushVapidKey.value,
+                        hasSW: 'serviceWorker' in navigator,
+                        hasPushManager: 'PushManager' in window
+                    })
+                    
                     if (!pushEnabled.value || !pushVapidKey.value) {
                         console.log('[Push] Not enabled or no VAPID key')
                         return false
@@ -1618,15 +1625,27 @@
                     }
                     
                     try {
+                        console.log('[Push] Waiting for service worker ready...')
                         const registration = await navigator.serviceWorker.ready
+                        console.log('[Push] Service worker ready, scope:', registration.scope)
                         
-                        // Subscribe to push
-                        pushSubscription = await registration.pushManager.subscribe({
-                            userVisibleOnly: true,
-                            applicationServerKey: urlBase64ToUint8Array(pushVapidKey.value)
-                        })
+                        // Check if already subscribed
+                        const existingSub = await registration.pushManager.getSubscription()
+                        if (existingSub) {
+                            console.log('[Push] Found existing subscription, reusing it')
+                            pushSubscription = existingSub
+                        } else {
+                            // Subscribe to push
+                            console.log('[Push] Creating new push subscription...')
+                            pushSubscription = await registration.pushManager.subscribe({
+                                userVisibleOnly: true,
+                                applicationServerKey: urlBase64ToUint8Array(pushVapidKey.value)
+                            })
+                            console.log('[Push] Push subscription created:', pushSubscription.endpoint.substring(0, 50) + '...')
+                        }
                         
                         // Send subscription to server
+                        console.log('[Push] Sending subscription to server...')
                         const response = await fetch('/api/push/subscribe', {
                             method: 'POST',
                             credentials: 'include',
@@ -1639,11 +1658,12 @@
                             console.log('[Push] ✅ Subscribed successfully')
                             return true
                         } else {
-                            console.error('[Push] Failed to store subscription:', await response.text())
+                            const errorText = await response.text()
+                            console.error('[Push] Server rejected subscription:', response.status, errorText)
                             return false
                         }
                     } catch (e) {
-                        console.error('[Push] Subscription error:', e)
+                        console.error('[Push] Subscription error:', e.name, e.message, e)
                         return false
                     }
                 }
