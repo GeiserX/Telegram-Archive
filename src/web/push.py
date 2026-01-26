@@ -276,13 +276,21 @@ class PushNotificationManager:
         
         for sub in subscriptions:
             try:
+                # Extract origin from endpoint for VAPID audience claim
+                from urllib.parse import urlparse
+                endpoint_url = urlparse(sub['endpoint'])
+                audience = f"{endpoint_url.scheme}://{endpoint_url.netloc}"
+                
+                # Generate VAPID headers using py_vapid
+                vapid_headers = self._vapid.sign({
+                    'sub': self.config.vapid_contact,
+                    'aud': audience
+                })
+                
                 webpush(
                     subscription_info=sub,
                     data=json.dumps(payload),
-                    vapid_private_key=self._private_key,
-                    vapid_claims={
-                        'sub': self.config.vapid_contact
-                    }
+                    headers=vapid_headers
                 )
                 sent += 1
             except WebPushException as e:
