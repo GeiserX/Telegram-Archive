@@ -8,6 +8,8 @@ if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; then
 from alembic.config import Config
 from alembic import command
 import os
+import sys
+import time
 import psycopg2
 
 # Build connection URL
@@ -18,8 +20,27 @@ password = os.getenv('POSTGRES_PASSWORD', '')
 db = os.getenv('POSTGRES_DB', 'telegram_backup')
 url = f'postgresql://{user}:{password}@{host}:{port}/{db}'
 
-# Check if this is a pre-Alembic database (tables exist but no alembic_version)
-conn = psycopg2.connect(host=host, port=port, user=user, password=password, dbname=db)
+print(f'Connecting to PostgreSQL at {host}:{port}...')
+
+# Retry logic - wait for PostgreSQL to be ready
+max_retries = 30
+retry_delay = 2
+conn = None
+
+for attempt in range(max_retries):
+    try:
+        conn = psycopg2.connect(host=host, port=port, user=user, password=password, dbname=db)
+        print('PostgreSQL connection established.')
+        break
+    except psycopg2.OperationalError as e:
+        if attempt < max_retries - 1:
+            print(f'PostgreSQL not ready (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s...')
+            time.sleep(retry_delay)
+        else:
+            print(f'ERROR: Could not connect to PostgreSQL at {host}:{port} after {max_retries} attempts')
+            print(f'Error: {e}')
+            sys.exit(1)
+
 cur = conn.cursor()
 
 # Check if alembic_version table exists
