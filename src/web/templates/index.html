@@ -1403,6 +1403,28 @@
                                 await loadChats()
                                 await loadStats()
                                 setupInfiniteScroll()
+                                
+                                // Handle deep link from push notification
+                                const urlParams = new URLSearchParams(window.location.search)
+                                const chatIdParam = urlParams.get('chat')
+                                const msgIdParam = urlParams.get('msg')
+                                
+                                if (chatIdParam) {
+                                    const chatId = parseInt(chatIdParam)
+                                    const targetChat = chats.value.find(c => c.id === chatId)
+                                    if (targetChat) {
+                                        console.log('[Notification] Deep linking to chat:', chatId)
+                                        await selectChat(targetChat)
+                                        if (msgIdParam) {
+                                            const msgId = parseInt(msgIdParam)
+                                            console.log('[Notification] Scrolling to message:', msgId)
+                                            await nextTick()
+                                            scrollToMessage(msgId)
+                                        }
+                                    }
+                                    // Clean URL without reload to prevent re-navigation on refresh
+                                    window.history.replaceState({}, '', '/')
+                                }
                             }
                         } else {
                             // If status endpoint returns non-2xx, mark auth check as failed
@@ -1422,6 +1444,27 @@
                     // Initialize WebSocket and notifications (v5.0)
                     await initNotifications()
                     initWebSocket()
+                    
+                    // Listen for notification clicks when app is already open
+                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.addEventListener('message', async (event) => {
+                            if (event.data?.type === 'NOTIFICATION_CLICK') {
+                                const { chat_id, message_id } = event.data.data || {}
+                                if (chat_id) {
+                                    console.log('[Notification] Click received for chat:', chat_id)
+                                    const targetChat = chats.value.find(c => c.id === chat_id)
+                                    if (targetChat) {
+                                        await selectChat(targetChat)
+                                        if (message_id) {
+                                            console.log('[Notification] Scrolling to message:', message_id)
+                                            await nextTick()
+                                            scrollToMessage(message_id)
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                    }
                     
                     // Mark secondary initialization complete
                     finishInitialization()
