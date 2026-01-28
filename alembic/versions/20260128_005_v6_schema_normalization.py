@@ -40,21 +40,39 @@ def upgrade() -> None:
     
     # Insert missing media records from messages table
     # This handles cases where messages have media_id but no corresponding media record
-    conn.execute(text("""
-        INSERT INTO media (id, message_id, chat_id, type, file_path, downloaded, created_at)
-        SELECT 
-            m.media_id,
-            m.id,
-            m.chat_id,
-            m.media_type,
-            m.media_path,
-            CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN 1 ELSE 0 END,
-            m.created_at
-        FROM messages m
-        WHERE m.media_id IS NOT NULL 
-          AND m.media_id != ''
-          AND NOT EXISTS (SELECT 1 FROM media WHERE media.id = m.media_id)
-    """))
+    # Use ON CONFLICT DO NOTHING for PostgreSQL to handle duplicate keys gracefully
+    if dialect == 'postgresql':
+        conn.execute(text("""
+            INSERT INTO media (id, message_id, chat_id, type, file_path, downloaded, created_at)
+            SELECT 
+                m.media_id,
+                m.id,
+                m.chat_id,
+                m.media_type,
+                m.media_path,
+                CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN true ELSE false END,
+                m.created_at
+            FROM messages m
+            WHERE m.media_id IS NOT NULL 
+              AND m.media_id != ''
+            ON CONFLICT (id) DO NOTHING
+        """))
+    else:
+        # SQLite: Use INSERT OR IGNORE
+        conn.execute(text("""
+            INSERT OR IGNORE INTO media (id, message_id, chat_id, type, file_path, downloaded, created_at)
+            SELECT 
+                m.media_id,
+                m.id,
+                m.chat_id,
+                m.media_type,
+                m.media_path,
+                CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN 1 ELSE 0 END,
+                m.created_at
+            FROM messages m
+            WHERE m.media_id IS NOT NULL 
+              AND m.media_id != ''
+        """))
     
     # Update existing media records that might be missing message_id/chat_id
     conn.execute(text("""
