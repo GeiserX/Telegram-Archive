@@ -144,7 +144,32 @@ def upgrade() -> None:
         op.drop_column('messages', 'media_path')
     
     # =========================================================================
-    # STEP 4: Add FK constraint for media -> messages
+    # STEP 4: Clean up orphan data before adding FK constraints
+    # =========================================================================
+    
+    # Delete orphan media records (where message doesn't exist)
+    conn.execute(text("""
+        DELETE FROM media 
+        WHERE message_id IS NOT NULL 
+          AND chat_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM messages 
+              WHERE messages.id = media.message_id 
+                AND messages.chat_id = media.chat_id
+          )
+    """))
+    
+    # Set user_id to NULL for orphan reactions (where user doesn't exist)
+    # This preserves the reaction counts while removing invalid FK references
+    conn.execute(text("""
+        UPDATE reactions 
+        SET user_id = NULL
+        WHERE user_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = reactions.user_id)
+    """))
+    
+    # =========================================================================
+    # STEP 5: Add FK constraint for media -> messages
     # =========================================================================
     
     if dialect == 'sqlite':
@@ -189,7 +214,7 @@ def upgrade() -> None:
         )
     
     # =========================================================================
-    # STEP 5: Add FK for reactions.user_id -> users.id
+    # STEP 6: Add FK for reactions.user_id -> users.id
     # =========================================================================
     
     if dialect != 'sqlite':
@@ -201,7 +226,7 @@ def upgrade() -> None:
         )
     
     # =========================================================================
-    # STEP 6: Add new performance indexes
+    # STEP 7: Add new performance indexes
     # =========================================================================
     
     # Index for reply lookups
