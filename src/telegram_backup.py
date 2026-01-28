@@ -458,6 +458,8 @@ class TelegramBackup:
                         # Re-download using existing method
                         result = await self._process_media(msg, chat_id)
                         if result and result.get('downloaded'):
+                            # Insert media record (message already exists for re-downloads)
+                            await self.db.insert_media(result)
                             redownloaded += 1
                             logger.debug(f"Re-downloaded media for message {msg_id}")
                         else:
@@ -526,6 +528,10 @@ class TelegramBackup:
             # Batch insert every 50 messages
             if len(batch_data) >= batch_size:
                 await self.db.insert_messages_batch(batch_data)
+                # Insert media records AFTER messages (FK constraint satisfied)
+                for msg in batch_data:
+                    if msg.get('_media_data'):
+                        await self.db.insert_media(msg['_media_data'])
                 # Store reactions for this batch
                 for msg in batch_data:
                     if msg.get('reactions'):
@@ -565,6 +571,10 @@ class TelegramBackup:
         # Insert remaining messages
         if batch_data:
             await self.db.insert_messages_batch(batch_data)
+            # Insert media records AFTER messages (FK constraint satisfied)
+            for msg in batch_data:
+                if msg.get('_media_data'):
+                    await self.db.insert_media(msg['_media_data'])
             # Store reactions for remaining messages
             for msg in batch_data:
                 if msg.get('reactions'):
@@ -769,6 +779,7 @@ class TelegramBackup:
                 await self.db.upsert_user(sender_data)
         
         # Extract message data
+        # v6.0.0: media_type, media_id, media_path removed - media stored in separate table
         message_data = {
             'id': message.id,
             'chat_id': chat_id,
@@ -779,9 +790,6 @@ class TelegramBackup:
             'reply_to_text': None,
             'forward_from_id': self._extract_forward_from_id(message),
             'edit_date': message.edit_date,
-            'media_type': None,
-            'media_id': None,
-            'media_path': None,
             'raw_data': {},
             'is_outgoing': 1 if message.out else 0,
             'is_pinned': 1 if getattr(message, 'pinned', False) else 0
@@ -827,8 +835,8 @@ class TelegramBackup:
         # Handle media
         if message.media:
             # Handle Polls specially (store structure in raw_data, do not download)
+            # v6.0.0: Poll type is detected by presence of raw_data['poll']
             if isinstance(message.media, MessageMediaPoll):
-                message_data['media_type'] = 'poll'
                 poll = message.media.poll
                 results = message.media.results
                 
@@ -869,11 +877,11 @@ class TelegramBackup:
                 }
 
             elif self.config.download_media:
-                media_info = await self._process_media(message, chat_id)
-                if media_info:
-                    message_data['media_type'] = media_info['type']
-                    message_data['media_id'] = media_info['id']
-                    message_data['media_path'] = media_info.get('file_path')
+                # v6.0.0: Download media and store data for later insertion
+                # (media is inserted AFTER message to satisfy FK constraint)
+                media_result = await self._process_media(message, chat_id)
+                if media_result:
+                    message_data['_media_data'] = media_result
         
         # Extract reactions if available
         reactions_data = []
@@ -1090,9 +1098,8 @@ class TelegramBackup:
                     if hasattr(attr, 'duration'):
                         media_data['duration'] = attr.duration
             
-            # Save to database
-            await self.db.insert_media(media_data)
-            
+            # Return media data - caller is responsible for inserting to database
+            # (to ensure message exists before media FK constraint)
             return media_data
             
         except Exception as e:

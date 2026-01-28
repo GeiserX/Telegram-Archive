@@ -16,6 +16,7 @@ Performance impact: 10-100x faster for large chats (10k+ messages).
 from typing import Sequence, Union
 
 from alembic import op
+import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
@@ -35,7 +36,7 @@ def upgrade() -> None:
     op.create_index(
         'idx_messages_chat_date_desc',
         'messages',
-        ['chat_id', op.desc('date')],
+        ['chat_id', sa.text('date DESC')],
         unique=False
     )
 
