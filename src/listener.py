@@ -816,34 +816,36 @@ class TelegramListener:
                     'is_outgoing': 1 if message.out else 0
                 }
                 
-                # v6.0.0: Handle media - create Media record instead of storing in message
+                # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None
                 if message.media:
                     media_type = self._get_media_type(message.media)
-                    if media_type:
-                        # Download media immediately if enabled
-                        if self.config.listen_new_messages_media and self.config.download_media:
-                            try:
-                                media_path = await self._download_media(message, chat_id)
-                                if media_path:
-                                    # Create media record
-                                    media_id = f"{chat_id}_{message.id}_{media_type}"
-                                    await self.db.insert_media({
-                                        'id': media_id,
-                                        'message_id': message.id,
-                                        'chat_id': chat_id,
-                                        'type': media_type,
-                                        'file_path': media_path,
-                                        'downloaded': True,
-                                        'download_date': datetime.utcnow()
-                                    })
-                                    logger.debug(f"📎 Downloaded media: {media_path}")
-                            except Exception as e:
-                                logger.warning(f"Failed to download media for message {message.id}: {e}")
                 
-                # Insert the message
+                # Insert the message FIRST (required for FK constraint on media table)
                 await self.db.insert_message(message_data)
                 self.stats['new_messages_saved'] += 1
+                
+                # v6.0.0: Handle media - create Media record AFTER message exists
+                if media_type:
+                    # Download media immediately if enabled
+                    if self.config.listen_new_messages_media and self.config.download_media:
+                        try:
+                            media_path = await self._download_media(message, chat_id)
+                            if media_path:
+                                # Create media record (FK to messages now satisfied)
+                                media_id = f"{chat_id}_{message.id}_{media_type}"
+                                await self.db.insert_media({
+                                    'id': media_id,
+                                    'message_id': message.id,
+                                    'chat_id': chat_id,
+                                    'type': media_type,
+                                    'file_path': media_path,
+                                    'downloaded': True,
+                                    'download_date': datetime.utcnow()
+                                })
+                                logger.debug(f"📎 Downloaded media: {media_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to download media for message {message.id}: {e}")
                 
                 # Send real-time notification
                 if self._notifier:
