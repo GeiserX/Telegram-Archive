@@ -307,11 +307,14 @@ Chat IDs use Telegram's "marked" format:
 
 **Finding Chat IDs**: Forward a message from the chat to [@userinfobot](https://t.me/userinfobot) on Telegram.
 
-**Whitelist-only mode**: Set `CHAT_TYPES=` (empty) to backup ONLY explicitly included chat IDs:
-```yaml
-- CHAT_TYPES=                           # Empty = no types by default
-- GLOBAL_INCLUDE_CHAT_IDS=-1001234567   # Only backup this specific chat
+**Whitelist-only mode**: Set `CHAT_TYPES=` (empty) in your `.env` to backup ONLY explicitly included chat IDs:
+```bash
+# In .env file:
+CHAT_TYPES=                              # Empty = no types by default
+GLOBAL_INCLUDE_CHAT_IDS=-1001234567      # Only backup this specific chat
 ```
+
+> **Note**: The provided `docker-compose.yml` uses `${CHAT_TYPES-default}` syntax (without colon) which correctly respects empty values. If you're using an older docker-compose.yml with `${CHAT_TYPES:-default}` syntax, empty values will fallback to the default. Update to the latest docker-compose.yml or remove the `:-` default.
 
 ### Real-time Edit/Deletion Tracking
 
