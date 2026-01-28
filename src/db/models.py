@@ -108,7 +108,14 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())
     
     # Relationships
-    messages: Mapped[List["Message"]] = relationship("Message", back_populates="sender", lazy="dynamic")
+    # NOTE: Explicit join because sender_id has no DB-level FK (can contain channel/group IDs)
+    messages: Mapped[List["Message"]] = relationship(
+        "Message",
+        back_populates="sender",
+        primaryjoin="User.id == Message.sender_id",
+        foreign_keys="[Message.sender_id]",
+        lazy="dynamic"
+    )
     
     __table_args__ = (
         Index('idx_users_username', 'username'),
