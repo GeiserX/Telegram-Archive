@@ -41,6 +41,7 @@ def upgrade() -> None:
     # Insert missing media records from messages table
     # This handles cases where messages have media_id but no corresponding media record
     # Use ON CONFLICT DO NOTHING for PostgreSQL to handle duplicate keys gracefully
+    # Note: downloaded column is Integer (0/1), not Boolean
     if dialect == 'postgresql':
         conn.execute(text("""
             INSERT INTO media (id, message_id, chat_id, type, file_path, downloaded, created_at)
@@ -50,7 +51,7 @@ def upgrade() -> None:
                 m.chat_id,
                 m.media_type,
                 m.media_path,
-                CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN true ELSE false END,
+                CASE WHEN m.media_path IS NOT NULL AND m.media_path != '' THEN 1 ELSE 0 END,
                 m.created_at
             FROM messages m
             WHERE m.media_id IS NOT NULL 
