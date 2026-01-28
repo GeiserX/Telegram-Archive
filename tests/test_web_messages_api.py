@@ -11,14 +11,22 @@ class TestWebMessagesAPIStructure(unittest.TestCase):
     """Test web API structure and endpoints."""
     
     def test_message_response_structure(self):
-        """Test expected message response structure."""
+        """Test expected message response structure.
+        
+        v6.0.0: Media is now a nested object instead of flat fields.
+        """
         # Expected fields in message response
         expected_fields = [
             'id', 'chat_id', 'sender_id', 'date', 'text',
             'reply_to_msg_id', 'reply_to_text', 'forward_from_id',
-            'edit_date', 'media_type', 'media_id', 'media_path',
-            'first_name', 'last_name', 'username',
-            'media_file_name', 'media_mime_type', 'reactions'
+            'edit_date', 'media',  # v6.0.0: nested media object
+            'first_name', 'last_name', 'username', 'reactions'
+        ]
+        
+        # Expected fields in media object (when present)
+        expected_media_fields = [
+            'id', 'type', 'file_path', 'file_name', 'file_size',
+            'mime_type', 'width', 'height', 'duration'
         ]
         
         # Mock message with all expected fields
@@ -32,19 +40,29 @@ class TestWebMessagesAPIStructure(unittest.TestCase):
             'reply_to_text': None,
             'forward_from_id': None,
             'edit_date': None,
-            'media_type': 'document',
-            'media_id': '1_100_document',
-            'media_path': 'data/backups/media/1/100_original.png',
+            'media': {
+                'id': '1_100_document',
+                'type': 'document',
+                'file_path': 'data/backups/media/1/100_original.png',
+                'file_name': '100_original.png',
+                'file_size': 12345,
+                'mime_type': 'image/png',
+                'width': 800,
+                'height': 600,
+                'duration': None
+            },
             'first_name': 'User',
             'last_name': 'Ten',
             'username': 'user10',
-            'media_file_name': '100_original.png',
-            'media_mime_type': 'image/png',
             'reactions': []
         }
         
         for field in expected_fields:
             self.assertIn(field, mock_message, f"Missing field: {field}")
+        
+        # Check media object fields
+        for field in expected_media_fields:
+            self.assertIn(field, mock_message['media'], f"Missing media field: {field}")
     
     def test_pagination_parameters(self):
         """Test pagination parameter defaults."""
