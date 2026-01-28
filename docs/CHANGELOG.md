@@ -58,9 +58,10 @@ After (v6.0.0):
 ### Added
 
 #### Foreign Key Constraints
-- `messages.sender_id` → `users.id` (nullable, ON DELETE SET NULL)
 - `media(message_id, chat_id)` → `messages(id, chat_id)` (ON DELETE CASCADE)
 - `reactions.user_id` → `users.id` (nullable, ON DELETE SET NULL)
+
+**Note:** `messages.sender_id` does NOT have a FK constraint because sender_id can contain channel/group IDs that aren't in the users table. The relationship is maintained at ORM level only.
 
 #### New Indexes
 - `idx_messages_reply_to` - Fast reply message lookups

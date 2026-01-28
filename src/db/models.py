@@ -55,7 +55,8 @@ class Message(Base):
     # Composite primary key (id, chat_id) - message IDs are only unique within a chat
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('chats.id'), primary_key=True)
-    sender_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'))
+    # NOTE: sender_id has no FK constraint because it can be channel/group IDs (not in users table)
+    sender_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     text: Mapped[Optional[str]] = mapped_column(Text)
     reply_to_msg_id: Mapped[Optional[int]] = mapped_column(BigInteger)
@@ -70,7 +71,13 @@ class Message(Base):
     
     # Relationships
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
-    sender: Mapped[Optional["User"]] = relationship("User", back_populates="messages", foreign_keys=[sender_id])
+    # NOTE: sender relationship works via ORM join, no DB-level FK (sender_id can be channel/group IDs)
+    sender: Mapped[Optional["User"]] = relationship(
+        "User", 
+        back_populates="messages",
+        primaryjoin="Message.sender_id == User.id",
+        foreign_keys="[Message.sender_id]"
+    )
     reactions: Mapped[List["Reaction"]] = relationship("Reaction", back_populates="message", lazy="dynamic")
     media_items: Mapped[List["Media"]] = relationship("Media", back_populates="message", lazy="selectin")
     

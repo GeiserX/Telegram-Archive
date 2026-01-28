@@ -89,6 +89,8 @@ def upgrade() -> None:
     if dialect == 'sqlite':
         # SQLite: Recreate table without the columns
         # First, create new table structure
+        # NOTE: sender_id FK is NOT enforced because sender_id can be channel/group IDs
+        # that aren't in the users table. The relationship is maintained at ORM level.
         op.execute(text("""
             CREATE TABLE messages_new (
                 id INTEGER NOT NULL,
@@ -105,8 +107,7 @@ def upgrade() -> None:
                 is_outgoing INTEGER DEFAULT 0 NOT NULL,
                 is_pinned INTEGER DEFAULT 0 NOT NULL,
                 PRIMARY KEY (id, chat_id),
-                FOREIGN KEY(chat_id) REFERENCES chats (id),
-                FOREIGN KEY(sender_id) REFERENCES users (id) ON DELETE SET NULL
+                FOREIGN KEY(chat_id) REFERENCES chats (id)
             )
         """))
         
@@ -135,18 +136,12 @@ def upgrade() -> None:
         op.create_index('idx_messages_chat_date_desc', 'messages', ['chat_id', sa.text('date DESC')])
         op.create_index('idx_messages_chat_pinned', 'messages', ['chat_id', 'is_pinned'])
     else:
-        # PostgreSQL: Direct column drops and FK additions
+        # PostgreSQL: Direct column drops
+        # NOTE: sender_id FK is NOT added because sender_id can be channel/group IDs
+        # that aren't in the users table. The relationship is maintained at ORM level.
         op.drop_column('messages', 'media_type')
         op.drop_column('messages', 'media_id')
         op.drop_column('messages', 'media_path')
-        
-        # Add FK for sender_id -> users.id
-        op.create_foreign_key(
-            'fk_messages_sender',
-            'messages', 'users',
-            ['sender_id'], ['id'],
-            ondelete='SET NULL'
-        )
     
     # =========================================================================
     # STEP 4: Add FK constraint for media -> messages
@@ -252,7 +247,7 @@ def downgrade() -> None:
     if dialect != 'sqlite':
         op.drop_constraint('fk_reactions_user', 'reactions', type_='foreignkey')
         op.drop_constraint('fk_media_message', 'media', type_='foreignkey')
-        op.drop_constraint('fk_messages_sender', 'messages', type_='foreignkey')
+        # NOTE: fk_messages_sender was never created (sender_id can be channel/group IDs)
     
     # =========================================================================
     # STEP 3: Restore media columns to messages
