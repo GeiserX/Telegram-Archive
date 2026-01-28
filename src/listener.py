@@ -413,10 +413,21 @@ class TelegramListener:
         """
         Check if we should process events for this chat.
         
-        Returns True if:
-        - Chat is in our tracked list (backed up at least once), OR
-        - Chat matches our backup filters (include/exclude lists, chat types)
+        Two modes:
+        
+        MODE 1 - Whitelist Mode (CHAT_IDS is set):
+            Only process events for chats explicitly listed in CHAT_IDS.
+        
+        MODE 2 - Type-based Mode:
+            Process if:
+            - Chat is in our tracked list (backed up at least once), OR
+            - Chat matches our backup filters (include lists)
         """
+        # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority
+        if self.config.whitelist_mode:
+            return chat_id in self.config.chat_ids
+        
+        # MODE 2: Type-based Mode
         # First, check if it's in our tracked chats
         if chat_id in self._tracked_chat_ids:
             return True

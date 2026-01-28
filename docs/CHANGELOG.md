@@ -57,6 +57,28 @@ After (v6.0.0):
 
 ### Added
 
+#### Simple Whitelist Mode with `CHAT_IDS` (fixes #48)
+
+New `CHAT_IDS` environment variable provides a simple way to backup only specific chats:
+
+```bash
+# Backup ONLY these 2 channels - nothing else
+CHAT_IDS=-1001234567890,-1009876543210
+```
+
+**Two filtering modes:**
+
+| Mode | When | How it works |
+|------|------|--------------|
+| **Whitelist** | `CHAT_IDS` is set | Backup ONLY the listed chats. All other settings ignored. |
+| **Type-based** | `CHAT_IDS` not set | Use `CHAT_TYPES` + `INCLUDE`/`EXCLUDE` filters (existing behavior). |
+
+This solves the common confusion where users expected `CHANNELS_INCLUDE_CHAT_IDS` to act as a whitelist, but it was actually additive.
+
+#### Removed `LISTEN_ALBUMS` Setting (fixes #46)
+
+The `LISTEN_ALBUMS` setting was redundant and has been removed. Albums are now automatically handled via `grouped_id` in the NewMessage handler. The viewer groups messages by `grouped_id` to display albums correctly.
+
 #### Foreign Key Constraints
 - `media(message_id, chat_id)` → `messages(id, chat_id)` (ON DELETE CASCADE)
 - `reactions.user_id` → `users.id` (nullable, ON DELETE SET NULL)

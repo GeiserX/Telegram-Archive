@@ -42,9 +42,27 @@ class Config:
         # Default increased to 60s for better resilience with concurrent access (backup + web viewer).
         self.database_timeout = float(os.getenv('DATABASE_TIMEOUT', '60.0'))
         
-        # Chat type filters
-        # Use os.environ.get() to distinguish between "not set" vs "set to empty"
-        # This ensures CHAT_TYPES= (empty) works for whitelist-only mode in Docker
+        # =====================================================================
+        # CHAT FILTERING - Two Modes
+        # =====================================================================
+        # 
+        # MODE 1: Whitelist Mode (simple) - set CHAT_IDS
+        #   CHAT_IDS=-100id1,-100id2   → Backup ONLY these specific chats
+        #   When set, CHAT_TYPES and all INCLUDE/EXCLUDE filters are IGNORED
+        #
+        # MODE 2: Type-based Mode (default) - use CHAT_TYPES + INCLUDE/EXCLUDE
+        #   CHAT_TYPES=private,groups  → Backup all chats of these types
+        #   *_INCLUDE_CHAT_IDS         → ALSO include these (additive)
+        #   *_EXCLUDE_CHAT_IDS         → Exclude these (takes priority)
+        #
+        # =====================================================================
+        
+        # Whitelist mode: CHAT_IDS takes absolute priority
+        # When set, ONLY these chats are backed up - nothing else
+        self.chat_ids = self._parse_id_list(os.getenv('CHAT_IDS', ''))
+        self.whitelist_mode = len(self.chat_ids) > 0
+        
+        # Type-based mode (only used if CHAT_IDS is not set)
         chat_types_env = os.environ.get('CHAT_TYPES')
         if chat_types_env is None:
             # Not set at all, use default (backup all types)
@@ -55,7 +73,7 @@ class Config:
         self.chat_types = [ct.strip().lower() for ct in chat_types_str.split(',') if ct.strip()]
         self._validate_chat_types()
         
-        # Granular chat ID filters
+        # Granular chat ID filters (only used in type-based mode)
         # Global filters (backward compatibility with old names)
         self.global_include_ids = self._parse_id_list(
             os.getenv('GLOBAL_INCLUDE_CHAT_IDS') or os.getenv('INCLUDE_CHAT_IDS', '')
@@ -216,7 +234,14 @@ class Config:
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")
-        logger.debug(f"Chat types: {self.chat_types}")
+        
+        # Log filtering mode
+        if self.whitelist_mode:
+            logger.info(f"Filter mode: WHITELIST - backing up ONLY {len(self.chat_ids)} specific chats")
+            logger.debug(f"  CHAT_IDS: {self.chat_ids}")
+        else:
+            logger.debug(f"Filter mode: TYPE-BASED")
+            logger.debug(f"  Chat types: {self.chat_types}")
         logger.debug(f"Schedule: {self.schedule}")
         if self.sync_deletions_edits:
             logger.warning("SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)")
@@ -326,12 +351,19 @@ class Config:
         """
         Determine if a chat should be backed up based on its ID and type.
         
-        Filtering logic (Priority Order):
-        1. Global Exclude (Blacklist) -> Skip
-        2. Type-Specific Exclude -> Skip
-        3. Global Include (Whitelist) -> Backup ONLY if in list (acts as whitelist!)
-        4. Type-Specific Include -> Backup ONLY if in list (acts as whitelist!)
-        5. Chat Type Filter (CHAT_TYPES) -> Backup if matches AND no include lists set
+        Two modes:
+        
+        MODE 1 - Whitelist Mode (CHAT_IDS is set):
+            Backup ONLY the chats in CHAT_IDS. Everything else is ignored.
+            Simple, explicit, no ambiguity.
+        
+        MODE 2 - Type-based Mode (CHAT_IDS not set):
+            Filtering logic (Priority Order):
+            1. Global Exclude (Blacklist) -> Skip
+            2. Type-Specific Exclude -> Skip
+            3. Global Include -> Backup (additive)
+            4. Type-Specific Include -> Backup (additive for that type)
+            5. Chat Type Filter (CHAT_TYPES) -> Backup if matches
         
         Args:
             chat_id: Telegram chat ID
@@ -342,6 +374,16 @@ class Config:
         Returns:
             True if chat should be backed up, False otherwise
         """
+        # =====================================================================
+        # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority
+        # =====================================================================
+        if self.whitelist_mode:
+            return chat_id in self.chat_ids
+        
+        # =====================================================================
+        # MODE 2: Type-based Mode
+        # =====================================================================
+        
         # 1. Global Exclude
         if chat_id in self.global_exclude_ids:
             return False

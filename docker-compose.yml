@@ -19,7 +19,17 @@ services:
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       BATCH_SIZE: ${BATCH_SIZE:-100}
-      # Note: Using ${VAR-default} (not :-) so CHAT_TYPES= empty works for whitelist-only mode
+      
+      # =======================================================================
+      # CHAT FILTERING - Choose ONE mode:
+      # =======================================================================
+      # MODE 1 (Simple): Set CHAT_IDS to backup ONLY specific chats
+      #   CHAT_IDS: "-100123456,-100789012"  # Only these chats, nothing else
+      #
+      # MODE 2 (Default): Use CHAT_TYPES to backup by type
+      #   CHAT_TYPES: "private,groups,channels"  # All chats of these types
+      # =======================================================================
+      CHAT_IDS: ${CHAT_IDS:-}
       CHAT_TYPES: ${CHAT_TYPES-private,groups,channels}
 
       # Database Configuration (v3.0+)
