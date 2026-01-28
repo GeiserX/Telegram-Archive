@@ -152,9 +152,8 @@ class Config:
         # When enabled, updates to chat metadata are captured in real-time
         self.listen_chat_actions = os.getenv('LISTEN_CHAT_ACTIONS', 'true').lower() == 'true'
         
-        # LISTEN_ALBUMS: Group media uploads together as albums
-        # When enabled, grouped photos/videos are detected and stored together
-        self.listen_albums = os.getenv('LISTEN_ALBUMS', 'true').lower() == 'true'
+        # Note: LISTEN_ALBUMS removed - albums are automatically handled via grouped_id
+        # in the NewMessage handler. The viewer groups messages by grouped_id.
         
         # =====================================================================
         # MEDIA DEDUPLICATION
@@ -236,8 +235,6 @@ class Config:
                 logger.info("  LISTEN_NEW_MESSAGES: false (messages saved on scheduled backup)")
             if self.listen_chat_actions:
                 logger.info("  LISTEN_CHAT_ACTIONS: true - Chat metadata changes tracked!")
-            if self.listen_albums:
-                logger.info("  LISTEN_ALBUMS: true - Grouped media detected!")
             logger.info(f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s")
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")

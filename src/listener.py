@@ -816,6 +816,10 @@ class TelegramListener:
                     'is_outgoing': 1 if message.out else 0
                 }
                 
+                # Capture grouped_id for album detection (multiple photos/videos sent together)
+                if message.grouped_id:
+                    message_data['raw_data']['grouped_id'] = str(message.grouped_id)
+                
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None
                 if message.media:
@@ -1000,79 +1004,8 @@ class TelegramListener:
                 self.stats['errors'] += 1
                 logger.error(f"Error in chat action handler: {e}", exc_info=True)
         
-        # Album handler - groups media uploads together
-        @self.client.on(events.Album)
-        async def on_album(event: events.Album.Event) -> None:
-            """
-            Handle album events (grouped photos/videos).
-            
-            Only active if LISTEN_ALBUMS is enabled.
-            Albums are groups of photos/videos sent together.
-            """
-            if not self.config.listen_albums:
-                return
-            
-            try:
-                chat_id = self._get_marked_id(event.chat_id)
-                
-                if not self._should_process_chat(chat_id):
-                    return
-                
-                # Track stats
-                if 'albums_received' not in self.stats:
-                    self.stats['albums_received'] = 0
-                self.stats['albums_received'] += 1
-                
-                album_size = len(event.messages)
-                logger.info(f"📸 Album received: chat={chat_id} size={album_size}")
-                
-                # If LISTEN_NEW_MESSAGES is enabled, save each message in the album
-                if self.config.listen_new_messages:
-                    for message in event.messages:
-                        # Get actual media type (photo/video) instead of generic 'album'
-                        media_type = self._get_media_type(message.media) if message.media else None
-                        
-                        # Download media if enabled and create Media record
-                        if media_type and self.config.listen_new_messages_media and self.config.download_media:
-                            try:
-                                media_path = await self._download_media(message, chat_id)
-                                if media_path:
-                                    media_id = f"{chat_id}_{message.id}_{media_type}"
-                                    await self.db.insert_media({
-                                        'id': media_id,
-                                        'message_id': message.id,
-                                        'chat_id': chat_id,
-                                        'type': media_type,
-                                        'file_path': media_path,
-                                        'downloaded': True,
-                                        'download_date': datetime.utcnow()
-                                    })
-                                    logger.debug(f"📎 Downloaded album media: {media_path}")
-                            except Exception as e:
-                                logger.warning(f"Failed to download album media for message {message.id}: {e}")
-                        
-                        # v6.0.0: media_type, media_id, media_path removed from message_data
-                        message_data = {
-                            'id': message.id,
-                            'chat_id': chat_id,
-                            'sender_id': message.sender_id,
-                            'date': message.date,
-                            'text': message.text or '',
-                            'reply_to_msg_id': message.reply_to_msg_id if hasattr(message, 'reply_to_msg_id') else None,
-                            'reply_to_text': None,
-                            'forward_from_id': None,
-                            'edit_date': message.edit_date,
-                            'raw_data': {'grouped_id': str(message.grouped_id)} if message.grouped_id else {},
-                            'is_outgoing': 1 if message.out else 0
-                        }
-                        await self.db.insert_message(message_data)
-                        self.stats['new_messages_saved'] += 1
-                    
-                    logger.info(f"📸 Album saved: chat={chat_id} messages={album_size}")
-                        
-            except Exception as e:
-                self.stats['errors'] += 1
-                logger.error(f"Error in album handler: {e}", exc_info=True)
+        # Note: Album handling removed - NewMessage handler captures grouped_id for album grouping
+        # The viewer groups messages by grouped_id automatically
         
         # Pin/Unpin handler - tracks pinned message changes
         @self.client.on(events.Raw(types=[UpdatePinnedMessages, UpdatePinnedChannelMessages]))
