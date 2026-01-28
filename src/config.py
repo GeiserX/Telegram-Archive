@@ -332,9 +332,9 @@ class Config:
         Filtering logic (Priority Order):
         1. Global Exclude (Blacklist) -> Skip
         2. Type-Specific Exclude -> Skip
-        3. Global Include (Whitelist) -> Backup
-        4. Type-Specific Include -> Backup
-        5. Chat Type Filter (CHAT_TYPES) -> Backup if matches
+        3. Global Include (Whitelist) -> Backup ONLY if in list (acts as whitelist!)
+        4. Type-Specific Include -> Backup ONLY if in list (acts as whitelist!)
+        5. Chat Type Filter (CHAT_TYPES) -> Backup if matches AND no include lists set
         
         Args:
             chat_id: Telegram chat ID
@@ -357,19 +357,19 @@ class Config:
         if is_channel and chat_id in self.channels_exclude_ids:
             return False
             
-        # 3. Global Include
-        if chat_id in self.global_include_ids:
-            return True
+        # 3. Global Include (acts as whitelist - if set, ONLY these are backed up)
+        if self.global_include_ids:
+            return chat_id in self.global_include_ids
             
-        # 4. Type-Specific Include
-        if is_user and chat_id in self.private_include_ids:
-            return True
-        if is_group and chat_id in self.groups_include_ids:
-            return True
-        if is_channel and chat_id in self.channels_include_ids:
-            return True
+        # 4. Type-Specific Include (acts as whitelist for that type)
+        if is_user and self.private_include_ids:
+            return chat_id in self.private_include_ids
+        if is_group and self.groups_include_ids:
+            return chat_id in self.groups_include_ids
+        if is_channel and self.channels_include_ids:
+            return chat_id in self.channels_include_ids
             
-        # 5. Chat Type Filter
+        # 5. Chat Type Filter (only if no include lists are set)
         return self.should_backup_chat_type(is_user, is_group, is_channel)
     
     def get_max_media_size_bytes(self) -> int:
