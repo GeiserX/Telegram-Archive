@@ -458,6 +458,8 @@ class TelegramBackup:
                         # Re-download using existing method
                         result = await self._process_media(msg, chat_id)
                         if result and result.get('downloaded'):
+                            # Insert media record (message already exists for re-downloads)
+                            await self.db.insert_media(result)
                             redownloaded += 1
                             logger.debug(f"Re-downloaded media for message {msg_id}")
                         else:
@@ -526,6 +528,10 @@ class TelegramBackup:
             # Batch insert every 50 messages
             if len(batch_data) >= batch_size:
                 await self.db.insert_messages_batch(batch_data)
+                # Insert media records AFTER messages (FK constraint satisfied)
+                for msg in batch_data:
+                    if msg.get('_media_data'):
+                        await self.db.insert_media(msg['_media_data'])
                 # Store reactions for this batch
                 for msg in batch_data:
                     if msg.get('reactions'):
@@ -565,6 +571,10 @@ class TelegramBackup:
         # Insert remaining messages
         if batch_data:
             await self.db.insert_messages_batch(batch_data)
+            # Insert media records AFTER messages (FK constraint satisfied)
+            for msg in batch_data:
+                if msg.get('_media_data'):
+                    await self.db.insert_media(msg['_media_data'])
             # Store reactions for remaining messages
             for msg in batch_data:
                 if msg.get('reactions'):
@@ -867,8 +877,11 @@ class TelegramBackup:
                 }
 
             elif self.config.download_media:
-                # v6.0.0: _process_media creates Media record, no need to store in message_data
-                await self._process_media(message, chat_id)
+                # v6.0.0: Download media and store data for later insertion
+                # (media is inserted AFTER message to satisfy FK constraint)
+                media_result = await self._process_media(message, chat_id)
+                if media_result:
+                    message_data['_media_data'] = media_result
         
         # Extract reactions if available
         reactions_data = []
@@ -1085,9 +1098,8 @@ class TelegramBackup:
                     if hasattr(attr, 'duration'):
                         media_data['duration'] = attr.duration
             
-            # Save to database
-            await self.db.insert_media(media_data)
-            
+            # Return media data - caller is responsible for inserting to database
+            # (to ensure message exists before media FK constraint)
             return media_data
             
         except Exception as e:
