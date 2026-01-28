@@ -348,7 +348,10 @@ class DatabaseAdapter:
     # ========== Message Operations ==========
     
     async def insert_message(self, message_data: Dict[str, Any]) -> None:
-        """Insert a message record."""
+        """Insert a message record.
+        
+        v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 'id': message_data['id'],
@@ -360,9 +363,6 @@ class DatabaseAdapter:
                 'reply_to_text': message_data.get('reply_to_text'),
                 'forward_from_id': message_data.get('forward_from_id'),
                 'edit_date': _strip_tz(message_data.get('edit_date')),
-                'media_type': message_data.get('media_type'),
-                'media_id': message_data.get('media_id'),
-                'media_path': message_data.get('media_path'),
                 'raw_data': self._serialize_raw_data(message_data.get('raw_data', {})),
                 'is_outgoing': message_data.get('is_outgoing', 0),
             }
@@ -385,7 +385,10 @@ class DatabaseAdapter:
     
     @retry_on_locked()
     async def insert_messages_batch(self, messages_data: List[Dict[str, Any]]) -> None:
-        """Insert multiple message records in a single transaction."""
+        """Insert multiple message records in a single transaction.
+        
+        v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
+        """
         if not messages_data:
             return
         
@@ -401,9 +404,6 @@ class DatabaseAdapter:
                     'reply_to_text': m.get('reply_to_text'),
                     'forward_from_id': m.get('forward_from_id'),
                     'edit_date': _strip_tz(m.get('edit_date')),
-                    'media_type': m.get('media_type'),
-                    'media_id': m.get('media_id'),
-                    'media_path': m.get('media_path'),
                     'raw_data': self._serialize_raw_data(m.get('raw_data', {})),
                     'is_outgoing': m.get('is_outgoing', 0),
                     'is_pinned': m.get('is_pinned', 0),
@@ -585,7 +585,10 @@ class DatabaseAdapter:
                 logger.info(f"Backfilled is_outgoing=1 for {result.rowcount} messages from owner {owner_id}")
     
     def _message_to_dict(self, message: Message) -> Dict[str, Any]:
-        """Convert Message model to dictionary."""
+        """Convert Message model to dictionary.
+        
+        v6.0.0: media_type, media_id, media_path removed - use media_items relationship.
+        """
         return {
             'id': message.id,
             'chat_id': message.chat_id,
@@ -596,9 +599,6 @@ class DatabaseAdapter:
             'reply_to_text': message.reply_to_text,
             'forward_from_id': message.forward_from_id,
             'edit_date': message.edit_date,
-            'media_type': message.media_type,
-            'media_id': message.media_id,
-            'media_path': message.media_path,
             'raw_data': message.raw_data,
             'created_at': message.created_at,
             'is_outgoing': message.is_outgoing,
@@ -1000,6 +1000,8 @@ class DatabaseAdapter:
         """
         Get messages with user info and media info for web viewer.
         
+        v6.0.0: Media is now returned as a nested object from the media table.
+        
         Supports two pagination modes:
         1. Offset-based (legacy): Uses offset parameter - slower for large offsets
         2. Cursor-based (preferred): Uses before_date/before_id - O(1) regardless of position
@@ -1016,18 +1018,28 @@ class DatabaseAdapter:
             List of message dictionaries with user and media info
         """
         async with self.db_manager.async_session_factory() as session:
-            # Build query with joins
+            # Build query with joins - v6.0.0: join on composite key
             stmt = (
                 select(
                     Message,
                     User.first_name,
                     User.last_name,
                     User.username,
+                    Media.id.label('media_id'),
+                    Media.type.label('media_type'),
+                    Media.file_path.label('media_file_path'),
                     Media.file_name.label('media_file_name'),
+                    Media.file_size.label('media_file_size'),
                     Media.mime_type.label('media_mime_type'),
+                    Media.width.label('media_width'),
+                    Media.height.label('media_height'),
+                    Media.duration.label('media_duration'),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, Message.media_id == Media.id)
+                .outerjoin(Media, and_(
+                    Media.message_id == Message.id,
+                    Media.chat_id == Message.chat_id
+                ))
                 .where(Message.chat_id == chat_id)
             )
             
@@ -1060,8 +1072,22 @@ class DatabaseAdapter:
                 msg['first_name'] = row.first_name
                 msg['last_name'] = row.last_name
                 msg['username'] = row.username
-                msg['media_file_name'] = row.media_file_name
-                msg['media_mime_type'] = row.media_mime_type
+                
+                # v6.0.0: Media as nested object
+                if row.media_type:
+                    msg['media'] = {
+                        'id': row.media_id,
+                        'type': row.media_type,
+                        'file_path': row.media_file_path,
+                        'file_name': row.media_file_name,
+                        'file_size': row.media_file_size,
+                        'mime_type': row.media_mime_type,
+                        'width': row.media_width,
+                        'height': row.media_height,
+                        'duration': row.media_duration,
+                    }
+                else:
+                    msg['media'] = None
                 
                 # Parse raw_data JSON
                 if msg.get('raw_data'):
@@ -1105,6 +1131,8 @@ class DatabaseAdapter:
         """
         Find message by date with full user/media joins for web viewer.
         
+        v6.0.0: Media is now returned as a nested object from the media table.
+        
         Args:
             chat_id: Chat ID
             target_date: Target date to find message for
@@ -1119,11 +1147,21 @@ class DatabaseAdapter:
                     User.first_name,
                     User.last_name,
                     User.username,
+                    Media.id.label('media_id'),
+                    Media.type.label('media_type'),
+                    Media.file_path.label('media_file_path'),
                     Media.file_name.label('media_file_name'),
+                    Media.file_size.label('media_file_size'),
                     Media.mime_type.label('media_mime_type'),
+                    Media.width.label('media_width'),
+                    Media.height.label('media_height'),
+                    Media.duration.label('media_duration'),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, Message.media_id == Media.id)
+                .outerjoin(Media, and_(
+                    Media.message_id == Message.id,
+                    Media.chat_id == Message.chat_id
+                ))
                 .where(Message.chat_id == chat_id)
             )
             
@@ -1151,8 +1189,22 @@ class DatabaseAdapter:
             msg['first_name'] = row.first_name
             msg['last_name'] = row.last_name
             msg['username'] = row.username
-            msg['media_file_name'] = row.media_file_name
-            msg['media_mime_type'] = row.media_mime_type
+            
+            # v6.0.0: Media as nested object
+            if row.media_type:
+                msg['media'] = {
+                    'id': row.media_id,
+                    'type': row.media_type,
+                    'file_path': row.media_file_path,
+                    'file_name': row.media_file_name,
+                    'file_size': row.media_file_size,
+                    'mime_type': row.media_mime_type,
+                    'width': row.media_width,
+                    'height': row.media_height,
+                    'duration': row.media_duration,
+                }
+            else:
+                msg['media'] = None
             
             # Parse raw_data
             if msg.get('raw_data'):
@@ -1205,7 +1257,10 @@ class DatabaseAdapter:
             }
     
     async def get_pinned_messages(self, chat_id: int) -> List[Dict[str, Any]]:
-        """Get all pinned messages for a chat, ordered by date descending (newest first)."""
+        """Get all pinned messages for a chat, ordered by date descending (newest first).
+        
+        v6.0.0: Media is now returned as a nested object from the media table.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(
@@ -1213,11 +1268,21 @@ class DatabaseAdapter:
                     User.first_name,
                     User.last_name,
                     User.username,
+                    Media.id.label('media_id'),
+                    Media.type.label('media_type'),
+                    Media.file_path.label('media_file_path'),
                     Media.file_name.label('media_file_name'),
+                    Media.file_size.label('media_file_size'),
                     Media.mime_type.label('media_mime_type'),
+                    Media.width.label('media_width'),
+                    Media.height.label('media_height'),
+                    Media.duration.label('media_duration'),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, Message.media_id == Media.id)
+                .outerjoin(Media, and_(
+                    Media.message_id == Message.id,
+                    Media.chat_id == Message.chat_id
+                ))
                 .where(Message.chat_id == chat_id)
                 .where(Message.is_pinned == 1)
                 .order_by(Message.date.desc())
@@ -1232,8 +1297,22 @@ class DatabaseAdapter:
                 msg['first_name'] = row.first_name
                 msg['last_name'] = row.last_name
                 msg['username'] = row.username
-                msg['media_file_name'] = row.media_file_name
-                msg['media_mime_type'] = row.media_mime_type
+                
+                # v6.0.0: Media as nested object
+                if row.media_type:
+                    msg['media'] = {
+                        'id': row.media_id,
+                        'type': row.media_type,
+                        'file_path': row.media_file_path,
+                        'file_name': row.media_file_name,
+                        'file_size': row.media_file_size,
+                        'mime_type': row.media_mime_type,
+                        'width': row.media_width,
+                        'height': row.media_height,
+                        'duration': row.media_duration,
+                    }
+                else:
+                    msg['media'] = None
                 
                 # Parse raw_data JSON
                 if msg.get('raw_data'):
@@ -1318,9 +1397,11 @@ class DatabaseAdapter:
         Get messages for export with user info.
         Returns an async generator for streaming.
         
+        v6.0.0: Media info now comes from the media table via JOIN.
+        
         Args:
             chat_id: Chat ID to export
-            include_media: If True, include media_path and media_type
+            include_media: If True, include media info from media table
             
         Yields:
             Message dictionaries with user info
@@ -1334,13 +1415,17 @@ class DatabaseAdapter:
                         Message.text,
                         Message.is_outgoing,
                         Message.reply_to_msg_id,
-                        Message.media_type,
-                        Message.media_path,
+                        Media.type.label('media_type'),
+                        Media.file_path.label('media_file_path'),
                         User.first_name,
                         User.last_name,
                         User.username,
                     )
                     .outerjoin(User, Message.sender_id == User.id)
+                    .outerjoin(Media, and_(
+                        Media.message_id == Message.id,
+                        Media.chat_id == Message.chat_id
+                    ))
                     .where(Message.chat_id == chat_id)
                     .order_by(Message.date.asc())
                 )
@@ -1376,7 +1461,7 @@ class DatabaseAdapter:
                 }
                 if include_media:
                     msg['media_type'] = row.media_type
-                    msg['media_path'] = row.media_path
+                    msg['media_path'] = row.media_file_path
                 yield msg
     
     async def close(self) -> None:

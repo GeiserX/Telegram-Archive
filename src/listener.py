@@ -801,6 +801,7 @@ class TelegramListener:
                     await self.db.upsert_user(user_data)
                 
                 # Extract message data
+                # v6.0.0: media_type, media_id, media_path removed - stored in media table
                 message_data = {
                     'id': message.id,
                     'chat_id': chat_id,
@@ -811,26 +812,31 @@ class TelegramListener:
                     'reply_to_text': None,
                     'forward_from_id': None,  # Will be filled by next backup if needed
                     'edit_date': message.edit_date,
-                    'media_type': None,
-                    'media_id': None,
-                    'media_path': None,
                     'raw_data': {},
                     'is_outgoing': 1 if message.out else 0
                 }
                 
-                # Handle media if present
+                # v6.0.0: Handle media - create Media record instead of storing in message
+                media_type = None
                 if message.media:
                     media_type = self._get_media_type(message.media)
                     if media_type:
-                        message_data['media_type'] = media_type
-                        message_data['media_id'] = f"{chat_id}_{message.id}_{media_type}"
-                        
                         # Download media immediately if enabled
                         if self.config.listen_new_messages_media and self.config.download_media:
                             try:
                                 media_path = await self._download_media(message, chat_id)
                                 if media_path:
-                                    message_data['media_path'] = media_path
+                                    # Create media record
+                                    media_id = f"{chat_id}_{message.id}_{media_type}"
+                                    await self.db.insert_media({
+                                        'id': media_id,
+                                        'message_id': message.id,
+                                        'chat_id': chat_id,
+                                        'type': media_type,
+                                        'file_path': media_path,
+                                        'downloaded': True,
+                                        'download_date': datetime.utcnow()
+                                    })
                                     logger.debug(f"📎 Downloaded media: {media_path}")
                             except Exception as e:
                                 logger.warning(f"Failed to download media for message {message.id}: {e}")
@@ -851,7 +857,7 @@ class TelegramListener:
                 text_preview = (message.text or '')[:50]
                 if len(message.text or '') > 50:
                     text_preview += '...'
-                media_indicator = f" [{message_data['media_type']}]" if message_data['media_type'] else ""
+                media_indicator = f" [{media_type}]" if media_type else ""
                 logger.info(f"📩 New message saved: chat={chat_id} msg={message.id}{media_indicator} text='{text_preview}'")
                         
             except Exception as e:
@@ -943,6 +949,7 @@ class TelegramListener:
                             import time
                             service_msg_id = -int(time.time() * 1000) % 2147483647
                             
+                            # v6.0.0: media_type removed - service type indicated by raw_data.service_type
                             message_data = {
                                 'id': service_msg_id,
                                 'chat_id': chat_id,
@@ -953,10 +960,11 @@ class TelegramListener:
                                 'reply_to_text': None,
                                 'forward_from_id': None,
                                 'edit_date': None,
-                                'media_type': 'service',
-                                'media_id': None,
-                                'media_path': None,
-                                'raw_data': {'action_type': action_type, 'new_title': event.new_title if action_type == 'title_changed' else None},
+                                'raw_data': {
+                                    'service_type': 'service',
+                                    'action_type': action_type,
+                                    'new_title': event.new_title if action_type == 'title_changed' else None
+                                },
                                 'is_outgoing': 0
                             }
                             await self.db.insert_message(message_data)
@@ -1021,19 +1029,27 @@ class TelegramListener:
                     for message in event.messages:
                         # Get actual media type (photo/video) instead of generic 'album'
                         media_type = self._get_media_type(message.media) if message.media else None
-                        media_path = None
-                        media_id = None
                         
-                        # Download media if enabled
+                        # Download media if enabled and create Media record
                         if media_type and self.config.listen_new_messages_media and self.config.download_media:
                             try:
                                 media_path = await self._download_media(message, chat_id)
                                 if media_path:
                                     media_id = f"{chat_id}_{message.id}_{media_type}"
+                                    await self.db.insert_media({
+                                        'id': media_id,
+                                        'message_id': message.id,
+                                        'chat_id': chat_id,
+                                        'type': media_type,
+                                        'file_path': media_path,
+                                        'downloaded': True,
+                                        'download_date': datetime.utcnow()
+                                    })
                                     logger.debug(f"📎 Downloaded album media: {media_path}")
                             except Exception as e:
                                 logger.warning(f"Failed to download album media for message {message.id}: {e}")
                         
+                        # v6.0.0: media_type, media_id, media_path removed from message_data
                         message_data = {
                             'id': message.id,
                             'chat_id': chat_id,
@@ -1044,9 +1060,6 @@ class TelegramListener:
                             'reply_to_text': None,
                             'forward_from_id': None,
                             'edit_date': message.edit_date,
-                            'media_type': media_type,
-                            'media_id': media_id,
-                            'media_path': media_path,
                             'raw_data': {'grouped_id': str(message.grouped_id)} if message.grouped_id else {},
                             'is_outgoing': 1 if message.out else 0
                         }
