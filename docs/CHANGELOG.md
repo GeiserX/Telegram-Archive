@@ -6,6 +6,130 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-01-28
+
+### ⚠️ Breaking Changes
+
+This is a major release with breaking schema changes. **Backup your database before upgrading.**
+
+#### Normalized Media Storage
+
+Media metadata is now stored exclusively in the `media` table instead of being duplicated in the `messages` table.
+
+**Removed columns from `messages` table:**
+- `media_type`
+- `media_id`
+- `media_path`
+
+**API response format changed:**
+
+Before (v5.x):
+```json
+{
+  "id": 123,
+  "media_type": "photo",
+  "media_path": "/data/backups/media/123/file.jpg",
+  "media_file_name": "photo.jpg",
+  "media_mime_type": "image/jpeg"
+}
+```
+
+After (v6.0.0):
+```json
+{
+  "id": 123,
+  "media": {
+    "type": "photo",
+    "file_path": "/data/backups/media/123/file.jpg",
+    "file_name": "photo.jpg",
+    "file_size": 12345,
+    "mime_type": "image/jpeg",
+    "width": 1920,
+    "height": 1080
+  }
+}
+```
+
+#### Service Messages and Polls
+
+- Service messages: Now detected by `raw_data.service_type === 'service'` instead of `media_type === 'service'`
+- Polls: Now detected by presence of `raw_data.poll` instead of `media_type === 'poll'`
+
+### Added
+
+#### Simple Whitelist Mode with `CHAT_IDS` (fixes #48)
+
+New `CHAT_IDS` environment variable provides a simple way to backup only specific chats:
+
+```bash
+# Backup ONLY these 2 channels - nothing else
+CHAT_IDS=-1001234567890,-1009876543210
+```
+
+**Two filtering modes:**
+
+| Mode | When | How it works |
+|------|------|--------------|
+| **Whitelist** | `CHAT_IDS` is set | Backup ONLY the listed chats. All other settings ignored. |
+| **Type-based** | `CHAT_IDS` not set | Use `CHAT_TYPES` + `INCLUDE`/`EXCLUDE` filters (existing behavior). |
+
+This solves the common confusion where users expected `CHANNELS_INCLUDE_CHAT_IDS` to act as a whitelist, but it was actually additive.
+
+#### Removed `LISTEN_ALBUMS` Setting (fixes #46)
+
+The `LISTEN_ALBUMS` setting was redundant and has been removed. Albums are now automatically handled via `grouped_id` in the NewMessage handler. The viewer groups messages by `grouped_id` to display albums correctly.
+
+#### Foreign Key Constraints
+- `media(message_id, chat_id)` → `messages(id, chat_id)` (ON DELETE CASCADE)
+- `reactions.user_id` → `users.id` (nullable, ON DELETE SET NULL)
+
+**Note:** `messages.sender_id` does NOT have a FK constraint because sender_id can contain channel/group IDs that aren't in the users table. The relationship is maintained at ORM level only.
+
+#### New Indexes
+- `idx_messages_reply_to` - Fast reply message lookups
+- `idx_media_downloaded` - Find undownloaded media by chat
+- `idx_media_type` - Filter media by type
+- `idx_reactions_user` - User reaction queries
+- `idx_chats_username` - Chat username lookups
+- `idx_users_username` - User username lookups
+
+### Changed
+
+- **Media file_path column type**: Changed from `String(500)` to `Text` to support longer paths
+- **Media relationship**: Messages now have a `media_items` relationship for direct access
+
+### Migration Guide
+
+The Alembic migration handles data migration automatically:
+
+1. **Backup your database** before upgrading
+2. The migration will:
+   - Copy any missing media data from `messages` to `media` table
+   - Create a backup table `_messages_media_backup` for rollback
+   - Drop the `media_type`, `media_id`, `media_path` columns
+   - Add foreign key constraints
+   - Create new indexes
+
+**Run the migration:**
+```bash
+# If using Docker
+docker exec telegram-backup alembic upgrade head
+
+# If running locally
+alembic upgrade head
+```
+
+**Rollback if needed:**
+```bash
+alembic downgrade 004
+```
+
+### Technical Notes
+
+- SQLite: Uses table recreation for schema changes (SQLite doesn't support DROP COLUMN in older versions)
+- PostgreSQL: Uses direct ALTER TABLE operations
+- Migration is reversible - downgrade restores columns from backup table
+
 ## [5.4.1] - 2026-01-25
 
 ### Fixed

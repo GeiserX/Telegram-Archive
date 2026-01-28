@@ -108,16 +108,21 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
     logger.info("")
     
     async with db.db_manager.async_session_factory() as session:
-        from sqlalchemy import select
-        from src.db.models import Message
+        from sqlalchemy import select, and_
+        from src.db.models import Message, Media
         
         # Get all photo/video messages that don't have grouped_id, ordered by chat and date
+        # v6.0.0: Join with Media table to get media type
         logger.info("Fetching photo/video messages without grouped_id...")
         
         result = await session.execute(
             select(Message)
+            .join(Media, and_(
+                Media.message_id == Message.id,
+                Media.chat_id == Message.chat_id
+            ))
             .where(
-                Message.media_type.in_(['photo', 'video']),
+                Media.type.in_(['photo', 'video']),
             )
             .order_by(Message.chat_id, Message.date, Message.id)
         )

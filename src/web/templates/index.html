@@ -639,7 +639,7 @@
                                 </span>
                             </div>
                             <div class="text-sm text-gray-300 truncate">
-                                {{ pinnedMessage.text || (pinnedMessage.media_type ? `[${pinnedMessage.media_type}]` : 'Message') }}
+                                {{ pinnedMessage.text || (pinnedMessage.media?.type ? `[${pinnedMessage.media?.type}]` : 'Message') }}
                             </div>
                         </div>
                         <!-- Time + view all pinned button on right -->
@@ -684,7 +684,8 @@
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
-                            <div v-if="msg.media_type === 'service'" class="flex justify-center my-2">
+                            <!-- v6.0.0: Service type moved to raw_data.service_type -->
+                            <div v-if="msg.raw_data?.service_type === 'service'" class="flex justify-center my-2">
                                 <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
                                     style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
                                     {{ msg.text }}
@@ -714,8 +715,8 @@
                                         <div class="truncate opacity-90">{{ getForwardName(msg) }}</div>
                                     </div>
 
-                                    <!-- Polls -->
-                                    <div v-if="msg.media_type === 'poll' && msg.raw_data && msg.raw_data.poll"
+                                    <!-- Polls: v6.0.0 - detected by presence of raw_data.poll -->
+                                    <div v-if="msg.raw_data?.poll"
                                         class="mb-2 w-full max-w-sm bg-black/20 rounded-lg p-3">
                                         <div class="font-bold text-sm mb-3">{{ msg.raw_data.poll.question }}</div>
 
@@ -754,39 +755,39 @@
                                     </div>
 
                                     <!-- Media (show if media exists, even if not yet downloaded) -->
-                                    <div v-if="msg.media_path || msg.media_type" class="mb-2 space-y-1">
+                                    <div v-if="msg.media?.file_path || msg.media?.type" class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
-                                        <div v-if="!msg.media_path && msg.media_type" 
+                                        <div v-if="!msg.media?.file_path && msg.media?.type" 
                                             class="bg-gray-700/50 rounded-lg p-4 flex items-center gap-3 max-w-md">
                                             <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
                                                     d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                                             </svg>
                                             <div>
-                                                <div class="text-sm text-gray-300">{{ msg.media_type }}</div>
+                                                <div class="text-sm text-gray-300">{{ msg.media?.type }}</div>
                                                 <div class="text-xs text-gray-500">Will download on next backup</div>
                                             </div>
                                         </div>
                                     </div>
-                                    <div v-if="msg.media_path" class="mb-2 space-y-1">
+                                    <div v-if="msg.media?.file_path" class="mb-2 space-y-1">
                                         <!-- Album Grid (multiple photos/videos grouped together) -->
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
                                                     <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
                                                         @click="openMedia(albumMsg)">
-                                                        <img v-if="albumMsg.media_type === 'photo'" 
+                                                        <img v-if="albumMsg.media?.type === 'photo'" 
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
-                                                        <video v-else-if="albumMsg.media_type === 'video'" 
+                                                        <video v-else-if="albumMsg.media?.type === 'video'" 
                                                             class="w-full h-full object-cover"
                                                             preload="metadata">
                                                             <source :src="getMediaUrl(albumMsg)" type="video/mp4">
                                                         </video>
                                                         <!-- Video indicator overlay -->
-                                                        <div v-if="albumMsg.media_type === 'video'" 
+                                                        <div v-if="albumMsg.media?.type === 'video'" 
                                                             class="absolute inset-0 flex items-center justify-center bg-black/20">
                                                             <svg class="w-10 h-10 text-white/90" fill="currentColor" viewBox="0 0 24 24">
                                                                 <path d="M8 5v14l11-7z"/>
@@ -798,7 +799,7 @@
                                         </div>
                                         
                                         <!-- Regular photo (not part of album) -->
-                                        <img v-else-if="msg.media_type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
+                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
                                             loading="lazy"
                                             class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
@@ -822,13 +823,13 @@
                                         </div>
 
                                         <!-- GIFs / Animations - autoplay when visible -->
-                                        <video v-else-if="msg.media_type === 'animation'" :data-src="getMediaUrl(msg)"
+                                        <video v-else-if="msg.media?.type === 'animation'" :data-src="getMediaUrl(msg)"
                                             class="rounded-lg max-h-64 w-auto max-w-full gif-video" loop muted
                                             playsinline @click="openMedia(msg)">
                                         </video>
 
                                         <!-- Videos - click to open in lightbox -->
-                                        <div v-else-if="msg.media_type === 'video'" 
+                                        <div v-else-if="msg.media?.type === 'video'" 
                                             class="relative cursor-pointer group"
                                             @click="openMedia(msg)">
                                             <video preload="metadata"
@@ -847,7 +848,7 @@
                                         </div>
 
                                         <!-- Stickers (static/animated) -->
-                                        <div v-else-if="msg.media_type === 'sticker'" class="max-w-[200px]">
+                                        <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
                                             <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
                                                 :src="getMediaUrl(msg)" loading="lazy" 
                                                 class="max-h-48 max-w-full object-contain"
@@ -858,7 +859,7 @@
                                         </div>
 
                                         <!-- Documents that are actually images: show inline preview + filename -->
-                                        <div v-else-if="msg.media_type === 'document' && isImageDocument(msg)"
+                                        <div v-else-if="msg.media?.type === 'document' && isImageDocument(msg)"
                                             class="space-y-1">
                                             <img :src="getMediaUrl(msg)"
                                                 loading="lazy"
@@ -886,8 +887,8 @@
                                                 <span class="font-medium truncate">
                                                     {{ getDocumentDisplayName(msg) }}
                                                 </span>
-                                                <span class="text-[10px] text-tg-muted" v-if="msg.media_type">
-                                                    {{ msg.media_type }} file
+                                                <span class="text-[10px] text-tg-muted" v-if="msg.media?.type">
+                                                    {{ msg.media?.type }} file
                                                 </span>
                                             </div>
                                         </a>
@@ -1121,23 +1122,23 @@
                 // Get all viewable media messages (photos, videos, animations) for lightbox navigation
                 const mediaMessages = computed(() => {
                     return messages.value.filter(m => 
-                        m.media_path && (
-                            m.media_type === 'photo' || 
-                            m.media_type === 'video' || 
-                            m.media_type === 'animation' ||
-                            (m.media_type === 'document' && isImageDocument(m))
+                        m.media?.file_path && (
+                            m.media?.type === 'photo' || 
+                            m.media?.type === 'video' || 
+                            m.media?.type === 'animation' ||
+                            (m.media?.type === 'document' && isImageDocument(m))
                         )
                     ).sort((a, b) => new Date(a.date) - new Date(b.date))  // Oldest first for intuitive prev/next
                 })
                 
                 // Check if media should show as image in lightbox
                 const isLightboxImage = (msg) => {
-                    return msg.media_type === 'photo' || (msg.media_type === 'document' && isImageDocument(msg))
+                    return msg.media?.type === 'photo' || (msg.media?.type === 'document' && isImageDocument(msg))
                 }
                 
                 // Check if media should show as video in lightbox
                 const isLightboxVideo = (msg) => {
-                    return msg.media_type === 'video' || msg.media_type === 'animation'
+                    return msg.media?.type === 'video' || msg.media?.type === 'animation'
                 }
                 
                 const loadChats = async (append = false) => {
@@ -2252,9 +2253,9 @@
 
                 const isAudioFile = (msg) => {
                     // Check explicit media types from backend
-                    if (msg.media_type === 'audio' || msg.media_type === 'voice') return true
+                    if (msg.media?.type === 'audio' || msg.media?.type === 'voice') return true
                     // Check mime type (for older backups)
-                    const mimeType = (msg.media_mime_type || '').toLowerCase()
+                    const mimeType = (msg.media?.mime_type || '').toLowerCase()
                     if (mimeType.startsWith('audio/')) return true
                     // Check file extension as last resort
                     const filename = getDocumentDisplayName(msg).toLowerCase()
@@ -2452,11 +2453,11 @@
                 }
 
                 const getMediaUrl = (msg) => {
-                    if (!msg.media_path) return ''
+                    if (!msg.media?.file_path) return ''
                     // Extract folder and filename from the stored path
                     // media_path is like: /data/backups/media/35258041/filename.jpg
                     // We need to extract: /media/35258041/filename.jpg
-                    const parts = msg.media_path.split(/[/\\]/)
+                    const parts = msg.media?.file_path.split(/[/\\]/)
                     const filename = parts.pop()
                     const folder = parts.pop()  // Get the folder from the path, not from chat_id
                     return `/media/${folder}/${filename}`
@@ -2464,11 +2465,11 @@
 
                 const getDocumentDisplayName = (msg) => {
                     // Prefer file name from media table when available
-                    let name = msg.media_file_name || ''
+                    let name = msg.media?.file_name || ''
 
                     // Fallback to filename from path
-                    if (!name && msg.media_path) {
-                        name = msg.media_path.split(/[/\\]/).pop()
+                    if (!name && msg.media?.file_path) {
+                        name = msg.media?.file_path.split(/[/\\]/).pop()
                     }
 
                     if (!name) {
@@ -2481,11 +2482,11 @@
                 }
 
                 const isImageDocument = (msg) => {
-                    const name = (msg.media_file_name || msg.media_path || '').toString().toLowerCase()
+                    const name = (msg.media?.file_name || msg.media?.file_path || '').toString().toLowerCase()
                     const byExtension = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].some(ext => name.endsWith(ext))
 
                     // As a secondary hint, use mime type if available
-                    const mime = (msg.media_mime_type || '').toLowerCase()
+                    const mime = (msg.media?.mime_type || '').toLowerCase()
                     const byMime = mime.startsWith('image/')
 
                     return byExtension || byMime
@@ -2528,8 +2529,8 @@
 
                 const openMedia = (msg) => {
                     // Open lightbox for images and videos, direct link for other media
-                    if (msg.media_type === 'photo' || msg.media_type === 'video' || msg.media_type === 'animation' ||
-                        (msg.media_type === 'document' && isImageDocument(msg))) {
+                    if (msg.media?.type === 'photo' || msg.media?.type === 'video' || msg.media?.type === 'animation' ||
+                        (msg.media?.type === 'document' && isImageDocument(msg))) {
                         lightboxMedia.value = msg
                         lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
                         lightboxOpen.value = true

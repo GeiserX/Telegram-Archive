@@ -278,25 +278,51 @@ Push notification modes:
 
 #### Chat Filtering
 
+There are **two modes** for selecting which chats to backup:
+
+##### Mode 1: Whitelist Mode (Simple)
+
+Set `CHAT_IDS` to backup **ONLY specific chats**. This is the easiest way to backup a few specific chats:
+
+```bash
+# In .env file:
+CHAT_IDS=-1001234567890,-1009876543210    # Only these 2 chats, nothing else
+```
+
+When `CHAT_IDS` is set, all other filtering options (`CHAT_TYPES`, `*_INCLUDE_*`, `*_EXCLUDE_*`) are **ignored**.
+
+##### Mode 2: Type-based Mode (Default)
+
+If `CHAT_IDS` is not set, use `CHAT_TYPES` to backup all chats of certain types:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GLOBAL_INCLUDE_CHAT_IDS` | - | Whitelist chats globally (any type) |
-| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist chats globally (any type) |
-| `PRIVATE_INCLUDE_CHAT_IDS` | - | Whitelist private/DM chats only |
-| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist private/DM chats only |
-| `GROUPS_INCLUDE_CHAT_IDS` | - | Whitelist group chats only |
-| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist group chats only |
-| `CHANNELS_INCLUDE_CHAT_IDS` | - | Whitelist channels only |
-| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist channels only |
+| `CHAT_TYPES` | `private,groups,channels` | Types of chats to backup |
+| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist specific chats (any type) |
+| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist specific private chats |
+| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist specific groups |
+| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist specific channels |
+| `GLOBAL_INCLUDE_CHAT_IDS` | - | Force-include specific chats (any type) |
+| `PRIVATE_INCLUDE_CHAT_IDS` | - | Force-include specific private chats |
+| `GROUPS_INCLUDE_CHAT_IDS` | - | Force-include specific groups |
+| `CHANNELS_INCLUDE_CHAT_IDS` | - | Force-include specific channels |
 
-**How filtering works** (priority order):
-1. `GLOBAL_EXCLUDE` → Skip (blacklist wins)
-2. Type-specific exclude → Skip
-3. `GLOBAL_INCLUDE` → Backup (works for ANY chat type)
-4. Type-specific include → Backup (only for that type)
-5. `CHAT_TYPES` filter → Backup if type matches
+**Common examples:**
 
-**GLOBAL vs Type-specific**: `GLOBAL_INCLUDE_CHAT_IDS` backs up a chat regardless of its type. Type-specific includes (e.g., `PRIVATE_INCLUDE_CHAT_IDS`) only apply to chats of that type. The chat type is auto-detected from Telegram.
+```bash
+# Backup all private chats and groups (no channels)
+CHAT_TYPES=private,groups
+
+# Backup all channels except one
+CHAT_TYPES=channels
+CHANNELS_EXCLUDE_CHAT_IDS=-1001234567890
+
+# Backup all groups plus one specific channel
+CHAT_TYPES=groups
+CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
+```
+
+> **Note**: `*_INCLUDE_*` variables are **additive** - they add to what `CHAT_TYPES` already includes. They don't restrict to only those chats. For exclusive selection, use `CHAT_IDS` instead.
 
 #### Chat ID Format
 
@@ -306,12 +332,6 @@ Chat IDs use Telegram's "marked" format:
 - **Supergroups/Channels**: Negative with `-100` prefix (e.g., `-1001234567890`)
 
 **Finding Chat IDs**: Forward a message from the chat to [@userinfobot](https://t.me/userinfobot) on Telegram.
-
-**Whitelist-only mode**: Set `CHAT_TYPES=` (empty) to backup ONLY explicitly included chat IDs:
-```yaml
-- CHAT_TYPES=                           # Empty = no types by default
-- GLOBAL_INCLUDE_CHAT_IDS=-1001234567   # Only backup this specific chat
-```
 
 ### Real-time Edit/Deletion Tracking
 
