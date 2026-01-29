@@ -25,6 +25,9 @@ class TestTelegramListener:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # CHAT_IDS whitelist mode (v6.0.0)
+        config.whitelist_mode = False
+        config.chat_ids = set()
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
@@ -141,6 +144,9 @@ class TestListenerEventHandling:
         config.groups_include_ids = set()
         config.channels_include_ids = set()
         config.validate_credentials = MagicMock()
+        # CHAT_IDS whitelist mode (v6.0.0)
+        config.whitelist_mode = False
+        config.chat_ids = set()
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
