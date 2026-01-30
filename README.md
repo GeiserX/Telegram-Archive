@@ -243,7 +243,6 @@ Browse your backups at **http://localhost:8000**
 | `LISTEN_NEW_MESSAGES` | `true` | Save new messages in real-time |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | Download media immediately (vs scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | Track chat photo/title changes |
-| `LISTEN_ALBUMS` | `true` | Group album uploads together |
 | `PRIORITY_CHAT_IDS` | - | Process these chats FIRST in all operations |
 
 #### Mass Operation Protection
