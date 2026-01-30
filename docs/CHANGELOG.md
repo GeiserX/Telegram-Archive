@@ -6,6 +6,19 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-01-30
+
+### Fixed
+- **Graceful handling of inaccessible chats** (fixes #49) - When you lose access to a channel/group (kicked, banned, left, or it went private), the backup now logs a clean warning instead of a full error traceback:
+  ```
+  WARNING - → Skipped (no access): ChannelPrivateError
+  ```
+  Previously this would show a confusing multi-line error that looked like a bug.
+
+### Technical
+- Added specific error handling for `ChannelPrivateError`, `ChatForbiddenError`, and `UserBannedInChannelError`
+- These Telegram API responses are now treated as expected conditions, not application errors
+
 ## [6.0.0] - 2026-01-28
 
 ### ⚠️ Breaking Changes
