@@ -19,6 +19,7 @@ echo
 
 docker compose run --rm telegram-backup python -m src.setup_auth
 
+# shellcheck disable=SC2181
 if [ $? -eq 0 ]; then
     echo
     echo "[SUCCESS] Authentication completed!"
