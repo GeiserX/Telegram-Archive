@@ -69,7 +69,7 @@ Project description: Own your Telegram history. Automated, incremental backups w
 - **PRs build `:dev` tag** via `docker-publish-dev.yml` workflow
 - **Tags build semver** via `docker-publish.yml` workflow
 - Always test on dev environment before releasing to prod
-- See gitea docker-compose for environment assignments
+- See gitea docker compose for environment assignments
 
 ## Release Guidelines
 
