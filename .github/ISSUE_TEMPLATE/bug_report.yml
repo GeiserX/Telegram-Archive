@@ -78,7 +78,7 @@ body:
       description: Please paste any relevant logs or error messages.
       render: shell
       placeholder: |
-        Paste logs here (run: docker-compose logs telegram-backup)
+        Paste logs here (run: docker compose logs telegram-backup)
 
   - type: textarea
     id: environment

@@ -556,12 +556,12 @@ v5.0.0 changes media folder naming to use marked IDs consistently. While the bac
 
 1. **Stop your backup container:**
    ```bash
-   docker-compose stop telegram-backup
+   docker compose stop telegram-backup
    ```
 
 2. **Pull the new image:**
    ```bash
-   docker-compose pull
+   docker compose pull
    ```
 
 3. **Run migration scripts** (one at a time, wait for each to finish):
@@ -631,7 +631,7 @@ v5.0.0 changes media folder naming to use marked IDs consistently. While the bac
 
 5. **Start the new version:**
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 **If starting fresh:** No migration needed, just use the new image.
@@ -648,7 +648,7 @@ v4.0.5 had a bug where chats were stored with positive IDs while messages used n
 
 1. **Stop your backup container:**
    ```bash
-   docker-compose stop telegram-backup
+   docker compose stop telegram-backup
    ```
 
 2. **Run the migration script:**
@@ -667,8 +667,8 @@ v4.0.5 had a bug where chats were stored with positive IDs while messages used n
 
 3. **Pull and restart:**
    ```bash
-   docker-compose pull
-   docker-compose up -d
+   docker compose pull
+   docker compose up -d
    ```
 
 **If upgrading from v4.0.4 or earlier:** No migration needed.
@@ -702,8 +702,8 @@ telegram-viewer:
 
 Then:
 ```bash
-docker-compose pull
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 **Your data is safe** - no database migration needed.
@@ -714,8 +714,8 @@ docker-compose up -d
 
 Transparent upgrade - just pull and restart:
 ```bash
-docker-compose pull
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 Your existing SQLite data works automatically. v3 detects v2 environment variables for backward compatibility.

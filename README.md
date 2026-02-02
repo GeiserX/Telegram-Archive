@@ -135,10 +135,10 @@ docker run -it --rm \
   python -m src.setup_auth
 ```
 
-**Example for docker-compose deployment:**
+**Example for docker compose deployment:**
 
 ```bash
-# If using docker-compose with a session volume
+# If using docker compose with a session volume
 docker run -it --rm \
   --env-file .env \
   -v telegram-archive_session:/data/session \
@@ -146,7 +146,7 @@ docker run -it --rm \
   python -m src.setup_auth
 
 # Then restart the backup container
-docker-compose restart telegram-backup
+docker compose restart telegram-backup
 ```
 
 **What happens during authentication:**
@@ -159,7 +159,7 @@ docker-compose restart telegram-backup
 ### 4. Start Services
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 **View your backup** at http://localhost:8000
@@ -445,7 +445,7 @@ Telegram Archive supports both SQLite and PostgreSQL.
 2. Set `POSTGRES_PASSWORD` in your `.env`
 3. Set `DB_TYPE=postgresql` in your `.env`
 4. Uncomment `depends_on` in backup and viewer services
-5. Run `docker-compose up -d`
+5. Run `docker compose up -d`
 
 ## Updating to Latest Version
 
@@ -497,19 +497,19 @@ For major version upgrades with breaking changes and migration scripts, see **[d
 
 ```bash
 # View statistics
-docker-compose exec telegram-backup python -m src.export_backup stats
+docker compose exec telegram-backup python -m src.export_backup stats
 
 # List chats
-docker-compose exec telegram-backup python -m src.export_backup list-chats
+docker compose exec telegram-backup python -m src.export_backup list-chats
 
 # Export to JSON
-docker-compose exec telegram-backup python -m src.export_backup export -o backup.json
+docker compose exec telegram-backup python -m src.export_backup export -o backup.json
 
 # Export date range
-docker-compose exec telegram-backup python -m src.export_backup export -o backup.json -s 2024-01-01 -e 2024-12-31
+docker compose exec telegram-backup python -m src.export_backup export -o backup.json -s 2024-01-01 -e 2024-12-31
 
 # Manual backup run
-docker-compose exec telegram-backup python -m src.telegram_backup
+docker compose exec telegram-backup python -m src.telegram_backup
 ```
 
 ## Data Storage
