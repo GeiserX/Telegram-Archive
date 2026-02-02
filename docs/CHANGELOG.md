@@ -6,6 +6,15 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.0.2] - 2026-02-02
+
+### Fixed
+- **Reduced Telethon disconnect warnings** (#50) - Added graceful disconnect handling to reduce "Task was destroyed but it is pending" asyncio warnings during shutdown or reconnection. These warnings are caused by a [known Telethon issue](https://github.com/LonamiWebs/Telethon/issues/782) and don't affect functionality.
+
+### Technical
+- Added small delay after `client.disconnect()` to allow internal task cleanup
+- Wrapped disconnect in try/except to handle cleanup errors gracefully
+
 ## [6.0.1] - 2026-01-30
 
 ### Fixed
