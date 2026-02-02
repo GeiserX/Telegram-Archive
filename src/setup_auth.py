@@ -5,11 +5,31 @@ Run this script once to authenticate and save the session file.
 
 import asyncio
 import logging
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
 from telethon import TelegramClient
 from .config import Config, setup_logging
+
+
+def _print_permission_error_help():
+    """Print helpful guidance for permission errors."""
+    print("\n" + "=" * 60)
+    print("PERMISSION ERROR - Unable to write to session directory")
+    print("=" * 60)
+    print("\nThis often happens when your user ID doesn't match the")
+    print("container's UID (1000). Common solutions:\n")
+    print("For Podman users:")
+    print("  Add --userns=keep-id to your run command:")
+    print("  podman run --userns=keep-id -it --rm ...")
+    print("\nFor Docker users:")
+    print("  Ensure the data directory is owned by UID 1000:")
+    print("  mkdir -p data && sudo chown -R 1000:1000 data")
+    print("\nAlternatively, run the container with your host UID:")
+    print(f"  docker run --user {os.getuid()}:{os.getgid()} ...")
+    print("=" * 60)
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +113,25 @@ async def setup_authentication():
         logger.error(f"Configuration error: {e}")
         logger.error("Please check your .env file and ensure all required variables are set.")
         return False
+    except PermissionError as e:
+        logger.error(f"Permission denied: {e}")
+        _print_permission_error_help()
+        return False
+    except sqlite3.OperationalError as e:
+        if "unable to open database file" in str(e).lower():
+            logger.error(f"Database error: {e}")
+            _print_permission_error_help()
+        else:
+            logger.error(f"Database error: {e}", exc_info=True)
+        return False
     except Exception as e:
-        logger.error(f"Authentication failed: {e}", exc_info=True)
+        # Check if it's a permission-related error wrapped in another exception
+        error_msg = str(e).lower()
+        if "permission denied" in error_msg or "unable to open database file" in error_msg:
+            logger.error(f"Authentication failed: {e}")
+            _print_permission_error_help()
+        else:
+            logger.error(f"Authentication failed: {e}", exc_info=True)
         return False
 
 

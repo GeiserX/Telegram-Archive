@@ -6,6 +6,35 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.0.3] - 2026-02-02
+
+### Community Contributions
+
+This release includes contributions from **[@yarikoptic](https://github.com/yarikoptic)** - welcome to the project! 🎉
+
+### Improved
+
+- **Better error messages for permission issues** (#54, #55) - Authentication setup now provides clear troubleshooting guidance when encountering permission errors (common with Podman or Docker UID mismatches):
+  ```
+  PERMISSION ERROR - Unable to write to session directory
+  
+  For Podman users:
+    Add --userns=keep-id to your run command
+  
+  For Docker users:
+    mkdir -p data && sudo chown -R 1000:1000 data
+  ```
+
+### Changed
+
+- **Standardized on `docker compose` (v2) syntax** - All documentation and scripts now use the modern `docker compose` command instead of the deprecated `docker-compose` (v1). Docker Compose v2 has been built into Docker CLI since mid-2021, and v1 was deprecated in July 2023. (contributed by @yarikoptic)
+
+- **`init_auth.sh` is now executable by default** - No need to manually run `chmod +x init_auth.sh` before using the script. (contributed by @yarikoptic)
+
+### Added
+
+- **Shellcheck CI workflow** - Added GitHub Actions workflow to lint shell scripts on push/PR, improving code quality for bash scripts. (contributed by @yarikoptic)
+
 ## [6.0.2] - 2026-02-02
 
 ### Fixed
