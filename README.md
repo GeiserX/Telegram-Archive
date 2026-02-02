@@ -111,9 +111,6 @@ TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
 **Option A: Using the provided scripts (recommended for fresh installs)**
 
 ```bash
-# Make script executable (Linux/Mac)
-chmod +x init_auth.sh
-
 # Run authentication
 ./init_auth.sh    # Linux/Mac
 # init_auth.bat   # Windows
