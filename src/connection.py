@@ -11,6 +11,7 @@ Architecture:
 - Both work on the same connection without conflicts
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -125,11 +126,25 @@ class TelegramConnection:
             logger.warning(f"Could not enable WAL mode for session DB: {e}")
     
     async def disconnect(self) -> None:
-        """Disconnect from Telegram."""
+        """
+        Disconnect from Telegram gracefully.
+        
+        Note: Telethon has a known issue (LonamiWebs/Telethon#782) where internal
+        tasks (_send_loop, _recv_loop) aren't properly cancelled on disconnect,
+        causing "Task was destroyed but it is pending" warnings. These are harmless
+        and don't affect functionality.
+        """
         if self._client and self._connected:
-            await self._client.disconnect()
-            self._connected = False
-            logger.info("Disconnected from Telegram")
+            try:
+                await self._client.disconnect()
+                # Small delay to allow internal task cleanup
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                # Log but don't fail - disconnect errors during shutdown are expected
+                logger.debug(f"Disconnect cleanup: {e}")
+            finally:
+                self._connected = False
+                logger.info("Disconnected from Telegram")
     
     async def ensure_connected(self) -> TelegramClient:
         """

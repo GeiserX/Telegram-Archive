@@ -1135,13 +1135,22 @@ class TelegramListener:
         
         Only disconnects if we own the client (created it ourselves).
         Shared clients are managed by the connection owner.
+        
+        Note: Telethon has a known issue (LonamiWebs/Telethon#782) where internal
+        tasks may not be cancelled cleanly, causing asyncio warnings. These are
+        harmless and don't affect functionality.
         """
         logger.info("Stopping listener...")
         self._running = False
         
         # Only disconnect if we own the client
         if self.client and self._owns_client and self.client.is_connected():
-            await self.client.disconnect()
+            try:
+                await self.client.disconnect()
+                # Small delay to allow internal task cleanup
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"Listener disconnect cleanup: {e}")
         
         await self._log_stats()
         logger.info("Listener stopped")
