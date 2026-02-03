@@ -6,18 +6,26 @@ Telegram Archive is an automated backup system for Telegram messages and media u
 
 ## Project Structure
 
-- **Language**: Python 3.11
+- **Language**: Python 3.11+
+- **Package Manager**: pip with pyproject.toml
 - **Main Components**:
   - `src/telegram_backup.py` - Main backup logic using Telethon
   - `src/scheduler.py` - Cron-based backup scheduling
   - `src/setup_auth.py` - Interactive Telegram authentication
   - `src/web/` - FastAPI-based web viewer
   - `src/db/` - SQLAlchemy database layer (SQLite/PostgreSQL)
+  - `src/__main__.py` - Unified CLI interface
 - **Container Images**:
   - `drumsergio/telegram-archive` - Full backup system (~300MB)
   - `drumsergio/telegram-archive-viewer` - Viewer only (~150MB)
+- **Entry Points**:
+  - `telegram-archive` - Console script (installed via pip)
+  - `./telegram-archive` - Direct script (no installation needed)
+  - `python -m src` - Python module invocation
 
 ## Dependencies
+
+Managed via `pyproject.toml` (single source of truth):
 
 - telethon>=1.37.0 - Telegram client library
 - APScheduler>=3.10.4 - Task scheduling
@@ -26,6 +34,8 @@ Telegram Archive is an automated backup system for Telegram messages and media u
 - aiosqlite>=0.20.0 - Async SQLite
 - asyncpg>=0.30.0, psycopg2-binary - PostgreSQL support
 - alembic>=1.14.0 - Database migrations
+
+Install with: `pip install -e .` (editable mode for development)
 
 ## Configuration
 
@@ -131,19 +141,35 @@ No test framework currently set up. Would recommend:
 
 ## CLI Interface
 
-**Unified Entry Point**: `python -m src` (src/__main__.py)
+**Unified Entry Point**: `telegram-archive` script or `python -m src` (src/__main__.py)
 
 All commands route through this single interface:
 
 ```bash
-python -m src              # Show help
-python -m src auth         # Authenticate with Telegram
-python -m src backup       # Run backup once
-python -m src schedule     # Run scheduled backups (Docker default)
-python -m src export       # Export to JSON
-python -m src stats        # Show statistics
-python -m src list-chats   # List chats
+# Local development (using telegram-archive script)
+./telegram-archive --data-dir ./data auth
+./telegram-archive --data-dir ./data backup
+./telegram-archive --data-dir ./data list-chats
+
+# Or using Python module directly
+python -m src --data-dir ./data auth
+python -m src --data-dir ./data backup
+python -m src --data-dir ./data list-chats
+
+# Docker (uses python -m src)
+docker compose exec telegram-backup python -m src stats
 ```
+
+**Available Commands**:
+- `auth` - Authenticate with Telegram
+- `backup` - Run backup once
+- `schedule` - Run scheduled backups (Docker default)
+- `export` - Export to JSON
+- `stats` - Show statistics
+- `list-chats` - List chats
+
+**Options**:
+- `--data-dir PATH` - Override default `/data` location (useful for local dev)
 
 **Docker Integration**:
 - Default CMD: `python -m src` (shows help, requires explicit command)

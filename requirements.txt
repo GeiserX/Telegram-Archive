@@ -1,3 +1,9 @@
+# NOTE: pyproject.toml is now the primary source of truth for dependencies.
+# This file is kept for backward compatibility with Docker builds and tools
+# that don't yet support pyproject.toml.
+#
+# For local development, prefer: pip install -e .
+
 telethon>=1.37.0
 APScheduler>=3.10.4
 python-dotenv>=1.0.1

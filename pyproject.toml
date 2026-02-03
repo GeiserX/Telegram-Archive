@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-archive"
+version = "6.0.3"
+description = "Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "Sergio Peignier", email = "drumsergio@gmail.com"}
+]
+keywords = ["telegram", "backup", "archive", "docker", "telethon"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: System :: Archiving :: Backup",
+]
+
+dependencies = [
+    "telethon>=1.37.0",
+    "APScheduler>=3.10.4",
+    "python-dotenv>=1.0.1",
+    "cryptg>=0.4.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "jinja2>=3.1.4",
+    "httpx>=0.28.0",
+    "websockets>=12.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.9",
+    "alembic>=1.14.0",
+    "greenlet>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/GeiserX/Telegram-Archive"
+Repository = "https://github.com/GeiserX/Telegram-Archive"
+Issues = "https://github.com/GeiserX/Telegram-Archive/issues"
+Changelog = "https://github.com/GeiserX/Telegram-Archive/blob/master/docs/CHANGELOG.md"
+
+[project.scripts]
+telegram-archive = "src.__main__:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["web/templates/**/*", "web/static/**/*"]

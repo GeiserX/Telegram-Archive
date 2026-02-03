@@ -6,8 +6,10 @@ backup execution, scheduling, and data export.
 """
 
 import sys
+import os
 import argparse
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 
@@ -21,16 +23,25 @@ def create_parser() -> argparse.ArgumentParser:
 GETTING STARTED:
 
   1. First time setup (authenticate with Telegram):
-     python -m src auth
+     telegram-archive auth
 
   2. Run backup:
-     python -m src backup          # One-time manual backup
-     python -m src schedule        # Continuous scheduled backups (recommended)
+     telegram-archive backup       # One-time manual backup
+     telegram-archive schedule     # Continuous scheduled backups (recommended)
 
   3. View and export data:
-     python -m src list-chats      # List all backed up chats
-     python -m src stats           # Show backup statistics
-     python -m src export -o file.json  # Export to JSON
+     telegram-archive list-chats   # List all backed up chats
+     telegram-archive stats        # Show backup statistics
+     telegram-archive export -o file.json  # Export to JSON
+
+LOCAL DEVELOPMENT:
+
+  Use --data-dir to specify an alternative data location (default: /data):
+    telegram-archive --data-dir ./data list-chats
+    telegram-archive --data-dir ~/telegram-data backup
+
+  Or use the Python module directly:
+    python -m src --data-dir ./data list-chats
 
 DOCKER USAGE:
 
@@ -48,6 +59,13 @@ DOCKER USAGE:
 
 For more information, visit: https://github.com/GeiserX/Telegram-Archive
 """
+    )
+
+    # Add top-level options (before subcommands)
+    parser.add_argument(
+        '--data-dir',
+        metavar='PATH',
+        help='Base data directory (default: /data). Sets BACKUP_PATH to PATH/backups'
     )
 
     subparsers = parser.add_subparsers(
@@ -213,6 +231,20 @@ def main() -> int:
         return 0
 
     args = parser.parse_args()
+
+    # Handle --data-dir option
+    if args.data_dir:
+        data_path = Path(args.data_dir).resolve()
+        backup_path = data_path / 'backups'
+        session_path = data_path / 'session'
+
+        # Set environment variables that Config will read
+        os.environ['BACKUP_PATH'] = str(backup_path)
+        os.environ['SESSION_DIR'] = str(session_path)
+
+        # Create directories if they don't exist
+        backup_path.mkdir(parents=True, exist_ok=True)
+        session_path.mkdir(parents=True, exist_ok=True)
 
     # Dispatch to appropriate command
     if args.command == 'auth':
