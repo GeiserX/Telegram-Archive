@@ -17,7 +17,7 @@ echo "Starting interactive authentication container..."
 echo "You will be asked for your Telegram verification code."
 echo
 
-docker compose run --rm telegram-backup python -m src.setup_auth
+docker compose run --rm telegram-backup python -m src auth
 
 # shellcheck disable=SC2181
 if [ $? -eq 0 ]; then

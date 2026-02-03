@@ -3,6 +3,7 @@ services:
     image: drumsergio/telegram-archive:latest
     container_name: telegram-backup
     restart: unless-stopped
+    command: ["python", "-m", "src", "schedule"]
 
     environment:
       # Authentication & Connection

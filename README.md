@@ -129,7 +129,7 @@ docker run -it --rm \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
   drumsergio/telegram-archive:latest \
-  python -m src.setup_auth
+  python -m src auth
 ```
 
 **Example for docker compose deployment:**
@@ -140,7 +140,7 @@ docker run -it --rm \
   --env-file .env \
   -v telegram-archive_session:/data/session \
   drumsergio/telegram-archive:latest \
-  python -m src.setup_auth
+  python -m src auth
 
 # Then restart the backup container
 docker compose restart telegram-backup
@@ -492,21 +492,29 @@ For major version upgrades with breaking changes and migration scripts, see **[d
 
 ## CLI Commands
 
+All commands use the unified `python -m src` interface:
+
 ```bash
+# Show all available commands
+docker compose exec telegram-backup python -m src --help
+
 # View statistics
-docker compose exec telegram-backup python -m src.export_backup stats
+docker compose exec telegram-backup python -m src stats
 
 # List chats
-docker compose exec telegram-backup python -m src.export_backup list-chats
+docker compose exec telegram-backup python -m src list-chats
 
 # Export to JSON
-docker compose exec telegram-backup python -m src.export_backup export -o backup.json
+docker compose exec telegram-backup python -m src export -o backup.json
 
 # Export date range
-docker compose exec telegram-backup python -m src.export_backup export -o backup.json -s 2024-01-01 -e 2024-12-31
+docker compose exec telegram-backup python -m src export -o backup.json -s 2024-01-01 -e 2024-12-31
 
-# Manual backup run
-docker compose exec telegram-backup python -m src.telegram_backup
+# Manual backup run (one-time)
+docker compose exec telegram-backup python -m src backup
+
+# Re-authenticate (if session expires)
+docker compose exec -it telegram-backup python -m src auth
 ```
 
 ## Data Storage

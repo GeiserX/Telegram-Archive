@@ -40,5 +40,5 @@ VOLUME ["/data"]
 # Entrypoint runs migrations, then hands off to CMD
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
-# Run scheduler
-CMD ["python", "-m", "src.scheduler"]
+# Default: show help (requires explicit command)
+CMD ["python", "-m", "src"]
