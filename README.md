@@ -492,7 +492,47 @@ For major version upgrades with breaking changes and migration scripts, see **[d
 
 ## CLI Commands
 
-All commands use the unified `python -m src` interface:
+### Local Development
+
+#### Option 1: Install with pip (Recommended)
+
+Install the package in editable mode to get the `telegram-archive` command:
+
+```bash
+# Install in editable mode
+pip install -e .
+
+# Now telegram-archive is available system-wide
+telegram-archive --help
+telegram-archive --data-dir ./data list-chats
+telegram-archive --data-dir ./data stats
+telegram-archive --data-dir ./data backup
+
+# Export to JSON
+telegram-archive --data-dir ./data export -o backup.json -s 2024-01-01 -e 2024-12-31
+```
+
+#### Option 2: Run directly without installation
+
+For development without installing, use the `telegram-archive` executable script:
+
+```bash
+# Show all available commands
+./telegram-archive --help
+
+# Use custom data directory (instead of /data)
+./telegram-archive --data-dir ./data list-chats
+./telegram-archive --data-dir ./data stats
+./telegram-archive --data-dir ./data backup
+
+# Or symlink to PATH for easier access
+sudo ln -s $(pwd)/telegram-archive /usr/local/bin/telegram-archive
+telegram-archive --data-dir ./data list-chats
+```
+
+### Docker Usage
+
+All commands use the unified `python -m src` interface inside containers:
 
 ```bash
 # Show all available commands
