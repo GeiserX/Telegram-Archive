@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "GPL-3.0-or-later"}
 authors = [
-    {name = "Sergio Peignier", email = "drumsergio@gmail.com"}
+    {name = "Sergio Fernández", email = "sergio@geiser.cloud"}
 ]
 keywords = ["telegram", "backup", "archive", "docker", "telethon"]
 classifiers = [
