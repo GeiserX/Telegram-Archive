@@ -1305,12 +1305,17 @@ async def run_backup(
         await backup.db.close()
 
 
-if __name__ == '__main__':
-    # Test backup
+def main():
+    """Main entry point for CLI."""
     import asyncio
     from .config import Config, setup_logging
-    
+
     config = Config()
     setup_logging(config)
-    
-    asyncio.run(run_backup(config))
+
+    return asyncio.run(run_backup(config))
+
+
+if __name__ == '__main__':
+    # Test backup
+    main()
