@@ -48,13 +48,13 @@ DOCKER USAGE:
   Authentication (first time only):
     docker run -it --rm --env-file .env \\
       -v ./data:/data \\
-      drumsergio/telegram-archive:latest \\
+      drumsergio/telegram-archive:<version> \\
       python -m src auth
 
   Start scheduled backups:
     docker run -d --env-file .env \\
       -v ./data:/data \\
-      drumsergio/telegram-archive:latest \\
+      drumsergio/telegram-archive:<version> \\
       python -m src schedule
 
 For more information, visit: https://github.com/GeiserX/Telegram-Archive
@@ -218,7 +218,7 @@ def run_backup(args) -> int:
 def run_schedule(args) -> int:
     """Run scheduled backups."""
     from .scheduler import main as scheduler_main
-    return scheduler_main()
+    return asyncio.run(scheduler_main())
 
 
 def main() -> int:

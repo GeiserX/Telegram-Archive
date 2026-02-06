@@ -6,6 +6,16 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.1.1] - 2026-02-06
+
+### Fixed
+
+- **Critical: `schedule` command would silently do nothing** - The `run_schedule` function in the CLI called the async `scheduler.main()` without `asyncio.run()`, causing the scheduler to never actually start. This affected all Docker deployments using `python -m src schedule`.
+
+### Changed
+
+- **Removed `:latest` tag from CLI help text** - Docker examples in `--help` output now use `<version>` placeholder instead of `:latest`, following the project convention of always using specific version tags.
+
 ## [6.1.0] - 2026-02-06
 
 ### Community Contributions
