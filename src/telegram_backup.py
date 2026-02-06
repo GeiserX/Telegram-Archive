@@ -190,6 +190,11 @@ class TelegramBackup:
             logger.info("Fetching archived dialogs...")
             archived_dialogs = await self._get_dialogs(archived=True)
             logger.info(f"Found {len(archived_dialogs)} archived dialogs")
+            
+            # Build set of archived chat IDs for fast lookup
+            archived_chat_ids = set()
+            for dialog in archived_dialogs:
+                archived_chat_ids.add(self._get_marked_id(dialog.entity))
 
             # Filter dialogs based on chat type and ID filters
             # Also delete explicitly excluded chats from database
@@ -297,16 +302,22 @@ class TelegramBackup:
                     break
 
             # Backup each dialog
+            # v6.2.0: Check archived_chat_ids so chats in both INCLUDE_CHAT_IDS
+            # and the archived folder get the correct is_archived flag immediately
             total_messages = 0
+            backed_up_chat_ids = set()
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
                 chat_id = self._get_marked_id(entity)
                 chat_name = self._get_chat_name(entity)
-                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up: {chat_name} (ID: {chat_id})")
+                is_archived = chat_id in archived_chat_ids
+                label = f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}: {chat_name} (ID: {chat_id})"
+                logger.info(label)
 
                 try:
-                    message_count = await self._backup_dialog(dialog)
+                    message_count = await self._backup_dialog(dialog, is_archived=is_archived)
                     total_messages += message_count
+                    backed_up_chat_ids.add(chat_id)
                     logger.info(f"  → Backed up {message_count} new messages")
 
                     # Optimization: after initial full run, if the most recently
@@ -317,28 +328,50 @@ class TelegramBackup:
                 except Exception as e:
                     logger.error(f"  → Error backing up {chat_name}: {e}", exc_info=True)
             
-            # v6.2.0: Backup archived dialogs
-            if archived_dialogs:
-                logger.info(f"Backing up {len(archived_dialogs)} archived dialogs...")
-                for i, dialog in enumerate(archived_dialogs, 1):
+            # v6.2.0: Backup archived dialogs that weren't already processed above.
+            # Apply the same chat type/ID filters so we don't back up unintended chats.
+            archived_to_backup = []
+            for dialog in archived_dialogs:
+                entity = dialog.entity
+                chat_id = self._get_marked_id(entity)
+                if chat_id in backed_up_chat_ids:
+                    continue  # Already backed up with correct is_archived flag
+                if chat_id in explicitly_excluded_chat_ids:
+                    continue
+                
+                is_user = isinstance(entity, User) and not entity.bot
+                is_group = isinstance(entity, Chat) or (
+                    isinstance(entity, Channel) and entity.megagroup
+                )
+                is_channel = isinstance(entity, Channel) and not entity.megagroup
+                
+                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                    archived_to_backup.append(dialog)
+            
+            if archived_to_backup:
+                logger.info(f"Backing up {len(archived_to_backup)} additional archived dialogs...")
+                for i, dialog in enumerate(archived_to_backup, 1):
                     entity = dialog.entity
                     chat_id = self._get_marked_id(entity)
                     chat_name = self._get_chat_name(entity)
-                    logger.info(f"  [Archived {i}/{len(archived_dialogs)}] {chat_name} (ID: {chat_id})")
+                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}] {chat_name} (ID: {chat_id})")
                     
                     try:
                         message_count = await self._backup_dialog(dialog, is_archived=True)
                         total_messages += message_count
+                        backed_up_chat_ids.add(chat_id)
                         if message_count > 0:
                             logger.info(f"    → Backed up {message_count} new messages")
                     except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
                         logger.warning(f"    → Skipped (no access): {e.__class__.__name__}")
                     except Exception as e:
                         logger.error(f"    → Error: {e}", exc_info=True)
+            else:
+                logger.info("No additional archived dialogs to back up")
             
             # v6.2.0: Backup forum topics for forum-enabled chats
             logger.info("Checking for forum topics...")
-            all_backed_up_dialogs = list(filtered_dialogs) + list(archived_dialogs)
+            all_backed_up_dialogs = list(filtered_dialogs) + list(archived_to_backup)
             for dialog in all_backed_up_dialogs:
                 entity = dialog.entity
                 if isinstance(entity, Channel) and getattr(entity, 'forum', False):
@@ -1315,9 +1348,8 @@ class TelegramBackup:
             if getattr(entity, 'forum', False):
                 chat_data['is_forum'] = 1
         
-        # v6.2.0: Track archived status
-        if is_archived:
-            chat_data['is_archived'] = 1
+        # v6.2.0: Track archived status (always set explicitly)
+        chat_data['is_archived'] = 1 if is_archived else 0
         
         return chat_data
     
