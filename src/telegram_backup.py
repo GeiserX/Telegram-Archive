@@ -425,11 +425,15 @@ class TelegramBackup:
         
         Returns:
             List of dialog objects
+        
+        Note: folder=0 explicitly fetches non-archived dialogs only.
+        Without folder parameter, Telethon returns ALL dialogs including
+        archived ones, which causes overlap with the folder=1 results.
         """
         if archived:
             dialogs = await self.client.get_dialogs(folder=1)
         else:
-            dialogs = await self.client.get_dialogs()
+            dialogs = await self.client.get_dialogs(folder=0)
         return dialogs
     
     async def _verify_and_redownload_media(self) -> None:
