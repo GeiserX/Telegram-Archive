@@ -20,7 +20,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Chat, Message, User, Media, Reaction, SyncStatus, Metadata
+from .models import Chat, Message, User, Media, Reaction, SyncStatus, Metadata, ForumTopic, ChatFolder, ChatFolderMember
 from .base import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -161,7 +161,12 @@ class DatabaseAdapter:
     
     @retry_on_locked()
     async def upsert_chat(self, chat_data: Dict[str, Any]) -> int:
-        """Insert or update a chat record."""
+        """Insert or update a chat record.
+        
+        Only fields present in chat_data will be updated on conflict.
+        This prevents the listener (which only provides basic fields)
+        from overwriting is_forum/is_archived set by the backup.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 'id': chat_data['id'],
@@ -173,53 +178,57 @@ class DatabaseAdapter:
                 'phone': chat_data.get('phone'),
                 'description': chat_data.get('description'),
                 'participants_count': chat_data.get('participants_count'),
+                'is_forum': chat_data.get('is_forum', 0),
+                'is_archived': chat_data.get('is_archived', 0),
                 'updated_at': datetime.utcnow(),
             }
+            
+            # Build update set from only the fields explicitly provided in chat_data.
+            # This prevents partial upserts (e.g. from the listener) from resetting
+            # is_forum/is_archived to their defaults.
+            update_set = {
+                'updated_at': datetime.utcnow(),
+            }
+            # Always update these basic metadata fields
+            for field in ('type', 'title', 'username', 'first_name', 'last_name',
+                          'phone', 'description', 'participants_count'):
+                if field in chat_data:
+                    update_set[field] = values[field]
+            # Only update is_forum/is_archived if explicitly provided
+            if 'is_forum' in chat_data:
+                update_set['is_forum'] = values['is_forum']
+            if 'is_archived' in chat_data:
+                update_set['is_archived'] = values['is_archived']
             
             if self._is_sqlite:
                 stmt = sqlite_insert(Chat).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=['id'],
-                    set_={
-                        'type': stmt.excluded.type,
-                        'title': stmt.excluded.title,
-                        'username': stmt.excluded.username,
-                        'first_name': stmt.excluded.first_name,
-                        'last_name': stmt.excluded.last_name,
-                        'phone': stmt.excluded.phone,
-                        'description': stmt.excluded.description,
-                        'participants_count': stmt.excluded.participants_count,
-                        'updated_at': datetime.utcnow(),
-                    }
+                    set_=update_set
                 )
             else:
                 stmt = pg_insert(Chat).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=['id'],
-                    set_={
-                        'type': stmt.excluded.type,
-                        'title': stmt.excluded.title,
-                        'username': stmt.excluded.username,
-                        'first_name': stmt.excluded.first_name,
-                        'last_name': stmt.excluded.last_name,
-                        'phone': stmt.excluded.phone,
-                        'description': stmt.excluded.description,
-                        'participants_count': stmt.excluded.participants_count,
-                        'updated_at': datetime.utcnow(),
-                    }
+                    set_=update_set
                 )
             
             await session.execute(stmt)
             await session.commit()
             return chat_data['id']
     
-    async def get_all_chats(self, limit: int = None, offset: int = 0, search: str = None) -> List[Dict[str, Any]]:
+    async def get_all_chats(
+        self, limit: int = None, offset: int = 0, search: str = None,
+        archived: Optional[bool] = None, folder_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
         
         Args:
             limit: Maximum number of chats to return
             offset: Offset for pagination
             search: Optional search query (case-insensitive, matches title/first_name/last_name/username)
+            archived: If True, only archived chats; if False, only non-archived; if None, all
+            folder_id: If set, only chats in this folder
         """
         async with self.db_manager.async_session_factory() as session:
             # Subquery for last message date
@@ -233,6 +242,19 @@ class DatabaseAdapter:
                 select(Chat, subq.c.last_message_date)
                 .outerjoin(subq, Chat.id == subq.c.chat_id)
             )
+            
+            # Filter by folder membership
+            if folder_id is not None:
+                stmt = stmt.join(
+                    ChatFolderMember,
+                    and_(ChatFolderMember.chat_id == Chat.id, ChatFolderMember.folder_id == folder_id)
+                )
+            
+            # Filter by archived status
+            if archived is True:
+                stmt = stmt.where(Chat.is_archived == 1)
+            elif archived is False:
+                stmt = stmt.where(or_(Chat.is_archived == 0, Chat.is_archived.is_(None)))
             
             # Apply search filter if provided
             if search:
@@ -269,6 +291,8 @@ class DatabaseAdapter:
                     'phone': row.Chat.phone,
                     'description': row.Chat.description,
                     'participants_count': row.Chat.participants_count,
+                    'is_forum': row.Chat.is_forum,
+                    'is_archived': row.Chat.is_archived,
                     'last_synced_message_id': row.Chat.last_synced_message_id,
                     'created_at': row.Chat.created_at,
                     'updated_at': row.Chat.updated_at,
@@ -277,14 +301,29 @@ class DatabaseAdapter:
                 chats.append(chat_dict)
             return chats
     
-    async def get_chat_count(self, search: str = None) -> int:
+    async def get_chat_count(
+        self, search: str = None, archived: Optional[bool] = None, folder_id: Optional[int] = None
+    ) -> int:
         """Get total number of chats (fast count for pagination).
         
         Args:
             search: Optional search query to filter count
+            archived: If True, only archived chats; if False, only non-archived; if None, all
+            folder_id: If set, only chats in this folder
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(func.count(Chat.id))
+            
+            if folder_id is not None:
+                stmt = stmt.join(
+                    ChatFolderMember,
+                    and_(ChatFolderMember.chat_id == Chat.id, ChatFolderMember.folder_id == folder_id)
+                )
+            
+            if archived is True:
+                stmt = stmt.where(Chat.is_archived == 1)
+            elif archived is False:
+                stmt = stmt.where(or_(Chat.is_archived == 0, Chat.is_archived.is_(None)))
             
             if search:
                 search_pattern = f"%{search}%"
@@ -360,6 +399,7 @@ class DatabaseAdapter:
                 'date': _strip_tz(message_data['date']),
                 'text': message_data.get('text'),
                 'reply_to_msg_id': message_data.get('reply_to_msg_id'),
+                'reply_to_top_id': message_data.get('reply_to_top_id'),
                 'reply_to_text': message_data.get('reply_to_text'),
                 'forward_from_id': message_data.get('forward_from_id'),
                 'edit_date': _strip_tz(message_data.get('edit_date')),
@@ -401,6 +441,7 @@ class DatabaseAdapter:
                     'date': _strip_tz(m['date']),
                     'text': m.get('text'),
                     'reply_to_msg_id': m.get('reply_to_msg_id'),
+                    'reply_to_top_id': m.get('reply_to_top_id'),
                     'reply_to_text': m.get('reply_to_text'),
                     'forward_from_id': m.get('forward_from_id'),
                     'edit_date': _strip_tz(m.get('edit_date')),
@@ -596,6 +637,7 @@ class DatabaseAdapter:
             'date': message.date,
             'text': message.text,
             'reply_to_msg_id': message.reply_to_msg_id,
+            'reply_to_top_id': message.reply_to_top_id,
             'reply_to_text': message.reply_to_text,
             'forward_from_id': message.forward_from_id,
             'edit_date': message.edit_date,
@@ -995,12 +1037,14 @@ class DatabaseAdapter:
         offset: int = 0,
         search: Optional[str] = None,
         before_date: Optional[datetime] = None,
-        before_id: Optional[int] = None
+        before_id: Optional[int] = None,
+        topic_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
         
         v6.0.0: Media is now returned as a nested object from the media table.
+        v6.2.0: Added topic_id filter for forum topic messages.
         
         Supports two pagination modes:
         1. Offset-based (legacy): Uses offset parameter - slower for large offsets
@@ -1013,6 +1057,7 @@ class DatabaseAdapter:
             search: Optional text search filter
             before_date: Cursor - get messages before this date (faster than offset)
             before_id: Cursor - message ID to use as tiebreaker for same-date messages
+            topic_id: Optional forum topic ID to filter messages by thread
             
         Returns:
             List of message dictionaries with user and media info
@@ -1042,6 +1087,10 @@ class DatabaseAdapter:
                 ))
                 .where(Message.chat_id == chat_id)
             )
+            
+            # v6.2.0: Filter by forum topic
+            if topic_id is not None:
+                stmt = stmt.where(Message.reply_to_top_id == topic_id)
             
             if search:
                 stmt = stmt.where(Message.text.ilike(f'%{search}%'))
@@ -1254,6 +1303,8 @@ class DatabaseAdapter:
                 'phone': chat.phone,
                 'description': chat.description,
                 'participants_count': chat.participants_count,
+                'is_forum': chat.is_forum,
+                'is_archived': chat.is_archived,
             }
     
     async def get_pinned_messages(self, chat_id: int) -> List[Dict[str, Any]]:
@@ -1463,6 +1514,214 @@ class DatabaseAdapter:
                     msg['media_type'] = row.media_type
                     msg['media_path'] = row.media_file_path
                 yield msg
+    
+    # ========== Forum Topic Operations (v6.2.0) ==========
+    
+    @retry_on_locked()
+    async def upsert_forum_topic(self, topic_data: Dict[str, Any]) -> None:
+        """Insert or update a forum topic record."""
+        async with self.db_manager.async_session_factory() as session:
+            values = {
+                'id': topic_data['id'],
+                'chat_id': topic_data['chat_id'],
+                'title': topic_data['title'],
+                'icon_color': topic_data.get('icon_color'),
+                'icon_emoji_id': topic_data.get('icon_emoji_id'),
+                'icon_emoji': topic_data.get('icon_emoji'),
+                'is_closed': topic_data.get('is_closed', 0),
+                'is_pinned': topic_data.get('is_pinned', 0),
+                'is_hidden': topic_data.get('is_hidden', 0),
+                'date': _strip_tz(topic_data.get('date')),
+                'updated_at': datetime.utcnow(),
+            }
+            
+            update_set = {
+                'title': values['title'],
+                'icon_color': values['icon_color'],
+                'icon_emoji_id': values['icon_emoji_id'],
+                'icon_emoji': values['icon_emoji'],
+                'is_closed': values['is_closed'],
+                'is_pinned': values['is_pinned'],
+                'is_hidden': values['is_hidden'],
+                'date': values['date'],
+                'updated_at': datetime.utcnow(),
+            }
+            
+            if self._is_sqlite:
+                stmt = sqlite_insert(ForumTopic).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['id', 'chat_id'],
+                    set_=update_set
+                )
+            else:
+                stmt = pg_insert(ForumTopic).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['id', 'chat_id'],
+                    set_=update_set
+                )
+            
+            await session.execute(stmt)
+            await session.commit()
+    
+    async def get_forum_topics(self, chat_id: int) -> List[Dict[str, Any]]:
+        """Get all forum topics for a chat, with message count per topic."""
+        async with self.db_manager.async_session_factory() as session:
+            # Subquery for message counts and last message date per topic.
+            # Messages with reply_to_top_id=NULL are treated as General topic (id=1),
+            # since pre-v6.2.0 messages and pre-forum messages lack topic assignment
+            # and Telegram's client displays them under General.
+            effective_topic_id = func.coalesce(Message.reply_to_top_id, 1).label('effective_topic_id')
+            msg_subq = (
+                select(
+                    effective_topic_id,
+                    func.count(Message.id).label('message_count'),
+                    func.max(Message.date).label('last_message_date')
+                )
+                .where(Message.chat_id == chat_id)
+                .group_by(effective_topic_id)
+                .subquery()
+            )
+            
+            stmt = (
+                select(ForumTopic, msg_subq.c.message_count, msg_subq.c.last_message_date)
+                .outerjoin(msg_subq, ForumTopic.id == msg_subq.c.effective_topic_id)
+                .where(ForumTopic.chat_id == chat_id)
+                .order_by(
+                    ForumTopic.is_pinned.desc(),
+                    msg_subq.c.last_message_date.desc().nullslast()
+                )
+            )
+            
+            result = await session.execute(stmt)
+            topics = []
+            for row in result:
+                topic = row.ForumTopic
+                topics.append({
+                    'id': topic.id,
+                    'chat_id': topic.chat_id,
+                    'title': topic.title,
+                    'icon_color': topic.icon_color,
+                    'icon_emoji_id': topic.icon_emoji_id,
+                    'icon_emoji': topic.icon_emoji,
+                    'is_closed': topic.is_closed,
+                    'is_pinned': topic.is_pinned,
+                    'is_hidden': topic.is_hidden,
+                    'date': topic.date,
+                    'message_count': row.message_count or 0,
+                    'last_message_date': row.last_message_date,
+                })
+            return topics
+    
+    # ========== Chat Folder Operations (v6.2.0) ==========
+    
+    @retry_on_locked()
+    async def upsert_chat_folder(self, folder_data: Dict[str, Any]) -> None:
+        """Insert or update a chat folder."""
+        async with self.db_manager.async_session_factory() as session:
+            values = {
+                'id': folder_data['id'],
+                'title': folder_data['title'],
+                'emoticon': folder_data.get('emoticon'),
+                'sort_order': folder_data.get('sort_order', 0),
+                'updated_at': datetime.utcnow(),
+            }
+            
+            update_set = {
+                'title': values['title'],
+                'emoticon': values['emoticon'],
+                'sort_order': values['sort_order'],
+                'updated_at': datetime.utcnow(),
+            }
+            
+            if self._is_sqlite:
+                stmt = sqlite_insert(ChatFolder).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['id'],
+                    set_=update_set
+                )
+            else:
+                stmt = pg_insert(ChatFolder).values(**values)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['id'],
+                    set_=update_set
+                )
+            
+            await session.execute(stmt)
+            await session.commit()
+    
+    @retry_on_locked()
+    async def sync_folder_members(self, folder_id: int, chat_ids: List[int]) -> None:
+        """Sync folder membership: replace all members for a folder."""
+        async with self.db_manager.async_session_factory() as session:
+            # Delete existing members
+            await session.execute(
+                delete(ChatFolderMember).where(ChatFolderMember.folder_id == folder_id)
+            )
+            
+            # Insert new members (only for chats that exist in our DB)
+            if chat_ids:
+                # Verify which chat_ids actually exist
+                existing = await session.execute(
+                    select(Chat.id).where(Chat.id.in_(chat_ids))
+                )
+                existing_ids = {row[0] for row in existing}
+                
+                for cid in chat_ids:
+                    if cid in existing_ids:
+                        session.add(ChatFolderMember(folder_id=folder_id, chat_id=cid))
+            
+            await session.commit()
+    
+    async def get_all_folders(self) -> List[Dict[str, Any]]:
+        """Get all chat folders with their chat counts."""
+        async with self.db_manager.async_session_factory() as session:
+            count_subq = (
+                select(
+                    ChatFolderMember.folder_id,
+                    func.count(ChatFolderMember.chat_id).label('chat_count')
+                )
+                .group_by(ChatFolderMember.folder_id)
+                .subquery()
+            )
+            
+            stmt = (
+                select(ChatFolder, count_subq.c.chat_count)
+                .outerjoin(count_subq, ChatFolder.id == count_subq.c.folder_id)
+                .order_by(ChatFolder.sort_order, ChatFolder.title)
+            )
+            
+            result = await session.execute(stmt)
+            folders = []
+            for row in result:
+                folder = row.ChatFolder
+                folders.append({
+                    'id': folder.id,
+                    'title': folder.title,
+                    'emoticon': folder.emoticon,
+                    'sort_order': folder.sort_order,
+                    'chat_count': row.chat_count or 0,
+                })
+            return folders
+    
+    @retry_on_locked()
+    async def cleanup_stale_folders(self, active_folder_ids: List[int]) -> None:
+        """Remove folders that no longer exist in Telegram."""
+        async with self.db_manager.async_session_factory() as session:
+            if active_folder_ids:
+                await session.execute(
+                    delete(ChatFolder).where(ChatFolder.id.notin_(active_folder_ids))
+                )
+            else:
+                await session.execute(delete(ChatFolder))
+            await session.commit()
+    
+    async def get_archived_chat_count(self) -> int:
+        """Get the count of archived chats."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(func.count(Chat.id)).where(Chat.is_archived == 1)
+            )
+            return result.scalar() or 0
     
     async def close(self) -> None:
         """Close database connections."""

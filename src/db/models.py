@@ -32,6 +32,8 @@ class Chat(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     description: Mapped[Optional[str]] = mapped_column(Text)
     participants_count: Mapped[Optional[int]] = mapped_column(Integer)
+    is_forum: Mapped[int] = mapped_column(Integer, default=0, server_default='0')  # v6.2.0: forum with topics
+    is_archived: Mapped[int] = mapped_column(Integer, default=0, server_default='0')  # v6.2.0: archived chat
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now())
@@ -39,6 +41,7 @@ class Chat(Base):
     # Relationships
     messages: Mapped[List["Message"]] = relationship("Message", back_populates="chat", lazy="dynamic")
     sync_status: Mapped[Optional["SyncStatus"]] = relationship("SyncStatus", back_populates="chat", uselist=False)
+    forum_topics: Mapped[List["ForumTopic"]] = relationship("ForumTopic", back_populates="chat", lazy="dynamic")
     
     __table_args__ = (
         Index('idx_chats_username', 'username'),
@@ -60,6 +63,7 @@ class Message(Base):
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     text: Mapped[Optional[str]] = mapped_column(Text)
     reply_to_msg_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    reply_to_top_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # v6.2.0: forum topic thread ID
     reply_to_text: Mapped[Optional[str]] = mapped_column(Text)
     forward_from_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     edit_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -91,6 +95,8 @@ class Message(Base):
         Index('idx_messages_chat_pinned', 'chat_id', 'is_pinned'),
         # Index for reply lookups
         Index('idx_messages_reply_to', 'chat_id', 'reply_to_msg_id'),
+        # v6.2.0: Index for topic message lookups in forum chats
+        Index('idx_messages_topic', 'chat_id', 'reply_to_top_id'),
     )
 
 
@@ -234,4 +240,70 @@ class PushSubscription(Base):
     
     __table_args__ = (
         Index('idx_push_sub_chat', 'chat_id'),
+    )
+
+
+class ForumTopic(Base):
+    """Forum topics table - topics within forum-enabled chats.
+    
+    v6.2.0: Stores topic metadata for forum groups/channels.
+    """
+    __tablename__ = 'forum_topics'
+    
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('chats.id', ondelete='CASCADE'), primary_key=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    icon_color: Mapped[Optional[int]] = mapped_column(Integer)
+    icon_emoji_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    icon_emoji: Mapped[Optional[str]] = mapped_column(String(32))  # Unicode emoji resolved from icon_emoji_id
+    is_closed: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    is_pinned: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    is_hidden: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    date: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    
+    # Relationships
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="forum_topics")
+    
+    __table_args__ = (
+        Index('idx_forum_topics_chat', 'chat_id'),
+    )
+
+
+class ChatFolder(Base):
+    """Chat folders table - user-created Telegram folders.
+    
+    v6.2.0: Stores folder metadata from Telegram dialog filters.
+    """
+    __tablename__ = 'chat_folders'
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    emoticon: Mapped[Optional[str]] = mapped_column(String(50))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    
+    # Relationships
+    members: Mapped[List["ChatFolderMember"]] = relationship("ChatFolderMember", back_populates="folder", cascade="all, delete-orphan")
+
+
+class ChatFolderMember(Base):
+    """Chat folder members table - maps chats to folders.
+    
+    v6.2.0: Junction table for many-to-many relationship between folders and chats.
+    """
+    __tablename__ = 'chat_folder_members'
+    
+    folder_id: Mapped[int] = mapped_column(Integer, ForeignKey('chat_folders.id', ondelete='CASCADE'), primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('chats.id', ondelete='CASCADE'), primary_key=True)
+    
+    # Relationships
+    folder: Mapped["ChatFolder"] = relationship("ChatFolder", back_populates="members")
+    chat: Mapped["Chat"] = relationship("Chat")
+    
+    __table_args__ = (
+        Index('idx_folder_members_chat', 'chat_id'),
+        Index('idx_folder_members_folder', 'folder_id'),
     )
