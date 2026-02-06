@@ -6,6 +6,34 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-02-06
+
+### Community Contributions
+
+This release includes a major contribution from **[@yarikoptic](https://github.com/yarikoptic)** (Yaroslav Halchenko) - thank you for this substantial improvement to the project!
+
+### Added
+
+- **Unified CLI interface** (`python -m src <command>`) - All operations now route through a single entry point with intuitive subcommands: `auth`, `backup`, `schedule`, `export`, `stats`, `list-chats`. Includes comprehensive `--help` with workflow guidance. (contributed by @yarikoptic, PR #57)
+
+- **Python packaging with `pyproject.toml`** - Proper PEP 621 package definition with centralized dependencies. Install locally with `pip install -e .` to get the `telegram-archive` command. (contributed by @yarikoptic, PR #57)
+
+- **`--data-dir` option for local development** - Override the default `/data` directory to avoid permission issues when developing outside Docker:
+  ```bash
+  telegram-archive --data-dir ./data list-chats
+  python -m src --data-dir ./data backup
+  ```
+
+- **`telegram-archive` executable script** - Direct execution without installation (`./telegram-archive --help`). (contributed by @yarikoptic, PR #57)
+
+- **Smart database migrations in entrypoint** - Migrations now skip for `auth` command (no DB needed yet) and check database existence before running SQLite migrations. (contributed by @yarikoptic, PR #57)
+
+### Changed
+
+- **Dockerfile default CMD now shows help** - Running the container without an explicit command displays help instead of silently starting the scheduler. The `docker-compose.yml` explicitly runs `schedule`. This is a behavioral change for users running `docker run` without a command - add `python -m src schedule` to your command.
+
+- **Unified command syntax** - Old module-based commands (`python -m src.telegram_backup`, `python -m src.export_backup stats`) are replaced by `python -m src backup`, `python -m src stats`, etc.
+
 ## [6.0.3] - 2026-02-02
 
 ### Community Contributions
