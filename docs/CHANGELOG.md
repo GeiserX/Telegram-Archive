@@ -218,7 +218,7 @@ After upgrading, pinned messages will be populated on the next backup run. If yo
 
 ```bash
 # Trigger a manual backup to sync pinned messages
-docker exec telegram-backup python -m src.main backup
+docker exec telegram-backup python -m src backup
 ```
 
 If using the real-time listener (`ENABLE_LISTENER=true`), pin/unpin events will be captured automatically going forward.

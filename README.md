@@ -129,7 +129,7 @@ docker run -it --rm \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
   drumsergio/telegram-archive:latest \
-  python -m src.setup_auth
+  python -m src auth
 ```
 
 **Example for docker compose deployment:**
@@ -140,7 +140,7 @@ docker run -it --rm \
   --env-file .env \
   -v telegram-archive_session:/data/session \
   drumsergio/telegram-archive:latest \
-  python -m src.setup_auth
+  python -m src auth
 
 # Then restart the backup container
 docker compose restart telegram-backup
@@ -492,21 +492,69 @@ For major version upgrades with breaking changes and migration scripts, see **[d
 
 ## CLI Commands
 
-```bash
-# View statistics
-docker compose exec telegram-backup python -m src.export_backup stats
+### Local Development
 
-# List chats
-docker compose exec telegram-backup python -m src.export_backup list-chats
+#### Option 1: Install with pip (Recommended)
+
+Install the package in editable mode to get the `telegram-archive` command:
+
+```bash
+# Install in editable mode
+pip install -e .
+
+# Now telegram-archive is available system-wide
+telegram-archive --help
+telegram-archive --data-dir ./data list-chats
+telegram-archive --data-dir ./data stats
+telegram-archive --data-dir ./data backup
 
 # Export to JSON
-docker compose exec telegram-backup python -m src.export_backup export -o backup.json
+telegram-archive --data-dir ./data export -o backup.json -s 2024-01-01 -e 2024-12-31
+```
+
+#### Option 2: Run directly without installation
+
+For development without installing, use the `telegram-archive` executable script:
+
+```bash
+# Show all available commands
+./telegram-archive --help
+
+# Use custom data directory (instead of /data)
+./telegram-archive --data-dir ./data list-chats
+./telegram-archive --data-dir ./data stats
+./telegram-archive --data-dir ./data backup
+
+# Or symlink to PATH for easier access
+sudo ln -s $(pwd)/telegram-archive /usr/local/bin/telegram-archive
+telegram-archive --data-dir ./data list-chats
+```
+
+### Docker Usage
+
+All commands use the unified `python -m src` interface inside containers:
+
+```bash
+# Show all available commands
+docker compose exec telegram-backup python -m src --help
+
+# View statistics
+docker compose exec telegram-backup python -m src stats
+
+# List chats
+docker compose exec telegram-backup python -m src list-chats
+
+# Export to JSON
+docker compose exec telegram-backup python -m src export -o backup.json
 
 # Export date range
-docker compose exec telegram-backup python -m src.export_backup export -o backup.json -s 2024-01-01 -e 2024-12-31
+docker compose exec telegram-backup python -m src export -o backup.json -s 2024-01-01 -e 2024-12-31
 
-# Manual backup run
-docker compose exec telegram-backup python -m src.telegram_backup
+# Manual backup run (one-time)
+docker compose exec telegram-backup python -m src backup
+
+# Re-authenticate (if session expires)
+docker compose exec -it telegram-backup python -m src auth
 ```
 
 ## Data Storage

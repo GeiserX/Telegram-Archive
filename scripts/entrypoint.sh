@@ -1,8 +1,19 @@
 #!/bin/bash
 set -e
 
-# Run Alembic migrations on startup (if using PostgreSQL)
-if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; then
+# Determine if we should run migrations
+# Skip migrations for 'auth' command (no database needed yet)
+# For other commands, check if database exists and run migrations if needed
+
+SKIP_MIGRATIONS=false
+if [[ "$1" == "python" ]] && [[ "$2" == "-m" ]] && [[ "$3" == "src" ]] && [[ "$4" == "auth" ]]; then
+    echo "Running auth command - skipping database migrations"
+    SKIP_MIGRATIONS=true
+fi
+
+# Run Alembic migrations if database exists
+if [ "$SKIP_MIGRATIONS" = "false" ]; then
+  if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; then
     echo "Running database migrations..."
     python -c "
 from alembic.config import Config
@@ -110,6 +121,29 @@ config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
 print('Migrations complete.')
 "
+  elif [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ]; then
+    # SQLite - check if database file exists before running migrations
+    DB_PATH="${DB_PATH:-${DATABASE_PATH:-${BACKUP_PATH:-/data/backups}/telegram_backup.db}}"
+
+    if [ -f "$DB_PATH" ]; then
+      echo "SQLite database found at $DB_PATH - running migrations..."
+      python -c "
+from alembic.config import Config
+from alembic import command
+import os
+
+db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
+url = f'sqlite:///{db_path}'
+
+config = Config('/app/alembic.ini')
+config.set_main_option('sqlalchemy.url', url)
+command.upgrade(config, 'head')
+print('SQLite migrations complete.')
+"
+    else
+      echo "No database found yet - skipping migrations (will be created automatically)"
+    fi
+  fi
 fi
 
 # Execute the main command
