@@ -191,10 +191,13 @@ class TelegramBackup:
             archived_dialogs = await self._get_dialogs(archived=True)
             logger.info(f"Found {len(archived_dialogs)} archived dialogs")
             
-            # Build set of archived chat IDs for fast lookup
+            # Build set of archived chat IDs for fast lookup.
+            # Only trust this for chats NOT found in the regular dialog list,
+            # since Telegram's API may occasionally return a chat in both lists.
             archived_chat_ids = set()
             for dialog in archived_dialogs:
                 archived_chat_ids.add(self._get_marked_id(dialog.entity))
+            logger.info(f"Archived chat IDs from Telegram: {archived_chat_ids & (self.config.global_include_ids | self.config.private_include_ids | self.config.groups_include_ids | self.config.channels_include_ids) if archived_chat_ids else 'none matching includes'}")
 
             # Filter dialogs based on chat type and ID filters
             # Also delete explicitly excluded chats from database
@@ -241,8 +244,9 @@ class TelegramBackup:
             missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
             
             if missing_include_ids:
-                logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in dialogs...")
+                logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs: {missing_include_ids}")
                 for include_id in missing_include_ids:
+                    is_in_archive = include_id in archived_chat_ids
                     try:
                         entity = await self.client.get_entity(include_id)
                         # Create a simple dialog-like wrapper
@@ -252,7 +256,7 @@ class TelegramBackup:
                                 self.date = datetime.now()
                         
                         filtered_dialogs.append(SimpleDialog(entity))
-                        logger.info(f"  → Added explicitly included chat: {self._get_chat_name(entity)} (ID: {include_id})")
+                        logger.info(f"  → Added: {self._get_chat_name(entity)} (ID: {include_id}){' [in archive]' if is_in_archive else ' [not in any dialog list]'}")
                     except Exception as e:
                         logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
             
@@ -303,14 +307,18 @@ class TelegramBackup:
 
             # Backup each dialog
             # v6.2.0: Check archived_chat_ids so chats in both INCLUDE_CHAT_IDS
-            # and the archived folder get the correct is_archived flag immediately
+            # and the archived folder get the correct is_archived flag immediately.
+            # A chat found in the regular dialog list (seen_chat_ids) is NEVER
+            # archived, even if Telegram's API also returns it in folder=1.
             total_messages = 0
             backed_up_chat_ids = set()
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
                 chat_id = self._get_marked_id(entity)
                 chat_name = self._get_chat_name(entity)
-                is_archived = chat_id in archived_chat_ids
+                is_archived = chat_id in archived_chat_ids and chat_id not in seen_chat_ids
+                if chat_id in archived_chat_ids and chat_id in seen_chat_ids:
+                    logger.warning(f"  Chat {chat_name} (ID: {chat_id}) appears in both regular and archived dialog lists - treating as NOT archived")
                 label = f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}: {chat_name} (ID: {chat_id})"
                 logger.info(label)
 
