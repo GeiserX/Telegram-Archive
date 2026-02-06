@@ -1410,13 +1410,14 @@ class TelegramBackup:
         try:
             # Try using GetForumTopicsRequest via raw API
             from telethon.tl.functions.channels import GetForumTopicsRequest
-            from telethon.tl.types import InputChannel
             
             try:
                 input_channel = await self.client.get_input_entity(entity)
+                # offset_date must be a proper date object, not int 0
+                from datetime import datetime as dt
                 result = await self.client(GetForumTopicsRequest(
                     channel=input_channel,
-                    offset_date=0,
+                    offset_date=dt(1970, 1, 1),
                     offset_id=0,
                     offset_topic=0,
                     limit=100
@@ -1438,14 +1439,14 @@ class TelegramBackup:
                     await self.db.upsert_forum_topic(topic_data)
                     topics_count += 1
                 
-                logger.info(f"  → Backed up {topics_count} forum topics")
+                logger.info(f"  → Backed up {topics_count} forum topics via API")
                 return topics_count
                 
             except Exception as e:
-                logger.debug(f"GetForumTopicsRequest failed, falling back to message inference: {e}")
+                logger.warning(f"GetForumTopicsRequest failed ({e.__class__.__name__}: {e}), falling back to message inference")
                 # Fall through to inference method
         except ImportError:
-            logger.debug("GetForumTopicsRequest not available, using message inference")
+            logger.warning("GetForumTopicsRequest not available in this Telethon version, using message inference")
         
         # Fallback: Infer topics from message reply_to_top_id values
         # This finds unique topic IDs and uses the topic's first message as metadata
