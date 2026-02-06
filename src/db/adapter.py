@@ -161,7 +161,12 @@ class DatabaseAdapter:
     
     @retry_on_locked()
     async def upsert_chat(self, chat_data: Dict[str, Any]) -> int:
-        """Insert or update a chat record."""
+        """Insert or update a chat record.
+        
+        Only fields present in chat_data will be updated on conflict.
+        This prevents the listener (which only provides basic fields)
+        from overwriting is_forum/is_archived set by the backup.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 'id': chat_data['id'],
@@ -178,19 +183,22 @@ class DatabaseAdapter:
                 'updated_at': datetime.utcnow(),
             }
             
+            # Build update set from only the fields explicitly provided in chat_data.
+            # This prevents partial upserts (e.g. from the listener) from resetting
+            # is_forum/is_archived to their defaults.
             update_set = {
-                'type': values['type'],
-                'title': values['title'],
-                'username': values['username'],
-                'first_name': values['first_name'],
-                'last_name': values['last_name'],
-                'phone': values['phone'],
-                'description': values['description'],
-                'participants_count': values['participants_count'],
-                'is_forum': values['is_forum'],
-                'is_archived': values['is_archived'],
                 'updated_at': datetime.utcnow(),
             }
+            # Always update these basic metadata fields
+            for field in ('type', 'title', 'username', 'first_name', 'last_name',
+                          'phone', 'description', 'participants_count'):
+                if field in chat_data:
+                    update_set[field] = values[field]
+            # Only update is_forum/is_archived if explicitly provided
+            if 'is_forum' in chat_data:
+                update_set['is_forum'] = values['is_forum']
+            if 'is_archived' in chat_data:
+                update_set['is_archived'] = values['is_archived']
             
             if self._is_sqlite:
                 stmt = sqlite_insert(Chat).values(**values)
