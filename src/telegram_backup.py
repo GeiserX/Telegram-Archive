@@ -1409,14 +1409,15 @@ class TelegramBackup:
         """
         try:
             # Try using GetForumTopicsRequest via raw API
-            from telethon.tl.functions.channels import GetForumTopicsRequest
+            # Note: In Telethon 1.42+, this is in messages, not channels
+            from telethon.tl.functions.messages import GetForumTopicsRequest
             
             try:
                 input_channel = await self.client.get_input_entity(entity)
                 # offset_date must be a proper date object, not int 0
                 from datetime import datetime as dt
                 result = await self.client(GetForumTopicsRequest(
-                    channel=input_channel,
+                    peer=input_channel,
                     offset_date=dt(1970, 1, 1),
                     offset_id=0,
                     offset_topic=0,
