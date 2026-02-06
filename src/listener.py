@@ -813,6 +813,13 @@ class TelegramListener:
                 
                 # Extract message data
                 # v6.0.0: media_type, media_id, media_path removed - stored in media table
+                # v6.2.0: reply_to_top_id added for forum topic threading
+                reply_to_top_id = None
+                if message.reply_to and getattr(message.reply_to, 'forum_topic', False):
+                    reply_to_top_id = getattr(message.reply_to, 'reply_to_top_id', None)
+                    if reply_to_top_id is None:
+                        reply_to_top_id = getattr(message.reply_to, 'reply_to_msg_id', None)
+                
                 message_data = {
                     'id': message.id,
                     'chat_id': chat_id,
@@ -820,6 +827,7 @@ class TelegramListener:
                     'date': message.date,
                     'text': message.text or '',
                     'reply_to_msg_id': message.reply_to_msg_id if hasattr(message, 'reply_to_msg_id') else None,
+                    'reply_to_top_id': reply_to_top_id,
                     'reply_to_text': None,
                     'forward_from_id': None,  # Will be filled by next backup if needed
                     'edit_date': message.edit_date,
