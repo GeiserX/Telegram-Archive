@@ -1566,24 +1566,25 @@ class DatabaseAdapter:
     async def get_forum_topics(self, chat_id: int) -> List[Dict[str, Any]]:
         """Get all forum topics for a chat, with message count per topic."""
         async with self.db_manager.async_session_factory() as session:
-            # Subquery for message counts and last message date per topic
+            # Subquery for message counts and last message date per topic.
+            # Messages with reply_to_top_id=NULL are treated as General topic (id=1),
+            # since pre-v6.2.0 messages and pre-forum messages lack topic assignment
+            # and Telegram's client displays them under General.
+            effective_topic_id = func.coalesce(Message.reply_to_top_id, 1).label('effective_topic_id')
             msg_subq = (
                 select(
-                    Message.reply_to_top_id,
+                    effective_topic_id,
                     func.count(Message.id).label('message_count'),
                     func.max(Message.date).label('last_message_date')
                 )
-                .where(and_(
-                    Message.chat_id == chat_id,
-                    Message.reply_to_top_id.isnot(None)
-                ))
-                .group_by(Message.reply_to_top_id)
+                .where(Message.chat_id == chat_id)
+                .group_by(effective_topic_id)
                 .subquery()
             )
             
             stmt = (
                 select(ForumTopic, msg_subq.c.message_count, msg_subq.c.last_message_date)
-                .outerjoin(msg_subq, ForumTopic.id == msg_subq.c.reply_to_top_id)
+                .outerjoin(msg_subq, ForumTopic.id == msg_subq.c.effective_topic_id)
                 .where(ForumTopic.chat_id == chat_id)
                 .order_by(
                     ForumTopic.is_pinned.desc(),
