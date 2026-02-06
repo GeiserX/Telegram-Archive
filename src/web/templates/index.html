@@ -472,7 +472,7 @@
                 <!-- Chat List / Topics View -->
                 <div class="flex-1 overflow-y-auto">
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
-                    <template v-if="currentNav.type === 'topics'">
+                    <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
                         <div class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
                             <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
@@ -481,7 +481,7 @@
                                 </svg>
                             </button>
                             <div class="flex-1 min-w-0">
-                                <h3 class="font-semibold text-white truncate">{{ currentNav.chatName }}</h3>
+                                <h3 class="font-semibold text-white truncate">{{ topicsNavEntry.chatName }}</h3>
                                 <p class="text-xs text-tg-muted">{{ topics.length }} topics</p>
                             </div>
                         </div>
@@ -500,8 +500,9 @@
                             <span class="text-sm">No topics found</span>
                         </div>
                         <div v-else v-for="topic in topics" :key="topic.id"
-                            @click="selectTopic({ id: currentNav.chatId, is_forum: true }, topic)"
-                            class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30">
+                            @click="selectTopic({ id: topicsNavEntry.chatId, is_forum: true }, topic)"
+                            class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
+                            :class="{'bg-tg-active': currentNav.topicId === topic.id}"
                             <!-- Topic icon -->
                             <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
                                 :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
@@ -1243,6 +1244,23 @@
                 
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
+                
+                // v6.2.0: Find the topics nav entry for sidebar display
+                // When viewing a topic's messages (currentNav.type === 'chat' with topicId),
+                // the sidebar should still show the topics list, not fall back to chat list
+                const topicsNavEntry = computed(() => {
+                    const nav = currentNav.value
+                    if (nav.type === 'topics') return nav
+                    if (nav.type === 'chat' && nav.topicId) {
+                        // Find the parent topics entry in navStack
+                        for (let i = navStack.value.length - 2; i >= 0; i--) {
+                            if (navStack.value[i].type === 'topics') {
+                                return navStack.value[i]
+                            }
+                        }
+                    }
+                    return null
+                })
                 
                 // Lightbox state
                 const lightboxOpen = ref(false)
@@ -3183,6 +3201,7 @@
                     // v6.2.0: Navigation, folders, topics, archived
                     navStack,
                     currentNav,
+                    topicsNavEntry,
                     canGoBack,
                     navigateBack,
                     folders,
