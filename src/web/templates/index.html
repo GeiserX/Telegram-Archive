@@ -475,7 +475,7 @@
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
                         <div class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                            <button @click="navigateBackToChats()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
@@ -506,10 +506,10 @@
                             <!-- Topic icon -->
                             <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
                                 :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
-                                <svg v-if="!topic.icon_emoji_id" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <span v-if="topic.icon_emoji" class="text-xl">{{ topic.icon_emoji }}</span>
+                                <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
                                 </svg>
-                                <span v-else class="text-lg">💬</span>
                             </div>
                             <div class="flex-1 min-w-0">
                                 <div class="flex justify-between items-baseline">
@@ -1426,16 +1426,31 @@
                 
                 const navigateBack = () => {
                     if (navStack.value.length <= 1) return
-                    const popped = navStack.value.pop()
+                    navStack.value.pop()
                     const current = currentNav.value
                     
                     if (current.type === 'chatList') {
                         loadChats()
-                    } else if (current.type === 'topics') {
-                        // Returning to topics list
-                        selectedChat.value = null
-                        messages.value = []
+                        // Don't clear selectedChat - main panel keeps showing current content (Telegram-like UX)
                     }
+                    // For 'topics' type: sidebar shows topics, main panel keeps showing topic messages
+                }
+                
+                // v6.2.0: Navigate back from topics view to parent chat list (pops all topic-related entries)
+                const navigateBackToChats = () => {
+                    while (navStack.value.length > 1) {
+                        const top = navStack.value[navStack.value.length - 1]
+                        if (top.type === 'topics' || (top.type === 'chat' && top.topicId)) {
+                            navStack.value.pop()
+                        } else {
+                            break
+                        }
+                    }
+                    const current = currentNav.value
+                    if (current.type === 'chatList') {
+                        loadChats()
+                    }
+                    // Main panel keeps showing current topic messages
                 }
                 
                 const loadFolders = async () => {
@@ -3204,6 +3219,7 @@
                     topicsNavEntry,
                     canGoBack,
                     navigateBack,
+                    navigateBackToChats,
                     folders,
                     archivedCount,
                     topics,

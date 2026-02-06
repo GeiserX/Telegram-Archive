@@ -1424,14 +1424,32 @@ class TelegramBackup:
                     limit=100
                 ))
                 
+                # Resolve custom emoji IDs to unicode emojis
+                emoji_map = {}
+                emoji_ids = [t.icon_emoji_id for t in result.topics if getattr(t, 'icon_emoji_id', None)]
+                if emoji_ids:
+                    try:
+                        from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
+                        docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=emoji_ids))
+                        for doc in docs:
+                            for attr in doc.attributes:
+                                if hasattr(attr, 'alt') and attr.alt:
+                                    emoji_map[doc.id] = attr.alt
+                                    break
+                        logger.info(f"  → Resolved {len(emoji_map)} topic emojis")
+                    except Exception as e:
+                        logger.warning(f"  → Could not resolve topic emojis: {e}")
+                
                 topics_count = 0
                 for topic in result.topics:
+                    emoji_id = getattr(topic, 'icon_emoji_id', None)
                     topic_data = {
                         'id': topic.id,
                         'chat_id': chat_id,
                         'title': topic.title,
                         'icon_color': getattr(topic, 'icon_color', None),
-                        'icon_emoji_id': getattr(topic, 'icon_emoji_id', None),
+                        'icon_emoji_id': emoji_id,
+                        'icon_emoji': emoji_map.get(emoji_id) if emoji_id else None,
                         'is_closed': 1 if getattr(topic, 'closed', False) else 0,
                         'is_pinned': 1 if getattr(topic, 'pinned', False) else 0,
                         'is_hidden': 1 if getattr(topic, 'hidden', False) else 0,

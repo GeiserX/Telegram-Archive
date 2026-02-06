@@ -255,6 +255,7 @@ class ForumTopic(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     icon_color: Mapped[Optional[int]] = mapped_column(Integer)
     icon_emoji_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    icon_emoji: Mapped[Optional[str]] = mapped_column(String(32))  # Unicode emoji resolved from icon_emoji_id
     is_closed: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
     is_pinned: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
     is_hidden: Mapped[int] = mapped_column(Integer, default=0, server_default='0')

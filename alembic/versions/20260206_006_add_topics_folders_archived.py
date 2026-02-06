@@ -59,6 +59,7 @@ def upgrade() -> None:
         sa.Column('title', sa.String(500), nullable=False),
         sa.Column('icon_color', sa.Integer(), nullable=True),
         sa.Column('icon_emoji_id', sa.BigInteger(), nullable=True),
+        sa.Column('icon_emoji', sa.String(32), nullable=True),
         sa.Column('is_closed', sa.Integer(), server_default='0'),
         sa.Column('is_pinned', sa.Integer(), server_default='0'),
         sa.Column('is_hidden', sa.Integer(), server_default='0'),
