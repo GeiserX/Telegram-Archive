@@ -136,9 +136,12 @@ class DatabaseManager:
             expire_on_commit=False,
         )
         
-        # Create tables if they don't exist (checkfirst=True skips existing tables)
-        async with self.engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
+        # Only use create_all for SQLite — Alembic manages PostgreSQL schema
+        # via entrypoint.sh, so running create_all concurrently would race with
+        # Alembic migrations and cause deadlocks.
+        if self._is_sqlite:
+            async with self.engine.begin() as conn:
+                await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
         
         logger.info(f"Database initialized successfully ({self._db_type()})")
     
