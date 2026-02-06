@@ -12,7 +12,7 @@ from urllib.parse import quote_plus
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Base, Chat, Message, User, Media, Reaction, SyncStatus, Metadata
+from .models import Base, Chat, Message, User, Media, Reaction, SyncStatus, Metadata, ForumTopic, ChatFolder, ChatFolderMember
 from .base import DatabaseManager
 
 logger = logging.getLogger(__name__)

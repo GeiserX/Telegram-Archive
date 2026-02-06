@@ -13,7 +13,7 @@ import sys
 from logging.config import fileConfig
 from urllib.parse import quote_plus
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -106,18 +106,31 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    """Run migrations within a connection context."""
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-        # Compare types for detecting column type changes
-        compare_type=True,
-        # Compare server defaults
-        compare_server_default=True,
-    )
+    """Run migrations within a connection context.
+    
+    Uses a PostgreSQL advisory lock to prevent concurrent migrations
+    from deadlocking when multiple containers start simultaneously.
+    """
+    # Acquire advisory lock for PostgreSQL to serialize migrations
+    is_pg = connection.dialect.name == 'postgresql'
+    if is_pg:
+        connection.execute(text("SELECT pg_advisory_lock(7483920165)"))
 
-    with context.begin_transaction():
-        context.run_migrations()
+    try:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # Compare types for detecting column type changes
+            compare_type=True,
+            # Compare server defaults
+            compare_server_default=True,
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        if is_pg:
+            connection.execute(text("SELECT pg_advisory_unlock(7483920165)"))
 
 
 async def run_async_migrations() -> None:

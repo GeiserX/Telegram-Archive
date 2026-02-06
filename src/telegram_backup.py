@@ -185,6 +185,19 @@ class TelegramBackup:
             logger.info("Fetching dialog list...")
             dialogs = await self._get_dialogs()
             logger.info(f"Found {len(dialogs)} total dialogs")
+            
+            # v6.2.0: Fetch archived dialogs
+            logger.info("Fetching archived dialogs...")
+            archived_dialogs = await self._get_dialogs(archived=True)
+            logger.info(f"Found {len(archived_dialogs)} archived dialogs")
+            
+            # Build set of archived chat IDs for fast lookup.
+            # Only trust this for chats NOT found in the regular dialog list,
+            # since Telegram's API may occasionally return a chat in both lists.
+            archived_chat_ids = set()
+            for dialog in archived_dialogs:
+                archived_chat_ids.add(self._get_marked_id(dialog.entity))
+            logger.info(f"Archived chat IDs from Telegram: {archived_chat_ids & (self.config.global_include_ids | self.config.private_include_ids | self.config.groups_include_ids | self.config.channels_include_ids) if archived_chat_ids else 'none matching includes'}")
 
             # Filter dialogs based on chat type and ID filters
             # Also delete explicitly excluded chats from database
@@ -231,8 +244,9 @@ class TelegramBackup:
             missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
             
             if missing_include_ids:
-                logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in dialogs...")
+                logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs: {missing_include_ids}")
                 for include_id in missing_include_ids:
+                    is_in_archive = include_id in archived_chat_ids
                     try:
                         entity = await self.client.get_entity(include_id)
                         # Create a simple dialog-like wrapper
@@ -242,7 +256,7 @@ class TelegramBackup:
                                 self.date = datetime.now()
                         
                         filtered_dialogs.append(SimpleDialog(entity))
-                        logger.info(f"  → Added explicitly included chat: {self._get_chat_name(entity)} (ID: {include_id})")
+                        logger.info(f"  → Added: {self._get_chat_name(entity)} (ID: {include_id}){' [in archive]' if is_in_archive else ' [not in any dialog list]'}")
                     except Exception as e:
                         logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
             
@@ -292,16 +306,26 @@ class TelegramBackup:
                     break
 
             # Backup each dialog
+            # v6.2.0: Check archived_chat_ids so chats in both INCLUDE_CHAT_IDS
+            # and the archived folder get the correct is_archived flag immediately.
+            # A chat found in the regular dialog list (seen_chat_ids) is NEVER
+            # archived, even if Telegram's API also returns it in folder=1.
             total_messages = 0
+            backed_up_chat_ids = set()
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
                 chat_id = self._get_marked_id(entity)
                 chat_name = self._get_chat_name(entity)
-                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up: {chat_name} (ID: {chat_id})")
+                is_archived = chat_id in archived_chat_ids and chat_id not in seen_chat_ids
+                if chat_id in archived_chat_ids and chat_id in seen_chat_ids:
+                    logger.warning(f"  Chat {chat_name} (ID: {chat_id}) appears in both regular and archived dialog lists - treating as NOT archived")
+                label = f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}: {chat_name} (ID: {chat_id})"
+                logger.info(label)
 
                 try:
-                    message_count = await self._backup_dialog(dialog)
+                    message_count = await self._backup_dialog(dialog, is_archived=is_archived)
                     total_messages += message_count
+                    backed_up_chat_ids.add(chat_id)
                     logger.info(f"  → Backed up {message_count} new messages")
 
                     # Optimization: after initial full run, if the most recently
@@ -311,6 +335,62 @@ class TelegramBackup:
                     logger.warning(f"  → Skipped (no access): {e.__class__.__name__}")
                 except Exception as e:
                     logger.error(f"  → Error backing up {chat_name}: {e}", exc_info=True)
+            
+            # v6.2.0: Backup archived dialogs that weren't already processed above.
+            # Apply the same chat type/ID filters so we don't back up unintended chats.
+            archived_to_backup = []
+            for dialog in archived_dialogs:
+                entity = dialog.entity
+                chat_id = self._get_marked_id(entity)
+                if chat_id in backed_up_chat_ids:
+                    continue  # Already backed up with correct is_archived flag
+                if chat_id in explicitly_excluded_chat_ids:
+                    continue
+                
+                is_user = isinstance(entity, User) and not entity.bot
+                is_group = isinstance(entity, Chat) or (
+                    isinstance(entity, Channel) and entity.megagroup
+                )
+                is_channel = isinstance(entity, Channel) and not entity.megagroup
+                
+                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                    archived_to_backup.append(dialog)
+            
+            if archived_to_backup:
+                logger.info(f"Backing up {len(archived_to_backup)} additional archived dialogs...")
+                for i, dialog in enumerate(archived_to_backup, 1):
+                    entity = dialog.entity
+                    chat_id = self._get_marked_id(entity)
+                    chat_name = self._get_chat_name(entity)
+                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}] {chat_name} (ID: {chat_id})")
+                    
+                    try:
+                        message_count = await self._backup_dialog(dialog, is_archived=True)
+                        total_messages += message_count
+                        backed_up_chat_ids.add(chat_id)
+                        if message_count > 0:
+                            logger.info(f"    → Backed up {message_count} new messages")
+                    except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
+                        logger.warning(f"    → Skipped (no access): {e.__class__.__name__}")
+                    except Exception as e:
+                        logger.error(f"    → Error: {e}", exc_info=True)
+            else:
+                logger.info("No additional archived dialogs to back up")
+            
+            # v6.2.0: Backup forum topics for forum-enabled chats
+            logger.info("Checking for forum topics...")
+            all_backed_up_dialogs = list(filtered_dialogs) + list(archived_to_backup)
+            for dialog in all_backed_up_dialogs:
+                entity = dialog.entity
+                if isinstance(entity, Channel) and getattr(entity, 'forum', False):
+                    chat_id = self._get_marked_id(entity)
+                    chat_name = self._get_chat_name(entity)
+                    logger.info(f"  → Fetching topics for forum: {chat_name}")
+                    await self._backup_forum_topics(chat_id, entity)
+            
+            # v6.2.0: Backup user's chat folders
+            logger.info("Backing up chat folders...")
+            await self._backup_folders()
             
             # Log statistics
             duration = (datetime.now() - start_time).total_seconds()
@@ -336,15 +416,24 @@ class TelegramBackup:
             logger.error(f"Backup failed: {e}", exc_info=True)
             raise
     
-    async def _get_dialogs(self) -> List:
+    async def _get_dialogs(self, archived: bool = False) -> List:
         """
         Get all dialogs (chats) from Telegram.
         
+        Args:
+            archived: If True, fetch archived dialogs (folder=1)
+        
         Returns:
             List of dialog objects
+        
+        Note: folder=0 explicitly fetches non-archived dialogs only.
+        Without folder parameter, Telethon returns ALL dialogs including
+        archived ones, which causes overlap with the folder=1 results.
         """
-        # Use the simpler get_dialogs method which handles pagination automatically
-        dialogs = await self.client.get_dialogs()
+        if archived:
+            dialogs = await self.client.get_dialogs(folder=1)
+        else:
+            dialogs = await self.client.get_dialogs(folder=0)
         return dialogs
     
     async def _verify_and_redownload_media(self) -> None:
@@ -486,12 +575,13 @@ class TelegramBackup:
         logger.info(f"Failed/Unrecoverable: {failed} files")
         logger.info("=" * 60)
     
-    async def _backup_dialog(self, dialog) -> int:
+    async def _backup_dialog(self, dialog, is_archived: bool = False) -> int:
         """
         Backup a single dialog (chat).
         
         Args:
             dialog: Dialog object from Telegram
+            is_archived: Whether this dialog is from the archived folder
             
         Returns:
             Number of new messages backed up
@@ -501,7 +591,7 @@ class TelegramBackup:
         chat_id = self._get_marked_id(entity)
 
         # Save chat information
-        chat_data = self._extract_chat_data(entity)
+        chat_data = self._extract_chat_data(entity, is_archived=is_archived)
         await self.db.upsert_chat(chat_data)
 
         # Ensure profile photos for users and groups/channels are backed up.
@@ -787,6 +877,14 @@ class TelegramBackup:
         
         # Extract message data
         # v6.0.0: media_type, media_id, media_path removed - media stored in separate table
+        # v6.2.0: reply_to_top_id added for forum topic threading
+        reply_to_top_id = None
+        if message.reply_to and getattr(message.reply_to, 'forum_topic', False):
+            reply_to_top_id = getattr(message.reply_to, 'reply_to_top_id', None)
+            # If reply_to_top_id is not set but it's a forum topic, use reply_to_msg_id
+            if reply_to_top_id is None:
+                reply_to_top_id = getattr(message.reply_to, 'reply_to_msg_id', None)
+        
         message_data = {
             'id': message.id,
             'chat_id': chat_id,
@@ -794,6 +892,7 @@ class TelegramBackup:
             'date': message.date,
             'text': message.text or '',
             'reply_to_msg_id': message.reply_to_msg_id,
+            'reply_to_top_id': reply_to_top_id,
             'reply_to_text': None,
             'forward_from_id': self._extract_forward_from_id(message),
             'edit_date': message.edit_date,
@@ -1233,8 +1332,13 @@ class TelegramBackup:
         return extensions.get(media_type, 'bin')
 
     
-    def _extract_chat_data(self, entity) -> dict:
-        """Extract chat data from entity."""
+    def _extract_chat_data(self, entity, is_archived: bool = False) -> dict:
+        """Extract chat data from entity.
+        
+        Args:
+            entity: Telegram entity (User, Chat, Channel)
+            is_archived: Whether this chat is from the archived folder
+        """
         # Use marked ID (with -100 prefix for channels/supergroups) for consistency
         chat_data = {'id': self._get_marked_id(entity)}
         
@@ -1252,6 +1356,12 @@ class TelegramBackup:
             chat_data['type'] = 'channel' if not entity.megagroup else 'group'
             chat_data['title'] = entity.title
             chat_data['username'] = entity.username
+            # v6.2.0: Detect forum-enabled chats
+            if getattr(entity, 'forum', False):
+                chat_data['is_forum'] = 1
+        
+        # v6.2.0: Track archived status (always set explicitly)
+        chat_data['is_archived'] = 1 if is_archived else 0
         
         return chat_data
     
@@ -1281,6 +1391,196 @@ class TelegramBackup:
         elif isinstance(entity, (Chat, Channel)):
             return entity.title or f"Chat {entity.id}"
         return f"Unknown {entity.id}"
+
+
+    async def _backup_forum_topics(self, chat_id: int, entity) -> int:
+        """
+        Fetch and store forum topics for a forum-enabled chat.
+        
+        Uses message metadata to infer topics when GetForumTopicsRequest
+        is not available in the current Telethon version.
+        
+        Args:
+            chat_id: Chat ID (marked format)
+            entity: Telegram entity
+            
+        Returns:
+            Number of topics found
+        """
+        try:
+            # Try using GetForumTopicsRequest via raw API
+            # Note: In Telethon 1.42+, this is in messages, not channels
+            from telethon.tl.functions.messages import GetForumTopicsRequest
+            
+            try:
+                input_channel = await self.client.get_input_entity(entity)
+                # offset_date must be a proper date object, not int 0
+                from datetime import datetime as dt
+                result = await self.client(GetForumTopicsRequest(
+                    peer=input_channel,
+                    offset_date=dt(1970, 1, 1),
+                    offset_id=0,
+                    offset_topic=0,
+                    limit=100
+                ))
+                
+                # Resolve custom emoji IDs to unicode emojis
+                emoji_map = {}
+                emoji_ids = [t.icon_emoji_id for t in result.topics if getattr(t, 'icon_emoji_id', None)]
+                if emoji_ids:
+                    try:
+                        from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
+                        docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=emoji_ids))
+                        for doc in docs:
+                            for attr in doc.attributes:
+                                if hasattr(attr, 'alt') and attr.alt:
+                                    emoji_map[doc.id] = attr.alt
+                                    break
+                        logger.info(f"  → Resolved {len(emoji_map)} topic emojis")
+                    except Exception as e:
+                        logger.warning(f"  → Could not resolve topic emojis: {e}")
+                
+                topics_count = 0
+                for topic in result.topics:
+                    emoji_id = getattr(topic, 'icon_emoji_id', None)
+                    topic_data = {
+                        'id': topic.id,
+                        'chat_id': chat_id,
+                        'title': topic.title,
+                        'icon_color': getattr(topic, 'icon_color', None),
+                        'icon_emoji_id': emoji_id,
+                        'icon_emoji': emoji_map.get(emoji_id) if emoji_id else None,
+                        'is_closed': 1 if getattr(topic, 'closed', False) else 0,
+                        'is_pinned': 1 if getattr(topic, 'pinned', False) else 0,
+                        'is_hidden': 1 if getattr(topic, 'hidden', False) else 0,
+                        'date': getattr(topic, 'date', None),
+                    }
+                    await self.db.upsert_forum_topic(topic_data)
+                    topics_count += 1
+                
+                logger.info(f"  → Backed up {topics_count} forum topics via API")
+                return topics_count
+                
+            except Exception as e:
+                logger.warning(f"GetForumTopicsRequest failed ({e.__class__.__name__}: {e}), falling back to message inference")
+                # Fall through to inference method
+        except ImportError:
+            logger.warning("GetForumTopicsRequest not available in this Telethon version, using message inference")
+        
+        # Fallback: Infer topics from message reply_to_top_id values
+        # This finds unique topic IDs and uses the topic's first message as metadata
+        try:
+            from sqlalchemy import select, func, distinct
+            from .db.models import Message as MessageModel
+            
+            async with self.db.db_manager.async_session_factory() as session:
+                # Get unique reply_to_top_id values for this chat
+                stmt = (
+                    select(distinct(MessageModel.reply_to_top_id))
+                    .where(MessageModel.chat_id == chat_id)
+                    .where(MessageModel.reply_to_top_id.isnot(None))
+                )
+                result = await session.execute(stmt)
+                topic_ids = [row[0] for row in result]
+            
+            topics_count = 0
+            for topic_id in topic_ids:
+                # Try to get the topic's first message for metadata
+                try:
+                    msgs = await self.client.get_messages(entity, ids=[topic_id])
+                    if msgs and msgs[0]:
+                        msg = msgs[0]
+                        topic_data = {
+                            'id': topic_id,
+                            'chat_id': chat_id,
+                            'title': msg.text[:100] if msg.text else f"Topic {topic_id}",
+                            'date': msg.date,
+                        }
+                        await self.db.upsert_forum_topic(topic_data)
+                        topics_count += 1
+                except Exception as e:
+                    logger.debug(f"Could not fetch topic {topic_id} metadata: {e}")
+            
+            if topics_count > 0:
+                logger.info(f"  → Inferred {topics_count} forum topics from messages")
+            return topics_count
+            
+        except Exception as e:
+            logger.warning(f"  → Failed to infer forum topics: {e}")
+            return 0
+    
+    async def _backup_folders(self) -> int:
+        """
+        Fetch and store user's Telegram chat folders (dialog filters).
+        
+        Returns:
+            Number of folders backed up
+        """
+        try:
+            from telethon.tl.functions.messages import GetDialogFiltersRequest
+            
+            result = await self.client(GetDialogFiltersRequest())
+            
+            # result might be a list directly or have a .filters attribute
+            filters = result.filters if hasattr(result, 'filters') else result
+            
+            folder_count = 0
+            active_folder_ids = []
+            
+            for idx, f in enumerate(filters):
+                # Skip the default "All" filter
+                if not hasattr(f, 'id') or not hasattr(f, 'title'):
+                    continue
+                
+                folder_id = f.id
+                # Handle title - might be string or TextWithEntities
+                title = f.title
+                if hasattr(title, 'text'):
+                    title = title.text
+                title = str(title)
+                
+                active_folder_ids.append(folder_id)
+                
+                folder_data = {
+                    'id': folder_id,
+                    'title': title,
+                    'emoticon': getattr(f, 'emoticon', None),
+                    'sort_order': idx,
+                }
+                await self.db.upsert_chat_folder(folder_data)
+                
+                # Resolve include_peers to chat IDs
+                chat_ids = []
+                include_peers = getattr(f, 'include_peers', []) or []
+                for peer in include_peers:
+                    try:
+                        chat_id = self._get_marked_id(peer)
+                        chat_ids.append(chat_id)
+                    except Exception:
+                        # Some peers might not be resolvable
+                        if hasattr(peer, 'user_id'):
+                            chat_ids.append(peer.user_id)
+                        elif hasattr(peer, 'chat_id'):
+                            chat_ids.append(-peer.chat_id)
+                        elif hasattr(peer, 'channel_id'):
+                            chat_ids.append(-1000000000000 - peer.channel_id)
+                
+                if chat_ids:
+                    await self.db.sync_folder_members(folder_id, chat_ids)
+                
+                folder_count += 1
+                logger.debug(f"  → Folder '{title}' (ID: {folder_id}): {len(chat_ids)} chats")
+            
+            # Remove folders that no longer exist
+            await self.db.cleanup_stale_folders(active_folder_ids)
+            
+            if folder_count > 0:
+                logger.info(f"Backed up {folder_count} chat folders")
+            return folder_count
+            
+        except Exception as e:
+            logger.warning(f"Failed to backup chat folders: {e}")
+            return 0
 
 
 async def run_backup(

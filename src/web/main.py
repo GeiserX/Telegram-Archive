@@ -495,25 +495,34 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> Optional[str]:
 async def get_chats(
     limit: int = Query(50, ge=1, le=500, description="Number of chats to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
-    search: str = Query(None, description="Search query for chat names/usernames")
+    search: str = Query(None, description="Search query for chat names/usernames"),
+    archived: Optional[bool] = Query(None, description="Filter by archived status"),
+    folder_id: Optional[int] = Query(None, description="Filter by folder ID"),
 ):
     """Get chats with metadata, paginated. Returns most recent chats first.
     
     If 'search' is provided, returns all chats matching the search query (up to limit).
     Search is case-insensitive and matches title, first_name, last_name, or username.
+    
+    v6.2.0: Added archived and folder_id filters.
     """
     try:
         # If display_chat_ids is configured, we need to load all matching chats
         # Otherwise, use pagination
         if config.display_chat_ids:
-            chats = await db.get_all_chats()
+            chats = await db.get_all_chats(archived=archived, folder_id=folder_id)
             chats = [c for c in chats if c['id'] in config.display_chat_ids]
             total = len(chats)
             # Apply pagination after filtering
             chats = chats[offset:offset + limit]
         else:
-            chats = await db.get_all_chats(limit=limit, offset=offset, search=search)
-            total = await db.get_chat_count(search=search)
+            chats = await db.get_all_chats(
+                limit=limit, offset=offset, search=search,
+                archived=archived, folder_id=folder_id
+            )
+            total = await db.get_chat_count(
+                search=search, archived=archived, folder_id=folder_id
+            )
         
         # Add avatar URLs using cache
         for chat in chats:
@@ -547,6 +556,7 @@ async def get_messages(
     search: Optional[str] = None,
     before_date: Optional[str] = None,
     before_id: Optional[int] = None,
+    topic_id: Optional[int] = None,
 ):
     """
     Get messages for a specific chat with user and media info.
@@ -554,6 +564,8 @@ async def get_messages(
     Supports two pagination modes:
     - Offset-based: ?offset=100 (slower for large offsets)
     - Cursor-based: ?before_date=2026-01-15T12:00:00&before_id=12345 (O(1) performance)
+    
+    v6.2.0: Added topic_id filter for forum topic messages.
     
     Cursor-based pagination is preferred for infinite scroll.
     """
@@ -579,7 +591,8 @@ async def get_messages(
             offset=offset,
             search=search,
             before_date=parsed_before_date,
-            before_id=before_id
+            before_id=before_id,
+            topic_id=topic_id
         )
         return messages
     except Exception as e:
@@ -599,6 +612,52 @@ async def get_pinned_messages(chat_id: int):
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
         logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/folders", dependencies=[Depends(require_auth)])
+async def get_folders():
+    """Get all chat folders with their chat counts.
+    
+    v6.2.0: Returns user-created Telegram folders (dialog filters).
+    """
+    try:
+        folders = await db.get_all_folders()
+        return {"folders": folders}
+    except Exception as e:
+        logger.error(f"Error fetching folders: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/topics", dependencies=[Depends(require_auth)])
+async def get_chat_topics(chat_id: int):
+    """Get forum topics for a chat.
+    
+    v6.2.0: Returns topic list with message counts for forum-enabled chats.
+    """
+    # Restrict access in display mode
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        topics = await db.get_forum_topics(chat_id)
+        return {"topics": topics}
+    except Exception as e:
+        logger.error(f"Error fetching topics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/archived/count", dependencies=[Depends(require_auth)])
+async def get_archived_count():
+    """Get the number of archived chats.
+    
+    v6.2.0: Used by the viewer to display the archived section badge.
+    """
+    try:
+        count = await db.get_archived_chat_count()
+        return {"count": count}
+    except Exception as e:
+        logger.error(f"Error fetching archived count: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

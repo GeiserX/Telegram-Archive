@@ -78,10 +78,15 @@
         }
 
         body,
-        #app,
-        .flex-1 {
+        #app {
             max-width: 100vw;
             overflow-x: hidden;
+        }
+
+        /* Messages scroll container - fix mobile touch scrolling */
+        .messages-scroll {
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;
         }
 
         .message-bubble img,
@@ -378,6 +383,22 @@
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
                     </div>
+                    <!-- v6.2.0: Folder Tabs -->
+                    <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
+                        <button @click="showAllChats()" 
+                            :class="activeTab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
+                            All Chats
+                        </button>
+                        <button v-for="folder in folders" :key="folder.id" 
+                            @click="selectFolder(folder.id)"
+                            :class="activeTab === 'folder_' + folder.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
+                            {{ folder.emoticon || '📁' }} {{ folder.title }}
+                            <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
+                        </button>
+                    </div>
+                    
                     <!-- Last Backup Time / Real-time Status -->
                     <div class="text-xs text-tg-muted">
                         <div class="flex items-center gap-1.5">
@@ -448,84 +469,179 @@
                     </div>
                 </div>
 
-                <!-- Chat List -->
+                <!-- Chat List / Topics View -->
                 <div class="flex-1 overflow-y-auto">
-                    <!-- Loading spinner while chats are loading -->
-                    <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
-                        <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <span class="text-sm">Loading chats...</span>
-                    </div>
-                    <!-- Empty state -->
-                    <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
-                        <svg class="w-12 h-12 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
-                                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
-                        </svg>
-                        <span class="text-sm">{{ searchQuery ? 'No chats found' : 'No chats yet' }}</span>
-                    </div>
-                    <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
-                        class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
-                        :class="{'bg-tg-active': selectedChat?.id === chat.id}">
-                        <!-- Avatar -->
-                        <div
-                            class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
-                            <img v-if="chat.avatar_url" :src="chat.avatar_url" class="w-full h-full object-cover"
-                                @error="chat.avatar_url = null" :alt="getChatName(chat)">
-                            <template v-else-if="isDeletedChat(chat)">
-                                <!-- Deleted account icon -->
-                                <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M5 21a7 7 0 0114 0" />
+                    <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
+                    <template v-if="topicsNavEntry">
+                        <!-- Back button + chat name header -->
+                        <div class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
+                            <button @click="navigateBackToChats()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
-                            </template>
-                            <template v-else>
-                                {{ getInitials(chat) }}
-                            </template>
-                        </div>
-
-                        <div class="flex-1 min-w-0">
-                            <div class="flex justify-between items-baseline">
-                                <h3 class="font-semibold truncate text-white">
-                                    {{ getChatName(chat) }}
-                                </h3>
-                                <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
+                            </button>
+                            <div class="flex-1 min-w-0">
+                                <h3 class="font-semibold text-white truncate">{{ topicsNavEntry.chatName }}</h3>
+                                <p class="text-xs text-tg-muted">{{ topics.length }} topics</p>
                             </div>
-                            <p class="text-sm text-tg-muted truncate">
-                                {{ chat.type }}
-                                <span v-if="chat.type !== 'private' && chat.participants_count">
-                                    • {{ chat.participants_count }} participants
-                                </span>
-                                <span class="text-tg-muted/70 text-xs font-mono ml-1">
-                                    • ID: {{ chat.id }}
-                                </span>
-                            </p>
                         </div>
-                    </div>
-                    
-                    <!-- Infinite Scroll Sentinel (loads more when visible) -->
-                    <div v-if="hasMoreChats && !searchQuery" ref="infiniteScrollSentinel" class="p-3 flex justify-center">
-                        <div v-if="loadingMoreChats" class="flex items-center gap-2 text-tg-muted text-sm">
-                            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        
+                        <!-- Loading topics -->
+                        <div v-if="loadingTopics" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                            <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            <span>Loading more...</span>
+                            <span class="text-sm">Loading topics...</span>
                         </div>
-                        <div v-else class="text-xs text-tg-muted opacity-50">
-                            {{ chatTotal - chats.length }} more chats
+                        
+                        <!-- Topic list -->
+                        <div v-else-if="topics.length === 0" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                            <span class="text-sm">No topics found</span>
                         </div>
-                    </div>
+                        <div v-else v-for="topic in topics" :key="topic.id"
+                            @click="selectTopic({ id: topicsNavEntry.chatId, is_forum: true }, topic)"
+                            class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
+                            :class="{'bg-tg-active': currentNav.topicId === topic.id}"
+                            <!-- Topic icon -->
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
+                                :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
+                                <span v-if="topic.icon_emoji" class="text-xl">{{ topic.icon_emoji }}</span>
+                                <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
+                                </svg>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex justify-between items-baseline">
+                                    <h3 class="font-semibold truncate text-white text-sm">
+                                        <span v-if="topic.is_pinned" class="text-blue-400 mr-1">📌</span>
+                                        <span v-if="topic.is_closed" class="text-gray-500 mr-1">🔒</span>
+                                        {{ topic.title }}
+                                    </h3>
+                                    <span class="text-xs text-tg-muted shrink-0 ml-2">{{ formatDate(topic.last_message_date) }}</span>
+                                </div>
+                                <p class="text-xs text-tg-muted">
+                                    {{ topic.message_count }} messages
+                                </p>
+                            </div>
+                        </div>
+                    </template>
                     
-                    <!-- Search results info -->
-                    <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-gray-700/50">
-                        <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
-                        <span v-else>No chats found</span>
-                    </div>
+                    <!-- Regular Chat List -->
+                    <template v-else>
+                        <!-- v6.2.0: Back button for archived/folder views -->
+                        <div v-if="canGoBack && currentNav.type === 'chatList'" 
+                            class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
+                            <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                                </svg>
+                            </button>
+                            <h3 class="font-semibold text-white">
+                                {{ currentNav.filter === 'archived' ? 'Archived Chats' : 'Back' }}
+                            </h3>
+                        </div>
+                        
+                        <!-- Loading spinner while chats are loading -->
+                        <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                            <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="text-sm">Loading chats...</span>
+                        </div>
+                        <!-- Empty state -->
+                        <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                            <svg class="w-12 h-12 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                            </svg>
+                            <span class="text-sm">{{ searchQuery ? 'No chats found' : 'No chats yet' }}</span>
+                        </div>
+                        <template v-else>
+                            <!-- v6.2.0: Archived Chats Row (only in "All Chats" view) -->
+                            <div v-if="archivedCount > 0 && currentNav.filter === 'all' && !searchQuery"
+                                @click="showArchived()"
+                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/50">
+                                <div class="w-12 h-12 rounded-full bg-blue-600/30 flex items-center justify-center shrink-0">
+                                    <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>
+                                    </svg>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="font-semibold text-blue-400">Archived Chats</h3>
+                                    <p class="text-xs text-tg-muted">{{ archivedCount }} chats</p>
+                                </div>
+                                <svg class="w-5 h-5 text-tg-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                                </svg>
+                            </div>
+                            
+                            <!-- Chat items -->
+                            <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
+                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
+                                :class="{'bg-tg-active': selectedChat?.id === chat.id}">
+                                <!-- Avatar -->
+                                <div
+                                    class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
+                                    <img v-if="chat.avatar_url" :src="chat.avatar_url" class="w-full h-full object-cover"
+                                        @error="chat.avatar_url = null" :alt="getChatName(chat)">
+                                    <template v-else-if="isDeletedChat(chat)">
+                                        <!-- Deleted account icon -->
+                                        <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M5 21a7 7 0 0114 0" />
+                                        </svg>
+                                    </template>
+                                    <template v-else>
+                                        {{ getInitials(chat) }}
+                                    </template>
+                                </div>
+
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex justify-between items-baseline">
+                                        <h3 class="font-semibold truncate text-white">
+                                            <span v-if="chat.is_forum" class="text-blue-400 mr-1 text-xs" title="Forum">#</span>
+                                            {{ getChatName(chat) }}
+                                        </h3>
+                                        <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
+                                    </div>
+                                    <p class="text-sm text-tg-muted truncate">
+                                        {{ chat.type }}
+                                        <span v-if="chat.is_forum" class="text-blue-400/70"> • Forum</span>
+                                        <span v-if="chat.type !== 'private' && chat.participants_count">
+                                            • {{ chat.participants_count }} participants
+                                        </span>
+                                        <span class="text-tg-muted/70 text-xs font-mono ml-1">
+                                            • ID: {{ chat.id }}
+                                        </span>
+                                    </p>
+                                </div>
+                            </div>
+                        </template>
+                        
+                        <!-- Infinite Scroll Sentinel (loads more when visible) -->
+                        <div v-if="hasMoreChats && !searchQuery" ref="infiniteScrollSentinel" class="p-3 flex justify-center">
+                            <div v-if="loadingMoreChats" class="flex items-center gap-2 text-tg-muted text-sm">
+                                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span>Loading more...</span>
+                            </div>
+                            <div v-else class="text-xs text-tg-muted opacity-50">
+                                {{ chatTotal - chats.length }} more chats
+                            </div>
+                        </div>
+                        
+                        <!-- Search results info -->
+                        <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-gray-700/50">
+                            <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
+                            <span v-else>No chats found</span>
+                        </div>
+                    </template>
                 </div>
             </div>
 
@@ -549,7 +665,7 @@
                         class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
-                            <button @click="selectedChat = null"
+                            <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
                                 class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -576,7 +692,12 @@
                             </div>
                             <div class="min-w-0 flex-1 max-w-[180px] sm:max-w-xs">
                                 <h2 class="font-bold text-base sm:text-lg truncate">{{ getChatName(selectedChat) }}</h2>
-                                <p class="text-xs text-tg-muted truncate">{{ selectedChat.type }}</p>
+                                <p class="text-xs text-tg-muted truncate">
+                                    <template v-if="currentNav.type === 'chat' && currentNav.topicTitle">
+                                        # {{ currentNav.topicTitle }}
+                                    </template>
+                                    <template v-else>{{ selectedChat.type }}</template>
+                                </p>
                             </div>
                             <!-- Per-Chat Stats -->
                             <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
@@ -676,8 +797,8 @@
                     </div>
 
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
-                    <div class="flex-1 relative overflow-hidden">
-                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 flex flex-col-reverse gap-1" @scroll="handleScroll">
+                    <div class="flex-1 relative min-h-0">
+                    <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
@@ -1114,6 +1235,33 @@
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
                 
+                // v6.2.0: Navigation stack for folders, archived, topics
+                const navStack = ref([{ type: 'chatList', filter: 'all' }])
+                const folders = ref([])
+                const archivedCount = ref(0)
+                const topics = ref([])
+                const loadingTopics = ref(false)
+                
+                const currentNav = computed(() => navStack.value[navStack.value.length - 1])
+                const canGoBack = computed(() => navStack.value.length > 1)
+                
+                // v6.2.0: Find the topics nav entry for sidebar display
+                // When viewing a topic's messages (currentNav.type === 'chat' with topicId),
+                // the sidebar should still show the topics list, not fall back to chat list
+                const topicsNavEntry = computed(() => {
+                    const nav = currentNav.value
+                    if (nav.type === 'topics') return nav
+                    if (nav.type === 'chat' && nav.topicId) {
+                        // Find the parent topics entry in navStack
+                        for (let i = navStack.value.length - 2; i >= 0; i--) {
+                            if (navStack.value[i].type === 'topics') {
+                                return navStack.value[i]
+                            }
+                        }
+                    }
+                    return null
+                })
+                
                 // Lightbox state
                 const lightboxOpen = ref(false)
                 const lightboxMedia = ref(null)  // Current media being viewed
@@ -1152,7 +1300,20 @@
                     try {
                         const limit = 50
                         const offset = append ? chatOffset.value : 0
-                        const res = await fetch(`/api/chats?limit=${limit}&offset=${offset}`, {
+                        
+                        // v6.2.0: Build URL with navigation filters
+                        let url = `/api/chats?limit=${limit}&offset=${offset}`
+                        const nav = currentNav.value
+                        if (nav.filter === 'archived') {
+                            url += '&archived=true'
+                        } else if (nav.filter === 'all') {
+                            url += '&archived=false'
+                        }
+                        if (nav.filter && typeof nav.filter === 'object' && nav.filter.folderId) {
+                            url += `&folder_id=${nav.filter.folderId}`
+                        }
+                        
+                        const res = await fetch(url, {
                             credentials: 'include'
                         })
                         if (!res.ok) {
@@ -1253,6 +1414,146 @@
                             infiniteScrollObserver.observe(infiniteScrollSentinel.value)
                         }
                     })
+                }
+                
+                // v6.2.0: Navigation functions
+                const navigateTo = (state) => {
+                    navStack.value.push(state)
+                    if (state.type === 'chatList') {
+                        loadChats()
+                    }
+                }
+                
+                const navigateBack = () => {
+                    if (navStack.value.length <= 1) return
+                    navStack.value.pop()
+                    const current = currentNav.value
+                    
+                    if (current.type === 'chatList') {
+                        loadChats()
+                        // Don't clear selectedChat - main panel keeps showing current content (Telegram-like UX)
+                    }
+                    // For 'topics' type: sidebar shows topics, main panel keeps showing topic messages
+                }
+                
+                // v6.2.0: Navigate back from topics view to parent chat list (pops all topic-related entries)
+                const navigateBackToChats = () => {
+                    while (navStack.value.length > 1) {
+                        const top = navStack.value[navStack.value.length - 1]
+                        if (top.type === 'topics' || (top.type === 'chat' && top.topicId)) {
+                            navStack.value.pop()
+                        } else {
+                            break
+                        }
+                    }
+                    const current = currentNav.value
+                    if (current.type === 'chatList') {
+                        loadChats()
+                    }
+                    // Main panel keeps showing current topic messages
+                }
+                
+                const loadFolders = async () => {
+                    try {
+                        const res = await fetch('/api/folders', { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            folders.value = data.folders || []
+                        }
+                    } catch (e) {
+                        console.error('Failed to load folders:', e)
+                    }
+                }
+                
+                const loadArchivedCount = async () => {
+                    try {
+                        const res = await fetch('/api/archived/count', { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            archivedCount.value = data.count || 0
+                        }
+                    } catch (e) {
+                        console.error('Failed to load archived count:', e)
+                    }
+                }
+                
+                const loadTopics = async (chatId) => {
+                    loadingTopics.value = true
+                    try {
+                        const res = await fetch(`/api/chats/${chatId}/topics`, { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            topics.value = data.topics || []
+                        }
+                    } catch (e) {
+                        console.error('Failed to load topics:', e)
+                    } finally {
+                        loadingTopics.value = false
+                    }
+                }
+                
+                const selectFolder = (folderId) => {
+                    navigateTo({ type: 'chatList', filter: { folderId } })
+                }
+                
+                const showArchived = () => {
+                    navigateTo({ type: 'chatList', filter: 'archived' })
+                }
+                
+                const showAllChats = () => {
+                    // Reset nav stack to root
+                    navStack.value = [{ type: 'chatList', filter: 'all' }]
+                    loadChats()
+                }
+                
+                const openForumTopics = async (chat) => {
+                    navigateTo({ type: 'topics', chatId: chat.id, chatName: getChatName(chat) })
+                    await loadTopics(chat.id)
+                }
+                
+                const selectTopic = async (chat, topic) => {
+                    // Push topic chat view onto nav stack
+                    navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
+                    selectedChat.value = chat
+                    messages.value = []
+                    page.value = 0
+                    hasMore.value = true
+                    messageSearchQuery.value = ''
+                    chatStats.value = null
+                    pinnedMessages.value = []
+                    currentPinnedIndex.value = 0
+                    showPinnedOnly.value = false
+                    await loadMessages()
+                    await loadChatStats(chat.id)
+                    await nextTick()
+                    scrollToBottom()
+                    setupMessagesScrollObserver()
+                    startMessageRefresh()
+                }
+                
+                // v6.2.0: Active folder tab tracking
+                const activeTab = computed(() => {
+                    const nav = currentNav.value
+                    if (nav.filter === 'all') return 'all'
+                    if (nav.filter === 'archived') return 'archived'
+                    if (nav.filter && typeof nav.filter === 'object' && nav.filter.folderId) {
+                        return `folder_${nav.filter.folderId}`
+                    }
+                    return 'all'
+                })
+                
+                // Topic color map (Telegram standard topic colors)
+                const topicColors = {
+                    7322096: '#6FB9F0',
+                    16766590: '#FFD67E',
+                    13338331: '#CB86DB',
+                    9367192: '#8EEE98',
+                    16749490: '#FF93B2',
+                    16478047: '#FB6F5F',
+                }
+                
+                const getTopicColor = (iconColor) => {
+                    return topicColors[iconColor] || '#6FB9F0'
                 }
                 
                 // Setup observer for loading older messages (Telegram-style auto-load)
@@ -1403,6 +1704,8 @@
                             if (isAuthenticated.value) {
                                 await loadChats()
                                 await loadStats()
+                                await loadFolders()
+                                await loadArchivedCount()
                                 setupInfiniteScroll()
                                 
                                 // Handle deep link from push notification
@@ -1996,6 +2299,12 @@
                 }
                 
                 const selectChat = async (chat) => {
+                    // v6.2.0: If forum chat, open topics list instead
+                    if (chat.is_forum) {
+                        await openForumTopics(chat)
+                        return
+                    }
+                    
                     selectedChat.value = chat
                     messages.value = []
                     page.value = 0
@@ -2099,6 +2408,12 @@
                     try {
                         const limit = 50
                         let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}`
+                        
+                        // v6.2.0: Add topic_id filter if viewing a topic
+                        const nav = currentNav.value
+                        if (nav.type === 'chat' && nav.topicId) {
+                            url += `&topic_id=${nav.topicId}`
+                        }
 
                         // Use cursor-based pagination (faster) instead of offset
                         // For initial load or search, don't use cursor
@@ -2124,6 +2439,10 @@
                             const offset = page.value * limit
                             url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
+                            // Also pass topic_id for search within a topic
+                            if (nav.type === 'chat' && nav.topicId) {
+                                url += `&topic_id=${nav.topicId}`
+                            }
                         }
 
                         const res = await fetch(url, {
@@ -2189,6 +2508,19 @@
                         }
                     }
                     
+                    // Prime mobile scroll: briefly nudge scrollTop so the browser
+                    // registers the container as scrollable (fixes iOS touch scroll)
+                    const primeMobileScroll = () => {
+                        if (!messagesContainer.value) return
+                        const el = messagesContainer.value
+                        if (el.scrollHeight > el.clientHeight) {
+                            el.scrollTop = -1
+                            requestAnimationFrame(() => {
+                                if (el) el.scrollTop = 0
+                            })
+                        }
+                    }
+                    
                     if (immediate) {
                         doScroll()
                     } else {
@@ -2196,7 +2528,7 @@
                         doScroll()
                         requestAnimationFrame(doScroll)
                         setTimeout(doScroll, 100)
-                        setTimeout(doScroll, 300)
+                        setTimeout(() => { doScroll(); primeMobileScroll(); }, 300)
                     }
                 }
 
@@ -2881,6 +3213,24 @@
                     requestNotificationPermission,
                     subscribeToPush,
                     unsubscribeFromPush,
+                    // v6.2.0: Navigation, folders, topics, archived
+                    navStack,
+                    currentNav,
+                    topicsNavEntry,
+                    canGoBack,
+                    navigateBack,
+                    navigateBackToChats,
+                    folders,
+                    archivedCount,
+                    topics,
+                    loadingTopics,
+                    selectFolder,
+                    showArchived,
+                    showAllChats,
+                    openForumTopics,
+                    selectTopic,
+                    activeTab,
+                    getTopicColor,
                 }
             }
         }).mount('#app')
