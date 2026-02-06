@@ -78,10 +78,15 @@
         }
 
         body,
-        #app,
-        .flex-1 {
+        #app {
             max-width: 100vw;
             overflow-x: hidden;
+        }
+
+        /* Messages scroll container - fix mobile touch scrolling */
+        .messages-scroll {
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;
         }
 
         .message-bubble img,
@@ -791,8 +796,8 @@
                     </div>
 
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
-                    <div class="flex-1 relative overflow-hidden">
-                    <div ref="messagesContainer" class="absolute inset-0 overflow-y-auto p-4 flex flex-col-reverse gap-1" @scroll="handleScroll">
+                    <div class="flex-1 relative min-h-0">
+                    <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
@@ -2470,6 +2475,19 @@
                         }
                     }
                     
+                    // Prime mobile scroll: briefly nudge scrollTop so the browser
+                    // registers the container as scrollable (fixes iOS touch scroll)
+                    const primeMobileScroll = () => {
+                        if (!messagesContainer.value) return
+                        const el = messagesContainer.value
+                        if (el.scrollHeight > el.clientHeight) {
+                            el.scrollTop = -1
+                            requestAnimationFrame(() => {
+                                if (el) el.scrollTop = 0
+                            })
+                        }
+                    }
+                    
                     if (immediate) {
                         doScroll()
                     } else {
@@ -2477,7 +2495,7 @@
                         doScroll()
                         requestAnimationFrame(doScroll)
                         setTimeout(doScroll, 100)
-                        setTimeout(doScroll, 300)
+                        setTimeout(() => { doScroll(); primeMobileScroll(); }, 300)
                     }
                 }
 
