@@ -440,9 +440,19 @@ async def login(request: Request):
 
         if username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
             response = JSONResponse({"success": True})
-            # Set secure flag based on SECURE_COOKIES env var (default: true)
-            # Disable only for local HTTP development (SECURE_COOKIES=false)
-            secure_cookies = os.getenv("SECURE_COOKIES", "true").lower() != "false"
+            # Determine Secure flag for auth cookie:
+            #   SECURE_COOKIES=true  -> always Secure
+            #   SECURE_COOKIES=false -> never Secure
+            #   Not set (default)    -> auto-detect from request protocol
+            secure_env = os.getenv("SECURE_COOKIES", "").strip().lower()
+            if secure_env == "true":
+                secure_cookies = True
+            elif secure_env == "false":
+                secure_cookies = False
+            else:
+                # Auto-detect: respect reverse proxy header or request scheme
+                forwarded_proto = request.headers.get("x-forwarded-proto", "")
+                secure_cookies = forwarded_proto == "https" or str(request.url.scheme) == "https"
             response.set_cookie(
                 key=AUTH_COOKIE_NAME,
                 value=AUTH_TOKEN,

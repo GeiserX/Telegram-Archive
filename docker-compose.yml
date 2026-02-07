@@ -131,8 +131,8 @@ services:
       # Security
       # CORS_ORIGINS: comma-separated allowed origins (default: * = allow all)
       # CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      # SECURE_COOKIES: set Secure flag on auth cookies (disable for local HTTP dev)
-      # SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      # SECURE_COOKIES: auto-detect from protocol; override with true/false
+      # SECURE_COOKIES: ${SECURE_COOKIES:-}
 
       # Notifications
       # PUSH_NOTIFICATIONS: ${PUSH_NOTIFICATIONS:-basic}
