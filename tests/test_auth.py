@@ -33,13 +33,18 @@ class TestAuthConfiguration:
             assert auth_enabled is True
 
     def test_auth_token_generation(self):
-        """Auth token should be SHA256 hash of username:password."""
+        """Auth token should be PBKDF2-SHA256 derived hex string."""
         username = "testuser"
         password = "testpass123"
 
-        expected_token = hashlib.sha256(f"{username}:{password}".encode()).hexdigest()
+        expected_token = hashlib.pbkdf2_hmac(
+            "sha256",
+            f"{username}:{password}".encode(),
+            b"telegram-archive-viewer",
+            600_000,
+        ).hex()
 
-        # Token should be 64 characters (SHA256 hex)
+        # Token should be 64 characters (SHA256 hex digest)
         assert len(expected_token) == 64
 
     def test_whitespace_trimming(self):
