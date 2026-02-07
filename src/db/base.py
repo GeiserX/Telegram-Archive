@@ -6,9 +6,9 @@ Supports both SQLite and PostgreSQL with proper configuration for each.
 
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-import re
 from urllib.parse import quote_plus
 
 from sqlalchemy import event, text
