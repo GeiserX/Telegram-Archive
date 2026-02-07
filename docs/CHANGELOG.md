@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.8] - 2026-02-07
+
+### Fixed
+
+- **Viewer CSS/JS broken since v6.2.3** — Content-Security-Policy header blocked all CDN resources (Tailwind CSS, Vue.js, Google Fonts, FontAwesome, Flatpickr), causing the viewer to render without styling or interactivity. Added required CDN domains to `script-src`, `style-src`, and `font-src` directives.
+
 ## [6.2.7] - 2026-02-07
 
 ### Changed
