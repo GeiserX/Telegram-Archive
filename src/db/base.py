@@ -177,7 +177,7 @@ class DatabaseManager:
         return f"postgresql://{user}:***@{host}:{port}/{db}"
 
     @asynccontextmanager
-    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+    async def get_session(self) -> AsyncGenerator[AsyncSession]:
         """
         Get an async database session.
 

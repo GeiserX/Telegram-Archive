@@ -31,7 +31,7 @@ class BackupExporter:
         self.db = db
 
     @classmethod
-    async def create(cls, config: Config) -> "BackupExporter":
+    async def create(cls, config: Config) -> BackupExporter:
         """
         Factory method to create BackupExporter with initialized database.
 

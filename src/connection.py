@@ -164,7 +164,7 @@ class TelegramConnection:
 
         return self._client
 
-    async def __aenter__(self) -> "TelegramConnection":
+    async def __aenter__(self) -> TelegramConnection:
         """Async context manager entry."""
         await self.connect()
         return self
