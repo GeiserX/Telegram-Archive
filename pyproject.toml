@@ -47,6 +47,8 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0",
+    "ruff>=0.9.0",
+    "pre-commit>=4.0.0",
 ]
 
 [project.urls]
@@ -63,3 +65,54 @@ packages = ["src"]
 
 [tool.setuptools.package-data]
 src = ["web/templates/**/*", "web/static/**/*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E711",   # none-comparison (SQLAlchemy uses == None idiom)
+    "E721",   # type-comparison (existing pattern)
+    "E722",   # bare-except (TODO: fix incrementally, widespread in codebase)
+    "B008",   # do not perform function calls in argument defaults (FastAPI depends on this)
+    "B904",   # raise-without-from-inside-except (TODO: fix incrementally)
+    "SIM102", # collapsible-if (readability preference, existing code)
+    "SIM103", # needless-bool (existing code patterns)
+    "SIM105", # suppressible-exception (existing code patterns)
+    "SIM108", # use ternary operator (readability preference)
+    "UP042",  # replace-str-enum (StrEnum not available in Python 3.10, keep compat)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts and migrations have less strict requirements
+"scripts/*" = ["F841", "B007"]
+# Argparse subparsers are assigned for side effects
+"src/__main__.py" = ["F841"]
+# Core backup has intentional variable assignments and zip patterns
+"src/telegram_backup.py" = ["F841", "B905"]
+# Test mocks are assigned for patching side effects
+"tests/*" = ["F841"]
+# Alembic migrations use dialect variable for inspection
+"alembic/*" = ["F841"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
