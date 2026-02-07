@@ -1293,6 +1293,7 @@
                     if (!append) {
                         loadingChats.value = true
                         chatOffset.value = 0
+                        hasMoreChats.value = false  // Prevent infinite scroll race during fetch
                     } else {
                         loadingMoreChats.value = true
                     }

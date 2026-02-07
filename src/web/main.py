@@ -687,9 +687,14 @@ async def get_archived_count():
     """Get the number of archived chats.
 
     v6.2.0: Used by the viewer to display the archived section badge.
+    Respects DISPLAY_CHAT_IDS so restricted viewers only see relevant archived chats.
     """
     try:
-        count = await db.get_archived_chat_count()
+        if config.display_chat_ids:
+            all_archived = await db.get_all_chats(archived=True)
+            count = sum(1 for c in all_archived if c["id"] in config.display_chat_ids)
+        else:
+            count = await db.get_archived_chat_count()
         return {"count": count}
     except Exception as e:
         logger.error(f"Error fetching archived count: {e}", exc_info=True)
