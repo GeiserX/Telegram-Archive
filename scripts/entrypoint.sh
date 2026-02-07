@@ -81,6 +81,15 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check if forum_topics table exists (added in migration 006)
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'forum_topics'
+        );
+    \"\"\")
+    has_006_table = cur.fetchone()[0]
+
     # Check if idx_messages_reply_to index exists (added in migration 005)
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -109,7 +118,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
     
     # Determine which version to stamp based on existing schema
-    if has_005_index:
+    if has_006_table:
+        stamp_version = '006'
+    elif has_005_index:
         stamp_version = '005'
     elif has_is_pinned:
         stamp_version = '004'
@@ -168,6 +179,10 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check if forum_topics table exists (added in migration 006)
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='forum_topics'\")
+    has_006_table = cur.fetchone() is not None
+
     # Check for idx_messages_reply_to index (added in migration 005)
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_reply_to'\")
     has_005_index = cur.fetchone() is not None
@@ -182,7 +197,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_005_index:
+    if has_006_table:
+        stamp_version = '006'
+    elif has_005_index:
         stamp_version = '005'
     elif has_is_pinned:
         stamp_version = '004'
