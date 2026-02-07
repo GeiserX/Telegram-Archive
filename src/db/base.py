@@ -135,27 +135,46 @@ class DatabaseManager:
         # via entrypoint.sh, so running create_all concurrently would race with
         # Alembic migrations and cause deadlocks.
         if self._is_sqlite:
-            async with self.engine.begin() as conn:
-                await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
+            try:
+                async with self.engine.begin() as conn:
+                    await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
+            except Exception as e:
+                # Viewer containers may mount the database read-only — that's fine,
+                # the backup container is responsible for creating tables.
+                logger.warning(f"Could not create/verify tables (database may be read-only): {e}")
 
         logger.info(f"Database initialized successfully ({self._db_type()})")
 
     def _setup_sqlite_pragmas(self) -> None:
-        """Set up SQLite PRAGMA settings for optimal performance."""
+        """Set up SQLite PRAGMA settings for optimal performance.
+
+        Gracefully handles read-only databases (e.g., viewer containers with
+        read-only volume mounts or non-root users without write permissions).
+        WAL mode requires write access to create .db-wal and .db-shm files;
+        if that fails the database still works in the default journal mode.
+        """
 
         @event.listens_for(self.engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
-            # WAL mode for better concurrent read/write
-            cursor.execute("PRAGMA journal_mode=WAL")
-            # 60 second busy timeout
-            cursor.execute("PRAGMA busy_timeout=60000")
-            # Faster than FULL, still safe with WAL
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            # 64MB cache for better performance
-            cursor.execute("PRAGMA cache_size=-64000")
+            try:
+                # WAL mode for better concurrent read/write
+                cursor.execute("PRAGMA journal_mode=WAL")
+                # Faster than FULL, still safe with WAL
+                cursor.execute("PRAGMA synchronous=NORMAL")
+            except Exception:
+                logger.warning(
+                    "Could not enable WAL mode (database may be read-only). "
+                    "This is expected for viewer containers with read-only mounts."
+                )
+            try:
+                # 60 second busy timeout
+                cursor.execute("PRAGMA busy_timeout=60000")
+                # 64MB cache for better performance
+                cursor.execute("PRAGMA cache_size=-64000")
+            except Exception:
+                pass  # Read-only PRAGMAs are non-critical
             cursor.close()
-            logger.debug("SQLite PRAGMAs set: WAL mode, 60s timeout, 64MB cache")
 
     def _db_type(self) -> str:
         """Get human-readable database type."""
