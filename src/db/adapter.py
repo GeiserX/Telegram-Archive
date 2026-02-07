@@ -853,7 +853,7 @@ class DatabaseAdapter:
 
             try:
                 result.update(json.loads(cached_stats))
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 pass
 
         if last_backup_time:
