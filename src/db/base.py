@@ -8,7 +8,8 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from urllib.parse import quote_plus, urlparse
+import re
+from urllib.parse import quote_plus
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -167,14 +168,7 @@ class DatabaseManager:
 
     def _safe_url(self) -> str:
         """Return URL with password masked for logging."""
-        parsed = urlparse(self.database_url)
-        if parsed.password:
-            # Reconstruct URL without the password to avoid sensitive data in logs
-            masked = parsed._replace(
-                netloc=f"{parsed.username}:***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
-            )
-            return masked.geturl()
-        return self.database_url
+        return re.sub(r"(://[^:]+:)[^@]+(@)", r"\1***\2", self.database_url)
 
     @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:

@@ -42,7 +42,7 @@ import asyncio
 import logging
 import os
 import sys
-from urllib.parse import urlparse
+import re
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -119,13 +119,7 @@ def resolve_postgres_url(explicit_url: str | None = None) -> str:
 
 def _mask_db_url(url: str) -> str:
     """Mask password in database URL for safe logging."""
-    parsed = urlparse(url)
-    if parsed.password:
-        masked = parsed._replace(
-            netloc=f"{parsed.username}:***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
-        )
-        return masked.geturl()
-    return url
+    return re.sub(r"(://[^:]+:)[^@]+(@)", r"\1***\2", url)
 
 
 async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dry_run: bool) -> bool:
