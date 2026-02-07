@@ -167,7 +167,7 @@ docker compose up -d
 |---------|----------|
 | `Permission denied` | Run `chmod -R 755 data/` |
 | `init_auth.sh: command not found` | Run `chmod +x init_auth.sh` first |
-| Viewer shows no data | Both containers need same database path - see [Database Configuration](#database-configuration-v30) |
+| Viewer shows no data | Both containers need same database path - see [Database Configuration](#database-configuration) |
 | `Failed to authorize` | Re-run `./init_auth.sh` |
 
 ## Web Viewer
@@ -196,114 +196,93 @@ Browse your backups at **http://localhost:8000**
 
 ## Configuration
 
-### Required
+All settings are configured via environment variables. Set them in your `.env` file or as `environment:` entries in `docker-compose.yml`. See [`.env.example`](.env.example) for a ready-to-use template.
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_API_ID` | API ID from my.telegram.org |
-| `TELEGRAM_API_HASH` | API Hash from my.telegram.org |
-| `TELEGRAM_PHONE` | Phone with country code (+1234567890) |
+> **`ENABLE_LISTENER` is a master switch.** When set to `false` (the default), all `LISTEN_*` and `MASS_OPERATION_*` variables have no effect. You only need to configure those when you set `ENABLE_LISTENER=true`.
 
-### Optional
+### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SCHEDULE` | `0 */6 * * *` | Cron schedule (every 6 hours) |
-| `BACKUP_PATH` | `/data/backups` | Backup storage path |
-| `DATABASE_DIR` | Same as backup | Database location |
-| `DOWNLOAD_MEDIA` | `true` | Download media files |
-| `MAX_MEDIA_SIZE_MB` | `100` | Max media file size |
-| `CHAT_TYPES` | `private,groups,channels` | Types to backup |
-| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR`) |
-| `BATCH_SIZE` | `100` | Messages per batch during backup |
-| `DATABASE_TIMEOUT` | `60.0` | Database operation timeout (seconds) |
-| `SESSION_NAME` | `telegram_backup` | Telethon session file name |
+The **Scope** column shows whether each variable applies to the backup scheduler (**B**), the web viewer (**V**), or both (**B/V**).
 
-#### Viewer Configuration
+| Variable | Default | Scope | Description |
+|----------|---------|:-----:|-------------|
+| **Telegram Credentials** | | | |
+| `TELEGRAM_API_ID` | *required* | B | API ID from [my.telegram.org](https://my.telegram.org/apps) |
+| `TELEGRAM_API_HASH` | *required* | B | API Hash from [my.telegram.org](https://my.telegram.org/apps) |
+| `TELEGRAM_PHONE` | *required* | B | Phone number with country code (e.g., `+1234567890`) |
+| **Backup Schedule & Storage** | | | |
+| `SCHEDULE` | `0 */6 * * *` | B | Cron expression for backup frequency |
+| `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
+| `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
+| `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
+| `BATCH_SIZE` | `100` | B | Messages processed per database batch |
+| `DATABASE_TIMEOUT` | `60.0` | B/V | Database operation timeout in seconds |
+| `SESSION_NAME` | `telegram_backup` | B | Telethon session file name |
+| `DEDUPLICATE_MEDIA` | `true` | B | Symlink identical media files across chats to save disk space |
+| `SYNC_DELETIONS_EDITS` | `false` | B | Batch-check ALL messages for edits/deletions each run (expensive!) |
+| `VERIFY_MEDIA` | `false` | B | Re-download missing or corrupted media files |
+| `STATS_CALCULATION_HOUR` | `3` | B | Hour (0-23) to recalculate backup statistics daily |
+| `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
+| `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
+| **Chat Filtering** | | | See [Chat Filtering](#chat-filtering) below |
+| `CHAT_IDS` | - | B | **Whitelist mode**: backup ONLY these chats (ignores all other filters) |
+| `CHAT_TYPES` | `private,groups,channels` | B | **Type-based mode**: comma-separated chat types to backup |
+| `GLOBAL_EXCLUDE_CHAT_IDS` | - | B | Exclude specific chats (any type) |
+| `GLOBAL_INCLUDE_CHAT_IDS` | - | B | Force-include specific chats (any type) |
+| `PRIVATE_EXCLUDE_CHAT_IDS` | - | B | Exclude specific private chats |
+| `PRIVATE_INCLUDE_CHAT_IDS` | - | B | Force-include specific private chats |
+| `GROUPS_EXCLUDE_CHAT_IDS` | - | B | Exclude specific groups |
+| `GROUPS_INCLUDE_CHAT_IDS` | - | B | Force-include specific groups |
+| `CHANNELS_EXCLUDE_CHAT_IDS` | - | B | Exclude specific channels |
+| `CHANNELS_INCLUDE_CHAT_IDS` | - | B | Force-include specific channels |
+| **Real-time Listener** | | | See [Real-time Listener](#real-time-listener) below |
+| `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
+| `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
+| `LISTEN_DELETIONS` | `true` | B | Mirror deletions (protected by [mass operation rate limiting](#mass-operation-protection)) |
+| `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
+| `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
+| `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
+| `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
+| `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
+| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Seconds to buffer operations before applying |
+| **Database** | | | See [Database Configuration](#database-configuration) below |
+| `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
+| `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |
+| `DB_PATH` | `$BACKUP_PATH/telegram_backup.db` | B/V | Path to SQLite database file |
+| `DATABASE_PATH` | - | B/V | Full path to SQLite file (v2 compatible alias for `DB_PATH`) |
+| `DATABASE_DIR` | - | B/V | Directory containing `telegram_backup.db` (v2 compatible) |
+| `POSTGRES_HOST` | `localhost` | B/V | PostgreSQL host |
+| `POSTGRES_PORT` | `5432` | B/V | PostgreSQL port |
+| `POSTGRES_USER` | `telegram` | B/V | PostgreSQL username |
+| `POSTGRES_PASSWORD` | - | B/V | PostgreSQL password (required when using PostgreSQL) |
+| `POSTGRES_DB` | `telegram_backup` | B/V | PostgreSQL database name |
+| **Viewer & Authentication** | | | |
+| `VIEWER_USERNAME` | - | V | Web viewer username (both username and password required to enable auth) |
+| `VIEWER_PASSWORD` | - | V | Web viewer password |
+| `AUTH_SESSION_DAYS` | `30` | V | Days before re-authentication is required |
+| `DISPLAY_CHAT_IDS` | - | V | Restrict viewer to specific chats (comma-separated IDs) |
+| `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
+| `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
+| **Security** | | | |
+| `CORS_ORIGINS` | `*` | V | Allowed CORS origins, comma-separated (e.g., `https://my.domain.com`). Credentials auto-disabled when `*` |
+| `SECURE_COOKIES` | `true` | V | Set `Secure` flag on auth cookies. Disable (`false`) only for local HTTP development |
+| **Notifications** | | | |
+| `PUSH_NOTIFICATIONS` | `basic` | V | `off` = disabled, `basic` = in-browser only, `full` = Web Push (works with browser closed) |
+| `VAPID_PRIVATE_KEY` | *auto-generated* | V | Custom VAPID private key for Web Push |
+| `VAPID_PUBLIC_KEY` | *auto-generated* | V | Custom VAPID public key for Web Push |
+| `VAPID_CONTACT` | `mailto:admin@example.com` | V | Contact email included in Web Push requests |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VIEWER_USERNAME` | - | Web viewer username |
-| `VIEWER_PASSWORD` | - | Web viewer password |
-| `AUTH_SESSION_DAYS` | `30` | Days before re-authentication required |
-| `DISPLAY_CHAT_IDS` | - | Restrict viewer to specific chats |
-| `VIEWER_TIMEZONE` | `Europe/Madrid` | Timezone for displayed timestamps |
-| `SHOW_STATS` | `true` | Show backup stats dropdown in header |
-
-#### Real-time Listener (v5.0+)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENABLE_LISTENER` | `false` | Real-time listener for edits/deletions |
-| `LISTEN_EDITS` | `true` | Apply text edits when listener is on |
-| `LISTEN_DELETIONS` | `true` | ⚠️ Mirror deletions (protected by rate limiting) |
-| `LISTEN_NEW_MESSAGES` | `true` | Save new messages in real-time |
-| `LISTEN_NEW_MESSAGES_MEDIA` | `false` | Download media immediately (vs scheduled backup) |
-| `LISTEN_CHAT_ACTIONS` | `true` | Track chat photo/title changes |
-| `PRIORITY_CHAT_IDS` | - | Process these chats FIRST in all operations |
-
-#### Mass Operation Protection
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MASS_OPERATION_THRESHOLD` | `10` | 🛡️ Operations before rate limiting triggers |
-| `MASS_OPERATION_WINDOW_SECONDS` | `30` | Time window for counting operations |
-
-#### Notifications (v5.0+)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PUSH_NOTIFICATIONS` | `basic` | Notification mode: `off`, `basic`, `full` |
-| `VAPID_PRIVATE_KEY` | - | Custom VAPID private key (auto-generated if empty) |
-| `VAPID_PUBLIC_KEY` | - | Custom VAPID public key (auto-generated if empty) |
-| `VAPID_CONTACT` | `mailto:admin@example.com` | VAPID contact email |
-
-Push notification modes:
-- `off` - No notifications
-- `basic` - In-browser only (tab must be open)
-- `full` - Web Push (works even when browser closed)
-
-#### Backup Features
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEDUPLICATE_MEDIA` | `true` | Use symlinks to deduplicate identical media |
-| `SYNC_DELETIONS_EDITS` | `false` | Batch-check ALL messages for edits/deletions (expensive!) |
-| `VERIFY_MEDIA` | `false` | Re-download missing/corrupted media files |
-| `STATS_CALCULATION_HOUR` | `3` | Hour (0-23) to recalculate backup stats |
-
-#### Chat Filtering
+### Chat Filtering
 
 There are **two modes** for selecting which chats to backup:
 
-##### Mode 1: Whitelist Mode (Simple)
-
-Set `CHAT_IDS` to backup **ONLY specific chats**. This is the easiest way to backup a few specific chats:
+**Mode 1 — Whitelist** (simple): set `CHAT_IDS` to backup **only** those specific chats. All other filtering variables are ignored.
 
 ```bash
-# In .env file:
 CHAT_IDS=-1001234567890,-1009876543210    # Only these 2 chats, nothing else
 ```
 
-When `CHAT_IDS` is set, all other filtering options (`CHAT_TYPES`, `*_INCLUDE_*`, `*_EXCLUDE_*`) are **ignored**.
-
-##### Mode 2: Type-based Mode (Default)
-
-If `CHAT_IDS` is not set, use `CHAT_TYPES` to backup all chats of certain types:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHAT_TYPES` | `private,groups,channels` | Types of chats to backup |
-| `GLOBAL_EXCLUDE_CHAT_IDS` | - | Blacklist specific chats (any type) |
-| `PRIVATE_EXCLUDE_CHAT_IDS` | - | Blacklist specific private chats |
-| `GROUPS_EXCLUDE_CHAT_IDS` | - | Blacklist specific groups |
-| `CHANNELS_EXCLUDE_CHAT_IDS` | - | Blacklist specific channels |
-| `GLOBAL_INCLUDE_CHAT_IDS` | - | Force-include specific chats (any type) |
-| `PRIVATE_INCLUDE_CHAT_IDS` | - | Force-include specific private chats |
-| `GROUPS_INCLUDE_CHAT_IDS` | - | Force-include specific groups |
-| `CHANNELS_INCLUDE_CHAT_IDS` | - | Force-include specific channels |
-
-**Common examples:**
+**Mode 2 — Type-based** (default): use `CHAT_TYPES` to backup all chats of certain types, then fine-tune with include/exclude lists:
 
 ```bash
 # Backup all private chats and groups (no channels)
@@ -318,131 +297,56 @@ CHAT_TYPES=groups
 CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 ```
 
-> **Note**: `*_INCLUDE_*` variables are **additive** - they add to what `CHAT_TYPES` already includes. They don't restrict to only those chats. For exclusive selection, use `CHAT_IDS` instead.
+> `*_INCLUDE_*` variables are **additive** — they add chats to what `CHAT_TYPES` already selects. For exclusive selection, use `CHAT_IDS` instead.
 
-#### Chat ID Format
+**Chat ID format** — Telegram uses "marked" IDs:
+- **Users**: positive numbers (`123456789`)
+- **Basic groups**: negative (`-123456789`)
+- **Supergroups/Channels**: negative with `-100` prefix (`-1001234567890`)
 
-Chat IDs use Telegram's "marked" format:
-- **Users**: Positive numbers (e.g., `123456789`)
-- **Basic groups**: Negative numbers (e.g., `-123456789`)
-- **Supergroups/Channels**: Negative with `-100` prefix (e.g., `-1001234567890`)
+Find a chat's ID by forwarding a message to [@userinfobot](https://t.me/userinfobot).
 
-**Finding Chat IDs**: Forward a message from the chat to [@userinfobot](https://t.me/userinfobot) on Telegram.
+### Real-time Listener
 
-### Real-time Edit/Deletion Tracking
-
-By default, the backup runs on a schedule and only captures new messages. Edits and deletions made between backups are not tracked. You have two options:
-
-#### Option 1: Real-time Listener ⭐
-
-Enable `ENABLE_LISTENER=true` to run a background listener that catches edits as they happen:
+The scheduled backup only captures new messages. To also track edits and deletions between backups, enable the real-time listener:
 
 ```yaml
-- ENABLE_LISTENER=true      # Enable real-time listener
-- LISTEN_EDITS=true         # Apply text edits (default: true, safe)
-- LISTEN_DELETIONS=true     # Delete from backup (protected by zero-footprint mass operation detection)
+ENABLE_LISTENER: "true"        # Master switch — required
+LISTEN_EDITS: "true"           # Track text edits (safe, default: true)
+LISTEN_DELETIONS: "true"       # Mirror deletions (default: true, protected by rate limiting)
+LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 ```
 
-**How it works:**
-- Stays connected to Telegram between scheduled backups
-- Instantly captures message edits (and optionally deletions)
-- Very efficient - only processes actual changes
-- Automatically restarts if disconnected
+**How it works:** stays connected to Telegram between scheduled backups, captures changes as they happen, and automatically reconnects if disconnected.
 
-**⚠️ IMPORTANT: Backup Protection**
+**Backup protection:** when `LISTEN_DELETIONS=true`, deletions are protected by the [mass operation rate limiter](#mass-operation-protection). Set `LISTEN_DELETIONS=false` to never delete anything from your backup.
 
-By default, `LISTEN_DELETIONS=true` - deletions are synced but protected by **rate limiting**. If a mass deletion is detected (>10 deletions in 30s), the first 10 are applied but the remaining are blocked. Set to `false` if you want to keep ALL messages even when deleted on Telegram.
+**Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow — only use for a one-time catch-up, then switch to the real-time listener.
 
-### 🛡️ Mass Operation Rate Limiting
+### Mass Operation Protection
 
-When `LISTEN_DELETIONS=true`, a **sliding-window rate limiter** protects against mass deletion attacks:
+When the listener is enabled and `LISTEN_DELETIONS=true`, a sliding-window rate limiter protects against mass deletion attacks:
 
-```yaml
-- MASS_OPERATION_THRESHOLD=10       # Max ops before rate limiting (default: 10)
-- MASS_OPERATION_WINDOW_SECONDS=30  # Time window for counting (default: 30s)
-```
+1. Operations are **buffered** for `MASS_OPERATION_BUFFER_DELAY` seconds before being applied
+2. A sliding window tracks operations per chat over `MASS_OPERATION_WINDOW_SECONDS`
+3. When `MASS_OPERATION_THRESHOLD` is exceeded, the **entire buffer is discarded** — zero changes written
 
-#### How It Works
+**Example:** someone deletes 50 messages in 10 seconds with default settings (threshold=10, window=30s) — the first 10 are applied, remaining 40 are blocked. For **zero** deletions from your backup, set `LISTEN_DELETIONS=false`.
 
-1. **Operations apply immediately** - Normal usage (deleting a few messages) works instantly
-2. **Sliding window** - System tracks operations per chat in a time window
-3. **Rate limiting** - When threshold exceeded, chat is blocked for remainder of window
-4. **First N applied** - The first 10 operations ARE applied, remaining are blocked
+### Database Configuration
 
-#### Example: Mass Deletion Attack
+Telegram Archive supports **SQLite** (default, zero-config) and **PostgreSQL** (better for large deployments with real-time LISTEN/NOTIFY).
 
-Someone deletes 50 messages in 10 seconds:
-```
-🛡️ RATE LIMIT TRIGGERED
-   Chat: -1001234567890
-   Operations in 30s: 11 (max: 10)
-   First 10 were applied, remaining blocked
-   Chat blocked until: 2026-01-18 12:35:00
-```
+> **Viewer shows no data?** Both backup and viewer containers must access the **same database**. Ensure `DB_TYPE` and `DB_PATH` (or `DATABASE_URL`) match in both services.
 
-**Result**: First 10 deletions were applied, but the remaining 40 were blocked. Most of your backup is preserved.
-
-#### Complete Protection
-
-For **zero deletions** from your backup, disable deletion sync entirely:
-```yaml
-- LISTEN_DELETIONS=false  # Deletions never affect your backup
-```
-
-#### Option 2: Batch Sync (One-time catch-up)
-
-Enable `SYNC_DELETIONS_EDITS=true` to re-check ALL backed-up messages on each backup run:
-
-```yaml
-- SYNC_DELETIONS_EDITS=true
-```
-
-**⚠️ Warning:** This fetches every message in every chat to check for changes. Only use for:
-- One-time initial catch-up on edits/deletions
-- If you can't use the real-time listener
-
-After running once, switch back to `ENABLE_LISTENER=true` for ongoing sync.
-
-### Database Configuration (v3.0+)
-
-Telegram Archive supports both SQLite and PostgreSQL.
-
-> ⚠️ **Viewer shows no data?** Both backup and viewer containers **must access the same database**. If using SQLite, add `DB_PATH` to BOTH services in docker-compose.yml:
-> ```yaml
-> environment:
->   DB_TYPE: sqlite
->   DB_PATH: /data/backups/telegram_backup.db
-> ```
-
-**SQLite Path Resolution (in priority order):**
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Full database URL (highest priority) |
-| `DATABASE_PATH` | Full path to SQLite file (v2 compatible) |
-| `DATABASE_DIR` | Directory for `telegram_backup.db` (v2 compatible) |
-| `DB_PATH` | Full path to SQLite file (v3 style) |
-| Default | `$BACKUP_PATH/telegram_backup.db` |
-
-**PostgreSQL Configuration:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | - | Full PostgreSQL URL (takes priority) |
-| `DB_TYPE` | `sqlite` | Set to `postgresql` to use PostgreSQL |
-| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
-| `POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `POSTGRES_USER` | `telegram` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | - | PostgreSQL password (required) |
-| `POSTGRES_DB` | `telegram_backup` | PostgreSQL database name |
+**SQLite path resolution** (highest priority first): `DATABASE_URL` → `DATABASE_PATH` → `DATABASE_DIR` → `DB_PATH` → `$BACKUP_PATH/telegram_backup.db`
 
 **Using PostgreSQL:**
 
 1. Uncomment the `postgres` service in `docker-compose.yml`
-2. Set `POSTGRES_PASSWORD` in your `.env`
-3. Set `DB_TYPE=postgresql` in your `.env`
-4. Uncomment `depends_on` in backup and viewer services
-5. Run `docker compose up -d`
+2. Set `DB_TYPE=postgresql` and `POSTGRES_PASSWORD` in your `.env`
+3. Uncomment `depends_on` in both backup and viewer services
+4. Run `docker compose up -d`
 
 ## Updating to Latest Version
 
