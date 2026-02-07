@@ -63,7 +63,7 @@ class TestTelegramListener:
         listener = TelegramListener(mock_config, mock_db)
 
         # Run async method synchronously
-        asyncio.get_event_loop().run_until_complete(listener._load_tracked_chats())
+        asyncio.run(listener._load_tracked_chats())
 
         assert listener._tracked_chat_ids == {-1001234567890, 123456789, -987654321}
         mock_db.get_all_chats.assert_called_once()
@@ -107,7 +107,7 @@ class TestTelegramListener:
         listener.client.is_connected = MagicMock(return_value=False)
 
         # Run async method synchronously
-        asyncio.get_event_loop().run_until_complete(listener.close())
+        asyncio.run(listener.close())
 
         mock_db.close.assert_called_once()
 

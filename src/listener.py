@@ -294,7 +294,7 @@ class TelegramListener:
         logger.info("=" * 70)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> "TelegramListener":
+    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramListener:
         """
         Factory method to create TelegramListener with initialized database.
 
