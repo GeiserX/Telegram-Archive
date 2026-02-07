@@ -53,7 +53,7 @@ jobs:
 
       # Build and push main backup image
       - name: Build and push backup image (dev)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
@@ -64,7 +64,7 @@ jobs:
 
       # Build and push viewer image
       - name: Build and push viewer image (dev)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.viewer

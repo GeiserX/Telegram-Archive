@@ -1,8 +1,7 @@
-import os
 import logging
-from typing import Optional, Tuple
+import os
 
-from telethon.tl.types import User, ChatPhotoEmpty, UserProfilePhotoEmpty
+from telethon.tl.types import ChatPhotoEmpty, User, UserProfilePhotoEmpty
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ def _get_avatar_dir(media_path: str, entity) -> str:
     return base_dir
 
 
-def get_avatar_paths(media_path: str, entity, chat_id: int) -> Tuple[Optional[str], str]:
+def get_avatar_paths(media_path: str, entity, chat_id: int) -> tuple[str | None, str]:
     """
     Build target and legacy avatar file paths.
 

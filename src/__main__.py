@@ -5,19 +5,18 @@ Provides a single interface for all backup operations including authentication,
 backup execution, scheduling, and data export.
 """
 
-import sys
-import os
 import argparse
 import asyncio
+import os
+import sys
 from pathlib import Path
-from typing import Optional
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
-        prog='telegram-archive',
-        description='Telegram Archive - Automated Telegram Backup',
+        prog="telegram-archive",
+        description="Telegram Archive - Automated Telegram Backup",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 GETTING STARTED:
@@ -58,80 +57,56 @@ DOCKER USAGE:
       python -m src schedule
 
 For more information, visit: https://github.com/GeiserX/Telegram-Archive
-"""
+""",
     )
 
     # Add top-level options (before subcommands)
     parser.add_argument(
-        '--data-dir',
-        metavar='PATH',
-        help='Base data directory (default: /data). Sets BACKUP_PATH to PATH/backups'
+        "--data-dir", metavar="PATH", help="Base data directory (default: /data). Sets BACKUP_PATH to PATH/backups"
     )
 
-    subparsers = parser.add_subparsers(
-        dest='command',
-        help='Command to execute',
-        metavar='<command>'
-    )
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute", metavar="<command>")
 
     # Auth command
     auth_parser = subparsers.add_parser(
-        'auth',
-        help='Authenticate with Telegram (interactive)',
-        description='Set up Telegram authentication. Creates a session file for future use.'
+        "auth",
+        help="Authenticate with Telegram (interactive)",
+        description="Set up Telegram authentication. Creates a session file for future use.",
     )
 
     # Backup command
     backup_parser = subparsers.add_parser(
-        'backup',
-        help='Run backup once',
-        description='Execute a one-time backup of all configured chats.'
+        "backup", help="Run backup once", description="Execute a one-time backup of all configured chats."
     )
 
     # Schedule command
     schedule_parser = subparsers.add_parser(
-        'schedule',
-        help='Run scheduled backups (default for Docker)',
-        description='Start the backup scheduler. Runs backups according to SCHEDULE env variable.'
+        "schedule",
+        help="Run scheduled backups (default for Docker)",
+        description="Start the backup scheduler. Runs backups according to SCHEDULE env variable.",
     )
 
     # Export command
     export_parser = subparsers.add_parser(
-        'export',
-        help='Export messages to JSON',
-        description='Export backup data to JSON format with optional filtering.'
+        "export",
+        help="Export messages to JSON",
+        description="Export backup data to JSON format with optional filtering.",
     )
-    export_parser.add_argument(
-        '-o', '--output',
-        required=True,
-        help='Output JSON file path'
-    )
-    export_parser.add_argument(
-        '-c', '--chat-id',
-        type=int,
-        help='Filter by specific chat ID'
-    )
-    export_parser.add_argument(
-        '-s', '--start-date',
-        help='Start date (YYYY-MM-DD)'
-    )
-    export_parser.add_argument(
-        '-e', '--end-date',
-        help='End date (YYYY-MM-DD)'
-    )
+    export_parser.add_argument("-o", "--output", required=True, help="Output JSON file path")
+    export_parser.add_argument("-c", "--chat-id", type=int, help="Filter by specific chat ID")
+    export_parser.add_argument("-s", "--start-date", help="Start date (YYYY-MM-DD)")
+    export_parser.add_argument("-e", "--end-date", help="End date (YYYY-MM-DD)")
 
     # Stats command
     stats_parser = subparsers.add_parser(
-        'stats',
-        help='Show backup statistics',
-        description='Display statistics about backed up chats, messages, and media.'
+        "stats",
+        help="Show backup statistics",
+        description="Display statistics about backed up chats, messages, and media.",
     )
 
     # List chats command
     list_parser = subparsers.add_parser(
-        'list-chats',
-        help='List all backed up chats',
-        description='Show a table of all chats in the backup database.'
+        "list-chats", help="List all backed up chats", description="Show a table of all chats in the backup database."
     )
 
     return parser
@@ -139,9 +114,8 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
 
 async def run_export(args) -> int:
     """Run export command."""
-    from .export_backup import BackupExporter
     from .config import Config, setup_logging
-    from .db import init_database, close_database
+    from .export_backup import BackupExporter
 
     try:
         config = Config()
@@ -149,12 +123,7 @@ async def run_export(args) -> int:
 
         exporter = await BackupExporter.create(config)
         try:
-            await exporter.export_to_json(
-                args.output,
-                args.chat_id,
-                args.start_date,
-                args.end_date
-            )
+            await exporter.export_to_json(args.output, args.chat_id, args.start_date, args.end_date)
         finally:
             await exporter.close()
         return 0
@@ -165,8 +134,8 @@ async def run_export(args) -> int:
 
 async def run_stats(args) -> int:
     """Run stats command."""
-    from .export_backup import BackupExporter
     from .config import Config, setup_logging
+    from .export_backup import BackupExporter
 
     try:
         config = Config()
@@ -185,8 +154,8 @@ async def run_stats(args) -> int:
 
 async def run_list_chats(args) -> int:
     """Run list-chats command."""
-    from .export_backup import BackupExporter
     from .config import Config, setup_logging
+    from .export_backup import BackupExporter
 
     try:
         config = Config()
@@ -206,18 +175,21 @@ async def run_list_chats(args) -> int:
 def run_auth(args) -> int:
     """Run authentication setup."""
     from .setup_auth import main as auth_main
+
     return auth_main()
 
 
 def run_backup(args) -> int:
     """Run one-time backup."""
     from .telegram_backup import main as backup_main
+
     return backup_main()
 
 
 def run_schedule(args) -> int:
     """Run scheduled backups."""
     from .scheduler import main as scheduler_main
+
     return asyncio.run(scheduler_main())
 
 
@@ -235,34 +207,34 @@ def main() -> int:
     # Handle --data-dir option
     if args.data_dir:
         data_path = Path(args.data_dir).resolve()
-        backup_path = data_path / 'backups'
-        session_path = data_path / 'session'
+        backup_path = data_path / "backups"
+        session_path = data_path / "session"
 
         # Set environment variables that Config will read
-        os.environ['BACKUP_PATH'] = str(backup_path)
-        os.environ['SESSION_DIR'] = str(session_path)
+        os.environ["BACKUP_PATH"] = str(backup_path)
+        os.environ["SESSION_DIR"] = str(session_path)
 
         # Create directories if they don't exist
         backup_path.mkdir(parents=True, exist_ok=True)
         session_path.mkdir(parents=True, exist_ok=True)
 
     # Dispatch to appropriate command
-    if args.command == 'auth':
+    if args.command == "auth":
         return run_auth(args)
-    elif args.command == 'backup':
+    elif args.command == "backup":
         return run_backup(args)
-    elif args.command == 'schedule':
+    elif args.command == "schedule":
         return run_schedule(args)
-    elif args.command == 'export':
+    elif args.command == "export":
         return asyncio.run(run_export(args))
-    elif args.command == 'stats':
+    elif args.command == "stats":
         return asyncio.run(run_stats(args))
-    elif args.command == 'list-chats':
+    elif args.command == "list-chats":
         return asyncio.run(run_list_chats(args))
     else:
         parser.print_help()
         return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())
