@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.6] - 2026-02-07
+
+### Fixed
+
+- **SQLite viewer crash** — Viewer container failed to start when using SQLite because `PRAGMA journal_mode=WAL` requires write access to create `.db-wal` and `.db-shm` sidecar files. WAL and `create_all` are now wrapped in try/except so the viewer degrades gracefully to default journal mode instead of crashing. (#61)
+- **Read-only volume mount** — Removed `:ro` from the viewer volume in `docker-compose.yml` since SQLite WAL needs write access. Added comment explaining when `:ro` is safe (PostgreSQL only).
+
 ## [6.2.5] - 2026-02-07
 
 ### Fixed
