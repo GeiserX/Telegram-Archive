@@ -169,7 +169,11 @@ class DatabaseManager:
         """Return URL with password masked for logging."""
         parsed = urlparse(self.database_url)
         if parsed.password:
-            return self.database_url.replace(parsed.password, "***")
+            # Reconstruct URL without the password to avoid sensitive data in logs
+            masked = parsed._replace(
+                netloc=f"{parsed.username}:***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
+            )
+            return masked.geturl()
         return self.database_url
 
     @asynccontextmanager

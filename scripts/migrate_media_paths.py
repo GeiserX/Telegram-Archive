@@ -38,6 +38,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -176,7 +177,15 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
     else:
         logger.warning("⚠️  LIVE MODE - Changes will be applied!")
 
-    logger.info(f"Database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
+    parsed_url = urlparse(db_url)
+    if parsed_url.password:
+        masked_url = parsed_url._replace(
+            netloc=f"{parsed_url.username}:***@{parsed_url.hostname}"
+            + (f":{parsed_url.port}" if parsed_url.port else "")
+        ).geturl()
+    else:
+        masked_url = db_url
+    logger.info(f"Database: {masked_url}")
     logger.info(f"Media path: {media_path}")
     logger.info("")
 

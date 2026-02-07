@@ -42,6 +42,7 @@ import asyncio
 import logging
 import os
 import sys
+from urllib.parse import urlparse
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -116,16 +117,24 @@ def resolve_postgres_url(explicit_url: str | None = None) -> str:
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
 
+def _mask_db_url(url: str) -> str:
+    """Mask password in database URL for safe logging."""
+    parsed = urlparse(url)
+    if parsed.password:
+        masked = parsed._replace(
+            netloc=f"{parsed.username}:***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
+        )
+        return masked.geturl()
+    return url
+
+
 async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dry_run: bool) -> bool:
     """Run the migration."""
-    # Mask password in logs
-    safe_url = postgres_url.split("@")[-1] if "@" in postgres_url else postgres_url
-
     logger.info("=" * 60)
     logger.info("Telegram Archive: SQLite to PostgreSQL Migration")
     logger.info("=" * 60)
     logger.info(f"Source: {sqlite_path}")
-    logger.info(f"Target: postgresql://...@{safe_url}")
+    logger.info(f"Target: {_mask_db_url(postgres_url)}")
     logger.info(f"Batch size: {batch_size}")
 
     if dry_run:
@@ -177,13 +186,11 @@ async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dr
 
 async def run_verification(sqlite_path: str, postgres_url: str) -> bool:
     """Verify migration by comparing counts."""
-    safe_url = postgres_url.split("@")[-1] if "@" in postgres_url else postgres_url
-
     logger.info("=" * 60)
     logger.info("Migration Verification")
     logger.info("=" * 60)
     logger.info(f"SQLite: {sqlite_path}")
-    logger.info(f"PostgreSQL: postgresql://...@{safe_url}")
+    logger.info(f"PostgreSQL: {_mask_db_url(postgres_url)}")
     logger.info("")
 
     try:
