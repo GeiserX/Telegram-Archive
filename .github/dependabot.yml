@@ -43,23 +43,9 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
-  # Docker base images
+  # Docker base images (scans all Dockerfiles in /)
   - package-ecosystem: "docker"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    commit-message:
-      prefix: "docker"
-    labels:
-      - "docker"
-      - "automated"
-
-  # Docker viewer image
-  - package-ecosystem: "docker"
-    directory: "/"
-    directories:
-      - "/Dockerfile.viewer"
     schedule:
       interval: "weekly"
       day: "monday"

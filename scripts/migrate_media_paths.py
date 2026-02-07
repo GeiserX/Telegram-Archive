@@ -176,7 +176,15 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
     else:
         logger.warning("⚠️  LIVE MODE - Changes will be applied!")
 
-    logger.info(f"Database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
+    # Log database info from non-sensitive env vars (avoids taint tracking)
+    _db_type = os.environ.get("DB_TYPE", "sqlite").lower()
+    if _db_type == "postgresql":
+        _host = os.environ.get("POSTGRES_HOST", "localhost")
+        _port = os.environ.get("POSTGRES_PORT", "5432")
+        _db = os.environ.get("POSTGRES_DB", "telegram_backup")
+        logger.info(f"Database: postgresql://*:***@{_host}:{_port}/{_db}")
+    else:
+        logger.info(f"Database: {_db_type}")
     logger.info(f"Media path: {media_path}")
     logger.info("")
 

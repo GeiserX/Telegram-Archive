@@ -116,16 +116,22 @@ def resolve_postgres_url(explicit_url: str | None = None) -> str:
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
 
+def _safe_postgres_description() -> str:
+    """Build safe database description for logging (no credentials)."""
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    user = os.getenv("POSTGRES_USER", "telegram")
+    db = os.getenv("POSTGRES_DB", "telegram_backup")
+    return f"postgresql://{user}:***@{host}:{port}/{db}"
+
+
 async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dry_run: bool) -> bool:
     """Run the migration."""
-    # Mask password in logs
-    safe_url = postgres_url.split("@")[-1] if "@" in postgres_url else postgres_url
-
     logger.info("=" * 60)
     logger.info("Telegram Archive: SQLite to PostgreSQL Migration")
     logger.info("=" * 60)
     logger.info(f"Source: {sqlite_path}")
-    logger.info(f"Target: postgresql://...@{safe_url}")
+    logger.info(f"Target: {_safe_postgres_description()}")
     logger.info(f"Batch size: {batch_size}")
 
     if dry_run:
@@ -177,13 +183,11 @@ async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dr
 
 async def run_verification(sqlite_path: str, postgres_url: str) -> bool:
     """Verify migration by comparing counts."""
-    safe_url = postgres_url.split("@")[-1] if "@" in postgres_url else postgres_url
-
     logger.info("=" * 60)
     logger.info("Migration Verification")
     logger.info("=" * 60)
     logger.info(f"SQLite: {sqlite_path}")
-    logger.info(f"PostgreSQL: postgresql://...@{safe_url}")
+    logger.info(f"PostgreSQL: {_safe_postgres_description()}")
     logger.info("")
 
     try:

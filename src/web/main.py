@@ -361,7 +361,13 @@ AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 
 if AUTH_ENABLED:
-    AUTH_TOKEN = hashlib.sha256(f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode()).hexdigest()
+    # Use PBKDF2 with SHA256 (600k iterations per OWASP 2023) for token derivation
+    AUTH_TOKEN = hashlib.pbkdf2_hmac(
+        "sha256",
+        f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode(),
+        b"telegram-archive-viewer",
+        600_000,
+    ).hex()
     logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
 else:
     logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
@@ -855,7 +861,7 @@ async def internal_push(request: Request):
         return {"status": "ok"}
     except Exception as e:
         logger.warning(f"Error handling internal push: {e}")
-        return {"status": "error", "detail": str(e)}
+        return {"status": "error", "detail": "Internal push processing failed"}
 
 
 @app.get("/api/chats/{chat_id}/stats", dependencies=[Depends(require_auth)])
