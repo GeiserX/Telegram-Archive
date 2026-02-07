@@ -6,6 +6,35 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.3] - 2026-02-07
+
+### Added
+
+- **Dependabot configuration** — Automated dependency updates for pip (weekly), GitHub Actions (monthly), and Docker base images (weekly). Groups minor/patch updates, ignores major bumps.
+- **Ruff linter and formatter** — Configured in `pyproject.toml` with CI workflow. Replaces flake8/black/isort with a single fast tool. Entire codebase auto-formatted.
+- **Pre-commit hooks** — `.pre-commit-config.yaml` with Ruff + standard hooks (check-yaml, trailing-whitespace, etc.).
+- **CodeQL security scanning** — Weekly SAST analysis plus on every PR.
+- **SECURITY.md** — Responsible disclosure policy with supported versions and scope.
+- **CONTRIBUTING.md** — Developer setup guide, branch naming, commit conventions, and testing instructions.
+- **PR template** — Checklists for type of change, database changes, data consistency, testing, and security.
+- **CODEOWNERS** — Routes all PR reviews to @GeiserX.
+- **`.editorconfig`** — Consistent formatting across editors (UTF-8, LF, Python 4-space, YAML 2-space).
+- **Content-Security-Policy headers** — CSP, X-Frame-Options, X-Content-Type-Options, and Referrer-Policy on all responses.
+- **`CORS_ORIGINS` environment variable** — Configure allowed CORS origins (default: `*` without credentials).
+- **`SECURE_COOKIES` environment variable** — Control `secure` flag on auth cookie (default: `true`; set `false` for local HTTP development).
+
+### Fixed
+
+- **CORS misconfiguration** — Removed `allow_credentials=True` when using wildcard origins (browser security requirement). Restricted allowed methods to GET/POST.
+- **`/internal/push` access control** — Endpoint now enforces private IP allowlist (loopback + RFC 1918 ranges) instead of silently allowing all requests.
+- **Auth cookie missing `secure` flag** — Cookie now sets `secure=True` by default, preventing transmission over plain HTTP.
+
+### Changed
+
+- **Docker Compose security hardening** — Both services now use `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, and `tmpfs: [/tmp]`. Viewer volume mounted read-only.
+- **GitHub Actions bumped** — `docker/build-push-action` v5→v6, `codecov/codecov-action` v4→v5.
+- **Removed `.cursor/rules/project.mdc`** — Redundant with `AGENTS.md` which is the single source of truth for AI assistant configuration.
+
 ## [6.1.1] - 2026-02-06
 
 ### Fixed
