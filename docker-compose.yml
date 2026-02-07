@@ -6,7 +6,7 @@ services:
     command: ["python", "-m", "src", "schedule"]
 
     environment:
-      # Authentication & Connection
+      # Telegram Credentials (required)
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE}
@@ -20,7 +20,10 @@ services:
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
       BATCH_SIZE: ${BATCH_SIZE:-100}
-      
+      # DEDUPLICATE_MEDIA: ${DEDUPLICATE_MEDIA:-true}
+      # PRIORITY_CHAT_IDS: ${PRIORITY_CHAT_IDS:-}
+      # STATS_CALCULATION_HOUR: ${STATS_CALCULATION_HOUR:-3}
+
       # =======================================================================
       # CHAT FILTERING - Choose ONE mode:
       # =======================================================================
@@ -32,6 +35,16 @@ services:
       # =======================================================================
       CHAT_IDS: ${CHAT_IDS:-}
       CHAT_TYPES: ${CHAT_TYPES-private,groups,channels}
+
+      # Granular Filtering (only used in type-based mode)
+      GLOBAL_INCLUDE_CHAT_IDS: ${GLOBAL_INCLUDE_CHAT_IDS:-}
+      GLOBAL_EXCLUDE_CHAT_IDS: ${GLOBAL_EXCLUDE_CHAT_IDS:-}
+      PRIVATE_INCLUDE_CHAT_IDS: ${PRIVATE_INCLUDE_CHAT_IDS:-}
+      PRIVATE_EXCLUDE_CHAT_IDS: ${PRIVATE_EXCLUDE_CHAT_IDS:-}
+      GROUPS_INCLUDE_CHAT_IDS: ${GROUPS_INCLUDE_CHAT_IDS:-}
+      GROUPS_EXCLUDE_CHAT_IDS: ${GROUPS_EXCLUDE_CHAT_IDS:-}
+      CHANNELS_INCLUDE_CHAT_IDS: ${CHANNELS_INCLUDE_CHAT_IDS:-}
+      CHANNELS_EXCLUDE_CHAT_IDS: ${CHANNELS_EXCLUDE_CHAT_IDS:-}
 
       # Database Configuration (v3.0+)
       # Option 1: DATABASE_URL (takes priority)
@@ -46,25 +59,23 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
 
-      # Granular Filtering
-      GLOBAL_INCLUDE_CHAT_IDS: ${GLOBAL_INCLUDE_CHAT_IDS:-}
-      GLOBAL_EXCLUDE_CHAT_IDS: ${GLOBAL_EXCLUDE_CHAT_IDS:-}
-
-      PRIVATE_INCLUDE_CHAT_IDS: ${PRIVATE_INCLUDE_CHAT_IDS:-}
-      PRIVATE_EXCLUDE_CHAT_IDS: ${PRIVATE_EXCLUDE_CHAT_IDS:-}
-
-      GROUPS_INCLUDE_CHAT_IDS: ${GROUPS_INCLUDE_CHAT_IDS:-}
-      GROUPS_EXCLUDE_CHAT_IDS: ${GROUPS_EXCLUDE_CHAT_IDS:-}
-
-      CHANNELS_INCLUDE_CHAT_IDS: ${CHANNELS_INCLUDE_CHAT_IDS:-}
-      CHANNELS_EXCLUDE_CHAT_IDS: ${CHANNELS_EXCLUDE_CHAT_IDS:-}
-
-      # Real-time Sync Options
-      # ENABLE_LISTENER: Catches edits/deletions in real-time (recommended)
+      # Real-time Listener
+      # ENABLE_LISTENER is the master switch — when false, all LISTEN_* vars are ignored
       ENABLE_LISTENER: ${ENABLE_LISTENER:-false}
-      # SYNC_DELETIONS_EDITS: Batch-check ALL messages for edits/deletions (expensive!)
+      # Granular listener controls (only apply when ENABLE_LISTENER=true):
+      # LISTEN_EDITS: ${LISTEN_EDITS:-true}
+      # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-true}
+      # LISTEN_NEW_MESSAGES: ${LISTEN_NEW_MESSAGES:-true}
+      # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-false}
+      # LISTEN_CHAT_ACTIONS: ${LISTEN_CHAT_ACTIONS:-true}
+
+      # Mass operation protection (only applies when ENABLE_LISTENER=true)
+      # MASS_OPERATION_THRESHOLD: ${MASS_OPERATION_THRESHOLD:-10}
+      # MASS_OPERATION_WINDOW_SECONDS: ${MASS_OPERATION_WINDOW_SECONDS:-30}
+      # MASS_OPERATION_BUFFER_DELAY: ${MASS_OPERATION_BUFFER_DELAY:-2.0}
+
+      # Batch sync alternative (expensive — prefer ENABLE_LISTENER instead)
       SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
-      # VERIFY_MEDIA: Re-download missing/corrupted media files
       VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
 
       # Logging
@@ -105,12 +116,31 @@ services:
       - "8000:8000"
     environment:
       BACKUP_PATH: /data/backups
-      # Optional basic auth for the viewer (recommended)
+
+      # Authentication (recommended — set both to enable)
       VIEWER_USERNAME: ${VIEWER_USERNAME:-}
       VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
-      # Timezone for displaying last backup time
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-30}
+
+      # Display
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
-      # Database Configuration - MUST MATCH telegram-backup service!
+      SHOW_STATS: ${SHOW_STATS:-true}
+      # Restrict viewer to specific chats (optional)
+      # DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}
+
+      # Security
+      # CORS_ORIGINS: comma-separated allowed origins (default: * = allow all)
+      # CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # SECURE_COOKIES: set Secure flag on auth cookies (disable for local HTTP dev)
+      # SECURE_COOKIES: ${SECURE_COOKIES:-true}
+
+      # Notifications
+      # PUSH_NOTIFICATIONS: ${PUSH_NOTIFICATIONS:-basic}
+      # VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      # VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      # VAPID_CONTACT: ${VAPID_CONTACT:-mailto:admin@example.com}
+
+      # Database Configuration — MUST MATCH telegram-backup service!
       # If viewer shows no data, ensure these match the backup container
       DATABASE_URL: ${DATABASE_URL:-}
       DB_TYPE: ${DB_TYPE:-sqlite}
@@ -120,6 +150,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-telegram}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
     volumes:
       - ./data:/data:ro
     networks:
