@@ -6,6 +6,7 @@ Media data is now stored only in the media table, not duplicated in messages.
 """
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -51,9 +52,9 @@ class Chat(Base):
     )
 
     # Relationships
-    messages: Mapped[list[Message]] = relationship("Message", back_populates="chat", lazy="dynamic")
-    sync_status: Mapped[SyncStatus | None] = relationship("SyncStatus", back_populates="chat", uselist=False)
-    forum_topics: Mapped[list[ForumTopic]] = relationship("ForumTopic", back_populates="chat", lazy="dynamic")
+    messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat", lazy="dynamic")
+    sync_status: Mapped[Optional["SyncStatus"]] = relationship("SyncStatus", back_populates="chat", uselist=False)
+    forum_topics: Mapped[list["ForumTopic"]] = relationship("ForumTopic", back_populates="chat", lazy="dynamic")
 
     __table_args__ = (Index("idx_chats_username", "username"),)
 
@@ -85,16 +86,16 @@ class Message(Base):
     is_pinned: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 - whether this message is pinned
 
     # Relationships
-    chat: Mapped[Chat] = relationship("Chat", back_populates="messages")
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
     # NOTE: sender relationship works via ORM join, no DB-level FK (sender_id can be channel/group IDs)
-    sender: Mapped[User | None] = relationship(
+    sender: Mapped[Optional["User"]] = relationship(
         "User",
         back_populates="messages",
         primaryjoin="Message.sender_id == User.id",
         foreign_keys="[Message.sender_id]",
     )
-    reactions: Mapped[list[Reaction]] = relationship("Reaction", back_populates="message", lazy="dynamic")
-    media_items: Mapped[list[Media]] = relationship("Media", back_populates="message", lazy="selectin")
+    reactions: Mapped[list["Reaction"]] = relationship("Reaction", back_populates="message", lazy="dynamic")
+    media_items: Mapped[list["Media"]] = relationship("Media", back_populates="message", lazy="selectin")
 
     __table_args__ = (
         Index("idx_messages_chat_id", "chat_id"),
@@ -129,7 +130,7 @@ class User(Base):
 
     # Relationships
     # NOTE: Explicit join because sender_id has no DB-level FK (can contain channel/group IDs)
-    messages: Mapped[list[Message]] = relationship(
+    messages: Mapped[list["Message"]] = relationship(
         "Message",
         back_populates="sender",
         primaryjoin="User.id == Message.sender_id",
@@ -165,7 +166,7 @@ class Media(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
 
     # Relationship to message
-    message: Mapped[Message | None] = relationship(
+    message: Mapped[Optional["Message"]] = relationship(
         "Message",
         back_populates="media_items",
         primaryjoin="and_(Media.message_id==Message.id, Media.chat_id==Message.chat_id)",
@@ -196,7 +197,7 @@ class Reaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
 
     # Relationship to message (composite foreign key)
-    message: Mapped[Message] = relationship(
+    message: Mapped["Message"] = relationship(
         "Message",
         back_populates="reactions",
         primaryjoin="and_(Reaction.message_id==Message.id, Reaction.chat_id==Message.chat_id)",
@@ -224,7 +225,7 @@ class SyncStatus(Base):
     message_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationship
-    chat: Mapped[Chat] = relationship("Chat", back_populates="sync_status")
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="sync_status")
 
 
 class Metadata(Base):
@@ -275,7 +276,7 @@ class ForumTopic(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
 
     # Relationships
-    chat: Mapped[Chat] = relationship("Chat", back_populates="forum_topics")
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="forum_topics")
 
     __table_args__ = (Index("idx_forum_topics_chat", "chat_id"),)
 
@@ -296,7 +297,7 @@ class ChatFolder(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
 
     # Relationships
-    members: Mapped[list[ChatFolderMember]] = relationship(
+    members: Mapped[list["ChatFolderMember"]] = relationship(
         "ChatFolderMember", back_populates="folder", cascade="all, delete-orphan"
     )
 
@@ -313,8 +314,8 @@ class ChatFolderMember(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id", ondelete="CASCADE"), primary_key=True)
 
     # Relationships
-    folder: Mapped[ChatFolder] = relationship("ChatFolder", back_populates="members")
-    chat: Mapped[Chat] = relationship("Chat")
+    folder: Mapped["ChatFolder"] = relationship("ChatFolder", back_populates="members")
+    chat: Mapped["Chat"] = relationship("Chat")
 
     __table_args__ = (
         Index("idx_folder_members_chat", "chat_id"),
