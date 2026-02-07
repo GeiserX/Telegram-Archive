@@ -6,7 +6,6 @@ Supports both SQLite and PostgreSQL with proper configuration for each.
 
 import logging
 import os
-import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
@@ -167,8 +166,15 @@ class DatabaseManager:
         return "Unknown"
 
     def _safe_url(self) -> str:
-        """Return URL with password masked for logging."""
-        return re.sub(r"(://[^:]+:)[^@]+(@)", r"\1***\2", self.database_url)
+        """Return database description for logging (no credentials)."""
+        if self._is_sqlite:
+            return self.database_url
+        # Build from non-sensitive env vars to avoid taint tracking
+        host = os.getenv("POSTGRES_HOST", "localhost")
+        port = os.getenv("POSTGRES_PORT", "5432")
+        user = os.getenv("POSTGRES_USER", "telegram")
+        db = os.getenv("POSTGRES_DB", "telegram_backup")
+        return f"postgresql://{user}:***@{host}:{port}/{db}"
 
     @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
