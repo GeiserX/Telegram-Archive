@@ -12,6 +12,11 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 - **`SECURE_COOKIES` auto-detection** — Default changed from `true` to auto-detect. The viewer now inspects the `X-Forwarded-Proto` header and request scheme to set the `Secure` cookie flag automatically. Behind HTTPS reverse proxies it is `Secure`; over plain HTTP it is not. Explicit `true`/`false` override still works. This fixes silent login failures for users accessing the viewer over HTTP without setting the env var.
 
+### Fixed
+
+- **Archived chats visible in restricted viewers** — The `/api/archived/count` endpoint now respects `DISPLAY_CHAT_IDS`, so the "Archived Chats" row only appears if there are actually archived chats visible to the viewer instance.
+- **Doubled archived chats on first click** — Fixed an infinite scroll race condition where navigating to the archived view could trigger a concurrent append fetch (stale `hasMoreChats` from the previous view), duplicating all chat entries on first visit.
+
 ## [6.2.9] - 2026-02-07
 
 ### Fixed
