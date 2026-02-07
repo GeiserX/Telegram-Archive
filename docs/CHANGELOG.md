@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.9] - 2026-02-07
+
+### Fixed
+
+- **Viewer blank blue page** — Vue.js 3 in-browser template compiler requires `'unsafe-eval'` in the CSP `script-src` directive (it uses `new Function()` internally). Without it, Vue loads but silently fails to compile templates, leaving a blank page. Added `'unsafe-eval'` to fix rendering. Bug present since v6.2.3.
+
 ## [6.2.8] - 2026-02-07
 
 ### Fixed
