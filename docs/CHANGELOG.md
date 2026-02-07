@@ -6,6 +6,16 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.7] - 2026-02-07
+
+### Changed
+
+- **Python 3.14 base image** — Bumped Docker base from `python:3.11-slim` to `python:3.14-slim` in both `Dockerfile` and `Dockerfile.viewer`. All dependencies have pre-built cp314 wheels.
+- **Python 3.14 type annotations** — Removed string quotes from forward references (PEP 649 deferred evaluation), replaced `Optional[X]` with `X | None`, simplified `AsyncGenerator` type args (PEP 585).
+- **PEP 758 except formatting** — Unparenthesized except clauses now used where applicable.
+- **CI updated to Python 3.14** — Tests and lint workflows now run on Python 3.14.
+- **Dependabot dev image builds skipped** — `docker-publish-dev` workflow no longer fails on Dependabot PRs (they lack Docker Hub secrets).
+
 ## [6.2.6] - 2026-02-07
 
 ### Fixed
