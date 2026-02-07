@@ -265,7 +265,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
 | **Security** | | | |
 | `CORS_ORIGINS` | `*` | V | Allowed CORS origins, comma-separated (e.g., `https://my.domain.com`). Credentials auto-disabled when `*` |
-| `SECURE_COOKIES` | `true` | V | Set `Secure` flag on auth cookies. Disable (`false`) only for local HTTP development |
+| `SECURE_COOKIES` | `auto` | V | `Secure` flag on auth cookies. Auto-detects from request protocol (`X-Forwarded-Proto` / scheme). Override with `true` or `false` |
 | **Notifications** | | | |
 | `PUSH_NOTIFICATIONS` | `basic` | V | `off` = disabled, `basic` = in-browser only, `full` = Web Push (works with browser closed) |
 | `VAPID_PRIVATE_KEY` | *auto-generated* | V | Custom VAPID private key for Web Push |

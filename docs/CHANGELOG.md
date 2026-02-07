@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.10] - 2026-02-07
+
+### Changed
+
+- **`SECURE_COOKIES` auto-detection** — Default changed from `true` to auto-detect. The viewer now inspects the `X-Forwarded-Proto` header and request scheme to set the `Secure` cookie flag automatically. Behind HTTPS reverse proxies it is `Secure`; over plain HTTP it is not. Explicit `true`/`false` override still works. This fixes silent login failures for users accessing the viewer over HTTP without setting the env var.
+
 ## [6.2.9] - 2026-02-07
 
 ### Fixed
