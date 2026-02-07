@@ -70,7 +70,7 @@ class TelegramBackup:
         return get_peer_id(entity)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> "TelegramBackup":
+    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramBackup:
         """
         Factory method to create TelegramBackup with initialized database.
 

@@ -16,7 +16,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -162,7 +162,7 @@ stats_task: asyncio.Task | None = None
 realtime_listener: RealtimeListener | None = None
 
 # Push notification manager (Web Push API)
-push_manager: Optional["PushNotificationManager"] = None
+push_manager: PushNotificationManager | None = None
 
 
 async def handle_realtime_notification(payload: dict):
@@ -246,7 +246,7 @@ async def stats_calculation_scheduler():
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifecycle - initialize and cleanup database."""
     global db, stats_task
     logger.info("Initializing database connection...")
