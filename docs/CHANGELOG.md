@@ -6,6 +6,16 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.4] - 2026-02-07
+
+### Changed
+
+- **Unified environment variables reference** — Consolidated 8+ scattered subsections into one comprehensive table with Scope column (B=backup, V=viewer, B/V=both) and bold category separators.
+- **Documented missing env vars** — Added `CORS_ORIGINS`, `SECURE_COOKIES`, and `MASS_OPERATION_BUFFER_DELAY` to the reference table.
+- **`ENABLE_LISTENER` master switch** — Prominently documented that `ENABLE_LISTENER=false` disables all `LISTEN_*` and `MASS_OPERATION_*` variables.
+- **docker-compose.yml** — Added all missing env vars to both backup and viewer services (listener sub-settings, mass operation, CORS, secure cookies, notifications).
+- **.env.example** — Complete rewrite with all variables organized into clear sections.
+
 ## [6.2.3] - 2026-02-07
 
 ### Added
