@@ -6,6 +6,20 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.5] - 2026-02-07
+
+### Fixed
+
+- **CodeQL security alerts resolved** — Replaced weak SHA256 auth token with PBKDF2-SHA256 (600k iterations), fixed stack trace exposure in `/internal/push`, and eliminated clear-text password logging by constructing log-safe strings from non-sensitive env vars.
+- **CORS credentials with wildcard origins** — Disabled `allow_credentials` when `CORS_ORIGINS=*` (browser security requirement).
+- **Auth cookie `Secure` flag** — Cookie now sets `Secure=true` by default, configurable via `SECURE_COOKIES` env var.
+- **`/internal/push` access control** — Endpoint restricted to private IPs only (loopback + RFC 1918).
+- **Dependabot config** — Removed invalid duplicate Docker ecosystem entry.
+
+### Changed
+
+- **Roadmap updated** — Reflects current v6.x implementation, reordered milestones, added new feature ideas.
+
 ## [6.2.4] - 2026-02-07
 
 ### Changed
