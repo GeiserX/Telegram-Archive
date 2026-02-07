@@ -81,6 +81,15 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check if idx_messages_reply_to index exists (added in migration 005)
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM pg_indexes
+            WHERE indexname = 'idx_messages_reply_to'
+        );
+    \"\"\")
+    has_005_index = cur.fetchone()[0]
+
     # Check if is_pinned column exists (added in migration 004)
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -100,7 +109,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
     
     # Determine which version to stamp based on existing schema
-    if has_is_pinned:
+    if has_005_index:
+        stamp_version = '005'
+    elif has_is_pinned:
         stamp_version = '004'
     elif has_push_subs:
         stamp_version = '003'
@@ -131,10 +142,63 @@ print('Migrations complete.')
 from alembic.config import Config
 from alembic import command
 import os
+import sqlite3
 
 db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
 url = f'sqlite:///{db_path}'
 
+# Check if this is a pre-Alembic database that needs stamping
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+
+# Check if alembic_version table exists
+cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'\")
+has_alembic = cur.fetchone() is not None
+
+# Check if chats table exists (pre-existing database)
+cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='chats'\")
+has_tables = cur.fetchone() is not None
+
+if has_tables and not has_alembic:
+    print('Detected pre-Alembic SQLite database. Stamping with current version...')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS alembic_version (
+            version_num VARCHAR(32) NOT NULL,
+            CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+        )
+    ''')
+
+    # Check for idx_messages_reply_to index (added in migration 005)
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_reply_to'\")
+    has_005_index = cur.fetchone() is not None
+
+    # Check if is_pinned column exists (added in migration 004)
+    cur.execute(\"PRAGMA table_info(messages)\")
+    msg_columns = {row[1] for row in cur.fetchall()}
+    has_is_pinned = 'is_pinned' in msg_columns
+
+    # Check if push_subscriptions table exists (added in migration 003)
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='push_subscriptions'\")
+    has_push_subs = cur.fetchone() is not None
+
+    # Determine which version to stamp based on existing schema
+    if has_005_index:
+        stamp_version = '005'
+    elif has_is_pinned:
+        stamp_version = '004'
+    elif has_push_subs:
+        stamp_version = '003'
+    else:
+        stamp_version = '002'
+
+    cur.execute(f\"INSERT INTO alembic_version (version_num) VALUES ('{stamp_version}')\")
+    conn.commit()
+    print(f'Database stamped at version {stamp_version}')
+
+cur.close()
+conn.close()
+
+# Now run normal Alembic upgrade
 config = Config('/app/alembic.ini')
 config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
