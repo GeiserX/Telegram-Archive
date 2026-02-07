@@ -155,7 +155,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
     volumes:
-      - ./data:/data:ro
+      # SQLite needs write access for WAL journal files (.db-wal, .db-shm).
+      # Use :ro only if you are using PostgreSQL as the database backend.
+      - ./data:/data
     networks:
       - telegram-network
     # Security hardening
