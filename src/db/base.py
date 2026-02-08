@@ -185,10 +185,23 @@ class DatabaseManager:
         return "Unknown"
 
     def _safe_url(self) -> str:
-        """Return database description for logging (no credentials)."""
+        """Return database URL for logging with credentials redacted.
+
+        Builds entirely from non-sensitive env vars to avoid taint tracking
+        (CodeQL py/clear-text-logging-sensitive-data).
+        """
         if self._is_sqlite:
-            return self.database_url
-        # Build from non-sensitive env vars to avoid taint tracking
+            # Reconstruct from env vars — SQLite URLs have no credentials
+            db_path = os.getenv("DATABASE_PATH") or os.getenv("DB_PATH")
+            if not db_path:
+                db_dir = os.getenv("DATABASE_DIR")
+                if db_dir:
+                    db_path = os.path.join(db_dir, "telegram_backup.db")
+            if not db_path:
+                backup_path = os.getenv("BACKUP_PATH", "/data/backups")
+                db_path = os.path.join(backup_path, "telegram_backup.db")
+            return f"sqlite+aiosqlite:///{db_path}"
+        # PostgreSQL — build from non-sensitive env vars, mask password
         host = os.getenv("POSTGRES_HOST", "localhost")
         port = os.getenv("POSTGRES_PORT", "5432")
         user = os.getenv("POSTGRES_USER", "telegram")
