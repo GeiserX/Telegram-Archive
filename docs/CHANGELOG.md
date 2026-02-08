@@ -6,6 +6,14 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Backup summary showing zero stats** — The backup completion summary (`Total chats: 0`, `Total messages: 0`, etc.) now calculates statistics directly instead of reading cached values from the viewer. This also pre-populates the stats cache for the viewer on first startup.
+
+### Security
+
+- **Redacted database URL in logs** — The `_safe_url()` method now reconstructs the logged URL entirely from non-sensitive environment variables, ensuring no credential leakage even when `DATABASE_URL` contains a password (CodeQL `py/clear-text-logging-sensitive-data`).
+
 ## [6.2.10] - 2026-02-07
 
 ### Changed

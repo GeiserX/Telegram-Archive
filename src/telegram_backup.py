@@ -385,9 +385,9 @@ class TelegramBackup:
             logger.info("Backing up chat folders...")
             await self._backup_folders()
 
-            # Log statistics
+            # Calculate and cache statistics (also updates metadata for the viewer)
             duration = (datetime.now() - start_time).total_seconds()
-            stats = await self.db.get_statistics()
+            stats = await self.db.calculate_and_store_statistics()
 
             # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
 
