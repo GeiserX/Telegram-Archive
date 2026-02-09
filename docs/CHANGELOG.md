@@ -6,6 +6,15 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.12] - 2026-02-09
+
+### Fixed
+
+- **Forum topics always showing same messages** — The auto-refresh (every 3s) was fetching messages without the `topic_id` filter, immediately replacing topic-specific messages with all chat messages. Now properly passes `topic_id` during refresh.
+- **"Deleted Account" shown as group name in forum chats** — Clicking a topic passed a minimal object (only `id` and `is_forum`) to the message view, causing `getChatName()` to fall through to "Deleted Account". Now stores and passes the full chat object with title/name fields.
+
+## [6.2.11] - 2026-02-08
+
 ### Fixed
 
 - **Backup summary showing zero stats** — The backup completion summary (`Total chats: 0`, `Total messages: 0`, etc.) now calculates statistics directly instead of reading cached values from the viewer. This also pre-populates the stats cache for the viewer on first startup.
