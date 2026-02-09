@@ -500,7 +500,7 @@
                             <span class="text-sm">No topics found</span>
                         </div>
                         <div v-else v-for="topic in topics" :key="topic.id"
-                            @click="selectTopic({ id: topicsNavEntry.chatId, is_forum: true }, topic)"
+                            @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, topic)"
                             class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
                             :class="{'bg-tg-active': currentNav.topicId === topic.id}"
                             <!-- Topic icon -->
@@ -1508,7 +1508,8 @@
                 }
                 
                 const openForumTopics = async (chat) => {
-                    navigateTo({ type: 'topics', chatId: chat.id, chatName: getChatName(chat) })
+                    // v6.2.12: Store full chat object so selectTopic can use it for display name
+                    navigateTo({ type: 'topics', chatId: chat.id, chatName: getChatName(chat), chat: chat })
                     await loadTopics(chat.id)
                 }
                 
@@ -2348,7 +2349,13 @@
                     
                     try {
                         // Get latest messages (just first page)
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`, {
+                        // v6.2.12: Include topic_id filter when viewing a forum topic
+                        let refreshUrl = `/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`
+                        const nav = currentNav.value
+                        if (nav.type === 'chat' && nav.topicId) {
+                            refreshUrl += `&topic_id=${nav.topicId}`
+                        }
+                        const res = await fetch(refreshUrl, {
                             credentials: 'include'
                         })
                         if (!res.ok) return
