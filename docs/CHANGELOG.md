@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.13] - 2026-02-11
+
+### Fixed
+
+- **Push notifications requiring re-enable** — Push subscriptions can expire (browser push service decides when), causing notifications to silently stop working. The viewer now auto-resubscribes on page load when the browser permission is still granted but the subscription was lost. A `localStorage` flag remembers the user's opt-in preference across subscription losses.
+- **Push subscription renewal while tab closed** — Added `pushsubscriptionchange` handler in the service worker so the browser can auto-renew the push subscription even when no tab is open, keeping notifications working indefinitely.
+
+### Changed
+
+- **Refactored push subscription sync** — Extracted `syncSubscriptionToServer()` helper to share logic between initial subscribe, auto-resubscribe, and subscription renewal flows.
+
 ## [6.2.12] - 2026-02-09
 
 ### Fixed

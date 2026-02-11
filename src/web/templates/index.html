@@ -1913,11 +1913,18 @@
                                     pushSubscribed.value = true
                                     console.log('[Push] Already subscribed')
                                     
+                                    // Re-sync to server in case endpoint/keys changed
+                                    await syncSubscriptionToServer(pushSubscription)
+                                    
                                     // Check if browser has blocked notifications
                                     if (notificationPermission.value === 'denied') {
                                         notificationsBlocked.value = true
-                                        console.log('[Push] ⚠️ Subscribed but notifications blocked by browser')
+                                        console.log('[Push] Subscribed but notifications blocked by browser')
                                     }
+                                } else if (notificationPermission.value === 'granted' && localStorage.getItem('push_enabled') === 'true') {
+                                    // Subscription expired/lost but permission still granted and user previously opted in
+                                    console.log('[Push] Subscription expired, auto-resubscribing...')
+                                    await subscribeToPush()
                                 }
                             }
                         } catch (e) {
@@ -1954,6 +1961,29 @@
                         outputArray[i] = rawData.charCodeAt(i)
                     }
                     return outputArray
+                }
+                
+                // Sync a push subscription to the server (shared by subscribe and auto-resubscribe)
+                const syncSubscriptionToServer = async (sub) => {
+                    try {
+                        const response = await fetch('/api/push/subscribe', {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(sub.toJSON())
+                        })
+                        if (response.ok) {
+                            pushSubscribed.value = true
+                            return true
+                        } else {
+                            const errorText = await response.text()
+                            console.error('[Push] Server rejected subscription:', response.status, errorText)
+                            return false
+                        }
+                    } catch (e) {
+                        console.error('[Push] Server sync error:', e)
+                        return false
+                    }
                 }
                 
                 const subscribeToPush = async () => {
@@ -1996,22 +2026,12 @@
                         
                         // Send subscription to server
                         console.log('[Push] Sending subscription to server...')
-                        const response = await fetch('/api/push/subscribe', {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(pushSubscription.toJSON())
-                        })
-                        
-                        if (response.ok) {
-                            pushSubscribed.value = true
-                            console.log('[Push] ✅ Subscribed successfully')
-                            return true
-                        } else {
-                            const errorText = await response.text()
-                            console.error('[Push] Server rejected subscription:', response.status, errorText)
-                            return false
+                        const ok = await syncSubscriptionToServer(pushSubscription)
+                        if (ok) {
+                            localStorage.setItem('push_enabled', 'true')
+                            console.log('[Push] Subscribed successfully')
                         }
+                        return ok
                     } catch (e) {
                         console.error('[Push] Subscription error:', e.name, e.message, e)
                         return false
@@ -2035,6 +2055,7 @@
                         
                         pushSubscription = null
                         pushSubscribed.value = false
+                        localStorage.removeItem('push_enabled')
                         console.log('[Push] Unsubscribed')
                     } catch (e) {
                         console.error('[Push] Unsubscribe error:', e)

@@ -139,6 +139,31 @@ self.addEventListener('notificationclose', (event) => {
     console.log('[SW] Notification closed');
 });
 
+// Handle push subscription expiry/renewal (auto-resubscribe)
+self.addEventListener('pushsubscriptionchange', (event) => {
+    console.log('[SW] Push subscription changed, re-subscribing...');
+    event.waitUntil(
+        self.registration.pushManager.subscribe(
+            event.oldSubscription ? event.oldSubscription.options : { userVisibleOnly: true }
+        ).then((newSub) => {
+            return fetch('/api/push/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(newSub.toJSON())
+            });
+        }).then((response) => {
+            if (response.ok) {
+                console.log('[SW] Re-subscribed after subscription change');
+            } else {
+                console.error('[SW] Re-subscribe failed:', response.status);
+            }
+        }).catch((err) => {
+            console.error('[SW] Re-subscribe error:', err);
+        })
+    );
+});
+
 // Handle messages from the main page
 self.addEventListener('message', (event) => {
     console.log('[SW] Message received:', event.data);
