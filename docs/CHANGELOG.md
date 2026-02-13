@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.14] - 2026-02-13
+
+### Fixed
+
+- **PostgreSQL migrations silently rolled back** — The advisory lock used to serialize concurrent migrations was acquired before Alembic's `context.configure()`, triggering SQLAlchemy's autobegin. Alembic detected this as an external transaction and skipped its own transaction management, so DDL changes (new columns, tables) were never committed. Switched to `pg_advisory_xact_lock()` inside the transaction block so Alembic properly commits. Fixes [#70](https://github.com/GeiserX/Telegram-Archive/issues/70).
+
 ## [6.2.13] - 2026-02-11
 
 ### Fixed

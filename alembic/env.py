@@ -108,29 +108,30 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations within a connection context.
 
-    Uses a PostgreSQL advisory lock to prevent concurrent migrations
-    from deadlocking when multiple containers start simultaneously.
+    Uses a PostgreSQL transaction-scoped advisory lock to prevent concurrent
+    migrations from deadlocking when multiple containers start simultaneously.
+
+    IMPORTANT: The advisory lock MUST be acquired inside begin_transaction(),
+    not before context.configure(). Executing any SQL before configure() triggers
+    SQLAlchemy's autobegin, which causes Alembic to detect an "external transaction"
+    (_in_external_transaction=True) and skip its own transaction management. This
+    results in DDL being silently rolled back when the connection closes.
     """
-    # Acquire advisory lock for PostgreSQL to serialize migrations
-    is_pg = connection.dialect.name == "postgresql"
-    if is_pg:
-        connection.execute(text("SELECT pg_advisory_lock(7483920165)"))
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # Compare types for detecting column type changes
+        compare_type=True,
+        # Compare server defaults
+        compare_server_default=True,
+    )
 
-    try:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            # Compare types for detecting column type changes
-            compare_type=True,
-            # Compare server defaults
-            compare_server_default=True,
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
-    finally:
-        if is_pg:
-            connection.execute(text("SELECT pg_advisory_unlock(7483920165)"))
+    with context.begin_transaction():
+        # Acquire transaction-scoped advisory lock inside the transaction.
+        # pg_advisory_xact_lock auto-releases when the transaction commits/rolls back.
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(7483920165)"))
+        context.run_migrations()
 
 
 async def run_async_migrations() -> None:
