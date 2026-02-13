@@ -238,6 +238,47 @@ When modifying database code, verify:
 - [ ] INSERT and UPDATE operations handle the same fields identically
 - [ ] Tests exist in `tests/test_db_adapter.py` for data type handling
 
+## Alembic Migrations (CRITICAL)
+
+### Architecture
+
+- Migrations live in `alembic/versions/` with format `YYYYMMDD_REV_slug.py`
+- Sequential integer revisions: `001`, `002`, ..., `006`, etc.
+- `alembic/env.py` runs migrations via async SQLAlchemy (`asyncpg` for PG, `aiosqlite` for SQLite)
+- `scripts/entrypoint.sh` calls `alembic upgrade head` on container start (backup container only, not viewer)
+- The entrypoint also handles **pre-Alembic stamping** for databases that existed before migrations were added
+
+### Writing a New Migration
+
+1. Create file: `alembic/versions/YYYYMMDD_NNN_slug.py`
+2. Set `revision = "NNN"` and `down_revision = "NNN-1"`
+3. Use `op.add_column()`, `op.create_table()`, `op.create_index()`, etc.
+4. Both SQLite and PostgreSQL must be supported -- check `conn.dialect.name` when behavior differs
+5. Update the pre-Alembic stamping logic in `entrypoint.sh` if the new migration adds detectable schema (table, index, column) so existing databases get stamped correctly
+
+### Advisory Lock Rule (v6.2.14 bugfix)
+
+**NEVER execute SQL on the Alembic connection before `context.configure()`.**
+
+Any `connection.execute()` before `configure()` triggers SQLAlchemy's autobegin. Alembic then detects `_in_external_transaction=True` and returns `nullcontext()` from `begin_transaction()`, skipping its own commit. DDL runs but is silently rolled back when the connection closes.
+
+The correct pattern in `env.py`:
+
+```python
+def do_run_migrations(connection):
+    context.configure(connection=connection, ...)  # FIRST — no SQL before this
+
+    with context.begin_transaction():
+        # Advisory lock INSIDE the transaction, using xact variant (auto-releases on commit)
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(7483920165)"))
+        context.run_migrations()
+```
+
+### Entrypoint Stamping
+
+`entrypoint.sh` detects pre-Alembic databases and stamps them at the correct version by checking for schema artifacts (tables, columns, indexes). When adding migration `NNN`, add a detection check for it in the stamping logic so fresh installs and upgrades from any version work correctly.
+
 ## Testing Strategy
 
 ### Test Levels
