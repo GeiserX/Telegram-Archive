@@ -531,7 +531,7 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
 
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 async def get_chats(
-    limit: int = Query(50, ge=1, le=500, description="Number of chats to return"),
+    limit: int = Query(50, ge=1, le=1000, description="Number of chats to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     search: str = Query(None, description="Search query for chat names/usernames"),
     archived: bool | None = Query(None, description="Filter by archived status"),
@@ -548,7 +548,7 @@ async def get_chats(
         # If display_chat_ids is configured, we need to load all matching chats
         # Otherwise, use pagination
         if config.display_chat_ids:
-            chats = await db.get_all_chats(archived=archived, folder_id=folder_id)
+            chats = await db.get_all_chats(search=search, archived=archived, folder_id=folder_id)
             chats = [c for c in chats if c["id"] in config.display_chat_ids]
             total = len(chats)
             # Apply pagination after filtering
