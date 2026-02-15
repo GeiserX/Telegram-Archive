@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.16] - 2026-02-15
+
+### Fixed
+
+- **Messages intermittently fail to load when clicking chats** — Race condition in `selectChat`: if a previous message load was still in-flight (from another chat, scroll pagination, or auto-refresh), the `loading` gate caused `loadMessages()` to silently return without fetching. Added a version counter to invalidate stale requests and reset the loading gate on chat switch. Also fixes stale auto-refresh results from a previous chat bleeding into the current view.
+
 ## [6.2.15] - 2026-02-15
 
 ### Fixed

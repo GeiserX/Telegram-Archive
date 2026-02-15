@@ -1229,6 +1229,7 @@
                 const infiniteScrollSentinel = ref(null)
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
+                let chatVersion = 0  // Incremented on each selectChat to invalidate stale requests
                 
                 // Server-side search
                 const searchResults = ref([])
@@ -1514,6 +1515,11 @@
                 }
                 
                 const selectTopic = async (chat, topic) => {
+                    // Invalidate any in-flight loads from previous chat/topic
+                    const myVersion = ++chatVersion
+                    stopMessageRefresh()
+                    loading.value = false
+                    
                     // Push topic chat view onto nav stack
                     navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
                     selectedChat.value = chat
@@ -1526,8 +1532,10 @@
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false
                     await loadMessages()
+                    if (chatVersion !== myVersion) return
                     await loadChatStats(chat.id)
                     await nextTick()
+                    if (chatVersion !== myVersion) return
                     scrollToBottom()
                     setupMessagesScrollObserver()
                     startMessageRefresh()
@@ -2328,6 +2336,11 @@
                         return
                     }
                     
+                    // Invalidate any in-flight loads from previous chat
+                    const myVersion = ++chatVersion
+                    stopMessageRefresh()
+                    loading.value = false  // Reset gate so loadMessages can proceed
+                    
                     selectedChat.value = chat
                     messages.value = []
                     page.value = 0
@@ -2338,9 +2351,11 @@
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     await loadMessages()
+                    if (chatVersion !== myVersion) return  // Another chat was selected, abort
                     await loadChatStats(chat.id)  // Load stats for this chat
                     await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
                     await nextTick()
+                    if (chatVersion !== myVersion) return
                     scrollToBottom()
                     // Setup observer for auto-loading older messages
                     setupMessagesScrollObserver()
@@ -2368,6 +2383,7 @@
                 const checkForNewMessages = async () => {
                     if (!selectedChat.value) return
                     
+                    const myVersion = chatVersion
                     try {
                         // Get latest messages (just first page)
                         // v6.2.12: Include topic_id filter when viewing a forum topic
@@ -2379,7 +2395,7 @@
                         const res = await fetch(refreshUrl, {
                             credentials: 'include'
                         })
-                        if (!res.ok) return
+                        if (!res.ok || chatVersion !== myVersion) return
                         
                         const latestMessages = await res.json()
                         const latestIds = new Set(latestMessages.map(m => m.id))
@@ -2433,6 +2449,7 @@
                 const loadMessages = async () => {
                     if (loading.value || !hasMore.value || !selectedChat.value) return
 
+                    const myVersion = chatVersion
                     loading.value = true
                     try {
                         const limit = 50
@@ -2477,6 +2494,9 @@
                         const res = await fetch(url, {
                             credentials: 'include'
                         })
+                        // Discard result if chat changed while we were fetching
+                        if (chatVersion !== myVersion) return
+                        
                         const newMessages = await res.json()
 
                         if (newMessages.length < limit) {
@@ -2495,7 +2515,10 @@
                     } catch (e) {
                         console.error("Failed to load messages", e)
                     } finally {
-                        loading.value = false
+                        // Only reset loading if this is still the current chat
+                        if (chatVersion === myVersion) {
+                            loading.value = false
+                        }
                         // Re-observe the sentinel after DOM updates (Vue recreates the element)
                         await nextTick()
                         if (messagesScrollObserver && loadMoreSentinel.value) {
