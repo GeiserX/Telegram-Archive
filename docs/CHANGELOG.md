@@ -6,6 +6,13 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.2.15] - 2026-02-15
+
+### Fixed
+
+- **Chat search broken (silent 422 error)** — The search bar sent `limit=1000` but the API enforced `le=500`, causing FastAPI to reject every search request with a 422 validation error. The frontend silently swallowed the error, making search appear to return no results. Raised the API limit to 1000 to match the frontend.
+- **Chat search ignored in DISPLAY_CHAT_IDS mode** — When `DISPLAY_CHAT_IDS` was configured, the search query was never passed to the database, so typing in the search bar had no effect on the displayed chats.
+
 ## [6.2.14] - 2026-02-13
 
 ### Fixed
