@@ -272,6 +272,35 @@ class TestSkipMediaChatIds(unittest.TestCase):
             config = Config()
             self.assertEqual(config.skip_media_chat_ids, {-1001234567890, -1009876543210, 123456})
 
+    def test_skip_media_delete_existing_defaults_true(self):
+        """SKIP_MEDIA_DELETE_EXISTING defaults to true when not set."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.skip_media_delete_existing)
+
+    def test_skip_media_delete_existing_can_be_disabled(self):
+        """Can disable SKIP_MEDIA_DELETE_EXISTING to keep existing media."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_MEDIA_DELETE_EXISTING": "false",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.skip_media_delete_existing)
+
+    def test_skip_media_delete_existing_explicit_true(self):
+        """Can explicitly enable SKIP_MEDIA_DELETE_EXISTING."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_MEDIA_DELETE_EXISTING": "true",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.skip_media_delete_existing)
+
 
 if __name__ == "__main__":
     unittest.main()

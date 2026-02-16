@@ -97,6 +97,8 @@ class Config:
 
         # Skip media downloads for specific chats (but still backup message text)
         self.skip_media_chat_ids = self._parse_id_list(os.getenv("SKIP_MEDIA_CHAT_IDS", ""))
+        # Delete existing media files and records for chats in skip list (reclaim storage)
+        self.skip_media_delete_existing = os.getenv("SKIP_MEDIA_DELETE_EXISTING", "true").lower() == "true"
 
         # Session configuration
         self.session_name = os.getenv("SESSION_NAME", "telegram_backup")
@@ -270,7 +272,8 @@ class Config:
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
         if self.skip_media_chat_ids:
-            logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids}")
+            cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
+            logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
 
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""

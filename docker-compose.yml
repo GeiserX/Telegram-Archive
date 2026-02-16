@@ -23,6 +23,7 @@ services:
       # DEDUPLICATE_MEDIA: ${DEDUPLICATE_MEDIA:-true}
       # PRIORITY_CHAT_IDS: ${PRIORITY_CHAT_IDS:-}
       # SKIP_MEDIA_CHAT_IDS: ${SKIP_MEDIA_CHAT_IDS:-}
+      # SKIP_MEDIA_DELETE_EXISTING: ${SKIP_MEDIA_DELETE_EXISTING:-true}
       # STATS_CALCULATION_HOUR: ${STATS_CALCULATION_HOUR:-3}
 
       # =======================================================================

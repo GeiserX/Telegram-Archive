@@ -592,6 +592,10 @@ class TelegramBackup:
         chat_data = self._extract_chat_data(entity, is_archived=is_archived)
         await self.db.upsert_chat(chat_data)
 
+        # Clean up existing media if this chat is in the skip list
+        if chat_id in self.config.skip_media_chat_ids and self.config.skip_media_delete_existing:
+            await self._cleanup_existing_media(chat_id)
+
         # Ensure profile photos for users and groups/channels are backed up.
         # This runs on every dialog backup but only downloads new files when
         # Telegram reports a different profile photo.
@@ -1043,6 +1047,54 @@ class TelegramBackup:
                 logger.info(f"📷 Avatar downloaded: {avatar_path}")
         except Exception as e:
             logger.warning(f"Failed to download avatar for {file_id}: {e}")
+
+    async def _cleanup_existing_media(self, chat_id: int) -> None:
+        """
+        Delete existing media files and database records for a chat.
+        Used when a chat is added to SKIP_MEDIA_CHAT_IDS to reclaim storage.
+
+        Args:
+            chat_id: Chat identifier
+        """
+        try:
+            # Get all media records for this chat
+            media_records = await self.db.get_media_for_chat(chat_id)
+            if not media_records:
+                logger.debug(f"No existing media found for chat {chat_id}")
+                return
+
+            deleted_files = 0
+            deleted_records = 0
+            freed_bytes = 0
+
+            for record in media_records:
+                # Delete file from disk if it exists
+                file_path = record.get("file_path")
+                if file_path and os.path.exists(file_path):
+                    try:
+                        file_size = os.path.getsize(file_path)
+                        # Check if it's a symlink (deduplicated media)
+                        if os.path.islink(file_path):
+                            os.unlink(file_path)
+                        else:
+                            os.remove(file_path)
+                        deleted_files += 1
+                        freed_bytes += file_size
+                    except Exception as e:
+                        logger.warning(f"Failed to delete media file {file_path}: {e}")
+
+            # Delete all media records from database for this chat
+            deleted_records = await self.db.delete_media_for_chat(chat_id)
+
+            if deleted_files > 0 or deleted_records > 0:
+                freed_mb = freed_bytes / (1024 * 1024)
+                logger.info(
+                    f"Cleaned up existing media for chat {chat_id}: "
+                    f"{deleted_files} files ({freed_mb:.1f} MB), {deleted_records} DB records"
+                )
+
+        except Exception as e:
+            logger.error(f"Error cleaning up existing media for chat {chat_id}: {e}", exc_info=True)
 
     async def _process_media(self, message: Message, chat_id: int) -> dict | None:
         """
