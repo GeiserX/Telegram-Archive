@@ -216,6 +216,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
 | `BATCH_SIZE` | `100` | B | Messages processed per database batch |
+| `CHECKPOINT_INTERVAL` | `1` | B | Save backup progress every N batch inserts (lower = safer resume after crash) |
 | `DATABASE_TIMEOUT` | `60.0` | B/V | Database operation timeout in seconds |
 | `SESSION_NAME` | `telegram_backup` | B | Telethon session file name |
 | `DEDUPLICATE_MEDIA` | `true` | B | Symlink identical media files across chats to save disk space |

@@ -34,6 +34,9 @@ class Config:
 
         # Batch processing configuration
         self.batch_size = int(os.getenv("BATCH_SIZE", "100"))
+        # How often to checkpoint sync progress (every N batch inserts)
+        # Lower = better crash recovery, higher = fewer DB writes
+        self.checkpoint_interval = max(1, int(os.getenv("CHECKPOINT_INTERVAL", "1")))
 
         # Database Configuration
         # Timeout for SQLite operations (seconds).

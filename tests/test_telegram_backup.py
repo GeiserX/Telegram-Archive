@@ -252,5 +252,166 @@ class TestCleanupExistingMedia(unittest.TestCase):
         self._run(self.backup._cleanup_existing_media(-1001234567890))
 
 
+class TestBackupCheckpointing(unittest.TestCase):
+    """Test per-batch sync_status checkpointing in _backup_dialog."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+        self.config = MagicMock()
+        self.config.batch_size = 2
+        self.config.checkpoint_interval = 1
+        self.config.skip_media_chat_ids = set()
+        self.config.skip_media_delete_existing = False
+        self.config.sync_deletions_edits = False
+        self.config.media_path = os.path.join(self.temp_dir, "media")
+
+        self.db = AsyncMock()
+        self.db.get_last_message_id.return_value = 0
+
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.config = self.config
+        self.backup.db = self.db
+        self.backup.client = MagicMock()
+        self.backup._cleaned_media_chats = set()
+        self.backup._get_marked_id = MagicMock(return_value=100)
+        self.backup._extract_chat_data = MagicMock(return_value={"id": 100})
+        self.backup._ensure_profile_photo = AsyncMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _make_dialog(self):
+        dialog = MagicMock()
+        dialog.entity = MagicMock()
+        return dialog
+
+    def _make_message(self, msg_id):
+        msg = MagicMock()
+        msg.id = msg_id
+        return msg
+
+    def test_checkpoint_after_every_batch(self):
+        """With checkpoint_interval=1, sync_status updates after every batch."""
+        messages = [self._make_message(i) for i in range(1, 5)]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(side_effect=lambda m, c: {"id": m.id, "chat_id": c})
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog(), 100))
+
+        self.assertEqual(result, 4)
+        # 2 batches of 2 => 2 checkpoints, nothing left uncheckpointed
+        self.assertEqual(self.db.update_sync_status.await_count, 2)
+
+    def test_checkpoint_interval_greater_than_one(self):
+        """With checkpoint_interval=2, checkpoint only every 2nd batch."""
+        self.config.checkpoint_interval = 2
+        messages = [self._make_message(i) for i in range(1, 7)]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(side_effect=lambda m, c: {"id": m.id, "chat_id": c})
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog(), 200))
+
+        self.assertEqual(result, 6)
+        # 3 batches of 2, checkpoint_interval=2 => checkpoint at batch 2, then final for batch 3
+        self.assertEqual(self.db.update_sync_status.await_count, 2)
+
+    def test_final_flush_gets_checkpointed(self):
+        """Leftover messages (< batch_size) are flushed and checkpointed."""
+        messages = [self._make_message(i) for i in range(1, 4)]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(side_effect=lambda m, c: {"id": m.id, "chat_id": c})
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog(), 300))
+
+        self.assertEqual(result, 3)
+        # batch of 2 -> checkpoint, then 1 remaining -> final checkpoint
+        self.assertEqual(self.db.update_sync_status.await_count, 2)
+
+    def test_no_messages_no_checkpoint(self):
+        """When there are no new messages, no checkpoint should happen."""
+        async def fake_iter(*args, **kwargs):
+            return
+            yield  # noqa: unreachable - makes this an async generator
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock()
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog(), 400))
+
+        self.assertEqual(result, 0)
+        self.db.update_sync_status.assert_not_awaited()
+
+    def test_checkpoint_tracks_max_message_id(self):
+        """Checkpoint should pass the highest message ID seen so far."""
+        messages = [self._make_message(10), self._make_message(20)]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(side_effect=lambda m, c: {"id": m.id, "chat_id": c})
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        self._run(self.backup._backup_dialog(self._make_dialog(), 500))
+
+        call_args = self.db.update_sync_status.call_args
+        self.assertEqual(call_args[0][1], 20)
+
+    def test_commit_batch_called_correctly(self):
+        """_commit_batch persists messages, media and reactions."""
+        backup = TelegramBackup.__new__(TelegramBackup)
+        backup.db = AsyncMock()
+
+        batch = [
+            {"id": 1, "chat_id": 100, "_media_data": {"file_path": "/a.jpg"}, "reactions": None},
+            {"id": 2, "chat_id": 100, "reactions": [
+                {"emoji": "👍", "user_ids": [], "count": 3}
+            ]},
+        ]
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(backup._commit_batch(batch, 100))
+        finally:
+            loop.close()
+
+        backup.db.insert_messages_batch.assert_awaited_once_with(batch)
+        backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
+        backup.db.insert_reactions.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -613,84 +613,48 @@ class TelegramBackup:
         # Get last synced message ID for incremental backup
         last_message_id = await self.db.get_last_message_id(chat_id)
 
-        # Fetch new messages
-        messages = []
-        batch_data = []
+        # Fetch and process messages in batches with periodic checkpointing.
+        # sync_status is updated every checkpoint_interval batches so that
+        # a crash/restart only re-fetches messages since the last checkpoint
+        # instead of restarting the entire chat from scratch.
+        batch_data: list[dict] = []
         batch_size = self.config.batch_size
-        total_processed = 0
+        checkpoint_interval = self.config.checkpoint_interval
+        grand_total = 0
+        uncheckpointed_count = 0
+        batches_since_checkpoint = 0
+        running_max_id = last_message_id
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
-            messages.append(message)
-
-            # Process message
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
+            running_max_id = max(running_max_id, message.id)
 
-            # Batch insert every 50 messages
             if len(batch_data) >= batch_size:
-                await self.db.insert_messages_batch(batch_data)
-                # Insert media records AFTER messages (FK constraint satisfied)
-                for msg in batch_data:
-                    if msg.get("_media_data"):
-                        await self.db.insert_media(msg["_media_data"])
-                # Store reactions for this batch
-                for msg in batch_data:
-                    if msg.get("reactions"):
-                        reactions_list = []
-                        for reaction in msg["reactions"]:
-                            # Store each user's reaction separately if we have user info
-                            # Otherwise store as aggregated count
-                            if reaction.get("user_ids") and len(reaction["user_ids"]) > 0:
-                                # We have specific users - store each one
-                                for user_id in reaction["user_ids"]:
-                                    reactions_list.append({"emoji": reaction["emoji"], "user_id": user_id, "count": 1})
-                                # If count is higher than user_ids, add remaining as anonymous
-                                remaining = reaction.get("count", 0) - len(reaction["user_ids"])
-                                if remaining > 0:
-                                    reactions_list.append(
-                                        {"emoji": reaction["emoji"], "user_id": None, "count": remaining}
-                                    )
-                            else:
-                                # No user info - store as aggregated count
-                                reactions_list.append(
-                                    {"emoji": reaction["emoji"], "user_id": None, "count": reaction.get("count", 1)}
-                                )
-                        if reactions_list:
-                            await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
-                total_processed += len(batch_data)
-                logger.info(f"  → Processed {total_processed} messages...")
+                await self._commit_batch(batch_data, chat_id)
+                count = len(batch_data)
+                grand_total += count
+                uncheckpointed_count += count
+                batches_since_checkpoint += 1
+                logger.info(f"  → Processed {grand_total} messages...")
+
+                if batches_since_checkpoint >= checkpoint_interval:
+                    await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
+                    uncheckpointed_count = 0
+                    batches_since_checkpoint = 0
+
                 batch_data = []
 
-        # Insert remaining messages
+        # Flush remaining messages
         if batch_data:
-            await self.db.insert_messages_batch(batch_data)
-            # Insert media records AFTER messages (FK constraint satisfied)
-            for msg in batch_data:
-                if msg.get("_media_data"):
-                    await self.db.insert_media(msg["_media_data"])
-            # Store reactions for remaining messages
-            for msg in batch_data:
-                if msg.get("reactions"):
-                    reactions_list = []
-                    for reaction in msg["reactions"]:
-                        if reaction.get("user_ids") and len(reaction["user_ids"]) > 0:
-                            for user_id in reaction["user_ids"]:
-                                reactions_list.append({"emoji": reaction["emoji"], "user_id": user_id, "count": 1})
-                            remaining = reaction.get("count", 0) - len(reaction["user_ids"])
-                            if remaining > 0:
-                                reactions_list.append({"emoji": reaction["emoji"], "user_id": None, "count": remaining})
-                        else:
-                            reactions_list.append(
-                                {"emoji": reaction["emoji"], "user_id": None, "count": reaction.get("count", 1)}
-                            )
-                    if reactions_list:
-                        await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
-            total_processed += len(batch_data)
+            await self._commit_batch(batch_data, chat_id)
+            count = len(batch_data)
+            grand_total += count
+            uncheckpointed_count += count
 
-        # Update sync status
-        if messages:
-            max_message_id = max(msg.id for msg in messages)
-            await self.db.update_sync_status(chat_id, max_message_id, len(messages))
+        # Final checkpoint for any un-checkpointed messages
+        if uncheckpointed_count > 0:
+            await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
 
         # Sync deletions and edits if enabled (expensive!)
         if self.config.sync_deletions_edits:
@@ -699,7 +663,32 @@ class TelegramBackup:
         # Always sync pinned messages to keep them up-to-date
         await self._sync_pinned_messages(chat_id, entity)
 
-        return len(messages)
+        return grand_total
+
+    async def _commit_batch(self, batch_data: list[dict], chat_id: int) -> None:
+        """Persist a batch of processed messages, their media and reactions to the DB."""
+        await self.db.insert_messages_batch(batch_data)
+
+        for msg in batch_data:
+            if msg.get("_media_data"):
+                await self.db.insert_media(msg["_media_data"])
+
+        for msg in batch_data:
+            if msg.get("reactions"):
+                reactions_list: list[dict] = []
+                for reaction in msg["reactions"]:
+                    if reaction.get("user_ids") and len(reaction["user_ids"]) > 0:
+                        for user_id in reaction["user_ids"]:
+                            reactions_list.append({"emoji": reaction["emoji"], "user_id": user_id, "count": 1})
+                        remaining = reaction.get("count", 0) - len(reaction["user_ids"])
+                        if remaining > 0:
+                            reactions_list.append({"emoji": reaction["emoji"], "user_id": None, "count": remaining})
+                    else:
+                        reactions_list.append(
+                            {"emoji": reaction["emoji"], "user_id": None, "count": reaction.get("count", 1)}
+                        )
+                if reactions_list:
+                    await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
 
     async def _sync_deletions_and_edits(self, chat_id: int, entity):
         """
