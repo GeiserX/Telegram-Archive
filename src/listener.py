@@ -842,7 +842,7 @@ class TelegramListener:
                 # v6.0.0: Handle media - create Media record AFTER message exists
                 if media_type:
                     # Download media immediately if enabled
-                    if self.config.listen_new_messages_media and self.config.download_media:
+                    if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
                         try:
                             media_path = await self._download_media(message, chat_id)
                             if media_path:
