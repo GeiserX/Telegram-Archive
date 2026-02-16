@@ -94,8 +94,15 @@ class TestCleanupExistingMedia(unittest.TestCase):
             f.write(b"x" * 1024)
 
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "photo",
-             "file_path": file_path, "file_size": 1024, "downloaded": True}
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": file_path,
+                "file_size": 1024,
+                "downloaded": True,
+            }
         ]
         self.db.delete_media_for_chat.return_value = 1
 
@@ -121,8 +128,15 @@ class TestCleanupExistingMedia(unittest.TestCase):
         os.symlink(rel_path, symlink_path)
 
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "photo",
-             "file_path": symlink_path, "file_size": 2048, "downloaded": True}
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": symlink_path,
+                "file_size": 2048,
+                "downloaded": True,
+            }
         ]
         self.db.delete_media_for_chat.return_value = 1
 
@@ -144,8 +158,15 @@ class TestCleanupExistingMedia(unittest.TestCase):
             f.write(b"x" * 512)
 
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "photo",
-             "file_path": file_path, "file_size": 512, "downloaded": True}
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": file_path,
+                "file_size": 512,
+                "downloaded": True,
+            }
         ]
         self.db.delete_media_for_chat.return_value = 1
 
@@ -168,8 +189,15 @@ class TestCleanupExistingMedia(unittest.TestCase):
             f.write(b"y" * 256)
 
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "photo",
-             "file_path": tracked_file, "file_size": 512, "downloaded": True}
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": tracked_file,
+                "file_size": 512,
+                "downloaded": True,
+            }
         ]
         self.db.delete_media_for_chat.return_value = 1
 
@@ -191,8 +219,15 @@ class TestCleanupExistingMedia(unittest.TestCase):
         """Should handle records where file doesn't exist on disk."""
         chat_id = -1001234567890
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "photo",
-             "file_path": "/nonexistent/path.jpg", "file_size": 1024, "downloaded": True}
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": "/nonexistent/path.jpg",
+                "file_size": 1024,
+                "downloaded": True,
+            }
         ]
         self.db.delete_media_for_chat.return_value = 1
 
@@ -232,10 +267,24 @@ class TestCleanupExistingMedia(unittest.TestCase):
         os.symlink(rel_path, symlink_path)
 
         self.db.get_media_for_chat.return_value = [
-            {"id": "m1", "message_id": 1, "chat_id": chat_id, "type": "video",
-             "file_path": real_file, "file_size": 4096, "downloaded": True},
-            {"id": "m2", "message_id": 2, "chat_id": chat_id, "type": "photo",
-             "file_path": symlink_path, "file_size": 2048, "downloaded": True},
+            {
+                "id": "m1",
+                "message_id": 1,
+                "chat_id": chat_id,
+                "type": "video",
+                "file_path": real_file,
+                "file_size": 4096,
+                "downloaded": True,
+            },
+            {
+                "id": "m2",
+                "message_id": 2,
+                "chat_id": chat_id,
+                "type": "photo",
+                "file_path": symlink_path,
+                "file_size": 2048,
+                "downloaded": True,
+            },
         ]
         self.db.delete_media_for_chat.return_value = 2
 
@@ -358,6 +407,7 @@ class TestBackupCheckpointing(unittest.TestCase):
 
     def test_no_messages_no_checkpoint(self):
         """When there are no new messages, no checkpoint should happen."""
+
         async def fake_iter(*args, **kwargs):
             return
             yield  # noqa: unreachable - makes this an async generator
@@ -397,9 +447,7 @@ class TestBackupCheckpointing(unittest.TestCase):
 
         batch = [
             {"id": 1, "chat_id": 100, "_media_data": {"file_path": "/a.jpg"}, "reactions": None},
-            {"id": 2, "chat_id": 100, "reactions": [
-                {"emoji": "👍", "user_ids": [], "count": 3}
-            ]},
+            {"id": 2, "chat_id": 100, "reactions": [{"emoji": "👍", "user_ids": [], "count": 3}]},
         ]
 
         loop = asyncio.new_event_loop()
