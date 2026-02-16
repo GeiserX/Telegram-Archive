@@ -6,6 +6,21 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-02-16
+
+### Fixed
+
+- **Backup resume after crash/restart** — `sync_status` is now updated after every `CHECKPOINT_INTERVAL` batch inserts (default: 1) instead of only at the end of each chat. On crash or power outage, backup resumes from the last committed batch rather than re-fetching all messages for the current chat. Fixes [#76](https://github.com/GeiserX/Telegram-Archive/issues/76).
+- **Reduced memory usage on large chats** — Removed in-memory accumulation of all messages per chat; only the current batch is held in memory.
+
+### Added
+
+- **`CHECKPOINT_INTERVAL` environment variable** — Controls how often backup progress is saved (every N batch inserts). Default: `1` (safest). Higher values reduce database writes but increase re-work on crash.
+
+### Refactored
+
+- **Batch commit logic extracted** — Duplicated batch insert code consolidated into `_commit_batch()` helper method.
+
 ## [6.3.0] - 2026-02-16
 
 ### Added
