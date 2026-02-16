@@ -503,6 +503,11 @@ class TelegramBackup:
         failed = 0
 
         for chat_id, records in by_chat.items():
+            # Skip media verification for chats in skip list
+            if chat_id in self.config.skip_media_chat_ids:
+                logger.debug(f"Skipping media verification for chat {chat_id} (in SKIP_MEDIA_CHAT_IDS)")
+                continue
+
             try:
                 # Get message IDs to fetch
                 message_ids = [r["message_id"] for r in records if r.get("message_id")]
@@ -951,7 +956,7 @@ class TelegramBackup:
                     "results": results_data,
                 }
 
-            elif self.config.download_media:
+            elif self.config.should_download_media_for_chat(chat_id):
                 # v6.0.0: Download media and store data for later insertion
                 # (media is inserted AFTER message to satisfy FK constraint)
                 media_result = await self._process_media(message, chat_id)

@@ -180,5 +180,98 @@ class TestDatabaseDir(unittest.TestCase):
             self.assertTrue(config.database_path.startswith("/data/ssd"))
 
 
+class TestSkipMediaChatIds(unittest.TestCase):
+    """Test SKIP_MEDIA_CHAT_IDS configuration for media filtering."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_skip_media_chat_ids_empty(self):
+        """Skip media chat IDs defaults to empty set when not configured."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_media_chat_ids, set())
+
+    def test_skip_media_chat_ids_single(self):
+        """Can configure single chat ID to skip media."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_MEDIA_CHAT_IDS": "-1001234567890",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_media_chat_ids, {-1001234567890})
+
+    def test_skip_media_chat_ids_multiple(self):
+        """Can configure multiple chat IDs to skip media."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_MEDIA_CHAT_IDS": "-1001234567890,-1009876543210,123456",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_media_chat_ids, {-1001234567890, -1009876543210, 123456})
+
+    def test_should_download_media_for_chat_normal(self):
+        """Should download media for chats not in skip list."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "DOWNLOAD_MEDIA": "true",
+            "SKIP_MEDIA_CHAT_IDS": "-1001234567890",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # Should download for chats not in skip list
+            self.assertTrue(config.should_download_media_for_chat(123456))
+            self.assertTrue(config.should_download_media_for_chat(-1009999999))
+
+    def test_should_download_media_for_chat_skipped(self):
+        """Should NOT download media for chats in skip list."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "DOWNLOAD_MEDIA": "true",
+            "SKIP_MEDIA_CHAT_IDS": "-1001234567890,-1009876543210",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # Should NOT download for chats in skip list
+            self.assertFalse(config.should_download_media_for_chat(-1001234567890))
+            self.assertFalse(config.should_download_media_for_chat(-1009876543210))
+
+    def test_should_download_media_respects_global_flag(self):
+        """Should respect DOWNLOAD_MEDIA=false even if not in skip list."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "DOWNLOAD_MEDIA": "false",
+            "SKIP_MEDIA_CHAT_IDS": "-1001234567890",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # Should NOT download for ANY chat when global flag is false
+            self.assertFalse(config.should_download_media_for_chat(123456))
+            self.assertFalse(config.should_download_media_for_chat(-1009999999))
+            self.assertFalse(config.should_download_media_for_chat(-1001234567890))
+
+    def test_skip_media_chat_ids_whitespace_handling(self):
+        """Should handle whitespace in chat ID list correctly."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_MEDIA_CHAT_IDS": " -1001234567890 , -1009876543210 , 123456 ",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_media_chat_ids, {-1001234567890, -1009876543210, 123456})
+
+
 if __name__ == "__main__":
     unittest.main()
