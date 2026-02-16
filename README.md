@@ -223,6 +223,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VERIFY_MEDIA` | `false` | B | Re-download missing or corrupted media files |
 | `STATS_CALCULATION_HOUR` | `3` | B | Hour (0-23) to recalculate backup statistics daily |
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
+| `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
+| `SKIP_MEDIA_DELETE_EXISTING` | `true` | B | Delete existing media files and DB records for chats in skip list to reclaim storage |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | **Chat Filtering** | | | See [Chat Filtering](#chat-filtering) below |
 | `CHAT_IDS` | - | B | **Whitelist mode**: backup ONLY these chats (ignores all other filters) |

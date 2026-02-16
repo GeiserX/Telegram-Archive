@@ -95,6 +95,11 @@ class Config:
         # Useful for ensuring important chats are always backed up first
         self.priority_chat_ids = self._parse_id_list(os.getenv("PRIORITY_CHAT_IDS", ""))
 
+        # Skip media downloads for specific chats (but still backup message text)
+        self.skip_media_chat_ids = self._parse_id_list(os.getenv("SKIP_MEDIA_CHAT_IDS", ""))
+        # Delete existing media files and records for chats in skip list (reclaim storage)
+        self.skip_media_delete_existing = os.getenv("SKIP_MEDIA_DELETE_EXISTING", "true").lower() == "true"
+
         # Session configuration
         self.session_name = os.getenv("SESSION_NAME", "telegram_backup")
 
@@ -266,6 +271,9 @@ class Config:
             )
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
+        if self.skip_media_chat_ids:
+            cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
+            logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
 
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""
@@ -411,6 +419,26 @@ class Config:
     def get_max_media_size_bytes(self) -> int:
         """Get maximum media file size in bytes."""
         return self.max_media_size_mb * 1024 * 1024
+
+    def should_download_media_for_chat(self, chat_id: int) -> bool:
+        """
+        Determine if media should be downloaded for a specific chat.
+
+        Args:
+            chat_id: Telegram chat ID (marked format)
+
+        Returns:
+            True if media should be downloaded, False if skipped
+        """
+        # If global media download is disabled, return False
+        if not self.download_media:
+            return False
+
+        # Check if chat is in skip list
+        if chat_id in self.skip_media_chat_ids:
+            return False
+
+        return True
 
     def validate_credentials(self):
         """Ensure Telegram credentials are present."""

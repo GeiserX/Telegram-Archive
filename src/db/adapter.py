@@ -675,6 +675,51 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    async def get_media_for_chat(self, chat_id: int) -> list[dict[str, Any]]:
+        """
+        Get all media records for a specific chat.
+
+        Args:
+            chat_id: Chat identifier
+
+        Returns:
+            List of media records with file paths and metadata
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Media).where(Media.chat_id == chat_id)
+            result = await session.execute(stmt)
+            media_records = result.scalars().all()
+
+            return [
+                {
+                    "id": m.id,
+                    "message_id": m.message_id,
+                    "chat_id": m.chat_id,
+                    "type": m.type,
+                    "file_path": m.file_path,
+                    "file_size": m.file_size,
+                    "downloaded": m.downloaded,
+                }
+                for m in media_records
+            ]
+
+    async def delete_media_for_chat(self, chat_id: int) -> int:
+        """
+        Delete all media records for a specific chat.
+        Does not delete message records or the chat itself.
+
+        Args:
+            chat_id: Chat identifier
+
+        Returns:
+            Number of media records deleted
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = delete(Media).where(Media.chat_id == chat_id)
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount
+
     async def get_media_for_verification(self) -> list[dict[str, Any]]:
         """
         Get all media records that should have files on disk.
