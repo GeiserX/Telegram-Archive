@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from src.telegram_backup import TelegramBackup
 
