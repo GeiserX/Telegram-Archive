@@ -6,6 +6,27 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.3.0] - 2026-02-16
+
+### Added
+
+- **Skip media downloads for specific chats** — New `SKIP_MEDIA_CHAT_IDS` environment variable to skip media downloads for selected chats while still backing up message text. Useful for high-volume media chats where you only need text content. Messages, reactions, and all other data are still fully backed up.
+- **Automatic media cleanup for skipped chats** — When `SKIP_MEDIA_DELETE_EXISTING` is `true` (default), existing media files and database records are deleted for chats in the skip list, reclaiming disk space. Set to `false` to keep previously downloaded media while skipping future downloads.
+- **Per-chat media control in real-time listener** — The listener now respects `SKIP_MEDIA_CHAT_IDS`, skipping media downloads for new incoming messages in skipped chats.
+
+### Fixed
+
+- **Freed-bytes reporting for deduplicated media** — Media cleanup now correctly reports freed bytes: symlink removals (from deduplicated media) no longer inflate the freed storage count. Only actual file deletions count toward reclaimed space.
+- **Empty media directories cleaned up** — After media cleanup, empty per-chat media directories are automatically removed.
+
+### Changed
+
+- **Media cleanup runs once per session** — The cleanup check for skipped chats now uses a session-level cache, avoiding redundant database queries on subsequent backup cycles.
+
+### Contributors
+
+- [@Farzadd](https://github.com/Farzadd) — Initial implementation of `SKIP_MEDIA_CHAT_IDS` ([#74](https://github.com/GeiserX/Telegram-Archive/pull/74))
+
 ## [6.2.16] - 2026-02-15
 
 ### Fixed
