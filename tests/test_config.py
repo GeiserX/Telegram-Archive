@@ -302,5 +302,43 @@ class TestSkipMediaChatIds(unittest.TestCase):
             self.assertTrue(config.skip_media_delete_existing)
 
 
+class TestCheckpointInterval(unittest.TestCase):
+    """Test CHECKPOINT_INTERVAL configuration for backup progress saving."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_checkpoint_interval_default(self):
+        """CHECKPOINT_INTERVAL defaults to 1 when not set."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.checkpoint_interval, 1)
+
+    def test_checkpoint_interval_custom(self):
+        """Can configure a custom checkpoint interval."""
+        env_vars = {"CHAT_TYPES": "private", "CHECKPOINT_INTERVAL": "5", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.checkpoint_interval, 5)
+
+    def test_checkpoint_interval_minimum_one(self):
+        """CHECKPOINT_INTERVAL is clamped to minimum of 1."""
+        env_vars = {"CHAT_TYPES": "private", "CHECKPOINT_INTERVAL": "0", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.checkpoint_interval, 1)
+
+    def test_checkpoint_interval_negative_clamped(self):
+        """Negative CHECKPOINT_INTERVAL is clamped to 1."""
+        env_vars = {"CHAT_TYPES": "private", "CHECKPOINT_INTERVAL": "-3", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.checkpoint_interval, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
