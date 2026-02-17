@@ -63,18 +63,67 @@
         /* Message Bubbles */
         .message-bubble {
             display: inline-block;
-            max-width: calc(100vw - 32px);
-            /* 32px = padding lateral del contenedor */
+            max-width: min(600px, 80vw);
             width: auto;
             word-wrap: break-word;
             overflow-wrap: anywhere;
             border-radius: 12px;
+            position: relative;
         }
 
-        @media (min-width: 768px) {
-            .message-bubble {
-                max-width: 600px;
-            }
+        /* Outgoing bubble: tail bottom-right */
+        .bubble-outgoing {
+            border-bottom-right-radius: 4px;
+        }
+        .bubble-outgoing::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            right: -6px;
+            width: 10px;
+            height: 10px;
+            background: inherit;
+            clip-path: polygon(0 0, 0 100%, 100% 100%);
+        }
+
+        /* Incoming bubble: tail bottom-left */
+        .bubble-incoming {
+            border-bottom-left-radius: 4px;
+        }
+        .bubble-incoming::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: -6px;
+            width: 10px;
+            height: 10px;
+            background: inherit;
+            clip-path: polygon(100% 0, 0 100%, 100% 100%);
+        }
+
+        /* Hide tail on grouped non-last messages */
+        .bubble-outgoing.no-tail {
+            border-bottom-right-radius: 12px;
+        }
+        .bubble-outgoing.no-tail::after {
+            display: none;
+        }
+        .bubble-incoming.no-tail {
+            border-bottom-left-radius: 12px;
+        }
+        .bubble-incoming.no-tail::before {
+            display: none;
+        }
+
+        /* Sticker bubble: transparent background, no shadow */
+        .bubble-sticker {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Grouped messages: tighter spacing */
+        .msg-row.msg-grouped {
+            margin-bottom: -2px;
         }
 
         body,
@@ -87,6 +136,14 @@
         .messages-scroll {
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
+            contain: layout paint;
+        }
+
+        /* Message row performance: CSS-based virtual scrolling */
+        .msg-row {
+            content-visibility: auto;
+            contain-intrinsic-size: auto 120px;
+            contain: layout style;
         }
 
         .message-bubble img,
@@ -242,15 +299,39 @@
         .album-item {
             aspect-ratio: 1;
             min-height: 80px;
-            max-height: 200px;
+            overflow: hidden;
         }
         .album-item img,
         .album-item video {
-            min-height: 100%;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
         }
-        /* 3-item album: make first item span 2 rows */
-        .album-grid .grid-cols-2:has(.album-item:nth-child(3):last-child) .album-item:first-child {
+        /* 3-item album: first item spans 2 rows */
+        .album-grid .album-3 .album-item:first-child {
             grid-row: span 2;
+        }
+        /* Video placeholder background for albums */
+        .album-item-video {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        /* Standalone video container */
+        .video-container {
+            position: relative;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            overflow: hidden;
+            min-height: 120px;
+        }
+        /* Regular photo: preserve aspect ratio */
+        .msg-photo {
+            border-radius: 12px;
+            max-width: 400px;
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+            cursor: pointer;
         }
     </style>
     <script>
@@ -925,15 +1006,24 @@
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
                             <!-- v6.0.0: Service type moved to raw_data.service_type -->
-                            <div v-if="msg.raw_data?.service_type === 'service'" class="flex justify-center my-2">
+                            <div v-if="msg.raw_data?.service_type === 'service'" class="msg-row flex justify-center my-2">
                                 <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
                                     style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
                                     {{ msg.text }}
                                 </div>
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
-                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="msg-row flex"
+                                :class="[
+                                    isOwnMessage(msg) ? 'justify-end' : 'justify-start',
+                                    !showSenderName(index) ? 'msg-grouped' : ''
+                                ]">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100 group"
+                                    :class="[
+                                        isOwnMessage(msg) ? 'bubble-outgoing' : 'bubble-incoming',
+                                        (!isLastInSenderGroup(index) || msg.media?.type === 'sticker') ? 'no-tail' : '',
+                                        msg.media?.type === 'sticker' ? 'bubble-sticker' : ''
+                                    ]"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
@@ -1012,13 +1102,15 @@
                                     <div v-if="msg.media?.file_path" class="mb-2 space-y-1">
                                         <!-- Album Grid (multiple photos/videos grouped together) -->
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
-                                            <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
+                                            <div class="grid gap-1" :class="getAlbumLayoutClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
                                                     <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
+                                                        :class="{ 'album-item-video': albumMsg.media?.type === 'video' }"
                                                         @click="openMedia(albumMsg)">
-                                                        <img v-if="albumMsg.media?.type === 'photo'" 
+                                                        <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
+                                                            decoding="async"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
                                                         <video v-else-if="albumMsg.media?.type === 'video'" 
@@ -1039,9 +1131,11 @@
                                         </div>
                                         
                                         <!-- Regular photo (not part of album) -->
-                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
+                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id"
+                                            :src="getMediaUrl(msg)"
                                             loading="lazy"
-                                            class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
+                                            decoding="async"
+                                            class="msg-photo hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
 
                                         <!-- Audio / Voice Notes -->
@@ -1069,8 +1163,8 @@
                                         </video>
 
                                         <!-- Videos - click to open in lightbox -->
-                                        <div v-else-if="msg.media?.type === 'video'" 
-                                            class="relative cursor-pointer group"
+                                        <div v-else-if="msg.media?.type === 'video'"
+                                            class="video-container relative cursor-pointer group"
                                             @click="openMedia(msg)">
                                             <video preload="metadata"
                                                 class="rounded-lg max-h-64 w-full pointer-events-none"
@@ -1090,7 +1184,7 @@
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
                                             <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
-                                                :src="getMediaUrl(msg)" loading="lazy" 
+                                                :src="getMediaUrl(msg)" loading="lazy" decoding="async"
                                                 class="max-h-48 max-w-full object-contain"
                                                 @error="handleImageError($event, msg)">
                                             <div v-else class="text-xs text-tg-muted p-2 bg-black/20 rounded">
@@ -1102,7 +1196,7 @@
                                         <div v-else-if="msg.media?.type === 'document' && isImageDocument(msg)"
                                             class="space-y-1">
                                             <img :src="getMediaUrl(msg)"
-                                                loading="lazy"
+                                                loading="lazy" decoding="async"
                                                 class="rounded-lg max-h-48 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
@@ -1163,7 +1257,7 @@
                             </div>
                             
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
-                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
+                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="msg-row date-separator">
                                 <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
                             </div>
                         </template>
@@ -2430,15 +2524,15 @@
                 }
                 
                 // Get grid layout class based on album size (like Telegram)
-                const getAlbumGridClass = (album) => {
+                const getAlbumLayoutClass = (album) => {
                     if (!album) return 'grid-cols-1'
                     const count = album.length
                     switch (count) {
                         case 1: return 'grid-cols-1'
                         case 2: return 'grid-cols-2'
-                        case 3: return 'grid-cols-2'  // 2+1 layout
-                        case 4: return 'grid-cols-2'  // 2x2 grid
-                        default: return 'grid-cols-3'  // 3+ items = 3 columns
+                        case 3: return 'grid-cols-2 album-3'  // first item spans 2 rows
+                        case 4: return 'grid-cols-2'           // 2x2 grid
+                        default: return 'grid-cols-3'          // 3+ items = 3 columns
                     }
                 }
 
@@ -3012,6 +3106,17 @@
                     return olderMsg.sender_id !== currMsg.sender_id
                 }
 
+                // Check if this message is the last (newest/bottom) in a consecutive sender group
+                // Only last-in-group messages show the bubble tail
+                const isLastInSenderGroup = (index) => {
+                    const currMsg = sortedMessages.value[index]
+                    // Newest message (index 0, bottom of chat): always last in its group
+                    if (index === 0) return true
+                    const newerMsg = sortedMessages.value[index - 1]
+                    // Different sender below = this is the last in its group
+                    return newerMsg.sender_id !== currMsg.sender_id
+                }
+
                 const showDateSeparator = (index) => {
                     // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
                     // Show separator when this is the last message of a day (next message is different day)
@@ -3516,12 +3621,13 @@
                     getSenderName,
                     getForwardName,
                     showSenderName,
+                    isLastInSenderGroup,
                     showDateSeparator,
                     // Album support
                     getAlbumForMessage,
                     isFirstInAlbum,
                     isHiddenAlbumMessage,
-                    getAlbumGridClass,
+                    getAlbumLayoutClass,
                     getChatName,
                     getInitials,
                     formatDate,
