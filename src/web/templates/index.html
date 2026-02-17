@@ -63,18 +63,67 @@
         /* Message Bubbles */
         .message-bubble {
             display: inline-block;
-            max-width: calc(100vw - 32px);
-            /* 32px = padding lateral del contenedor */
+            max-width: min(600px, 80vw);
             width: auto;
             word-wrap: break-word;
             overflow-wrap: anywhere;
             border-radius: 12px;
+            position: relative;
         }
 
-        @media (min-width: 768px) {
-            .message-bubble {
-                max-width: 600px;
-            }
+        /* Outgoing bubble: tail bottom-right */
+        .bubble-outgoing {
+            border-bottom-right-radius: 4px;
+        }
+        .bubble-outgoing::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            right: -6px;
+            width: 10px;
+            height: 10px;
+            background: inherit;
+            clip-path: polygon(0 0, 0 100%, 100% 100%);
+        }
+
+        /* Incoming bubble: tail bottom-left */
+        .bubble-incoming {
+            border-bottom-left-radius: 4px;
+        }
+        .bubble-incoming::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: -6px;
+            width: 10px;
+            height: 10px;
+            background: inherit;
+            clip-path: polygon(100% 0, 0 100%, 100% 100%);
+        }
+
+        /* Hide tail on grouped non-last messages */
+        .bubble-outgoing.no-tail {
+            border-bottom-right-radius: 12px;
+        }
+        .bubble-outgoing.no-tail::after {
+            display: none;
+        }
+        .bubble-incoming.no-tail {
+            border-bottom-left-radius: 12px;
+        }
+        .bubble-incoming.no-tail::before {
+            display: none;
+        }
+
+        /* Sticker bubble: transparent background, no shadow */
+        .bubble-sticker {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Grouped messages: tighter spacing */
+        .msg-row.msg-grouped {
+            margin-bottom: -2px;
         }
 
         body,
@@ -87,6 +136,14 @@
         .messages-scroll {
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
+            contain: layout paint;
+        }
+
+        /* Message row performance: CSS-based virtual scrolling */
+        .msg-row {
+            content-visibility: auto;
+            contain-intrinsic-size: auto 120px;
+            contain: layout style;
         }
 
         .message-bubble img,
@@ -198,6 +255,15 @@
             height: 24px;
         }
 
+        /* v7.0: Message highlight animation for search/link */
+        @keyframes messageHighlight {
+            0% { background-color: rgba(59, 130, 246, 0.3); }
+            100% { background-color: transparent; }
+        }
+        .message-highlight-flash {
+            animation: messageHighlight 2s ease-out;
+        }
+
         /* Loading Spinner (Telegram-style) */
         .loading-spinner {
             width: 24px;
@@ -233,15 +299,39 @@
         .album-item {
             aspect-ratio: 1;
             min-height: 80px;
-            max-height: 200px;
+            overflow: hidden;
         }
         .album-item img,
         .album-item video {
-            min-height: 100%;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
         }
-        /* 3-item album: make first item span 2 rows */
-        .album-grid .grid-cols-2:has(.album-item:nth-child(3):last-child) .album-item:first-child {
+        /* 3-item album: first item spans 2 rows */
+        .album-grid .album-3 .album-item:first-child {
             grid-row: span 2;
+        }
+        /* Video placeholder background for albums */
+        .album-item-video {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        /* Standalone video container */
+        .video-container {
+            position: relative;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            overflow: hidden;
+            min-height: 120px;
+        }
+        /* Regular photo: preserve aspect ratio */
+        .msg-photo {
+            border-radius: 12px;
+            max-width: 400px;
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+            cursor: pointer;
         }
     </style>
     <script>
@@ -319,16 +409,6 @@
             <!-- Sidebar - hidden on mobile when chat is selected -->
             <div class="bg-tg-sidebar flex flex-col border-r border-gray-700"
                 :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
-                <!-- User bar -->
-                <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-gray-700">
-                    <span class="text-xs text-gray-400 truncate flex-1">{{ currentUsername }}</span>
-                    <button v-if="userRole === 'master'" @click="openAdminPanel" class="text-gray-400 hover:text-white p-1" title="Admin Settings">
-                        <i class="fas fa-cog"></i>
-                    </button>
-                    <button @click="performLogout" class="text-gray-400 hover:text-red-400 p-1" title="Logout">
-                        <i class="fas fa-sign-out-alt"></i>
-                    </button>
-                </div>
                 <!-- Header with Stats Dropdown -->
                 <div class="p-4 border-b border-gray-700">
                     <div class="flex items-center justify-between mb-3">
@@ -360,15 +440,8 @@
                                         <!-- Footer -->
                                         <div class="pt-3 mt-3 border-t border-gray-700 text-center">
                                             <div class="text-[10px] opacity-70">
-                                                Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-blue-400 hover:text-blue-300">Sergio Fernández</a>
+                                                Made with frustration by <a href="https://github.com/PhenixStar/telegram-viewer" target="_blank" class="text-blue-400 hover:text-blue-300">phenix</a>
                                             </div>
-                                            <a href="https://github.com/sponsors/GeiserX" target="_blank" 
-                                                class="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 text-[9px] bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 rounded transition">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 16 16">
-                                                    <path fill-rule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5zM8 14.25l-.345.666-.002-.001-.006-.003-.018-.01a7.643 7.643 0 01-.31-.17 22.075 22.075 0 01-3.434-2.414C2.045 10.731 0 8.35 0 5.5 0 2.836 2.086 1 4.25 1 5.797 1 7.153 1.802 8 3.02 8.847 1.802 10.203 1 11.75 1 13.914 1 16 2.836 16 5.5c0 2.85-2.045 5.231-3.885 6.818a22.08 22.08 0 01-3.744 2.584l-.018.01-.006.003h-.002L8 14.25zm0 0l.345.666a.752.752 0 01-.69 0L8 14.25z"></path>
-                                                </svg>
-                                                Sponsor
-                                            </a>
                                         </div>
                                     </div>
                                 </div>
@@ -385,14 +458,37 @@
                     </div>
                     
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
-                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <input v-model="searchQuery" @input="globalSearchMode ? debouncedGlobalSearch() : onSearchInput()" type="text"
+                            :placeholder="globalSearchMode ? 'Global search across all chats...' : 'Search all chats...'"
+                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-10 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
+                        <!-- v7.0: Global search toggle -->
+                        <button @click="globalSearchMode = !globalSearchMode; if(!globalSearchMode) globalSearchResults = {results:[],total:0}"
+                            :class="globalSearchMode ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'"
+                            class="absolute right-2 top-2 p-0.5 transition" title="Toggle global search (Ctrl+K)">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </button>
                     </div>
+
+                    <!-- v7.0: Global Search Results -->
+                    <div v-if="globalSearchMode && globalSearchResults.results.length > 0" class="mb-3 max-h-96 overflow-y-auto space-y-1">
+                        <div class="text-xs text-tg-muted mb-1">{{ globalSearchResults.total }} results</div>
+                        <div v-for="r in globalSearchResults.results" :key="`${r.chat_id}-${r.message_id}`"
+                            @click="jumpToSearchResult(r.chat_id, r.message_id)"
+                            class="p-2 bg-gray-800/50 hover:bg-gray-700/50 rounded-lg cursor-pointer transition">
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="text-xs font-semibold text-blue-400 truncate">{{ r.chat_title }}</span>
+                                <span class="text-[10px] text-tg-muted">{{ r.sender_name }}</span>
+                            </div>
+                            <div class="text-xs text-gray-300 truncate" v-html="highlightText(r.text_snippet, searchQuery)"></div>
+                            <div class="text-[10px] text-tg-muted mt-0.5">{{ formatDateFull(r.date) }}</div>
+                        </div>
+                    </div>
+
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()" 
@@ -552,13 +648,16 @@
                             </h3>
                         </div>
                         
-                        <!-- Loading spinner while chats are loading -->
-                        <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
-                            <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span class="text-sm">Loading chats...</span>
+                        <!-- v7.0: Skeleton loading for chat list -->
+                        <div v-if="loadingChats" class="space-y-1 p-2">
+                            <div v-for="n in 8" :key="n" class="flex items-center gap-3 p-3 rounded-xl animate-pulse">
+                                <div class="w-12 h-12 rounded-full bg-gray-700/50 shrink-0"></div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="h-3.5 bg-gray-700/50 rounded w-2/3 mb-2"></div>
+                                    <div class="h-3 bg-gray-700/30 rounded w-full"></div>
+                                </div>
+                                <div class="h-2.5 bg-gray-700/30 rounded w-10"></div>
+                            </div>
                         </div>
                         <!-- Empty state -->
                         <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
@@ -737,7 +836,27 @@
                                 </svg>
                             </div>
 
-                            <!-- Export Button - always visible -->
+                            <!-- Filter Toggle Button -->
+                            <button @click="showSearchFilters = !showSearchFilters"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                :class="showSearchFilters ? 'text-blue-400 bg-blue-500/20' : ''"
+                                title="Search Filters">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
+                                </svg>
+                            </button>
+
+                            <!-- Gallery Toggle Button -->
+                            <button @click="toggleGallery()"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                :class="showMediaGallery ? 'text-blue-400 bg-blue-500/20' : ''"
+                                title="Media Gallery">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+                                </svg>
+                            </button>
+
+                            <!-- Export Button -->
                             <button @click="exportChat"
                                 class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
@@ -746,6 +865,29 @@
                                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                                 </svg>
                             </button>
+                        </div>
+                    </div>
+
+                    <!-- v7.0: Search Filters Bar (collapsible) -->
+                    <div v-if="showSearchFilters && selectedChat" class="px-4 py-2 bg-gray-800/50 border-b border-gray-700 space-y-2">
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <input v-model="searchFilters.sender" type="text" placeholder="Sender name..."
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <select v-model="searchFilters.mediaType"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                <option value="">All types</option>
+                                <option value="photo">Photos</option>
+                                <option value="video">Videos</option>
+                                <option value="document">Docs</option>
+                                <option value="audio">Audio</option>
+                            </select>
+                            <input v-model="searchFilters.dateFrom" type="date"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <span class="text-gray-500 text-xs">to</span>
+                            <input v-model="searchFilters.dateTo" type="date"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <button @click="applySearchFilters" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition">Apply</button>
+                            <button @click="clearSearchFilters" class="text-gray-400 hover:text-white text-xs px-2 py-1 transition">Clear</button>
                         </div>
                     </div>
 
@@ -806,25 +948,82 @@
                         </div>
                     </div>
 
+                    <!-- v7.0: Media Gallery Panel (replaces messages when active) -->
+                    <div v-if="showMediaGallery && selectedChat" class="flex-1 relative min-h-0 overflow-y-auto p-4">
+                        <!-- Gallery Filter Tabs -->
+                        <div class="flex gap-2 mb-4 flex-wrap">
+                            <button v-for="t in [{v:'',l:'All'},{v:'photo',l:'Photos'},{v:'video',l:'Videos'},{v:'document',l:'Docs'},{v:'audio',l:'Audio'}]"
+                                :key="t.v" @click="setGalleryFilter(t.v)"
+                                :class="galleryFilter === t.v ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                                class="px-3 py-1 text-xs rounded-full transition">{{ t.l }}</button>
+                        </div>
+                        <!-- Gallery Grid -->
+                        <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1">
+                            <div v-for="item in galleryMedia" :key="item.id"
+                                class="aspect-square relative overflow-hidden rounded cursor-pointer hover:opacity-80 transition bg-gray-800"
+                                @click="openMedia({ media: item, id: item.message_id, chat_id: selectedChat.id, date: item.date })">
+                                <img v-if="item.type === 'photo'" :src="`/media/${item.file_path}`" loading="lazy"
+                                    class="w-full h-full object-cover" @error="$event.target.style.display='none'">
+                                <div v-else-if="item.type === 'video'" class="w-full h-full flex items-center justify-center bg-gray-800">
+                                    <div class="text-center">
+                                        <svg class="w-8 h-8 text-white/50 mx-auto" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                        <span v-if="item.duration" class="text-[10px] text-gray-400">{{ Math.floor(item.duration/60) }}:{{ String(item.duration%60).padStart(2,'0') }}</span>
+                                    </div>
+                                </div>
+                                <div v-else class="w-full h-full flex items-center justify-center bg-gray-800">
+                                    <div class="text-center px-2">
+                                        <svg class="w-6 h-6 text-gray-500 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                        <span class="text-[10px] text-gray-400 truncate block">{{ item.file_name || item.type }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Load More -->
+                        <div v-if="galleryHasMore" class="text-center py-4">
+                            <button @click="loadGalleryMedia()" class="text-blue-400 hover:text-blue-300 text-sm" :disabled="galleryLoading">
+                                {{ galleryLoading ? 'Loading...' : 'Load more' }}
+                            </button>
+                        </div>
+                        <div v-if="!galleryLoading && galleryMedia.length === 0" class="text-center py-8 text-tg-muted">
+                            No media found
+                        </div>
+                    </div>
+
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
-                    <div class="flex-1 relative min-h-0">
+                    <div v-else class="flex-1 relative min-h-0">
                     <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
-                        <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
-                            Loading messages...
+                        <!-- v7.0: Skeleton loading -->
+                        <div v-if="loading && messages.length === 0" class="space-y-3 py-4">
+                            <div v-for="n in 5" :key="n" class="flex" :class="n % 2 === 0 ? 'justify-end' : 'justify-start'">
+                                <div class="rounded-2xl p-3 animate-pulse" :class="n % 2 === 0 ? 'bg-blue-900/30 rounded-br-md' : 'bg-gray-700/50 rounded-bl-md'" style="width: 60%; max-width: 320px;">
+                                    <div class="h-3 bg-gray-600/50 rounded w-1/3 mb-2"></div>
+                                    <div class="h-3 bg-gray-600/30 rounded w-full mb-1"></div>
+                                    <div class="h-3 bg-gray-600/30 rounded w-2/3"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
                             <!-- v6.0.0: Service type moved to raw_data.service_type -->
-                            <div v-if="msg.raw_data?.service_type === 'service'" class="flex justify-center my-2">
+                            <div v-if="msg.raw_data?.service_type === 'service'" class="msg-row flex justify-center my-2">
                                 <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
                                     style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
                                     {{ msg.text }}
                                 </div>
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
-                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
-                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="msg-row flex"
+                                :class="[
+                                    isOwnMessage(msg) ? 'justify-end' : 'justify-start',
+                                    !showSenderName(index) ? 'msg-grouped' : ''
+                                ]">
+                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100 group"
+                                    :class="[
+                                        isOwnMessage(msg) ? 'bubble-outgoing' : 'bubble-incoming',
+                                        (!isLastInSenderGroup(index) || msg.media?.type === 'sticker') ? 'no-tail' : '',
+                                        msg.media?.type === 'sticker' ? 'bubble-sticker' : ''
+                                    ]"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
@@ -903,13 +1102,15 @@
                                     <div v-if="msg.media?.file_path" class="mb-2 space-y-1">
                                         <!-- Album Grid (multiple photos/videos grouped together) -->
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
-                                            <div class="grid gap-1" :class="getAlbumGridClass(getAlbumForMessage(msg))">
+                                            <div class="grid gap-1" :class="getAlbumLayoutClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
                                                     <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
+                                                        :class="{ 'album-item-video': albumMsg.media?.type === 'video' }"
                                                         @click="openMedia(albumMsg)">
-                                                        <img v-if="albumMsg.media?.type === 'photo'" 
+                                                        <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
+                                                            decoding="async"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
                                                         <video v-else-if="albumMsg.media?.type === 'video'" 
@@ -930,9 +1131,11 @@
                                         </div>
                                         
                                         <!-- Regular photo (not part of album) -->
-                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
+                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id"
+                                            :src="getMediaUrl(msg)"
                                             loading="lazy"
-                                            class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
+                                            decoding="async"
+                                            class="msg-photo hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
 
                                         <!-- Audio / Voice Notes -->
@@ -960,8 +1163,8 @@
                                         </video>
 
                                         <!-- Videos - click to open in lightbox -->
-                                        <div v-else-if="msg.media?.type === 'video'" 
-                                            class="relative cursor-pointer group"
+                                        <div v-else-if="msg.media?.type === 'video'"
+                                            class="video-container relative cursor-pointer group"
                                             @click="openMedia(msg)">
                                             <video preload="metadata"
                                                 class="rounded-lg max-h-64 w-full pointer-events-none"
@@ -981,7 +1184,7 @@
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
                                             <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
-                                                :src="getMediaUrl(msg)" loading="lazy" 
+                                                :src="getMediaUrl(msg)" loading="lazy" decoding="async"
                                                 class="max-h-48 max-w-full object-contain"
                                                 @error="handleImageError($event, msg)">
                                             <div v-else class="text-xs text-tg-muted p-2 bg-black/20 rounded">
@@ -993,7 +1196,7 @@
                                         <div v-else-if="msg.media?.type === 'document' && isImageDocument(msg)"
                                             class="space-y-1">
                                             <img :src="getMediaUrl(msg)"
-                                                loading="lazy"
+                                                loading="lazy" decoding="async"
                                                 class="rounded-lg max-h-48 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
@@ -1027,7 +1230,7 @@
 
                                     <!-- Text with clickable links -->
                                     <div class="whitespace-pre-wrap break-words message-text"
-                                        v-html="linkifyText(msg.text)"></div>
+                                        v-html="messageSearchQuery ? highlightText(linkifyText(msg.text), messageSearchQuery) : linkifyText(msg.text)"></div>
 
                                     <!-- Reactions -->
                                     <div v-if="msg.reactions && msg.reactions.length > 0" class="mt-2 flex flex-wrap gap-1.5">
@@ -1045,12 +1248,16 @@
                                         class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
                                         <span v-if="msg.edit_date">edited</span>
                                         {{ formatTime(msg.date) }}
+                                        <!-- v7.0: Copy link button -->
+                                        <button @click.stop="copyMessageLink(msg)" class="opacity-0 group-hover:opacity-100 hover:text-blue-400 transition ml-1" title="Copy link">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                             
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
-                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
+                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="msg-row date-separator">
                                 <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
                             </div>
                         </template>
@@ -1065,6 +1272,13 @@
                         
                         <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
                             Beginning of chat history
+                        </div>
+
+                        <div v-if="!loading && !hasMore && messages.length === 0 && selectedChat" class="flex flex-col items-center justify-center py-16 text-tg-muted">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                            </svg>
+                            <p class="text-sm">No messages backed up for this chat yet</p>
                         </div>
 
                         <div ref="scrollAnchor"></div>
@@ -1116,6 +1330,20 @@
             </div>
         </div>
         
+        <!-- v7.0: Keyboard Shortcuts Help Modal -->
+        <div v-if="showShortcutsHelp" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            @click.self="showShortcutsHelp = false">
+            <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-700">
+                <h3 class="text-lg font-bold text-white mb-4">Keyboard Shortcuts</h3>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between"><span class="text-gray-300">Close panel</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">Esc</kbd></div>
+                    <div class="flex justify-between"><span class="text-gray-300">Global search</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">Ctrl+K</kbd></div>
+                    <div class="flex justify-between"><span class="text-gray-300">This help</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">?</kbd></div>
+                </div>
+                <button @click="showShortcutsHelp = false" class="mt-4 w-full py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition text-sm">Close</button>
+            </div>
+        </div>
+
         <!-- Lightbox Modal for Images -->
         <div v-if="lightboxOpen" 
             class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center"
@@ -1175,97 +1403,6 @@
                 </span>
             </div>
         </div>
-
-        <!-- Admin Panel (v7.0.0) -->
-        <div v-if="showAdminPanel" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4">
-            <div class="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
-                <!-- Header -->
-                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
-                    <h2 class="text-lg font-semibold text-white">Admin Settings</h2>
-                    <button @click="showAdminPanel = false" class="text-gray-400 hover:text-white">
-                        <i class="fas fa-times text-xl"></i>
-                    </button>
-                </div>
-
-                <!-- Tabs -->
-                <div class="flex border-b border-gray-700 px-6">
-                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
-                        Viewer Accounts
-                    </button>
-                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
-                        Audit Log
-                    </button>
-                </div>
-
-                <!-- Content -->
-                <div class="flex-1 overflow-y-auto p-6">
-                    <!-- Viewers Tab -->
-                    <div v-if="adminActiveTab === 'viewers'">
-                        <!-- Create/Edit Form -->
-                        <div class="bg-gray-900 rounded-lg p-4 mb-4">
-                            <h3 class="text-sm font-medium text-gray-300 mb-3">{{ adminEditingId ? 'Edit Viewer' : 'Create Viewer' }}</h3>
-                            <div v-if="adminError" class="text-red-400 text-sm mb-3">{{ adminError }}</div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <input v-model="adminViewerForm.username" :disabled="!!adminEditingId" placeholder="Username" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
-                                <input v-model="adminViewerForm.password" type="password" :placeholder="adminEditingId ? 'New password (leave empty to keep)' : 'Password'" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
-                            </div>
-                            <div class="mt-3">
-                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
-                                <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
-                                        <input type="checkbox" :value="chat.id" v-model="adminViewerForm.allowed_chat_ids" class="rounded" />
-                                        {{ chat.title || chat.id }}
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="mt-3 flex items-center gap-4">
-                                <label class="flex items-center gap-2 text-sm text-gray-300">
-                                    <input type="checkbox" v-model="adminViewerForm.is_active" class="rounded" /> Active
-                                </label>
-                                <div class="flex-1"></div>
-                                <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
-                                <button @click="saveViewer" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
-                                    {{ adminEditingId ? 'Update' : 'Create' }}
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Viewers List -->
-                        <div class="space-y-2">
-                            <div v-for="viewer in adminViewers" :key="viewer.id" class="flex items-center gap-3 bg-gray-900 rounded-lg p-3">
-                                <div class="flex-1">
-                                    <div class="text-sm text-white font-medium">{{ viewer.username }}</div>
-                                    <div class="text-xs text-gray-400">
-                                        <template v-if="viewer.allowed_chat_ids && viewer.allowed_chat_ids.length">
-                                            {{ viewer.allowed_chat_ids.map(id => { const c = adminChats.find(ch => ch.id === id); return c ? c.title : id }).join(', ') }}
-                                        </template>
-                                        <template v-else>All chats</template>
-                                        · {{ viewer.is_active ? 'Active' : 'Inactive' }}
-                                    </div>
-                                </div>
-                                <button @click="editViewer(viewer)" class="text-gray-400 hover:text-blue-400 p-1"><i class="fas fa-edit"></i></button>
-                                <button @click="deleteViewer(viewer)" class="text-gray-400 hover:text-red-400 p-1"><i class="fas fa-trash"></i></button>
-                            </div>
-                            <div v-if="adminViewers.length === 0" class="text-gray-500 text-sm text-center py-4">No viewer accounts yet</div>
-                        </div>
-                    </div>
-
-                    <!-- Audit Log Tab -->
-                    <div v-if="adminActiveTab === 'audit'">
-                        <div class="space-y-1">
-                            <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-gray-900 rounded px-3 py-2">
-                                <span class="text-gray-500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
-                                <span :class="log.role === 'master' ? 'text-yellow-400' : 'text-blue-400'" class="w-16 shrink-0">{{ log.role }}</span>
-                                <span class="text-gray-300 w-24 shrink-0 truncate">{{ log.username }}</span>
-                                <span class="text-gray-400 flex-1 truncate">{{ log.action }}</span>
-                                <span class="text-gray-600 truncate w-28">{{ log.ip_address }}</span>
-                            </div>
-                            <div v-if="adminAuditLogs.length === 0" class="text-gray-500 text-sm text-center py-4">No audit logs yet</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script>
@@ -1292,9 +1429,6 @@
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
-                const userRole = ref('')
-                const currentUsername = ref('')
-                const showAdminPanel = ref(false)
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
@@ -1339,7 +1473,27 @@
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
-                
+
+                // v7.0: Advanced search filters
+                const showSearchFilters = ref(false)
+                const searchFilters = ref({ sender: '', mediaType: '', dateFrom: '', dateTo: '' })
+                const globalSearchMode = ref(false)
+                const globalSearchResults = ref({ results: [], total: 0 })
+                const globalSearchLoading = ref(false)
+
+                // v7.0: Media gallery
+                const showMediaGallery = ref(false)
+                const galleryMedia = ref([])
+                const galleryTotal = ref(0)
+                const galleryHasMore = ref(true)
+                const galleryLoading = ref(false)
+                const galleryFilter = ref('')
+                const galleryOffset = ref(0)
+
+                // v7.0: Skeleton & keyboard shortcuts
+                const showShortcutsHelp = ref(false)
+                const highlightedMessageId = ref(null)
+
                 // v6.2.0: Navigation stack for folders, archived, topics
                 const navStack = ref([{ type: 'chatList', filter: 'all' }])
                 const folders = ref([])
@@ -1813,8 +1967,6 @@
                             console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
-                            userRole.value = data.role || ''
-                            currentUsername.value = data.username || ''
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
@@ -1886,6 +2038,35 @@
                         })
                     }
                     
+                    // v7.0: Keyboard shortcuts
+                    document.addEventListener('keydown', handleGlobalKeydown)
+
+                    // v7.0: Hash routing - handle initial hash
+                    const { chatId: hashChatId, msgId: hashMsgId } = parseHash()
+                    if (hashChatId && !chatIdParam) {
+                        const hChat = chats.value.find(c => c.id === parseInt(hashChatId))
+                        if (hChat) {
+                            await selectChat(hChat)
+                            if (hashMsgId) {
+                                await nextTick()
+                                scrollToMessage(parseInt(hashMsgId))
+                            }
+                        }
+                    }
+                    window.addEventListener('hashchange', async () => {
+                        const { chatId: hc, msgId: hm } = parseHash()
+                        if (hc) {
+                            const chat = chats.value.find(c => c.id === parseInt(hc))
+                            if (chat && (!selectedChat.value || selectedChat.value.id !== parseInt(hc))) {
+                                await selectChat(chat)
+                            }
+                            if (hm) {
+                                await nextTick()
+                                scrollToMessage(parseInt(hm))
+                            }
+                        }
+                    })
+
                     // Mark secondary initialization complete
                     finishInitialization()
                 })
@@ -2270,13 +2451,9 @@
                         const data = await res.json()
                         if (data.success) {
                             isAuthenticated.value = true
-                            userRole.value = data.role || 'master'
-                            currentUsername.value = data.username || ''
                             await loadChats()
                             await loadStats()
-                            await loadFolders()
-                            await loadArchivedCount()
-                            setupInfiniteScroll()
+                            // Re-initialize notifications after login (cookie now set)
                             await initNotifications()
                         } else {
                             loginError.value = 'Login failed'
@@ -2287,16 +2464,6 @@
                     } finally {
                         loadingAuth.value = false
                     }
-                }
-
-                const performLogout = async () => {
-                    try {
-                        await fetch('/api/logout', { method: 'POST', credentials: 'include' })
-                    } catch (e) { /* ignore */ }
-                    isAuthenticated.value = false
-                    userRole.value = ''
-                    currentUsername.value = ''
-                    showAdminPanel.value = false
                 }
 
                 const filteredChats = computed(() => {
@@ -2359,15 +2526,15 @@
                 }
                 
                 // Get grid layout class based on album size (like Telegram)
-                const getAlbumGridClass = (album) => {
+                const getAlbumLayoutClass = (album) => {
                     if (!album) return 'grid-cols-1'
                     const count = album.length
                     switch (count) {
                         case 1: return 'grid-cols-1'
                         case 2: return 'grid-cols-2'
-                        case 3: return 'grid-cols-2'  // 2+1 layout
-                        case 4: return 'grid-cols-2'  // 2x2 grid
-                        default: return 'grid-cols-3'  // 3+ items = 3 columns
+                        case 3: return 'grid-cols-2 album-3'  // first item spans 2 rows
+                        case 4: return 'grid-cols-2'           // 2x2 grid
+                        default: return 'grid-cols-3'          // 3+ items = 3 columns
                     }
                 }
 
@@ -2468,8 +2635,10 @@
                     page.value = 0
                     hasMore.value = true
                     messageSearchQuery.value = ''
-                    chatStats.value = null  // Reset stats when changing chat
-                    pinnedMessages.value = []  // Reset pinned messages when changing chat
+                    chatStats.value = null
+                    pinnedMessages.value = []
+                    showMediaGallery.value = false  // v7.0: Close gallery on chat change
+                    updateHash(chat.id)  // v7.0: Update URL hash
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     await loadMessages()
@@ -2612,11 +2781,17 @@
                             const offset = page.value * limit
                             url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
-                            // Also pass topic_id for search within a topic
                             if (nav.type === 'chat' && nav.topicId) {
                                 url += `&topic_id=${nav.topicId}`
                             }
                         }
+
+                        // v7.0: Apply advanced search filters
+                        const f = searchFilters.value
+                        if (f.sender) url += `&sender_id=${encodeURIComponent(f.sender)}`
+                        if (f.mediaType) url += `&media_type=${encodeURIComponent(f.mediaType)}`
+                        if (f.dateFrom) url += `&date_from=${encodeURIComponent(f.dateFrom)}`
+                        if (f.dateTo) url += `&date_to=${encodeURIComponent(f.dateTo)}`
 
                         const res = await fetch(url, {
                             credentials: 'include'
@@ -2659,6 +2834,150 @@
                     page.value = 0
                     hasMore.value = true
                     await loadMessages()
+                }
+
+                // v7.0: Search highlighting
+                const highlightText = (text, query) => {
+                    if (!query || !text) return text
+                    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                    return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark class="bg-yellow-400/30 text-inherit rounded px-0.5">$1</mark>')
+                }
+
+                // v7.0: Apply search filters to message list
+                const applySearchFilters = async () => {
+                    messages.value = []
+                    page.value = 0
+                    hasMore.value = true
+                    await loadMessages()
+                }
+
+                const clearSearchFilters = () => {
+                    searchFilters.value = { sender: '', mediaType: '', dateFrom: '', dateTo: '' }
+                    applySearchFilters()
+                }
+
+                // v7.0: Debounced global search
+                let globalSearchTimer = null
+                const debouncedGlobalSearch = () => {
+                    clearTimeout(globalSearchTimer)
+                    globalSearchTimer = setTimeout(() => performGlobalSearch(), 300)
+                }
+
+                // v7.0: Global search across all chats
+                const performGlobalSearch = async () => {
+                    if (!searchQuery.value && !searchFilters.value.sender) return
+                    globalSearchLoading.value = true
+                    try {
+                        const params = new URLSearchParams()
+                        if (searchQuery.value) params.set('q', searchQuery.value)
+                        if (searchFilters.value.sender) params.set('sender', searchFilters.value.sender)
+                        if (searchFilters.value.mediaType) params.set('media_type', searchFilters.value.mediaType)
+                        if (searchFilters.value.dateFrom) params.set('date_from', searchFilters.value.dateFrom)
+                        if (searchFilters.value.dateTo) params.set('date_to', searchFilters.value.dateTo)
+                        const res = await fetch(`/api/search?${params}`, { credentials: 'include' })
+                        if (res.ok) {
+                            globalSearchResults.value = await res.json()
+                        }
+                    } catch (e) {
+                        console.error('Global search failed:', e)
+                    } finally {
+                        globalSearchLoading.value = false
+                    }
+                }
+
+                // v7.0: Jump to a search result in a specific chat
+                const jumpToSearchResult = async (chatId, messageId) => {
+                    const targetChat = chats.value.find(c => c.id === chatId)
+                    if (!targetChat) return
+                    globalSearchMode.value = false
+                    await selectChat(targetChat)
+                    await nextTick()
+                    scrollToMessage(messageId)
+                }
+
+                // v7.0: Media gallery
+                const loadGalleryMedia = async (reset = false) => {
+                    if (!selectedChat.value || galleryLoading.value) return
+                    if (reset) {
+                        galleryMedia.value = []
+                        galleryOffset.value = 0
+                        galleryHasMore.value = true
+                    }
+                    galleryLoading.value = true
+                    try {
+                        let url = `/api/chats/${selectedChat.value.id}/media?limit=50&offset=${galleryOffset.value}`
+                        if (galleryFilter.value) url += `&type=${galleryFilter.value}`
+                        const res = await fetch(url, { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            galleryMedia.value.push(...data.media)
+                            galleryTotal.value = data.total
+                            galleryHasMore.value = data.has_more
+                            galleryOffset.value += data.media.length
+                        }
+                    } catch (e) {
+                        console.error('Gallery load failed:', e)
+                    } finally {
+                        galleryLoading.value = false
+                    }
+                }
+
+                const toggleGallery = () => {
+                    showMediaGallery.value = !showMediaGallery.value
+                    if (showMediaGallery.value) loadGalleryMedia(true)
+                }
+
+                const setGalleryFilter = (type) => {
+                    galleryFilter.value = type
+                    loadGalleryMedia(true)
+                }
+
+                // v7.0: URL hash routing
+                const parseHash = () => {
+                    const hash = window.location.hash.slice(1)
+                    const params = new URLSearchParams(hash)
+                    return { chatId: params.get('chat'), msgId: params.get('msg') }
+                }
+
+                const updateHash = (chatId, msgId = null) => {
+                    let hash = chatId ? `#chat=${chatId}` : ''
+                    if (msgId) hash += `&msg=${msgId}`
+                    window.history.replaceState(null, '', hash || window.location.pathname)
+                }
+
+                // v7.0: Keyboard shortcuts
+                const handleGlobalKeydown = (e) => {
+                    // Don't trigger when typing in inputs
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                        if (e.key === 'Escape') e.target.blur()
+                        return
+                    }
+                    if (e.key === 'Escape') {
+                        if (lightboxOpen.value) { closeLightbox(); return }
+                        if (showShortcutsHelp.value) { showShortcutsHelp.value = false; return }
+                        if (showMediaGallery.value) { showMediaGallery.value = false; return }
+                        if (showSearchFilters.value) { showSearchFilters.value = false; return }
+                    }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                        e.preventDefault()
+                        globalSearchMode.value = !globalSearchMode.value
+                    }
+                    if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+                        showShortcutsHelp.value = !showShortcutsHelp.value
+                    }
+                }
+
+                // v7.0: Copy message link
+                const copyMessageLink = async (msg) => {
+                    const url = `${window.location.origin}/#chat=${msg.chat_id}&msg=${msg.id}`
+                    try {
+                        await navigator.clipboard.writeText(url)
+                        // Brief visual feedback
+                        highlightedMessageId.value = msg.id
+                        setTimeout(() => { highlightedMessageId.value = null }, 1500)
+                    } catch (e) {
+                        console.warn('Clipboard write failed:', e)
+                    }
                 }
 
                 const handleScroll = (e) => {
@@ -2792,6 +3111,17 @@
                     if (!olderMsg) return true
                     
                     return olderMsg.sender_id !== currMsg.sender_id
+                }
+
+                // Check if this message is the last (newest/bottom) in a consecutive sender group
+                // Only last-in-group messages show the bubble tail
+                const isLastInSenderGroup = (index) => {
+                    const currMsg = sortedMessages.value[index]
+                    // Newest message (index 0, bottom of chat): always last in its group
+                    if (index === 0) return true
+                    const newerMsg = sortedMessages.value[index - 1]
+                    // Different sender below = this is the last in its group
+                    return newerMsg.sender_id !== currMsg.sender_id
                 }
 
                 const showDateSeparator = (index) => {
@@ -3089,7 +3419,7 @@
                     if (!text) return ''
                     const escaped = escapeHtml(text)
                     const urlRegex = /(https?:\/\/[^\s<]+)/g
-                    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+                    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
                 }
 
                 const scrollToMessage = (msgId) => {
@@ -3274,102 +3604,6 @@
                     }
                 }
 
-                // Admin panel (v7.0.0)
-                const adminViewers = ref([])
-                const adminChats = ref([])
-                const adminAuditLogs = ref([])
-                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: [], is_active: true })
-                const adminEditingId = ref(null)
-                const adminError = ref('')
-                const adminActiveTab = ref('viewers')
-
-                const loadAdminViewers = async () => {
-                    try {
-                        const res = await fetch('/api/admin/viewers', { credentials: 'include' })
-                        if (res.ok) { const data = await res.json(); adminViewers.value = data.viewers }
-                    } catch (e) { console.error('Failed to load viewers:', e) }
-                }
-
-                const loadAdminChats = async () => {
-                    try {
-                        const res = await fetch('/api/admin/chats', { credentials: 'include' })
-                        if (res.ok) { const data = await res.json(); adminChats.value = data.chats }
-                    } catch (e) { console.error('Failed to load chats:', e) }
-                }
-
-                const loadAdminAudit = async () => {
-                    try {
-                        const res = await fetch('/api/admin/audit?limit=50', { credentials: 'include' })
-                        if (res.ok) { const data = await res.json(); adminAuditLogs.value = data.logs }
-                    } catch (e) { console.error('Failed to load audit logs:', e) }
-                }
-
-                const openAdminPanel = async () => {
-                    showAdminPanel.value = true
-                    await Promise.all([loadAdminViewers(), loadAdminChats(), loadAdminAudit()])
-                }
-
-                const saveViewer = async () => {
-                    adminError.value = ''
-                    const chatIds = adminViewerForm.value.allowed_chat_ids
-                    const body = {
-                        username: adminViewerForm.value.username,
-                        password: adminViewerForm.value.password,
-                        allowed_chat_ids: (chatIds && chatIds.length > 0) ? chatIds : null,
-                        is_active: adminViewerForm.value.is_active ? 1 : 0
-                    }
-                    try {
-                        let res
-                        if (adminEditingId.value) {
-                            res = await fetch(`/api/admin/viewers/${adminEditingId.value}`, {
-                                method: 'PUT', credentials: 'include',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(body)
-                            })
-                        } else {
-                            res = await fetch('/api/admin/viewers', {
-                                method: 'POST', credentials: 'include',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(body)
-                            })
-                        }
-                        if (!res.ok) {
-                            const err = await res.json()
-                            adminError.value = err.detail || 'Failed to save'
-                            return
-                        }
-                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
-                        adminEditingId.value = null
-                        await loadAdminViewers()
-                    } catch (e) { adminError.value = 'Network error' }
-                }
-
-                const editViewer = (viewer) => {
-                    adminEditingId.value = viewer.id
-                    adminViewerForm.value = {
-                        username: viewer.username,
-                        password: '',
-                        allowed_chat_ids: viewer.allowed_chat_ids ? [...viewer.allowed_chat_ids] : [],
-                        is_active: !!viewer.is_active
-                    }
-                }
-
-                const deleteViewer = async (viewer) => {
-                    if (!confirm(`Delete viewer "${viewer.username}"?`)) return
-                    try {
-                        await fetch(`/api/admin/viewers/${viewer.id}`, {
-                            method: 'DELETE', credentials: 'include'
-                        })
-                        await loadAdminViewers()
-                    } catch (e) { adminError.value = 'Failed to delete' }
-                }
-
-                const cancelEdit = () => {
-                    adminEditingId.value = null
-                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
-                    adminError.value = ''
-                }
-
                 return {
                     chats,
                     filteredChats,
@@ -3394,12 +3628,13 @@
                     getSenderName,
                     getForwardName,
                     showSenderName,
+                    isLastInSenderGroup,
                     showDateSeparator,
                     // Album support
                     getAlbumForMessage,
                     isFirstInAlbum,
                     isHiddenAlbumMessage,
-                    getAlbumGridClass,
+                    getAlbumLayoutClass,
                     getChatName,
                     getInitials,
                     formatDate,
@@ -3436,24 +3671,6 @@
                     loginForm,
                     loginError,
                     performLogin,
-                    // Admin (v7.0.0)
-                    userRole,
-                    currentUsername,
-                    showAdminPanel,
-                    performLogout,
-                    adminViewers,
-                    adminChats,
-                    adminAuditLogs,
-                    adminViewerForm,
-                    adminEditingId,
-                    adminError,
-                    adminActiveTab,
-                    openAdminPanel,
-                    saveViewer,
-                    editViewer,
-                    deleteViewer,
-                    cancelEdit,
-                    loadAdminAudit,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
@@ -3530,6 +3747,32 @@
                     selectTopic,
                     activeTab,
                     getTopicColor,
+                    // v7.0: Search, gallery, shortcuts
+                    showSearchFilters,
+                    searchFilters,
+                    applySearchFilters,
+                    clearSearchFilters,
+                    globalSearchMode,
+                    globalSearchResults,
+                    globalSearchLoading,
+                    performGlobalSearch,
+                    debouncedGlobalSearch,
+                    jumpToSearchResult,
+                    highlightText,
+                    showMediaGallery,
+                    galleryMedia,
+                    galleryTotal,
+                    galleryHasMore,
+                    galleryLoading,
+                    galleryFilter,
+                    toggleGallery,
+                    setGalleryFilter,
+                    loadGalleryMedia,
+                    showShortcutsHelp,
+                    highlightedMessageId,
+                    copyMessageLink,
+                    updateHash,
+                    parseHash,
                 }
             }
         }).mount('#app')
