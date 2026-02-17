@@ -9,6 +9,8 @@ This module provides a unified interface for pushing real-time updates
 from the backup/listener components to the viewer.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

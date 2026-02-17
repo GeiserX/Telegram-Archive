@@ -3,6 +3,8 @@ Interactive authentication setup for Telegram.
 Run this script once to authenticate and save the session file.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

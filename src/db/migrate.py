@@ -4,6 +4,8 @@ Migration utilities for Telegram Backup database.
 Provides tools to migrate data between SQLite and PostgreSQL.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from urllib.parse import quote_plus

@@ -11,6 +11,8 @@ Architecture:
 - Both work on the same connection without conflicts
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 

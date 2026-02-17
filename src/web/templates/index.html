@@ -198,6 +198,15 @@
             height: 24px;
         }
 
+        /* v7.0: Message highlight animation for search/link */
+        @keyframes messageHighlight {
+            0% { background-color: rgba(59, 130, 246, 0.3); }
+            100% { background-color: transparent; }
+        }
+        .message-highlight-flash {
+            animation: messageHighlight 2s ease-out;
+        }
+
         /* Loading Spinner (Telegram-style) */
         .loading-spinner {
             width: 24px;
@@ -350,15 +359,8 @@
                                         <!-- Footer -->
                                         <div class="pt-3 mt-3 border-t border-gray-700 text-center">
                                             <div class="text-[10px] opacity-70">
-                                                Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-blue-400 hover:text-blue-300">Sergio Fernández</a>
+                                                Made with frustration by <a href="https://github.com/PhenixStar/telegram-viewer" target="_blank" class="text-blue-400 hover:text-blue-300">phenix</a>
                                             </div>
-                                            <a href="https://github.com/sponsors/GeiserX" target="_blank" 
-                                                class="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 text-[9px] bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 rounded transition">
-                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 16 16">
-                                                    <path fill-rule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5zM8 14.25l-.345.666-.002-.001-.006-.003-.018-.01a7.643 7.643 0 01-.31-.17 22.075 22.075 0 01-3.434-2.414C2.045 10.731 0 8.35 0 5.5 0 2.836 2.086 1 4.25 1 5.797 1 7.153 1.802 8 3.02 8.847 1.802 10.203 1 11.75 1 13.914 1 16 2.836 16 5.5c0 2.85-2.045 5.231-3.885 6.818a22.08 22.08 0 01-3.744 2.584l-.018.01-.006.003h-.002L8 14.25zm0 0l.345.666a.752.752 0 01-.69 0L8 14.25z"></path>
-                                                </svg>
-                                                Sponsor
-                                            </a>
                                         </div>
                                     </div>
                                 </div>
@@ -375,14 +377,37 @@
                     </div>
                     
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
-                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <input v-model="searchQuery" @input="globalSearchMode ? debouncedGlobalSearch() : onSearchInput()" type="text"
+                            :placeholder="globalSearchMode ? 'Global search across all chats...' : 'Search all chats...'"
+                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-10 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
+                        <!-- v7.0: Global search toggle -->
+                        <button @click="globalSearchMode = !globalSearchMode; if(!globalSearchMode) globalSearchResults = {results:[],total:0}"
+                            :class="globalSearchMode ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'"
+                            class="absolute right-2 top-2 p-0.5 transition" title="Toggle global search (Ctrl+K)">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </button>
                     </div>
+
+                    <!-- v7.0: Global Search Results -->
+                    <div v-if="globalSearchMode && globalSearchResults.results.length > 0" class="mb-3 max-h-96 overflow-y-auto space-y-1">
+                        <div class="text-xs text-tg-muted mb-1">{{ globalSearchResults.total }} results</div>
+                        <div v-for="r in globalSearchResults.results" :key="`${r.chat_id}-${r.message_id}`"
+                            @click="jumpToSearchResult(r.chat_id, r.message_id)"
+                            class="p-2 bg-gray-800/50 hover:bg-gray-700/50 rounded-lg cursor-pointer transition">
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="text-xs font-semibold text-blue-400 truncate">{{ r.chat_title }}</span>
+                                <span class="text-[10px] text-tg-muted">{{ r.sender_name }}</span>
+                            </div>
+                            <div class="text-xs text-gray-300 truncate" v-html="highlightText(r.text_snippet, searchQuery)"></div>
+                            <div class="text-[10px] text-tg-muted mt-0.5">{{ formatDateFull(r.date) }}</div>
+                        </div>
+                    </div>
+
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()" 
@@ -542,13 +567,16 @@
                             </h3>
                         </div>
                         
-                        <!-- Loading spinner while chats are loading -->
-                        <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
-                            <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span class="text-sm">Loading chats...</span>
+                        <!-- v7.0: Skeleton loading for chat list -->
+                        <div v-if="loadingChats" class="space-y-1 p-2">
+                            <div v-for="n in 8" :key="n" class="flex items-center gap-3 p-3 rounded-xl animate-pulse">
+                                <div class="w-12 h-12 rounded-full bg-gray-700/50 shrink-0"></div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="h-3.5 bg-gray-700/50 rounded w-2/3 mb-2"></div>
+                                    <div class="h-3 bg-gray-700/30 rounded w-full"></div>
+                                </div>
+                                <div class="h-2.5 bg-gray-700/30 rounded w-10"></div>
+                            </div>
                         </div>
                         <!-- Empty state -->
                         <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
@@ -727,7 +755,27 @@
                                 </svg>
                             </div>
 
-                            <!-- Export Button - always visible -->
+                            <!-- Filter Toggle Button -->
+                            <button @click="showSearchFilters = !showSearchFilters"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                :class="showSearchFilters ? 'text-blue-400 bg-blue-500/20' : ''"
+                                title="Search Filters">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
+                                </svg>
+                            </button>
+
+                            <!-- Gallery Toggle Button -->
+                            <button @click="toggleGallery()"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                :class="showMediaGallery ? 'text-blue-400 bg-blue-500/20' : ''"
+                                title="Media Gallery">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+                                </svg>
+                            </button>
+
+                            <!-- Export Button -->
                             <button @click="exportChat"
                                 class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
@@ -736,6 +784,29 @@
                                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                                 </svg>
                             </button>
+                        </div>
+                    </div>
+
+                    <!-- v7.0: Search Filters Bar (collapsible) -->
+                    <div v-if="showSearchFilters && selectedChat" class="px-4 py-2 bg-gray-800/50 border-b border-gray-700 space-y-2">
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <input v-model="searchFilters.sender" type="text" placeholder="Sender name..."
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <select v-model="searchFilters.mediaType"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                <option value="">All types</option>
+                                <option value="photo">Photos</option>
+                                <option value="video">Videos</option>
+                                <option value="document">Docs</option>
+                                <option value="audio">Audio</option>
+                            </select>
+                            <input v-model="searchFilters.dateFrom" type="date"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <span class="text-gray-500 text-xs">to</span>
+                            <input v-model="searchFilters.dateTo" type="date"
+                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <button @click="applySearchFilters" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition">Apply</button>
+                            <button @click="clearSearchFilters" class="text-gray-400 hover:text-white text-xs px-2 py-1 transition">Clear</button>
                         </div>
                     </div>
 
@@ -796,11 +867,59 @@
                         </div>
                     </div>
 
+                    <!-- v7.0: Media Gallery Panel (replaces messages when active) -->
+                    <div v-if="showMediaGallery && selectedChat" class="flex-1 relative min-h-0 overflow-y-auto p-4">
+                        <!-- Gallery Filter Tabs -->
+                        <div class="flex gap-2 mb-4 flex-wrap">
+                            <button v-for="t in [{v:'',l:'All'},{v:'photo',l:'Photos'},{v:'video',l:'Videos'},{v:'document',l:'Docs'},{v:'audio',l:'Audio'}]"
+                                :key="t.v" @click="setGalleryFilter(t.v)"
+                                :class="galleryFilter === t.v ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                                class="px-3 py-1 text-xs rounded-full transition">{{ t.l }}</button>
+                        </div>
+                        <!-- Gallery Grid -->
+                        <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1">
+                            <div v-for="item in galleryMedia" :key="item.id"
+                                class="aspect-square relative overflow-hidden rounded cursor-pointer hover:opacity-80 transition bg-gray-800"
+                                @click="openMedia({ media: item, id: item.message_id, chat_id: selectedChat.id, date: item.date })">
+                                <img v-if="item.type === 'photo'" :src="`/media/${item.file_path}`" loading="lazy"
+                                    class="w-full h-full object-cover" @error="$event.target.style.display='none'">
+                                <div v-else-if="item.type === 'video'" class="w-full h-full flex items-center justify-center bg-gray-800">
+                                    <div class="text-center">
+                                        <svg class="w-8 h-8 text-white/50 mx-auto" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                        <span v-if="item.duration" class="text-[10px] text-gray-400">{{ Math.floor(item.duration/60) }}:{{ String(item.duration%60).padStart(2,'0') }}</span>
+                                    </div>
+                                </div>
+                                <div v-else class="w-full h-full flex items-center justify-center bg-gray-800">
+                                    <div class="text-center px-2">
+                                        <svg class="w-6 h-6 text-gray-500 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                        <span class="text-[10px] text-gray-400 truncate block">{{ item.file_name || item.type }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Load More -->
+                        <div v-if="galleryHasMore" class="text-center py-4">
+                            <button @click="loadGalleryMedia()" class="text-blue-400 hover:text-blue-300 text-sm" :disabled="galleryLoading">
+                                {{ galleryLoading ? 'Loading...' : 'Load more' }}
+                            </button>
+                        </div>
+                        <div v-if="!galleryLoading && galleryMedia.length === 0" class="text-center py-8 text-tg-muted">
+                            No media found
+                        </div>
+                    </div>
+
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
-                    <div class="flex-1 relative min-h-0">
+                    <div v-else class="flex-1 relative min-h-0">
                     <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
-                        <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
-                            Loading messages...
+                        <!-- v7.0: Skeleton loading -->
+                        <div v-if="loading && messages.length === 0" class="space-y-3 py-4">
+                            <div v-for="n in 5" :key="n" class="flex" :class="n % 2 === 0 ? 'justify-end' : 'justify-start'">
+                                <div class="rounded-2xl p-3 animate-pulse" :class="n % 2 === 0 ? 'bg-blue-900/30 rounded-br-md' : 'bg-gray-700/50 rounded-bl-md'" style="width: 60%; max-width: 320px;">
+                                    <div class="h-3 bg-gray-600/50 rounded w-1/3 mb-2"></div>
+                                    <div class="h-3 bg-gray-600/30 rounded w-full mb-1"></div>
+                                    <div class="h-3 bg-gray-600/30 rounded w-2/3"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
@@ -814,7 +933,7 @@
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
                             <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
-                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
+                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100 group"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
@@ -1017,7 +1136,7 @@
 
                                     <!-- Text with clickable links -->
                                     <div class="whitespace-pre-wrap break-words message-text"
-                                        v-html="linkifyText(msg.text)"></div>
+                                        v-html="messageSearchQuery ? highlightText(linkifyText(msg.text), messageSearchQuery) : linkifyText(msg.text)"></div>
 
                                     <!-- Reactions -->
                                     <div v-if="msg.reactions && msg.reactions.length > 0" class="mt-2 flex flex-wrap gap-1.5">
@@ -1035,6 +1154,10 @@
                                         class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
                                         <span v-if="msg.edit_date">edited</span>
                                         {{ formatTime(msg.date) }}
+                                        <!-- v7.0: Copy link button -->
+                                        <button @click.stop="copyMessageLink(msg)" class="opacity-0 group-hover:opacity-100 hover:text-blue-400 transition ml-1" title="Copy link">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -1113,6 +1236,20 @@
             </div>
         </div>
         
+        <!-- v7.0: Keyboard Shortcuts Help Modal -->
+        <div v-if="showShortcutsHelp" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            @click.self="showShortcutsHelp = false">
+            <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-700">
+                <h3 class="text-lg font-bold text-white mb-4">Keyboard Shortcuts</h3>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between"><span class="text-gray-300">Close panel</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">Esc</kbd></div>
+                    <div class="flex justify-between"><span class="text-gray-300">Global search</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">Ctrl+K</kbd></div>
+                    <div class="flex justify-between"><span class="text-gray-300">This help</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">?</kbd></div>
+                </div>
+                <button @click="showShortcutsHelp = false" class="mt-4 w-full py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition text-sm">Close</button>
+            </div>
+        </div>
+
         <!-- Lightbox Modal for Images -->
         <div v-if="lightboxOpen" 
             class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center"
@@ -1242,7 +1379,27 @@
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
-                
+
+                // v7.0: Advanced search filters
+                const showSearchFilters = ref(false)
+                const searchFilters = ref({ sender: '', mediaType: '', dateFrom: '', dateTo: '' })
+                const globalSearchMode = ref(false)
+                const globalSearchResults = ref({ results: [], total: 0 })
+                const globalSearchLoading = ref(false)
+
+                // v7.0: Media gallery
+                const showMediaGallery = ref(false)
+                const galleryMedia = ref([])
+                const galleryTotal = ref(0)
+                const galleryHasMore = ref(true)
+                const galleryLoading = ref(false)
+                const galleryFilter = ref('')
+                const galleryOffset = ref(0)
+
+                // v7.0: Skeleton & keyboard shortcuts
+                const showShortcutsHelp = ref(false)
+                const highlightedMessageId = ref(null)
+
                 // v6.2.0: Navigation stack for folders, archived, topics
                 const navStack = ref([{ type: 'chatList', filter: 'all' }])
                 const folders = ref([])
@@ -1787,6 +1944,35 @@
                         })
                     }
                     
+                    // v7.0: Keyboard shortcuts
+                    document.addEventListener('keydown', handleGlobalKeydown)
+
+                    // v7.0: Hash routing - handle initial hash
+                    const { chatId: hashChatId, msgId: hashMsgId } = parseHash()
+                    if (hashChatId && !chatIdParam) {
+                        const hChat = chats.value.find(c => c.id === parseInt(hashChatId))
+                        if (hChat) {
+                            await selectChat(hChat)
+                            if (hashMsgId) {
+                                await nextTick()
+                                scrollToMessage(parseInt(hashMsgId))
+                            }
+                        }
+                    }
+                    window.addEventListener('hashchange', async () => {
+                        const { chatId: hc, msgId: hm } = parseHash()
+                        if (hc) {
+                            const chat = chats.value.find(c => c.id === parseInt(hc))
+                            if (chat && (!selectedChat.value || selectedChat.value.id !== parseInt(hc))) {
+                                await selectChat(chat)
+                            }
+                            if (hm) {
+                                await nextTick()
+                                scrollToMessage(parseInt(hm))
+                            }
+                        }
+                    })
+
                     // Mark secondary initialization complete
                     finishInitialization()
                 })
@@ -2353,8 +2539,10 @@
                     page.value = 0
                     hasMore.value = true
                     messageSearchQuery.value = ''
-                    chatStats.value = null  // Reset stats when changing chat
-                    pinnedMessages.value = []  // Reset pinned messages when changing chat
+                    chatStats.value = null
+                    pinnedMessages.value = []
+                    showMediaGallery.value = false  // v7.0: Close gallery on chat change
+                    updateHash(chat.id)  // v7.0: Update URL hash
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     await loadMessages()
@@ -2492,11 +2680,17 @@
                             const offset = page.value * limit
                             url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
-                            // Also pass topic_id for search within a topic
                             if (nav.type === 'chat' && nav.topicId) {
                                 url += `&topic_id=${nav.topicId}`
                             }
                         }
+
+                        // v7.0: Apply advanced search filters
+                        const f = searchFilters.value
+                        if (f.sender) url += `&sender_id=${encodeURIComponent(f.sender)}`
+                        if (f.mediaType) url += `&media_type=${encodeURIComponent(f.mediaType)}`
+                        if (f.dateFrom) url += `&date_from=${encodeURIComponent(f.dateFrom)}`
+                        if (f.dateTo) url += `&date_to=${encodeURIComponent(f.dateTo)}`
 
                         const res = await fetch(url, {
                             credentials: 'include'
@@ -2539,6 +2733,150 @@
                     page.value = 0
                     hasMore.value = true
                     await loadMessages()
+                }
+
+                // v7.0: Search highlighting
+                const highlightText = (text, query) => {
+                    if (!query || !text) return text
+                    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                    return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark class="bg-yellow-400/30 text-inherit rounded px-0.5">$1</mark>')
+                }
+
+                // v7.0: Apply search filters to message list
+                const applySearchFilters = async () => {
+                    messages.value = []
+                    page.value = 0
+                    hasMore.value = true
+                    await loadMessages()
+                }
+
+                const clearSearchFilters = () => {
+                    searchFilters.value = { sender: '', mediaType: '', dateFrom: '', dateTo: '' }
+                    applySearchFilters()
+                }
+
+                // v7.0: Debounced global search
+                let globalSearchTimer = null
+                const debouncedGlobalSearch = () => {
+                    clearTimeout(globalSearchTimer)
+                    globalSearchTimer = setTimeout(() => performGlobalSearch(), 300)
+                }
+
+                // v7.0: Global search across all chats
+                const performGlobalSearch = async () => {
+                    if (!searchQuery.value && !searchFilters.value.sender) return
+                    globalSearchLoading.value = true
+                    try {
+                        const params = new URLSearchParams()
+                        if (searchQuery.value) params.set('q', searchQuery.value)
+                        if (searchFilters.value.sender) params.set('sender', searchFilters.value.sender)
+                        if (searchFilters.value.mediaType) params.set('media_type', searchFilters.value.mediaType)
+                        if (searchFilters.value.dateFrom) params.set('date_from', searchFilters.value.dateFrom)
+                        if (searchFilters.value.dateTo) params.set('date_to', searchFilters.value.dateTo)
+                        const res = await fetch(`/api/search?${params}`, { credentials: 'include' })
+                        if (res.ok) {
+                            globalSearchResults.value = await res.json()
+                        }
+                    } catch (e) {
+                        console.error('Global search failed:', e)
+                    } finally {
+                        globalSearchLoading.value = false
+                    }
+                }
+
+                // v7.0: Jump to a search result in a specific chat
+                const jumpToSearchResult = async (chatId, messageId) => {
+                    const targetChat = chats.value.find(c => c.id === chatId)
+                    if (!targetChat) return
+                    globalSearchMode.value = false
+                    await selectChat(targetChat)
+                    await nextTick()
+                    scrollToMessage(messageId)
+                }
+
+                // v7.0: Media gallery
+                const loadGalleryMedia = async (reset = false) => {
+                    if (!selectedChat.value || galleryLoading.value) return
+                    if (reset) {
+                        galleryMedia.value = []
+                        galleryOffset.value = 0
+                        galleryHasMore.value = true
+                    }
+                    galleryLoading.value = true
+                    try {
+                        let url = `/api/chats/${selectedChat.value.id}/media?limit=50&offset=${galleryOffset.value}`
+                        if (galleryFilter.value) url += `&type=${galleryFilter.value}`
+                        const res = await fetch(url, { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            galleryMedia.value.push(...data.media)
+                            galleryTotal.value = data.total
+                            galleryHasMore.value = data.has_more
+                            galleryOffset.value += data.media.length
+                        }
+                    } catch (e) {
+                        console.error('Gallery load failed:', e)
+                    } finally {
+                        galleryLoading.value = false
+                    }
+                }
+
+                const toggleGallery = () => {
+                    showMediaGallery.value = !showMediaGallery.value
+                    if (showMediaGallery.value) loadGalleryMedia(true)
+                }
+
+                const setGalleryFilter = (type) => {
+                    galleryFilter.value = type
+                    loadGalleryMedia(true)
+                }
+
+                // v7.0: URL hash routing
+                const parseHash = () => {
+                    const hash = window.location.hash.slice(1)
+                    const params = new URLSearchParams(hash)
+                    return { chatId: params.get('chat'), msgId: params.get('msg') }
+                }
+
+                const updateHash = (chatId, msgId = null) => {
+                    let hash = chatId ? `#chat=${chatId}` : ''
+                    if (msgId) hash += `&msg=${msgId}`
+                    window.history.replaceState(null, '', hash || window.location.pathname)
+                }
+
+                // v7.0: Keyboard shortcuts
+                const handleGlobalKeydown = (e) => {
+                    // Don't trigger when typing in inputs
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                        if (e.key === 'Escape') e.target.blur()
+                        return
+                    }
+                    if (e.key === 'Escape') {
+                        if (lightboxOpen.value) { closeLightbox(); return }
+                        if (showShortcutsHelp.value) { showShortcutsHelp.value = false; return }
+                        if (showMediaGallery.value) { showMediaGallery.value = false; return }
+                        if (showSearchFilters.value) { showSearchFilters.value = false; return }
+                    }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                        e.preventDefault()
+                        globalSearchMode.value = !globalSearchMode.value
+                    }
+                    if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+                        showShortcutsHelp.value = !showShortcutsHelp.value
+                    }
+                }
+
+                // v7.0: Copy message link
+                const copyMessageLink = async (msg) => {
+                    const url = `${window.location.origin}/#chat=${msg.chat_id}&msg=${msg.id}`
+                    try {
+                        await navigator.clipboard.writeText(url)
+                        // Brief visual feedback
+                        highlightedMessageId.value = msg.id
+                        setTimeout(() => { highlightedMessageId.value = null }, 1500)
+                    } catch (e) {
+                        console.warn('Clipboard write failed:', e)
+                    }
                 }
 
                 const handleScroll = (e) => {
@@ -2959,11 +3297,17 @@
                     else if (e.key === 'ArrowRight') lightboxNext()
                 }
 
+                const escapeHtml = (text) => {
+                    const div = document.createElement('div')
+                    div.textContent = text
+                    return div.innerHTML
+                }
+
                 const linkifyText = (text) => {
                     if (!text) return ''
-                    // Basic URL regex
-                    const urlRegex = /(https?:\/\/[^\s]+)/g
-                    return text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>')
+                    const escaped = escapeHtml(text)
+                    const urlRegex = /(https?:\/\/[^\s<]+)/g
+                    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
                 }
 
                 const scrollToMessage = (msgId) => {
@@ -3290,6 +3634,32 @@
                     selectTopic,
                     activeTab,
                     getTopicColor,
+                    // v7.0: Search, gallery, shortcuts
+                    showSearchFilters,
+                    searchFilters,
+                    applySearchFilters,
+                    clearSearchFilters,
+                    globalSearchMode,
+                    globalSearchResults,
+                    globalSearchLoading,
+                    performGlobalSearch,
+                    debouncedGlobalSearch,
+                    jumpToSearchResult,
+                    highlightText,
+                    showMediaGallery,
+                    galleryMedia,
+                    galleryTotal,
+                    galleryHasMore,
+                    galleryLoading,
+                    galleryFilter,
+                    toggleGallery,
+                    setGalleryFilter,
+                    loadGalleryMedia,
+                    showShortcutsHelp,
+                    highlightedMessageId,
+                    copyMessageLink,
+                    updateHash,
+                    parseHash,
                 }
             }
         }).mount('#app')

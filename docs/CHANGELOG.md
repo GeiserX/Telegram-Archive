@@ -6,6 +6,79 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-02-17
+
+### Added
+
+- **Advanced Search with Filters** — Full-text search across all messages with advanced filtering: sender (by name/ID), media type (photo/video/document/audio), and date range (from/to). Results include highlighting and context. Implements FTS index for <100ms query performance.
+- **Global Cross-Chat Search** — Search across all accessible chats in a single query, enabling discovery across entire backup without navigating individual chats.
+- **Message Deep Linking** — Generate copyable links to specific messages (#chat/{id}/message/{id}). Restore scroll position and highlight on page load. Enables sharing message URLs.
+- **Search Result Highlighting** — Search queries highlight matching text in context. Display surrounding messages for better understanding. Result count and query timing shown.
+- **Copy Message Link** — Button to copy permalink to specific message for sharing via external channels.
+- **Media Gallery with Type Filters** — Grid view of all media in a chat with type filters: photo, video, document, audio. Responsive layout (1-4 columns). Lazy-loaded thumbnails. Pagination support (limit 100/page).
+- **Lightbox Viewer** — Full-size image/video preview. Navigate between media with arrow keys. Fullscreen mode. Download option. Close with Esc key.
+- **Keyboard Shortcuts** — Esc (close lightbox/clear search), Ctrl+K/Cmd+K (focus search), ? (show help overlay), Arrow keys (navigate media).
+- **URL Hash Routing** — Hash-based navigation (#/search, #/chat/{id}, #/chat/{id}/media, etc.). Preserve filters in URL. Browser back/forward support. Shareable state links.
+- **Skeleton Loading States** — Show skeleton screens during data fetch. Spinner during search. Progress indicator for media load. Better perceived performance.
+- **Transaction Accounting View** — Auto-detect monetary transactions from chat messages. Spreadsheet-like interface with date, sender, debit, credit, balance, category columns.
+- **Auto-Detect Transactions** — Scan message text for monetary amounts using regex patterns. Support multiple currency prefixes: PHP, $, ₱, P. Classify as credit/debit based on keywords (sent, paid, transfer, received, etc.). Confidence scoring (0.4-0.9 based on signal clarity). Range validation (1-10M).
+- **Transaction Management UI** — Inline editing of category and notes. Manual override of credit/debit amounts. Toggle auto-detected vs. manually-entered. Visibility of confidence scores.
+- **Transaction Summary** — Total credit/debit/balance. Count by category. Auto-generated insights. Date range filtering.
+- **Transaction CSV Export** — Export to CSV with headers and running balance column. Include date range and category filters. Download as file.
+- **Alembic Migration 007** — Database schema for transactions table. Adds indexes on (chat_id, date) and unique constraint on message_id.
+- **Transaction Detection Module** (`src/transaction_detector.py`) — Pattern matching for amounts and keyword-based classification. Handles comma-separated numbers (1,000.00). Validates amounts. Returns confidence scores.
+
+### Changed
+
+- **Frontend Upgrade** — Migrated to Vue 3 Composition API. Enhanced Tailwind CSS styling. Mobile-first responsive design. Improved component organization.
+- **Search Pagination** — Limited to 500 results per query (increased from 100 in v6.2). Prevents UI slowdown on very broad searches.
+- **API Response Format** — Unified response structure across endpoints. Include metadata (total, took_ms) for better client-side handling.
+
+### Technical
+
+- **30+ New API Endpoints**:
+  - `/api/search` — Global search with advanced filters
+  - `/api/chats/{chat_id}/messages` — Chat messages with highlighting
+  - `/api/chats/{chat_id}/media` — Media gallery with type filters
+  - `/api/chats/{chat_id}/messages/{message_id}/context` — Deep link support
+  - `/api/chats/{chat_id}/transactions` — Paginated transaction list
+  - `/api/chats/{chat_id}/transactions/scan` — Auto-detect from messages
+  - `/api/transactions/{txn_id}` — Manual transaction update/delete
+  - `/api/chats/{chat_id}/transactions/summary` — Running balance
+  - `/api/chats/{chat_id}/transactions/export` — CSV export
+  - Plus 20+ supporting endpoints for media, stats, and real-time updates
+
+- **Database Model: Transaction** — id, message_id, chat_id, sender_id, date, category, credit, debit, notes, auto_detected, confidence, created_at, updated_at. Indexes on chat_id+date and unique on message_id.
+
+- **Backward Compatibility** — v7.0 maintains full compatibility with v6.x databases. Migration 007 is non-breaking. Existing backups continue to work without data loss.
+
+### Performance
+
+- Full-text search index on message text (FTS)
+- Index on (chat_id, media_type, date) for gallery queries
+- Index on (chat_id, date) for transaction queries
+- P95 search latency: <100ms for typical queries
+- P95 media gallery load: <200ms for 100 items
+- P95 transaction scan: <1s for 1000 messages
+
+### Dependencies
+
+- **sqlalchemy** >=2.0 (for FTS support)
+- **alembic** >=1.18 (migration framework)
+- **vue** 3.3+ (frontend)
+- **tailwindcss** >=3.0 (styling)
+
+### Migration Path
+
+1. Backup your database: `cp data/backups/telegram_backup.db data/backups/telegram_backup.db.backup`
+2. Update container image: `docker pull drumsergio/telegram-archive:v7.0`
+3. Run migration: `docker compose up` (automatic on startup)
+4. Scan transactions (optional): POST `/api/chats/{chat_id}/transactions/scan` for each chat
+
+### Contributors
+
+- Telegram Archive Team — v7.0 feature implementation and testing
+
 ## [6.3.2] - 2026-02-17
 
 ### Fixed

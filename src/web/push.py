@@ -7,6 +7,8 @@ This module handles:
 - Sending push notifications to subscribed clients
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from datetime import datetime

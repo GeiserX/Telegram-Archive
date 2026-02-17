@@ -6,6 +6,8 @@ v3.0: Async database operations with SQLAlchemy.
 v5.0: WebSocket support for real-time updates and notifications.
 """
 
+from __future__ import annotations
+
 import asyncio
 import glob
 import hashlib
@@ -583,6 +585,108 @@ async def get_chats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/search", dependencies=[Depends(require_auth)])
+async def global_search(
+    q: str = "",
+    sender: str | None = None,
+    media_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Global cross-chat search. Returns results grouped by relevance."""
+    parsed_from = None
+    parsed_to = None
+    try:
+        if date_from:
+            parsed_from = datetime.fromisoformat(date_from)
+            if parsed_from.tzinfo:
+                parsed_from = parsed_from.replace(tzinfo=None)
+        if date_to:
+            parsed_to = datetime.fromisoformat(date_to)
+            if parsed_to.tzinfo:
+                parsed_to = parsed_to.replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO 8601.")
+
+    try:
+        results = await db.search_messages_global(
+            query=q,
+            display_chat_ids=list(config.display_chat_ids) if config.display_chat_ids else None,
+            sender=sender,
+            media_type=media_type,
+            date_from=parsed_from,
+            date_to=parsed_to,
+            limit=limit,
+            offset=offset,
+        )
+        return results
+    except Exception as e:
+        logger.error(f"Error in global search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/media", dependencies=[Depends(require_auth)])
+async def get_chat_media(
+    chat_id: int,
+    type: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Get media items for a chat gallery view."""
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        result = await db.get_chat_media(chat_id=chat_id, media_type=type, limit=limit, offset=offset)
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching chat media: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/messages/{message_id}/context", dependencies=[Depends(require_auth)])
+async def get_message_context(chat_id: int, message_id: int, limit: int = 25):
+    """Get messages surrounding a specific message for deep link navigation."""
+    if config.display_chat_ids and chat_id not in config.display_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        # Find the target message date, then get messages around it
+        target = await db.find_message_by_id(chat_id, message_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Get messages before and after the target
+        before = await db.get_messages_paginated(
+            chat_id=chat_id,
+            limit=limit,
+            before_date=target["date"],
+            before_id=target["id"],
+        )
+        after = await db.get_messages_paginated(
+            chat_id=chat_id,
+            limit=limit,
+            date_from=target["date"],
+        )
+
+        # Combine: after (older first) + target area
+        all_msgs = {m["id"]: m for m in before}
+        for m in after:
+            all_msgs[m["id"]] = m
+
+        # Also get the target message itself with full joins
+        # The target should be in before or after, but ensure it's there
+        messages = sorted(all_msgs.values(), key=lambda m: m.get("date", ""), reverse=True)
+        return messages
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting message context: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/chats/{chat_id}/messages", dependencies=[Depends(require_auth)])
 async def get_messages(
     chat_id: int,
@@ -592,6 +696,10 @@ async def get_messages(
     before_date: str | None = None,
     before_id: int | None = None,
     topic_id: int | None = None,
+    sender_id: int | None = None,
+    media_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ):
     """
     Get messages for a specific chat with user and media info.
@@ -601,8 +709,7 @@ async def get_messages(
     - Cursor-based: ?before_date=2026-01-15T12:00:00&before_id=12345 (O(1) performance)
 
     v6.2.0: Added topic_id filter for forum topic messages.
-
-    Cursor-based pagination is preferred for infinite scroll.
+    v7.0: Added sender_id, media_type, date_from, date_to filters.
     """
     # Restrict access in display mode
     if config.display_chat_ids and chat_id not in config.display_chat_ids:
@@ -613,11 +720,25 @@ async def get_messages(
     if before_date:
         try:
             parsed_before_date = datetime.fromisoformat(before_date.replace("Z", "+00:00"))
-            # Strip timezone for DB compatibility
             if parsed_before_date.tzinfo:
                 parsed_before_date = parsed_before_date.replace(tzinfo=None)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid before_date format. Use ISO 8601.")
+
+    # Parse date range filters
+    parsed_date_from = None
+    parsed_date_to = None
+    try:
+        if date_from:
+            parsed_date_from = datetime.fromisoformat(date_from)
+            if parsed_date_from.tzinfo:
+                parsed_date_from = parsed_date_from.replace(tzinfo=None)
+        if date_to:
+            parsed_date_to = datetime.fromisoformat(date_to)
+            if parsed_date_to.tzinfo:
+                parsed_date_to = parsed_date_to.replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO 8601.")
 
     try:
         messages = await db.get_messages_paginated(
@@ -628,6 +749,10 @@ async def get_messages(
             before_date=parsed_before_date,
             before_id=before_id,
             topic_id=topic_id,
+            sender_id=sender_id,
+            media_type=media_type,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
         )
         return messages
     except Exception as e:

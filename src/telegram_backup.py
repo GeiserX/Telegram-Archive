@@ -3,6 +3,8 @@ Main Telegram backup module.
 Handles Telegram client connection, message fetching, and incremental backup logic.
 """
 
+from __future__ import annotations
+
 import base64
 import logging
 import os

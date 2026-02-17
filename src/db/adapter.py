@@ -5,6 +5,8 @@ Provides all database operations using SQLAlchemy async.
 This is a drop-in replacement for the old Database class.
 """
 
+from __future__ import annotations
+
 import asyncio
 import glob
 import json
@@ -20,7 +22,18 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .base import DatabaseManager
-from .models import Chat, ChatFolder, ChatFolderMember, ForumTopic, Media, Message, Metadata, Reaction, SyncStatus, User
+from .models import (
+    Chat,
+    ChatFolder,
+    ChatFolderMember,
+    ForumTopic,
+    Media,
+    Message,
+    Metadata,
+    Reaction,
+    SyncStatus,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -898,7 +911,7 @@ class DatabaseAdapter:
 
             try:
                 result.update(json.loads(cached_stats))
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):
                 pass
 
         if last_backup_time:
@@ -1009,6 +1022,10 @@ class DatabaseAdapter:
         before_date: datetime | None = None,
         before_id: int | None = None,
         topic_id: int | None = None,
+        sender_id: int | None = None,
+        media_type: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
@@ -1062,6 +1079,16 @@ class DatabaseAdapter:
             if search:
                 stmt = stmt.where(Message.text.ilike(f"%{search}%"))
 
+            # Advanced search filters
+            if sender_id is not None:
+                stmt = stmt.where(Message.sender_id == sender_id)
+            if media_type is not None:
+                stmt = stmt.where(Media.type == media_type)
+            if date_from is not None:
+                stmt = stmt.where(Message.date >= date_from)
+            if date_to is not None:
+                stmt = stmt.where(Message.date <= date_to)
+
             # Cursor-based pagination (preferred - O(1) performance)
             if before_date is not None:
                 # Use composite cursor: (date, id) for deterministic ordering
@@ -1106,7 +1133,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1136,6 +1163,164 @@ class DatabaseAdapter:
                 msg["reactions"] = list(reactions_by_emoji.values())
 
             return messages
+
+    async def search_messages_global(
+        self,
+        query: str,
+        display_chat_ids: list[int] | None = None,
+        sender: str | None = None,
+        media_type: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Search messages across all chats for the web viewer global search.
+
+        Returns dict with results list and total count.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(
+                    Message.id,
+                    Message.chat_id,
+                    Message.text,
+                    Message.date,
+                    Message.sender_id,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Chat.title.label("chat_title"),
+                    Chat.type.label("chat_type"),
+                    Media.type.label("media_type"),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Chat, Message.chat_id == Chat.id)
+                .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+            )
+
+            # Restrict to allowed chats
+            if display_chat_ids:
+                stmt = stmt.where(Message.chat_id.in_(display_chat_ids))
+
+            # Text search
+            if query:
+                stmt = stmt.where(Message.text.ilike(f"%{query}%"))
+
+            # Sender name filter
+            if sender:
+                stmt = stmt.where(
+                    or_(
+                        User.first_name.ilike(f"%{sender}%"),
+                        User.last_name.ilike(f"%{sender}%"),
+                        User.username.ilike(f"%{sender}%"),
+                    )
+                )
+
+            if media_type:
+                stmt = stmt.where(Media.type == media_type)
+            if date_from:
+                stmt = stmt.where(Message.date >= date_from)
+            if date_to:
+                stmt = stmt.where(Message.date <= date_to)
+
+            # Count total
+            from sqlalchemy import func as sa_func
+
+            count_stmt = select(sa_func.count()).select_from(stmt.subquery())
+            total = (await session.execute(count_stmt)).scalar() or 0
+
+            # Fetch results
+            stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+            result = await session.execute(stmt)
+
+            results = []
+            for row in result:
+                sender_name = row.first_name or ""
+                if row.last_name:
+                    sender_name += f" {row.last_name}"
+                text_snippet = (row.text or "")[:150]
+                results.append(
+                    {
+                        "message_id": row.id,
+                        "chat_id": row.chat_id,
+                        "chat_title": row.chat_title or str(row.chat_id),
+                        "chat_type": row.chat_type,
+                        "text_snippet": text_snippet,
+                        "sender_name": sender_name.strip() or row.username or str(row.sender_id or ""),
+                        "date": row.date,
+                        "media_type": row.media_type,
+                    }
+                )
+
+            return {"results": results, "total": total}
+
+    async def get_chat_media(
+        self,
+        chat_id: int,
+        media_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Get media items for a chat, for the media gallery view."""
+        async with self.db_manager.async_session_factory() as session:
+            base = (
+                select(
+                    Media.id,
+                    Media.message_id,
+                    Media.type,
+                    Media.file_path,
+                    Media.file_name,
+                    Media.file_size,
+                    Media.width,
+                    Media.height,
+                    Media.duration,
+                    Message.date,
+                )
+                .join(Message, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                .where(Media.chat_id == chat_id)
+                .where(Media.file_path.isnot(None))
+            )
+
+            if media_type:
+                base = base.where(Media.type == media_type)
+
+            # Count
+            count_stmt = select(func.count()).select_from(base.subquery())
+            total = (await session.execute(count_stmt)).scalar() or 0
+
+            # Fetch
+            stmt = base.order_by(Message.date.desc()).limit(limit).offset(offset)
+            result = await session.execute(stmt)
+
+            media_list = []
+            for row in result:
+                media_list.append(
+                    {
+                        "id": row.id,
+                        "message_id": row.message_id,
+                        "type": row.type,
+                        "file_path": row.file_path,
+                        "file_name": row.file_name,
+                        "file_size": row.file_size,
+                        "width": row.width,
+                        "height": row.height,
+                        "duration": row.duration,
+                        "date": row.date,
+                    }
+                )
+
+            return {"media": media_list, "total": total, "has_more": offset + len(media_list) < total}
+
+    async def find_message_by_id(self, chat_id: int, message_id: int) -> dict[str, Any] | None:
+        """Find a single message by ID with basic info."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+            result = await session.execute(stmt)
+            msg = result.scalar_one_or_none()
+            if msg:
+                return self._message_to_dict(msg)
+            return None
 
     async def find_message_by_date_with_joins(self, chat_id: int, target_date: datetime) -> dict[str, Any] | None:
         """
@@ -1323,7 +1508,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         msg["raw_data"] = {}
 
                 messages.append(msg)

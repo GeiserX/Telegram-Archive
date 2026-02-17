@@ -5,6 +5,8 @@ v6.0.0 - Normalized schema with proper foreign key constraints.
 Media data is now stored only in the media table, not duplicated in messages.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy import (
@@ -320,3 +322,5 @@ class ChatFolderMember(Base):
         Index("idx_folder_members_chat", "chat_id"),
         Index("idx_folder_members_folder", "folder_id"),
     )
+
+

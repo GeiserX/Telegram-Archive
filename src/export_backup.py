@@ -5,6 +5,8 @@ Allows exporting messages from database to JSON format with date filtering.
 v3.0: Async database operations with SQLAlchemy.
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
