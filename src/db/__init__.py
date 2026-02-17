@@ -30,6 +30,8 @@ Usage:
     #   POSTGRES_DB=telegram_backup
 """
 
+from __future__ import annotations
+
 from .adapter import DatabaseAdapter
 from .base import DatabaseManager, close_database, get_db_manager, init_database
 from .migrate import migrate_sqlite_to_postgres, verify_migration

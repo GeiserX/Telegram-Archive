@@ -5,6 +5,8 @@ Provides a single interface for all backup operations including authentication,
 backup execution, scheduling, and data export.
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os

@@ -10,6 +10,8 @@ A single TelegramClient is shared between the backup and listener components.
 This avoids session file lock conflicts and allows both to run simultaneously.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import signal

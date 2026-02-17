@@ -13,6 +13,8 @@ Operations are buffered and only applied after a safety delay, ensuring
 that burst attacks are caught BEFORE any data is modified.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

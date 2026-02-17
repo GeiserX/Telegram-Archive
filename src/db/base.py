@@ -4,6 +4,8 @@ Database engine and session management for async SQLAlchemy.
 Supports both SQLite and PostgreSQL with proper configuration for each.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from collections.abc import AsyncGenerator
