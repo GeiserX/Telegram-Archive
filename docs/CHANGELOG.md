@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.3.2] - 2026-02-17
+
+### Fixed
+
+- **Empty chat blank screen** — Chats with no backed-up messages now show a "No messages backed up for this chat yet" empty state instead of a blank screen. Fixes [#78](https://github.com/GeiserX/Telegram-Archive/issues/78).
+
 ## [6.3.1] - 2026-02-16
 
 ### Fixed
