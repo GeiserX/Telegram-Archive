@@ -62,9 +62,7 @@
 
         /* Message Bubbles */
         .message-bubble {
-            display: inline-block;
-            max-width: min(600px, 80vw);
-            width: auto;
+            max-width: min(600px, 85%);
             word-wrap: break-word;
             overflow-wrap: anywhere;
             border-radius: 12px;
@@ -74,6 +72,7 @@
         /* Outgoing bubble: tail bottom-right */
         .bubble-outgoing {
             border-bottom-right-radius: 4px;
+            margin-right: 8px;
         }
         .bubble-outgoing::after {
             content: '';
@@ -89,6 +88,7 @@
         /* Incoming bubble: tail bottom-left */
         .bubble-incoming {
             border-bottom-left-radius: 4px;
+            margin-left: 8px;
         }
         .bubble-incoming::before {
             content: '';
@@ -137,13 +137,15 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             contain: layout paint;
+            overflow-x: hidden;
         }
 
-        /* Message row performance: CSS-based virtual scrolling */
+        /* Message row containment for reflow isolation */
         .msg-row {
-            content-visibility: auto;
-            contain-intrinsic-size: auto 120px;
             contain: layout style;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
 
         .message-bubble img,
@@ -755,7 +757,7 @@
             </div>
 
             <!-- Main Chat Area - full width on mobile -->
-            <div class="flex-1 flex flex-col bg-tg-bg relative"
+            <div class="flex-1 flex flex-col bg-tg-bg relative min-w-0 overflow-hidden"
                 :class="{'hidden md:flex': !selectedChat, 'flex': selectedChat}">
                 <div v-if="!selectedChat" class="flex-1 flex items-center justify-center text-tg-muted flex-col">
                     <div class="bg-tg-sidebar p-6 rounded-full mb-4">
@@ -771,7 +773,7 @@
                 <template v-else>
                     <!-- Chat Header -->
                     <div
-                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
+                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10 overflow-hidden max-w-full">
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
@@ -823,7 +825,7 @@
                             </div>
                         </div>
 
-                        <div class="flex items-center gap-1 sm:gap-2 shrink-0">
+                        <div class="flex items-center gap-1 sm:gap-2 min-w-0">
                             <!-- Search Bar - responsive width -->
                             <div class="relative w-28 sm:w-48 md:w-64">
                                 <input v-model="messageSearchQuery" @input="searchMessages" type="text"
