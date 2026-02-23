@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..realtime import RealtimeListener
+from .thumbnails import ALLOWED_SIZES, ensure_thumbnail
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -334,7 +335,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    """Add security headers to all responses."""
+    """Add security headers and cache-control to all responses."""
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -348,6 +349,16 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self' ws: wss:; "
         "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com"
     )
+
+    # Cache-Control headers by path
+    path = request.url.path
+    if path.startswith("/media/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+
     return response
 
 
@@ -402,6 +413,25 @@ async def serve_service_worker():
         raise HTTPException(status_code=404, detail="Service worker not found")
 
     return FileResponse(sw_path, media_type="application/javascript", headers={"Service-Worker-Allowed": "/"})
+
+
+# Thumbnail endpoint — registered BEFORE StaticFiles so it takes priority
+@app.get("/media/thumb/{size}/{folder:path}/{filename}", dependencies=[Depends(require_auth)])
+async def serve_thumbnail(size: int, folder: str, filename: str):
+    """Serve a cached WebP thumbnail, generating on first request."""
+    if size not in ALLOWED_SIZES:
+        raise HTTPException(status_code=400, detail=f"Invalid size. Allowed: {sorted(ALLOWED_SIZES)}")
+
+    media_root = Path(config.media_path)
+    thumb = await ensure_thumbnail(media_root, size, folder, filename)
+    if thumb is None:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    return FileResponse(
+        thumb,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 # Mount static directory

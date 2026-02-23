@@ -335,6 +335,21 @@
             object-fit: contain;
             cursor: pointer;
         }
+        /* Thumbnail fade-in on load */
+        .thumb-fade { opacity: 0; transition: opacity 0.3s ease-in; }
+        .thumb-fade.loaded { opacity: 1; }
+        /* Photo wrapper with gradient placeholder */
+        .msg-photo-wrapper {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            max-width: 400px;
+            background: linear-gradient(135deg, #1f2937 0%, #374151 50%, #1f2937 100%);
+        }
+        /* Gallery item gradient placeholder */
+        .gallery-placeholder {
+            background: linear-gradient(135deg, #1f2937 0%, #374151 50%, #1f2937 100%);
+        }
     </style>
     <script>
         tailwind.config = {
@@ -962,10 +977,14 @@
                         <!-- Gallery Grid -->
                         <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1">
                             <div v-for="item in galleryMedia" :key="item.id"
-                                class="aspect-square relative overflow-hidden rounded cursor-pointer hover:opacity-80 transition bg-gray-800"
+                                class="aspect-square relative overflow-hidden rounded cursor-pointer hover:opacity-80 transition gallery-placeholder"
                                 @click="openMedia({ media: item, id: item.message_id, chat_id: selectedChat.id, date: item.date })">
-                                <img v-if="item.type === 'photo'" :src="`/media/${item.file_path}`" loading="lazy"
-                                    class="w-full h-full object-cover" @error="$event.target.style.display='none'">
+                                <img v-if="item.type === 'photo'"
+                                    :src="`/media/thumb/200/${item.file_path}`"
+                                    loading="lazy" decoding="async"
+                                    class="w-full h-full object-cover thumb-fade"
+                                    @load="$event.target.classList.add('loaded')"
+                                    @error="$event.target.src.includes('/thumb/') ? ($event.target.src = `/media/${item.file_path}`) : $event.target.style.display='none'">
                                 <div v-else-if="item.type === 'video'" class="w-full h-full flex items-center justify-center bg-gray-800">
                                     <div class="text-center">
                                         <svg class="w-8 h-8 text-white/50 mx-auto" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -1106,15 +1125,16 @@
                                         <div v-if="isFirstInAlbum(msg, index)" class="album-grid">
                                             <div class="grid gap-1" :class="getAlbumLayoutClass(getAlbumForMessage(msg))">
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
-                                                    <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
+                                                    <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition gallery-placeholder"
                                                         :class="{ 'album-item-video': albumMsg.media?.type === 'video' }"
                                                         @click="openMedia(albumMsg)">
                                                         <img v-if="albumMsg.media?.type === 'photo'"
-                                                            :src="getMediaUrl(albumMsg)"
+                                                            :src="getThumbUrl(albumMsg, 400)"
                                                             loading="lazy"
                                                             decoding="async"
-                                                            class="w-full h-full object-cover"
-                                                            @error="handleImageError($event, albumMsg)">
+                                                            class="w-full h-full object-cover thumb-fade"
+                                                            @load="$event.target.classList.add('loaded')"
+                                                            @error="handleThumbError($event, albumMsg)">
                                                         <video v-else-if="albumMsg.media?.type === 'video'" 
                                                             class="w-full h-full object-cover"
                                                             preload="metadata">
@@ -1133,12 +1153,17 @@
                                         </div>
                                         
                                         <!-- Regular photo (not part of album) -->
-                                        <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id"
-                                            :src="getMediaUrl(msg)"
-                                            loading="lazy"
-                                            decoding="async"
-                                            class="msg-photo hover:opacity-90 transition"
-                                            @click="openMedia(msg)" @error="handleImageError($event, msg)">
+                                        <div v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id"
+                                            class="msg-photo-wrapper"
+                                            :style="msg.media?.width && msg.media?.height ? `aspect-ratio: ${msg.media.width}/${msg.media.height}` : ''">
+                                            <img
+                                                :src="getThumbUrl(msg, 400)"
+                                                loading="lazy"
+                                                decoding="async"
+                                                class="msg-photo hover:opacity-90 transition thumb-fade"
+                                                @load="$event.target.classList.add('loaded')"
+                                                @click="openMedia(msg)" @error="handleThumbError($event, msg)">
+                                        </div>
 
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
@@ -3299,6 +3324,14 @@
                     return `/media/${folder}/${filename}`
                 }
 
+                const getThumbUrl = (msg, size) => {
+                    if (!msg.media?.file_path) return ''
+                    const parts = msg.media?.file_path.split(/[/\\]/)
+                    const filename = parts.pop()
+                    const folder = parts.pop()
+                    return `/media/thumb/${size}/${folder}/${filename}`
+                }
+
                 const getDocumentDisplayName = (msg) => {
                     // Prefer file name from media table when available
                     let name = msg.media?.file_name || ''
@@ -3343,6 +3376,18 @@
                     `)
                     img.style.cursor = 'default'
                     img.onclick = null
+                }
+
+                const handleThumbError = (event, msg) => {
+                    // Thumbnail failed — fall back to full-size original
+                    const img = event.target
+                    const original = getMediaUrl(msg)
+                    if (img.src.includes('/thumb/') && original) {
+                        img.src = original
+                        return
+                    }
+                    // Original also failed — show placeholder
+                    handleImageError(event, msg)
                 }
                 
                 const handleMediaError = (event, msg) => {
@@ -3638,9 +3683,11 @@
                     formatLastBackupTime,
                     formatReactionEmoji,
                     getMediaUrl,
+                    getThumbUrl,
                     getDocumentDisplayName,
                     isImageDocument,
                     handleImageError,
+                    handleThumbError,
                     handleMediaError,
                     openMedia,
                     // Lightbox

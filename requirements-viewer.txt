@@ -21,6 +21,9 @@ greenlet>=3.1.0
 pywebpush>=2.0.0
 py-vapid>=1.9.0
 
+# Image thumbnails (v7.0+)
+Pillow>=10.0.0
+
 
 
 

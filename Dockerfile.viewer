@@ -6,7 +6,12 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements-viewer.txt .
 
-# Install Python dependencies (no gcc needed - viewer has no native extensions)
+# Install system libs for Pillow (JPEG + WebP thumbnail support)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libjpeg62-turbo-dev libwebp-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements-viewer.txt
 
 # Copy only the necessary application code for the viewer
