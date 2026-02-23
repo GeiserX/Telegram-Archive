@@ -6,6 +6,35 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-02-24
+
+### Added
+
+- **Multi-user Viewer Authentication** — Per-user viewer accounts with PBKDF2-SHA256 password hashing (600k iterations). Each viewer assigned specific chats for fine-grained access control. Dual-mode: master account via env vars (VIEWER_USERNAME/VIEWER_PASSWORD) + database viewer accounts.
+- **ViewerAccount & ViewerAuditLog Models** — New ORM models for viewer authentication and audit logging. ViewerAccount stores username, password hash, assigned chat IDs, and active status. ViewerAuditLog tracks all actions: login, logout, view, export with timestamp, IP, user agent.
+- **Session Caching** — In-memory session cache with 24-hour TTL for fast auth validation without database queries on every request.
+- **Per-user Chat Filtering** — All API endpoints now filter results based on viewer's assigned chats. Master user respects DISPLAY_CHAT_IDS for backward compatibility.
+- **Admin API Endpoints** (NEW):
+  - `GET /api/admin/viewers` — List all viewer accounts
+  - `POST /api/admin/viewers` — Create new viewer account
+  - `PUT /api/admin/viewers/{viewer_id}` — Update viewer permissions and chats
+  - `DELETE /api/admin/viewers/{viewer_id}` — Delete viewer account
+  - `GET /api/admin/chats` — List all chats with message counts
+  - `GET /api/admin/audit` — View access audit log (paginated)
+- **Admin UI** — New admin panel for viewer management, chat picker with counts, audit log viewer with filtering.
+- **Alembic Migration 007** — Database schema for viewer_accounts and viewer_audit_log tables with proper indexes.
+- **7 DB Adapter Methods** — `get_viewer_account_by_username`, `get_all_viewer_accounts`, `create_viewer_account`, `update_viewer_account`, `delete_viewer_account`, `get_audit_log`, `log_audit_action`.
+
+### Changed
+
+- **Authentication Overhaul** — Replaced SHA256 tokens with PBKDF2-SHA256 password hashing. Changed from single global auth to per-user permissions model.
+- **Backward Compatibility** — Master users login via VIEWER_USERNAME env var and retain DISPLAY_CHAT_IDS filtering. Existing single-user deployments continue to work without migration.
+
+### Technical
+
+- Alembic migration 007: viewer_accounts, viewer_audit_log tables
+- New env vars: No new required vars (VIEWER_USERNAME/VIEWER_PASSWORD already existed, now define master account)
+
 ## [7.0.0] - 2026-02-17
 
 ### Added

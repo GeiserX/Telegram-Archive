@@ -324,3 +324,43 @@ class ChatFolderMember(Base):
     )
 
 
+class ViewerAccount(Base):
+    """Viewer accounts for multi-user access control.
+
+    Each viewer has a username, hashed password, and list of allowed chat IDs.
+    Master/admin user is always authenticated via env vars (VIEWER_USERNAME/VIEWER_PASSWORD).
+    """
+
+    __tablename__ = "viewer_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)  # hex-encoded 32-byte random salt
+    allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array of int chat IDs
+    is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_viewer_accounts_username", "username"),)
+
+
+class ViewerAuditLog(Base):
+    """Audit log for viewer API requests. Tracks what viewers access."""
+
+    __tablename__ = "viewer_audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    viewer_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(500), nullable=False)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_audit_viewer_id", "viewer_id"),
+        Index("idx_audit_timestamp", "timestamp"),
+    )

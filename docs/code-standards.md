@@ -1,6 +1,6 @@
 # Code Standards & Patterns
 
-**Version:** 7.0 | **Last Updated:** 2026-02-17
+**Version:** 7.1 | **Last Updated:** 2026-02-24
 
 ## Python Standards
 
@@ -203,6 +203,58 @@ async def create_transactions_bulk(
             logger.error("Transaction insert failed", exc_info=True)
             raise
 ```
+
+## Authentication Patterns
+
+### Multi-user Auth (v7.1)
+```python
+from src.db.adapter import get_adapter
+from src.web.auth import require_admin, SessionCache
+
+# Session cache for fast validation
+session_cache = SessionCache(ttl_seconds=86400)  # 24h TTL
+
+# Password hashing with PBKDF2-SHA256
+import hashlib
+password = "secure_pass"
+salt = os.urandom(32)
+hash_obj = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000)
+password_hash = hash_obj.hex()
+
+# Dual-mode auth: Check env var master first
+def authenticate_user(username: str, password: str) -> tuple[str, dict | None]:
+    """Returns (role, user_data) or (None, None) if invalid."""
+    # Check 1: Master account (env var)
+    if username == os.getenv("VIEWER_USERNAME"):
+        if hashlib.pbkdf2_hmac('sha256', password.encode(),
+                               MASTER_SALT, 600000).hex() == MASTER_HASH:
+            return ("master", {"username": username, "assigned_chats": None})
+
+    # Check 2: Database viewer accounts
+    db = get_adapter()
+    viewer = await db.get_viewer_account_by_username(username)
+    if viewer and verify_password(password, viewer["password_hash"]):
+        return ("viewer", viewer)
+
+    return (None, None)
+
+# Audit logging
+await db.log_audit_action(
+    viewer_id=viewer_id,
+    action="login",
+    chat_id=None,
+    ip_address=request.client.host,
+    user_agent=request.headers.get("user-agent")
+)
+```
+
+**Guidelines:**
+- Use PBKDF2-SHA256 (600k iterations) for all new password hashing
+- Store salt separately or use crypto.scrypt for key derivation
+- Session validation from in-memory cache (avoid DB queries per request)
+- Master account via env vars (backward compatible)
+- Per-viewer chat filtering before returning API responses
+- Audit log all sensitive actions (login, export, config changes)
 
 ## FastAPI Patterns
 
@@ -591,10 +643,15 @@ Format: `type(scope): subject`
 - [ ] All inputs validated (type, length, format)
 - [ ] SQL injection prevention (parameterized queries)
 - [ ] CSRF tokens on state-changing endpoints
-- [ ] Authentication required for sensitive endpoints
+- [ ] Authentication required for sensitive endpoints (use `require_admin`, `require_auth`)
+- [ ] Per-user chat filtering applied to all responses (v7.1)
+- [ ] PBKDF2-SHA256 hashing for all stored passwords (v7.1)
+- [ ] Session tokens validated via cache (avoid DB per request)
+- [ ] Audit logging for all sensitive actions (v7.1)
 - [ ] Rate limiting on expensive operations
 - [ ] Error messages don't leak sensitive info
-- [ ] Logs redact credentials/tokens
+- [ ] Logs redact credentials/tokens/passwords
 - [ ] HTTPS enforced in production
 - [ ] Secure cookie flags set
 - [ ] CORS origins restricted
+- [ ] Master account access controlled via env vars only

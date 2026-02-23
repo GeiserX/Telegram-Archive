@@ -464,17 +464,38 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- Small loading indicator for stats/WS initialization -->
-                        <div v-if="loadingStats" class="flex items-center gap-1.5 text-xs text-tg-muted">
-                            <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span>Syncing...</span>
+                        <div class="flex items-center gap-1">
+                            <!-- Small loading indicator for stats/WS initialization -->
+                            <div v-if="loadingStats" class="flex items-center gap-1.5 text-xs text-tg-muted">
+                                <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span>Syncing...</span>
+                            </div>
+                            <!-- Settings (admin only) -->
+                            <button v-if="userRole === 'master'"
+                                @click="openSettings"
+                                class="p-1.5 text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition"
+                                title="Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <!-- Logout -->
+                            <button v-if="isAuthenticated && authRequired"
+                                @click="performLogout"
+                                class="p-1.5 text-tg-muted hover:text-red-400 hover:bg-gray-700/50 rounded transition"
+                                title="Logout">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                     
-                    <div class="relative mb-3">
+                    <div v-if="!showSettings" class="relative mb-3">
                         <input v-model="searchQuery" @input="globalSearchMode ? debouncedGlobalSearch() : onSearchInput()" type="text"
                             :placeholder="globalSearchMode ? 'Global search across all chats...' : 'Search all chats...'"
                             class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-10 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -507,7 +528,7 @@
                     </div>
 
                     <!-- v6.2.0: Folder Tabs -->
-                    <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
+                    <div v-if="!showSettings && folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()" 
                             :class="activeTab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
@@ -523,7 +544,7 @@
                     </div>
                     
                     <!-- Last Backup Time / Real-time Status -->
-                    <div class="text-xs text-tg-muted">
+                    <div v-if="!showSettings" class="text-xs text-tg-muted">
                         <div class="flex items-center gap-1.5">
                             <template v-if="listenerActive">
                                 <!-- Real-time mode indicator -->
@@ -592,8 +613,184 @@
                     </div>
                 </div>
 
+                <!-- Settings Panel (admin only, replaces chat list) -->
+                <div v-if="showSettings" class="flex-1 flex flex-col overflow-hidden relative">
+                    <div class="p-4 border-b border-gray-700 flex items-center gap-3">
+                        <button @click="closeSettings" class="text-tg-muted hover:text-white transition">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                        <h2 class="text-lg font-semibold">Settings</h2>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                        <!-- User Info -->
+                        <div class="bg-gray-800/50 rounded-lg p-3 flex items-center justify-between">
+                            <div>
+                                <span class="text-sm text-tg-muted">Logged in as</span>
+                                <p class="font-medium">{{ userName }}
+                                    <span class="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 ml-1">admin</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Tab Switcher -->
+                        <div class="flex border-b border-gray-700">
+                            <button @click="switchSettingsTab('viewers')"
+                                :class="settingsTab === 'viewers' ? 'text-blue-400 border-blue-400' : 'text-tg-muted border-transparent hover:text-white'"
+                                class="px-4 py-2 text-sm font-medium border-b-2 transition">Viewers</button>
+                            <button @click="switchSettingsTab('activity')"
+                                :class="settingsTab === 'activity' ? 'text-blue-400 border-blue-400' : 'text-tg-muted border-transparent hover:text-white'"
+                                class="px-4 py-2 text-sm font-medium border-b-2 transition">Activity Log</button>
+                        </div>
+
+                        <!-- Viewers Tab -->
+                        <div v-if="settingsTab === 'viewers'">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="text-sm font-semibold text-tg-muted uppercase tracking-wider">Viewer Accounts</h3>
+                                <button @click="openAddViewer"
+                                    class="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition">+ Add User</button>
+                            </div>
+                            <div v-if="loadingViewers" class="text-center text-tg-muted py-4">Loading...</div>
+                            <div v-else-if="viewerAccounts.length === 0" class="text-center text-tg-muted py-6 bg-gray-800/30 rounded-lg">
+                                <p class="text-sm">No viewer accounts yet</p>
+                                <p class="text-xs mt-1">Create accounts to share access to specific chats</p>
+                            </div>
+                            <div v-else class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-tg-muted text-xs uppercase border-b border-gray-700">
+                                            <th class="text-left py-2 px-2">Username</th>
+                                            <th class="text-left py-2 px-2">Chats</th>
+                                            <th class="text-right py-2 px-2">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="viewer in viewerAccounts" :key="viewer.id"
+                                            class="border-b border-gray-700/50 hover:bg-gray-800/30">
+                                            <td class="py-2 px-2">{{ viewer.username }}
+                                                <span v-if="!viewer.is_active" class="text-xs text-red-400 ml-1">(disabled)</span>
+                                            </td>
+                                            <td class="py-2 px-2 text-tg-muted">{{ (viewer.allowed_chat_ids || []).length }} chats</td>
+                                            <td class="py-2 px-2 text-right space-x-2">
+                                                <button @click="openEditViewer(viewer)" class="text-blue-400 hover:text-blue-300 text-xs">Edit</button>
+                                                <button @click="confirmDeleteViewer(viewer)" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Activity Log Tab -->
+                        <div v-if="settingsTab === 'activity'">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="text-sm font-semibold text-tg-muted uppercase tracking-wider">Activity Log</h3>
+                                <select v-model="auditFilterViewer" @change="loadAuditLogs"
+                                    class="text-xs bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-tg-muted">
+                                    <option :value="null">All viewers</option>
+                                    <option v-for="v in viewerAccounts" :key="v.id" :value="v.id">{{ v.username }}</option>
+                                </select>
+                            </div>
+                            <div v-if="auditLoading" class="text-center text-tg-muted py-4">Loading...</div>
+                            <div v-else-if="auditLogs.length === 0" class="text-center text-tg-muted py-6 bg-gray-800/30 rounded-lg">
+                                <p class="text-sm">No activity recorded yet</p>
+                            </div>
+                            <div v-else class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-tg-muted text-xs uppercase border-b border-gray-700">
+                                            <th class="text-left py-2 px-2">Time</th>
+                                            <th class="text-left py-2 px-2">User</th>
+                                            <th class="text-left py-2 px-2">Endpoint</th>
+                                            <th class="text-left py-2 px-2">IP</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="log in auditLogs" :key="log.id"
+                                            class="border-b border-gray-700/50 hover:bg-gray-800/30">
+                                            <td class="py-2 px-2 text-xs text-tg-muted whitespace-nowrap">{{ new Date(log.timestamp).toLocaleString() }}</td>
+                                            <td class="py-2 px-2">{{ log.username }}</td>
+                                            <td class="py-2 px-2 text-xs font-mono text-tg-muted">{{ log.endpoint }}</td>
+                                            <td class="py-2 px-2 text-xs text-tg-muted">{{ log.ip_address }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Add/Edit Viewer Modal -->
+                    <div v-if="showViewerForm" class="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+                        <div class="bg-tg-sidebar border border-gray-700 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto p-5 shadow-2xl">
+                            <h3 class="text-lg font-semibold mb-4">{{ editingViewer ? 'Edit Viewer' : 'Add Viewer' }}</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm text-tg-muted mb-1">Username</label>
+                                    <input v-model="viewerForm.username" type="text" :disabled="!!editingViewer"
+                                        :class="{'opacity-50': !!editingViewer}"
+                                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                                        placeholder="viewer_username">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-tg-muted mb-1">
+                                        Password <span v-if="editingViewer" class="text-xs">(leave blank to keep current)</span>
+                                    </label>
+                                    <input v-model="viewerForm.password" type="password"
+                                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                                        :placeholder="editingViewer ? 'Leave blank to keep current' : 'Enter password'">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-tg-muted mb-1">
+                                        Allowed Chats <span class="text-xs ml-1">({{ viewerForm.allowed_chat_ids.length }} / {{ allChats.length }} selected)</span>
+                                    </label>
+                                    <input v-model="chatPickerSearch" type="text"
+                                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm mb-2 focus:outline-none focus:border-blue-500"
+                                        placeholder="Search chats...">
+                                    <div class="max-h-48 overflow-y-auto border border-gray-700 rounded-lg">
+                                        <label v-for="chat in filteredPickerChats" :key="chat.id"
+                                            class="flex items-center px-3 py-2 hover:bg-gray-800/50 cursor-pointer text-sm border-b border-gray-700/30 last:border-0">
+                                            <input type="checkbox" :checked="viewerForm.allowed_chat_ids.includes(chat.id)"
+                                                @change="toggleChat(chat.id)" class="mr-2 rounded">
+                                            <span class="truncate">{{ chat.title }}</span>
+                                            <span class="text-xs text-tg-muted ml-auto pl-2 whitespace-nowrap">{{ chat.type }}</span>
+                                        </label>
+                                        <div v-if="filteredPickerChats.length === 0" class="text-center text-tg-muted py-3 text-xs">No chats found</div>
+                                    </div>
+                                </div>
+                                <p v-if="viewerFormError" class="text-sm text-red-400 bg-red-500/10 rounded-lg p-2 text-center">{{ viewerFormError }}</p>
+                                <div class="flex gap-2 justify-end pt-2">
+                                    <button @click="showViewerForm = false"
+                                        class="px-4 py-2 text-sm text-tg-muted hover:text-white bg-gray-800 rounded-lg transition">Cancel</button>
+                                    <button @click="saveViewer" :disabled="savingViewer"
+                                        class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition">
+                                        {{ savingViewer ? 'Saving...' : 'Save' }}</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Delete Confirmation Modal -->
+                    <div v-if="deletingViewer" class="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+                        <div class="bg-tg-sidebar border border-gray-700 rounded-xl w-full max-w-sm p-5 shadow-2xl">
+                            <h3 class="text-lg font-semibold mb-2">Delete Viewer</h3>
+                            <p class="text-sm text-tg-muted mb-4">
+                                Are you sure you want to delete <strong class="text-white">{{ deletingViewer.username }}</strong>?
+                                This will immediately revoke their access.
+                            </p>
+                            <div class="flex gap-2 justify-end">
+                                <button @click="deletingViewer = null"
+                                    class="px-4 py-2 text-sm text-tg-muted hover:text-white bg-gray-800 rounded-lg transition">Cancel</button>
+                                <button @click="deleteViewer"
+                                    class="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 text-white rounded-lg transition">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Chat List / Topics View -->
-                <div class="flex-1 overflow-y-auto">
+                <div v-if="!showSettings" class="flex-1 overflow-y-auto">
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
@@ -1457,6 +1654,31 @@
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
                 const chatsError = ref('')  // Error message when database is busy
+
+                // Multi-user: user identity
+                const userRole = ref(null)
+                const userName = ref('')
+
+                // Admin settings panel
+                const showSettings = ref(false)
+                const settingsTab = ref('viewers')
+                const viewerAccounts = ref([])
+                const allChats = ref([])
+                const loadingViewers = ref(false)
+
+                // Viewer form (add/edit)
+                const showViewerForm = ref(false)
+                const editingViewer = ref(null)
+                const viewerForm = ref({ username: '', password: '', allowed_chat_ids: [] })
+                const viewerFormError = ref('')
+                const chatPickerSearch = ref('')
+                const deletingViewer = ref(null)
+                const savingViewer = ref(false)
+
+                // Audit log
+                const auditLogs = ref([])
+                const auditLoading = ref(false)
+                const auditFilterViewer = ref(null)
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
                 const listenerActive = ref(false)  // Whether real-time listener is active
@@ -1994,6 +2216,8 @@
                             console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
+                            userRole.value = data.role || null
+                            userName.value = data.username || ''
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
@@ -2476,9 +2700,10 @@
                         const data = await res.json()
                         if (data.success) {
                             isAuthenticated.value = true
+                            userRole.value = data.role || 'master'
+                            userName.value = data.username || ''
                             await loadChats()
                             await loadStats()
-                            // Re-initialize notifications after login (cookie now set)
                             await initNotifications()
                         } else {
                             loginError.value = 'Login failed'
@@ -2489,6 +2714,142 @@
                     } finally {
                         loadingAuth.value = false
                     }
+                }
+
+                // ── Admin Settings ──
+
+                const loadViewerAccounts = async () => {
+                    if (userRole.value !== 'master') return
+                    loadingViewers.value = true
+                    try {
+                        const res = await fetch('/api/admin/viewers', { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            viewerAccounts.value = data.viewers || []
+                        }
+                    } catch (e) { console.error('Failed to load viewers:', e) }
+                    finally { loadingViewers.value = false }
+                }
+
+                const loadAllChatsAdmin = async () => {
+                    if (userRole.value !== 'master') return
+                    try {
+                        const res = await fetch('/api/admin/chats', { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            allChats.value = data.chats || []
+                        }
+                    } catch (e) { console.error('Failed to load admin chats:', e) }
+                }
+
+                const openSettings = async () => {
+                    showSettings.value = true
+                    await loadViewerAccounts()
+                    await loadAllChatsAdmin()
+                }
+
+                const closeSettings = () => {
+                    showSettings.value = false
+                    showViewerForm.value = false
+                    editingViewer.value = null
+                    deletingViewer.value = null
+                }
+
+                const openAddViewer = () => {
+                    editingViewer.value = null
+                    viewerForm.value = { username: '', password: '', allowed_chat_ids: [] }
+                    viewerFormError.value = ''
+                    chatPickerSearch.value = ''
+                    showViewerForm.value = true
+                }
+
+                const openEditViewer = (viewer) => {
+                    editingViewer.value = viewer
+                    viewerForm.value = {
+                        username: viewer.username,
+                        password: '',
+                        allowed_chat_ids: [...(viewer.allowed_chat_ids || [])],
+                    }
+                    viewerFormError.value = ''
+                    chatPickerSearch.value = ''
+                    showViewerForm.value = true
+                }
+
+                const saveViewer = async () => {
+                    viewerFormError.value = ''
+                    savingViewer.value = true
+                    try {
+                        const isEdit = !!editingViewer.value
+                        const url = isEdit ? `/api/admin/viewers/${editingViewer.value.id}` : '/api/admin/viewers'
+                        const method = isEdit ? 'PUT' : 'POST'
+                        const body = { allowed_chat_ids: viewerForm.value.allowed_chat_ids }
+                        if (!isEdit) body.username = viewerForm.value.username
+                        if (viewerForm.value.password) body.password = viewerForm.value.password
+                        if (!isEdit && !body.password) { viewerFormError.value = 'Password is required'; return }
+
+                        const res = await fetch(url, {
+                            method, headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include', body: JSON.stringify(body),
+                        })
+                        if (!res.ok) {
+                            const err = await res.json().catch(() => ({}))
+                            viewerFormError.value = err.detail || 'Failed to save'
+                            return
+                        }
+                        showViewerForm.value = false
+                        await loadViewerAccounts()
+                    } catch (e) { viewerFormError.value = 'Unexpected error' }
+                    finally { savingViewer.value = false }
+                }
+
+                const confirmDeleteViewer = (viewer) => { deletingViewer.value = viewer }
+
+                const deleteViewer = async () => {
+                    if (!deletingViewer.value) return
+                    try {
+                        const res = await fetch(`/api/admin/viewers/${deletingViewer.value.id}`, { method: 'DELETE', credentials: 'include' })
+                        if (res.ok) { deletingViewer.value = null; await loadViewerAccounts() }
+                    } catch (e) { console.error('Delete failed:', e) }
+                }
+
+                const toggleChat = (chatId) => {
+                    const idx = viewerForm.value.allowed_chat_ids.indexOf(chatId)
+                    if (idx >= 0) viewerForm.value.allowed_chat_ids.splice(idx, 1)
+                    else viewerForm.value.allowed_chat_ids.push(chatId)
+                }
+
+                const filteredPickerChats = computed(() => {
+                    const q = chatPickerSearch.value.toLowerCase()
+                    if (!q) return allChats.value
+                    return allChats.value.filter(c => (c.title || '').toLowerCase().includes(q) || String(c.id).includes(q))
+                })
+
+                const performLogout = async () => {
+                    try { await fetch('/api/logout', { method: 'POST', credentials: 'include' }) } catch (e) { /* ignore */ }
+                    isAuthenticated.value = false
+                    userRole.value = null
+                    userName.value = ''
+                    showSettings.value = false
+                }
+
+                // ── Audit Log ──
+                const loadAuditLogs = async () => {
+                    auditLoading.value = true
+                    try {
+                        let url = '/api/admin/audit?limit=100'
+                        if (auditFilterViewer.value) url += `&viewer_id=${auditFilterViewer.value}`
+                        const res = await fetch(url, { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            auditLogs.value = data.entries || []
+                        }
+                    } catch (e) { console.error('Failed to load audit logs:', e) }
+                    finally { auditLoading.value = false }
+                }
+
+                const switchSettingsTab = async (tab) => {
+                    settingsTab.value = tab
+                    if (tab === 'activity') await loadAuditLogs()
                 }
 
                 const filteredChats = computed(() => {
@@ -3713,6 +4074,36 @@
                     loginForm,
                     loginError,
                     performLogin,
+                    performLogout,
+                    userRole,
+                    userName,
+                    // Admin settings
+                    showSettings,
+                    settingsTab,
+                    viewerAccounts,
+                    allChats,
+                    loadingViewers,
+                    showViewerForm,
+                    editingViewer,
+                    viewerForm,
+                    viewerFormError,
+                    chatPickerSearch,
+                    deletingViewer,
+                    savingViewer,
+                    openSettings,
+                    closeSettings,
+                    openAddViewer,
+                    openEditViewer,
+                    saveViewer,
+                    confirmDeleteViewer,
+                    deleteViewer,
+                    toggleChat,
+                    filteredPickerChats,
+                    switchSettingsTab,
+                    auditLogs,
+                    auditLoading,
+                    auditFilterViewer,
+                    loadAuditLogs,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,

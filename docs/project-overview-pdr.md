@@ -1,6 +1,6 @@
 # Project Overview & Product Development Requirements (PDR)
 
-**Version:** 7.0 | **Last Updated:** 2026-02-17 | **Status:** Active Development
+**Version:** 7.1 | **Last Updated:** 2026-02-24 | **Status:** Active Development
 
 ## Executive Summary
 
@@ -82,6 +82,13 @@ Enable Telegram users to independently archive, search, and analyze their conver
 - WebSocket sync
 - Push notifications (in-browser + Web Push)
 - Auto-reconnect with backoff
+
+**Multi-user Access Control** (NEW v7.1)
+- Per-user viewer accounts with password protection
+- Chat permission assignment per viewer
+- Master admin account via environment variables
+- Audit logging of all viewer actions
+- Admin console for viewer management
 
 ## Functional Requirements
 
@@ -191,9 +198,14 @@ Enable Telegram users to independently archive, search, and analyze their conver
 - Graceful degradation if PostgreSQL unavailable
 
 ### Security
-- Optional authentication (username/password)
-- Session tokens with 30-day expiration
-- DISPLAY_CHAT_IDS chat filtering
+- **Multi-user authentication** with per-user chat permissions (v7.1)
+- **PBKDF2-SHA256 password hashing** (600k iterations) for stored passwords (v7.1)
+- **In-memory session cache** with 24h TTL for fast auth validation (v7.1)
+- **Dual-mode auth**: Master account via env vars + DB viewer accounts (v7.1)
+- **Audit logging** of all viewer actions for compliance (v7.1)
+- Session tokens with 24-hour expiration (v7.1)
+- DISPLAY_CHAT_IDS chat filtering (backward compatible for master)
+- Per-viewer chat permission filtering (v7.1)
 - HTTPS cookie flag (auto-detect or explicit)
 - CORS origin restriction
 - Rate limiting on deletions
@@ -253,6 +265,19 @@ Enable Telegram users to independently archive, search, and analyze their conver
 - [x] Copy message link feature
 - [x] Alembic migration 007
 - [x] Backward compatibility with v6.x
+
+### v7.1 Release (NEW)
+- [x] ViewerAccount ORM model with PBKDF2-SHA256 hashing
+- [x] ViewerAuditLog ORM model for action tracking
+- [x] 7 DB adapter methods for viewer CRUD + audit operations
+- [x] Alembic migration 007 for new tables
+- [x] Multi-user authentication with session cache (24h TTL)
+- [x] Per-user chat permission filtering on all endpoints
+- [x] Dual-mode login: env-var master + DB viewers
+- [x] Master user respects DISPLAY_CHAT_IDS (backward compatible)
+- [x] 6 admin endpoints: GET/POST/PUT/DELETE /api/admin/viewers, GET /api/admin/chats, GET /api/admin/audit
+- [x] Admin UI: viewer management, chat assignment, audit log viewer
+- [x] Audit logging: login, logout, view, export actions
 
 ## Success Metrics
 

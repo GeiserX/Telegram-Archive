@@ -33,6 +33,8 @@ from .models import (
     Reaction,
     SyncStatus,
     User,
+    ViewerAccount,
+    ViewerAuditLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -911,7 +913,7 @@ class DatabaseAdapter:
 
             try:
                 result.update(json.loads(cached_stats))
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 pass
 
         if last_backup_time:
@@ -1133,7 +1135,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1508,7 +1510,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1833,6 +1835,132 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(select(func.count(Chat.id)).where(Chat.is_archived == 1))
             return result.scalar() or 0
+
+    # ========================================================================
+    # Viewer Account Management (multi-user access control)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def get_viewer_account_by_username(self, username: str) -> dict | None:
+        """Get viewer account by username (case-insensitive)."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(
+                select(ViewerAccount).where(func.lower(ViewerAccount.username) == username.lower())
+            )
+            account = result.scalar_one_or_none()
+            if not account:
+                return None
+            return {
+                "id": account.id,
+                "username": account.username,
+                "password_hash": account.password_hash,
+                "salt": account.salt,
+                "allowed_chat_ids": account.allowed_chat_ids,
+                "is_active": account.is_active,
+                "created_at": account.created_at,
+                "updated_at": account.updated_at,
+            }
+
+    @retry_on_locked()
+    async def get_all_viewer_accounts(self) -> list[dict]:
+        """Get all viewer accounts (for admin panel)."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(ViewerAccount).order_by(ViewerAccount.created_at))
+            accounts = result.scalars().all()
+            return [
+                {
+                    "id": a.id,
+                    "username": a.username,
+                    "allowed_chat_ids": json.loads(a.allowed_chat_ids or "[]"),
+                    "is_active": a.is_active,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in accounts
+            ]
+
+    @retry_on_locked()
+    async def create_viewer_account(
+        self, username: str, password_hash: str, salt: str, allowed_chat_ids: list[int]
+    ) -> dict:
+        """Create a new viewer account."""
+        async with self.db_manager.get_session() as session:
+            account = ViewerAccount(
+                username=username,
+                password_hash=password_hash,
+                salt=salt,
+                allowed_chat_ids=json.dumps(allowed_chat_ids),
+            )
+            session.add(account)
+            await session.flush()
+            result = {"id": account.id, "username": account.username}
+            await session.commit()
+            return result
+
+    @retry_on_locked()
+    async def update_viewer_account(self, account_id: int, **kwargs) -> bool:
+        """Update viewer account fields. Supports: password_hash, salt, allowed_chat_ids, is_active."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
+            account = result.scalar_one_or_none()
+            if not account:
+                return False
+            allowed_fields = {"password_hash", "salt", "allowed_chat_ids", "is_active"}
+            for key, value in kwargs.items():
+                if key in allowed_fields:
+                    setattr(account, key, value)
+            account.updated_at = datetime.utcnow()
+            await session.commit()
+            return True
+
+    @retry_on_locked()
+    async def delete_viewer_account(self, account_id: int) -> bool:
+        """Delete a viewer account."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(delete(ViewerAccount).where(ViewerAccount.id == account_id))
+            await session.commit()
+            return result.rowcount > 0
+
+    # ========================================================================
+    # Viewer Audit Log
+    # ========================================================================
+
+    @retry_on_locked()
+    async def create_audit_log(
+        self, viewer_id: int, username: str, endpoint: str, chat_id: int | None = None, ip_address: str | None = None
+    ):
+        """Log a viewer API access for audit trail."""
+        async with self.db_manager.get_session() as session:
+            entry = ViewerAuditLog(
+                viewer_id=viewer_id,
+                username=username,
+                endpoint=endpoint,
+                chat_id=chat_id,
+                ip_address=ip_address,
+            )
+            session.add(entry)
+            await session.commit()
+
+    @retry_on_locked()
+    async def get_audit_log(self, viewer_id: int | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Get viewer activity audit log entries."""
+        async with self.db_manager.get_session() as session:
+            query = select(ViewerAuditLog).order_by(ViewerAuditLog.timestamp.desc())
+            if viewer_id:
+                query = query.where(ViewerAuditLog.viewer_id == viewer_id)
+            query = query.offset(offset).limit(limit)
+            result = await session.execute(query)
+            return [
+                {
+                    "id": e.id,
+                    "viewer_id": e.viewer_id,
+                    "username": e.username,
+                    "endpoint": e.endpoint,
+                    "chat_id": e.chat_id,
+                    "ip_address": e.ip_address,
+                    "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                }
+                for e in result.scalars().all()
+            ]
 
     async def close(self) -> None:
         """Close database connections."""

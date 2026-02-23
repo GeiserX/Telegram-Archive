@@ -1,6 +1,6 @@
 # System Architecture
 
-**Version:** 7.0 | **Last Updated:** 2026-02-17
+**Version:** 7.1 | **Last Updated:** 2026-02-24
 
 ## High-Level Design
 
@@ -30,6 +30,14 @@
 │   │  (v1.0)       │  │  (NEW v7.0)    │   │  Metadata     │
 │   └───────────────┘  └────────────────┘   └───────────────┘
 │
+│   ┌──────────────────────────────────────┐  ┌──────────────────────┐
+│   │ ViewerAccount (NEW v7.1)             │  │ ViewerAuditLog       │
+│   │ • username (unique)                  │  │ (NEW v7.1)           │
+│   │ • password_hash (PBKDF2-SHA256)      │  │ • viewer_id, action  │
+│   │ • assigned_chat_ids (JSON)           │  │ • chat_id, timestamp │
+│   │ • is_active flag                     │  │ • ip_address         │
+│   └──────────────────────────────────────┘  └──────────────────────┘
+│
 │        ┌──────────────────────────────────────────┐
 │        │        FastAPI Web Viewer                │
 │        │  (30+ Endpoints)                         │
@@ -40,7 +48,9 @@
 │        │ • Message Display + Deep Linking (v7.0)  │
 │        │ • Real-time WebSocket Updates            │
 │        │ • Push Notifications                     │
-│        │ • Authentication & Rate Limiting         │
+│        │ • Authentication & Rate Limiting (v7.1)  │
+│        │ • Multi-user Access Control (NEW v7.1)   │
+│        │ • Admin Viewer Management (NEW v7.1)     │
 │        └──────────────────────────────────────────┘
 │
 │        ┌──────────────────────────────────────────┐
@@ -173,9 +183,75 @@ Frontend
     └→ Keyboard Navigation (arrow keys)
 ```
 
-## Database Schema (v7.0)
+### Multi-user Auth Flow (NEW v7.1)
+```
+User Login Request
+    ↓
+POST /api/login?username=user&password=pass
+    ↓
+Check 1: Is this the master account?
+    ├→ Username matches VIEWER_USERNAME env var
+    ├→ Password matches VIEWER_PASSWORD env var
+    └→ If match: grant master role + DISPLAY_CHAT_IDS access
 
-### Transaction Table (NEW)
+Check 2: Is this a DB viewer account?
+    ├→ Query viewer_accounts table
+    ├→ Verify password with PBKDF2-SHA256 (600k iterations)
+    ├→ Check is_active flag
+    └→ If match: grant viewer role + assigned_chat_ids access
+
+Session Creation
+    ├→ Generate session token (in-memory cache)
+    ├→ Set TTL to 24 hours
+    ├→ Log action to viewer_audit_log
+    └→ Return cookie + token
+
+Per-Request Auth Check
+    ├→ Extract session from cookie
+    ├→ Validate against in-memory cache (fast)
+    ├→ Check viewer permissions
+    └→ Apply per-user chat filter to all API responses
+
+Admin Chat Filtering
+    ├→ Master users: use global DISPLAY_CHAT_IDS (backward compatible)
+    └→ Viewer users: use assigned_chat_ids from viewer_accounts table
+
+Audit Logging
+    └→ Every action logged: login, logout, view chat, export (timestamp, IP, user_agent)
+```
+
+## Database Schema (v7.1)
+
+### ViewerAccount Table (NEW v7.1)
+```sql
+CREATE TABLE viewer_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    assigned_chat_ids TEXT,          -- JSON array of chat IDs visible to this viewer
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### ViewerAuditLog Table (NEW v7.1)
+```sql
+CREATE TABLE viewer_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id INTEGER,               -- FK to viewer_accounts.id (can be NULL for master)
+    action VARCHAR(50) NOT NULL,     -- login, logout, view, export, etc.
+    chat_id BIGINT,                  -- which chat was accessed (optional)
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+
+    INDEX idx_viewer_timestamp (viewer_id, timestamp DESC),
+    INDEX idx_action (action, timestamp DESC)
+);
+```
+
+### Transaction Table (v7.0)
 ```sql
 CREATE TABLE transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
