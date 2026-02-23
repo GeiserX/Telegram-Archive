@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Installation journal (contains infra IDs, credentials references)
+journal.md
+
 # Session files (contain authentication tokens)
 *.session
 *.session-journal
