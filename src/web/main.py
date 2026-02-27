@@ -499,9 +499,11 @@ def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKI
     )
 
 
-def require_master(user: UserContext = Depends(require_auth)) -> UserContext:
-    """Dependency that requires master role."""
+def require_master(request: Request, user: UserContext = Depends(require_auth)) -> UserContext:
+    """Dependency that requires master role. Blocked when X-Viewer-Only header is set."""
     if user.role != "master":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if request.headers.get("x-viewer-only", "").lower() == "true":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
@@ -677,7 +679,10 @@ async def login(request: Request):
                 return response
 
     # 2. Fall back to master env var credentials
+    viewer_only = request.headers.get("x-viewer-only", "").lower() == "true"
     if secrets.compare_digest(username, VIEWER_USERNAME) and secrets.compare_digest(password, VIEWER_PASSWORD):
+        if viewer_only:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         token = _create_session(username, "master", None)
         response = JSONResponse({"success": True, "role": "master", "username": username})
         response.set_cookie(
@@ -1423,7 +1428,14 @@ async def delete_viewer(viewer_id: int, request: Request, user: UserContext = De
 async def admin_list_chats(user: UserContext = Depends(require_master)):
     """List all chats for the admin chat picker."""
     chats = await db.get_all_chats()
-    return {"chats": [{"id": c["id"], "title": c.get("title"), "type": c.get("type")} for c in chats]}
+    result = []
+    for c in chats:
+        title = c.get("title")
+        if not title:
+            parts = [c.get("first_name", ""), c.get("last_name", "")]
+            title = " ".join(p for p in parts if p) or c.get("username") or str(c["id"])
+        result.append({"id": c["id"], "title": title, "type": c.get("type")})
+    return {"chats": result}
 
 
 @app.get("/api/admin/audit")
