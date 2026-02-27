@@ -54,22 +54,26 @@ class ConnectionManager:
     """Manages WebSocket connections for real-time updates."""
 
     def __init__(self):
-        # Active connections: {websocket: set of subscribed chat_ids}
         self.active_connections: dict[WebSocket, set[int]] = {}
+        self._allowed_chats: dict[WebSocket, set[int] | None] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, allowed_chat_ids: set[int] | None = None):
         await websocket.accept()
         self.active_connections[websocket] = set()
+        self._allowed_chats[websocket] = allowed_chat_ids
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            del self.active_connections[websocket]
+        self.active_connections.pop(websocket, None)
+        self._allowed_chats.pop(websocket, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     def subscribe(self, websocket: WebSocket, chat_id: int):
         """Subscribe a connection to updates for a specific chat."""
         if websocket in self.active_connections:
+            allowed = self._allowed_chats.get(websocket)
+            if allowed is not None and chat_id not in allowed:
+                return
             self.active_connections[websocket].add(chat_id)
 
     def unsubscribe(self, websocket: WebSocket, chat_id: int):
@@ -81,7 +85,10 @@ class ConnectionManager:
         """Broadcast a message to all connections subscribed to a chat."""
         disconnected = []
         for websocket, subscribed_chats in self.active_connections.items():
-            if chat_id in subscribed_chats or not subscribed_chats:  # Empty set = subscribed to all
+            allowed = self._allowed_chats.get(websocket)
+            if allowed is not None and chat_id not in allowed:
+                continue
+            if chat_id in subscribed_chats or not subscribed_chats:
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
@@ -555,6 +562,17 @@ async def serve_media(path: str, user: UserContext = Depends(require_auth)):
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    user_chat_ids = get_user_chat_ids(user)
+    if user_chat_ids is not None:
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] != "avatars":
+            try:
+                media_chat_id = int(parts[0])
+                if media_chat_id not in user_chat_ids:
+                    raise HTTPException(status_code=403, detail="Access denied")
+            except ValueError:
+                pass
+
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -594,11 +612,16 @@ async def login(request: Request):
     if not AUTH_ENABLED:
         return JSONResponse({"success": True, "message": "Auth disabled"})
 
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or request.headers.get("x-real-ip", "")
-        or (request.client.host if request.client else "unknown")
-    )
+    direct_ip = request.client.host if request.client else "unknown"
+    _trusted = direct_ip.startswith(("172.", "10.", "192.168.", "127.")) or direct_ip in ("::1", "localhost")
+    if _trusted:
+        client_ip = (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or request.headers.get("x-real-ip", "")
+            or direct_ip
+        )
+    else:
+        client_ip = direct_ip
 
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
@@ -972,7 +995,7 @@ async def get_stats(user: UserContext = Depends(require_auth)):
 
 
 @app.post("/api/stats/refresh")
-async def refresh_stats(user: UserContext = Depends(require_auth)):
+async def refresh_stats(user: UserContext = Depends(require_master)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics()
@@ -1028,13 +1051,17 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         endpoint = data.get("endpoint")
         keys = data.get("keys", {})
         p256dh = keys.get("p256dh")
-        auth = keys.get("auth")
+        auth = data.get("auth")
         chat_id = data.get("chat_id")
 
         if not endpoint or not p256dh or not auth:
             raise HTTPException(status_code=400, detail="Missing required subscription data")
 
-        # Get user agent for debugging
+        if chat_id:
+            user_chat_ids = get_user_chat_ids(user)
+            if user_chat_ids is not None and chat_id not in user_chat_ids:
+                raise HTTPException(status_code=403, detail="Access denied to this chat")
+
         user_agent = request.headers.get("user-agent", "")[:500]
 
         success = await push_manager.subscribe(
@@ -1099,12 +1126,10 @@ async def internal_push(request: Request):
     """
     client_host = request.client.host if request.client else None
 
-    # Allow loopback addresses and Docker internal networks (172.x.x.x, 10.x.x.x, 192.168.x.x)
     allowed = False
-    if (
-        client_host in ("127.0.0.1", "localhost", "::1", None)
-        or client_host
-        and (client_host.startswith("172.") or client_host.startswith("10.") or client_host.startswith("192.168."))
+    if client_host and (
+        client_host in ("127.0.0.1", "localhost", "::1")
+        or client_host.startswith(("172.", "10.", "192.168."))
     ):
         allowed = True
 
@@ -1266,6 +1291,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
     if not password or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if AUTH_ENABLED and VIEWER_USERNAME and username.lower() == VIEWER_USERNAME.lower():
+        raise HTTPException(status_code=409, detail="Username conflicts with master account")
 
     existing = await db.get_viewer_by_username(username)
     if existing:
@@ -1450,7 +1477,7 @@ async def websocket_endpoint(websocket: WebSocket):
         user_ctx = UserContext(session.username, session.role, session.allowed_chat_ids)
         ws_user_chat_ids = get_user_chat_ids(user_ctx)
 
-    await ws_manager.connect(websocket)
+    await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
 
     try:
         while True:
@@ -1460,11 +1487,8 @@ async def websocket_endpoint(websocket: WebSocket):
             if action == "subscribe":
                 chat_id = data.get("chat_id")
                 if chat_id:
-                    if ws_user_chat_ids is not None and chat_id not in ws_user_chat_ids:
-                        await websocket.send_json({"type": "error", "message": "Access denied"})
-                    else:
-                        ws_manager.subscribe(websocket, chat_id)
-                        await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+                    ws_manager.subscribe(websocket, chat_id)
+                    await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
 
             elif action == "unsubscribe":
                 chat_id = data.get("chat_id")
