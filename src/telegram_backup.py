@@ -202,6 +202,7 @@ class TelegramBackup:
                 chat_id = self._get_marked_id(entity)
                 seen_chat_ids.add(chat_id)
 
+                is_bot = isinstance(entity, User) and entity.bot
                 is_user = isinstance(entity, User) and not entity.bot
                 is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
                 is_channel = isinstance(entity, Channel) and not entity.megagroup
@@ -209,7 +210,7 @@ class TelegramBackup:
                 # Check if chat is explicitly in an exclude list (not just filtered out)
                 is_explicitly_excluded = (
                     chat_id in self.config.global_exclude_ids
-                    or (is_user and chat_id in self.config.private_exclude_ids)
+                    or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
                     or (is_group and chat_id in self.config.groups_exclude_ids)
                     or (is_channel and chat_id in self.config.channels_exclude_ids)
                 )
@@ -217,7 +218,7 @@ class TelegramBackup:
                 if is_explicitly_excluded:
                     # Chat is explicitly excluded - mark for deletion
                     explicitly_excluded_chat_ids.add(chat_id)
-                elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
                     # Chat should be backed up
                     filtered_dialogs.append(dialog)
 
@@ -343,11 +344,12 @@ class TelegramBackup:
                 if chat_id in explicitly_excluded_chat_ids:
                     continue
 
+                is_bot = isinstance(entity, User) and entity.bot
                 is_user = isinstance(entity, User) and not entity.bot
                 is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
                 is_channel = isinstance(entity, Channel) and not entity.megagroup
 
-                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel):
+                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
                     archived_to_backup.append(dialog)
 
             if archived_to_backup:
