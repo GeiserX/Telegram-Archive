@@ -1210,7 +1210,7 @@
                                 <input v-model="adminViewerForm.password" type="password" :placeholder="adminEditingId ? 'New password (leave empty to keep)' : 'Password'" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
                             </div>
                             <div class="mt-3">
-                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (leave empty for all)</label>
+                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
                                 <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
                                     <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
                                         <input type="checkbox" :value="chat.id" v-model="adminViewerForm.allowed_chat_ids" class="rounded" />
@@ -3266,7 +3266,7 @@
                 const adminViewers = ref([])
                 const adminChats = ref([])
                 const adminAuditLogs = ref([])
-                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: null, is_active: true })
+                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: [], is_active: true })
                 const adminEditingId = ref(null)
                 const adminError = ref('')
                 const adminActiveTab = ref('viewers')
@@ -3299,10 +3299,11 @@
 
                 const saveViewer = async () => {
                     adminError.value = ''
+                    const chatIds = adminViewerForm.value.allowed_chat_ids
                     const body = {
                         username: adminViewerForm.value.username,
                         password: adminViewerForm.value.password,
-                        allowed_chat_ids: adminViewerForm.value.allowed_chat_ids,
+                        allowed_chat_ids: (chatIds && chatIds.length > 0) ? chatIds : null,
                         is_active: adminViewerForm.value.is_active ? 1 : 0
                     }
                     try {
@@ -3325,7 +3326,7 @@
                             adminError.value = err.detail || 'Failed to save'
                             return
                         }
-                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: null, is_active: true }
+                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
                         adminEditingId.value = null
                         await loadAdminViewers()
                     } catch (e) { adminError.value = 'Network error' }
@@ -3336,7 +3337,7 @@
                     adminViewerForm.value = {
                         username: viewer.username,
                         password: '',
-                        allowed_chat_ids: viewer.allowed_chat_ids,
+                        allowed_chat_ids: viewer.allowed_chat_ids ? [...viewer.allowed_chat_ids] : [],
                         is_active: !!viewer.is_active
                     }
                 }
@@ -3353,7 +3354,7 @@
 
                 const cancelEdit = () => {
                     adminEditingId.value = null
-                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: null, is_active: true }
+                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
                     adminError.value = ''
                 }
 
