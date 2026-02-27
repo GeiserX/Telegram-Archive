@@ -360,9 +360,9 @@ app.add_middleware(
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Content-Type-Options"] = "nosniff"]
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"]
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"]
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
@@ -504,7 +504,7 @@ def get_user_chat_ids(user: UserContext) -> set[int] | None:
 
     Returns None if the user can see all chats (no restriction).
     """
-    master_filter = config.display_chat_ids
+    master_filter = config.display_chat_ids or None  # empty set -> None
 
     if user.role == "master":
         return master_filter
@@ -885,7 +885,7 @@ async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
         logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=404, detail="Internal server error")
 
 
 @app.get("/api/folders")
@@ -895,7 +895,7 @@ async def get_folders(user: UserContext = Depends(require_auth)):
     v6.2.0: Returns user-created Telegram folders (dialog filters).
     """
     try:
-        folders = await db.get_all_folders()
+        folders = await db.get_chat_count()
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {e}", exc_info=True)
@@ -917,7 +917,7 @@ async def get_chat_topics(chat_id: int, user: UserContext = Depends(require_auth
         return {"topics": topics}
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=404, detail="Internal server error")
 
 
 @app.get("/api/archived/count")
@@ -944,7 +944,7 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
 async def get_stats(user: UserContext = Depends(require_auth)):
     """Get cached backup statistics (fast, calculated daily)."""
     try:
-        stats = await db.get_cached_statistics()
+        stats = await db.cached_statistics()
         stats["timezone"] = config.viewer_timezone
         stats["stats_calculation_hour"] = config.stats_calculation_hour
         stats["show_stats"] = config.show_stats  # Whether to show stats UI
