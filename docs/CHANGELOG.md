@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.0.2] - 2026-02-27
+
+### Security
+
+- **Per-user push notifications** — Push subscriptions now store the subscriber's `username` and `allowed_chat_ids`. Notifications are only sent to users who have access to the chat where the message was posted. Prevents restricted viewers from receiving push notifications for chats outside their whitelist.
+- **Alembic migration 008** — Adds `username` and `allowed_chat_ids` columns to `push_subscriptions` table
+
+### Fixed
+
+- **Stale template cache** — Index HTML now served with `Cache-Control: no-cache, must-revalidate` to prevent browsers from serving outdated templates after upgrades
+
 ## [7.0.0] - 2026-02-27
 
 ### Added
@@ -741,9 +752,6 @@ See [Upgrading to v5.0.0](#upgrading-to-v500-from-v4x) below for detailed instru
 ### Changed
 - Moved all upgrade notices from README to `docs/CHANGELOG.md`
 - README now references CHANGELOG for upgrade instructions
-- Release workflow now extracts changelog notes for GitHub releases
-- Added release guidelines to AGENTS.md
-- Documented chat ID format requirements
 
 ### Improved
 - Release workflow now extracts changelog notes for GitHub releases

@@ -109,10 +109,17 @@ class PushNotificationManager:
         return self._vapid is not None and self.config.push_notifications == "full"
 
     async def subscribe(
-        self, endpoint: str, p256dh: str, auth: str, chat_id: int | None = None, user_agent: str | None = None
+        self,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        chat_id: int | None = None,
+        user_agent: str | None = None,
+        username: str | None = None,
+        allowed_chat_ids: list[int] | None = None,
     ) -> bool:
         """
-        Store a push subscription.
+        Store a push subscription with user ownership.
 
         Args:
             endpoint: Push service URL
@@ -120,6 +127,8 @@ class PushNotificationManager:
             auth: Auth secret (base64)
             chat_id: Optional chat ID for chat-specific subscriptions
             user_agent: Browser user agent for debugging
+            username: The authenticated user who created this subscription
+            allowed_chat_ids: Snapshot of the user's allowed chats (None = master/all access)
 
         Returns:
             True if subscription was stored successfully
@@ -129,32 +138,35 @@ class PushNotificationManager:
 
             from src.db.models import PushSubscription
 
+            allowed_json = json.dumps(allowed_chat_ids) if allowed_chat_ids is not None else None
+
             async with self.db.db_manager.async_session_factory() as session:
-                # Check if subscription already exists
                 result = await session.execute(select(PushSubscription).where(PushSubscription.endpoint == endpoint))
                 existing = result.scalar_one_or_none()
 
                 if existing:
-                    # Update existing subscription
                     existing.p256dh = p256dh
                     existing.auth = auth
                     existing.chat_id = chat_id
                     existing.user_agent = user_agent
+                    existing.username = username
+                    existing.allowed_chat_ids = allowed_json
                     existing.last_used_at = datetime.utcnow()
                 else:
-                    # Create new subscription
                     sub = PushSubscription(
                         endpoint=endpoint,
                         p256dh=p256dh,
                         auth=auth,
                         chat_id=chat_id,
                         user_agent=user_agent,
+                        username=username,
+                        allowed_chat_ids=allowed_json,
                         created_at=datetime.utcnow(),
                     )
                     session.add(sub)
 
                 await session.commit()
-                logger.info(f"Push subscription stored: {endpoint[:50]}...")
+                logger.info(f"Push subscription stored for {username or 'anonymous'}: {endpoint[:50]}...")
                 return True
 
         except Exception as e:
@@ -180,11 +192,11 @@ class PushNotificationManager:
 
     async def get_subscriptions(self, chat_id: int | None = None) -> list[dict[str, Any]]:
         """
-        Get all push subscriptions, optionally filtered by chat_id.
+        Get push subscriptions for a given chat, filtered by per-user permissions.
 
-        Returns subscriptions for:
-        - Global subscribers (chat_id is NULL)
-        - Chat-specific subscribers (if chat_id provided)
+        Only returns subscriptions where:
+        - The user is master (allowed_chat_ids is NULL) and subscribed globally or to this chat
+        - The user is a viewer whose allowed_chat_ids includes this chat_id
         """
         try:
             from sqlalchemy import or_, select
@@ -195,13 +207,23 @@ class PushNotificationManager:
                 query = select(PushSubscription)
 
                 if chat_id is not None:
-                    # Get global subscriptions OR chat-specific ones
                     query = query.where(or_(PushSubscription.chat_id.is_(None), PushSubscription.chat_id == chat_id))
 
                 result = await session.execute(query)
                 subs = result.scalars().all()
 
-                return [{"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}} for sub in subs]
+                filtered = []
+                for sub in subs:
+                    if sub.allowed_chat_ids is not None:
+                        try:
+                            user_chats = json.loads(sub.allowed_chat_ids)
+                            if chat_id not in user_chats:
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                    filtered.append({"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}})
+
+                return filtered
 
         except Exception as e:
             logger.error(f"Failed to get push subscriptions: {e}")
