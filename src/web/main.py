@@ -360,9 +360,9 @@ app.add_middleware(
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"]
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"]
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"]
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
@@ -621,7 +621,7 @@ async def login(request: Request):
                 if viewer["allowed_chat_ids"]:
                     try:
                         allowed = set(json.loads(viewer["allowed_chat_ids"]))
-                    except json.JSONDecodeError, TypeError:
+                    except (json.JSONDecodeError, TypeError):
                         allowed = None
 
                 token = _create_session(username, "viewer", allowed)
@@ -885,7 +885,7 @@ async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
         logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
-        raise HTTPException(status_code=404, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/folders")
@@ -895,7 +895,7 @@ async def get_folders(user: UserContext = Depends(require_auth)):
     v6.2.0: Returns user-created Telegram folders (dialog filters).
     """
     try:
-        folders = await db.get_chat_count()
+        folders = await db.get_all_folders()
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {e}", exc_info=True)
@@ -917,7 +917,7 @@ async def get_chat_topics(chat_id: int, user: UserContext = Depends(require_auth
         return {"topics": topics}
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
-        raise HTTPException(status_code=404, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/archived/count")
@@ -944,7 +944,7 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
 async def get_stats(user: UserContext = Depends(require_auth)):
     """Get cached backup statistics (fast, calculated daily)."""
     try:
-        stats = await db.cached_statistics()
+        stats = await db.get_cached_statistics()
         stats["timezone"] = config.viewer_timezone
         stats["stats_calculation_hour"] = config.stats_calculation_hour
         stats["show_stats"] = config.show_stats  # Whether to show stats UI
@@ -1274,7 +1274,7 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     if allowed_chat_ids is not None:
         try:
             chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
     account = await db.create_viewer_account(
@@ -1329,7 +1329,7 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
         else:
             try:
                 updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
     if "is_active" in data:
