@@ -246,11 +246,13 @@ class PushSubscription(Base):
     p256dh: Mapped[str] = mapped_column(String(255), nullable=False)  # Public key
     auth: Mapped[str] = mapped_column(String(255), nullable=False)  # Auth secret
     chat_id: Mapped[int | None] = mapped_column(BigInteger)  # Optional: subscribe to specific chat only
+    username: Mapped[str | None] = mapped_column(String(255))  # User who created this subscription
+    allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON snapshot of user's allowed chats at subscribe time
     user_agent: Mapped[str | None] = mapped_column(String(500))  # Browser info for debugging
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)  # Track activity
 
-    __table_args__ = (Index("idx_push_sub_chat", "chat_id"),)
+    __table_args__ = (Index("idx_push_sub_chat", "chat_id"), Index("idx_push_sub_username", "username"))
 
 
 class ForumTopic(Base):
