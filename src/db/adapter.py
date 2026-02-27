@@ -20,7 +20,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .base import DatabaseManager
-from .models import Chat, ChatFolder, ChatFolderMember, ForumTopic, Media, Message, Metadata, Reaction, SyncStatus, User
+from .models import (
+    Chat,
+    ChatFolder,
+    ChatFolderMember,
+    ForumTopic,
+    Media,
+    Message,
+    Metadata,
+    Reaction,
+    SyncStatus,
+    User,
+    ViewerAccount,
+    ViewerAuditLog,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1060,7 +1073,8 @@ class DatabaseAdapter:
                 stmt = stmt.where(Message.reply_to_top_id == topic_id)
 
             if search:
-                stmt = stmt.where(Message.text.ilike(f"%{search}%"))
+                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+                stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
 
             # Cursor-based pagination (preferred - O(1) performance)
             if before_date is not None:
@@ -1648,6 +1662,139 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(select(func.count(Chat.id)).where(Chat.is_archived == 1))
             return result.scalar() or 0
+
+    # ========================================================================
+    # Viewer Account Management (v7.0.0)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def create_viewer_account(
+        self,
+        username: str,
+        password_hash: str,
+        salt: str,
+        allowed_chat_ids: str | None = None,
+        created_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new viewer account. Returns the created account dict."""
+        async with self.db_manager.async_session_factory() as session:
+            account = ViewerAccount(
+                username=username,
+                password_hash=password_hash,
+                salt=salt,
+                allowed_chat_ids=allowed_chat_ids,
+                created_by=created_by,
+            )
+            session.add(account)
+            await session.commit()
+            await session.refresh(account)
+            return self._viewer_account_to_dict(account)
+
+    async def get_viewer_account(self, account_id: int) -> dict[str, Any] | None:
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
+            account = result.scalar_one_or_none()
+            return self._viewer_account_to_dict(account) if account else None
+
+    async def get_viewer_by_username(self, username: str) -> dict[str, Any] | None:
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(ViewerAccount).where(ViewerAccount.username == username))
+            account = result.scalar_one_or_none()
+            return self._viewer_account_to_dict(account) if account else None
+
+    async def get_all_viewer_accounts(self) -> list[dict[str, Any]]:
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(ViewerAccount).order_by(ViewerAccount.created_at.desc()))
+            return [self._viewer_account_to_dict(a) for a in result.scalars().all()]
+
+    @retry_on_locked()
+    async def update_viewer_account(self, account_id: int, **kwargs) -> dict[str, Any] | None:
+        """Update viewer account fields. Returns updated account or None if not found."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
+            account = result.scalar_one_or_none()
+            if not account:
+                return None
+            for key, value in kwargs.items():
+                if hasattr(account, key):
+                    setattr(account, key, value)
+            account.updated_at = datetime.utcnow()
+            await session.commit()
+            await session.refresh(account)
+            return self._viewer_account_to_dict(account)
+
+    @retry_on_locked()
+    async def delete_viewer_account(self, account_id: int) -> bool:
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(delete(ViewerAccount).where(ViewerAccount.id == account_id))
+            await session.commit()
+            return result.rowcount > 0
+
+    @staticmethod
+    def _viewer_account_to_dict(account: ViewerAccount) -> dict[str, Any]:
+        return {
+            "id": account.id,
+            "username": account.username,
+            "password_hash": account.password_hash,
+            "salt": account.salt,
+            "allowed_chat_ids": account.allowed_chat_ids,
+            "is_active": account.is_active,
+            "created_by": account.created_by,
+            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+        }
+
+    # ========================================================================
+    # Viewer Audit Log (v7.0.0)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def create_audit_log(
+        self,
+        username: str,
+        role: str,
+        action: str,
+        endpoint: str | None = None,
+        chat_id: int | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        async with self.db_manager.async_session_factory() as session:
+            entry = ViewerAuditLog(
+                username=username,
+                role=role,
+                action=action,
+                endpoint=endpoint,
+                chat_id=chat_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            session.add(entry)
+            await session.commit()
+
+    async def get_audit_logs(
+        self, limit: int = 100, offset: int = 0, username: str | None = None
+    ) -> list[dict[str, Any]]:
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(ViewerAuditLog).order_by(ViewerAuditLog.created_at.desc())
+            if username:
+                stmt = stmt.where(ViewerAuditLog.username == username)
+            stmt = stmt.limit(limit).offset(offset)
+            result = await session.execute(stmt)
+            return [
+                {
+                    "id": log.id,
+                    "username": log.username,
+                    "role": log.role,
+                    "action": log.action,
+                    "endpoint": log.endpoint,
+                    "chat_id": log.chat_id,
+                    "ip_address": log.ip_address,
+                    "user_agent": log.user_agent,
+                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                }
+                for log in result.scalars().all()
+            ]
 
     async def close(self) -> None:
         """Close database connections."""

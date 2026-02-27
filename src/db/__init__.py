@@ -45,6 +45,8 @@ from .models import (
     Reaction,
     SyncStatus,
     User,
+    ViewerAccount,
+    ViewerAuditLog,
 )
 
 __all__ = [
@@ -60,6 +62,8 @@ __all__ = [
     "ForumTopic",
     "ChatFolder",
     "ChatFolderMember",
+    "ViewerAccount",
+    "ViewerAuditLog",
     # Database management
     "DatabaseManager",
     "init_database",

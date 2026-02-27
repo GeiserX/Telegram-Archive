@@ -320,3 +320,45 @@ class ChatFolderMember(Base):
         Index("idx_folder_members_chat", "chat_id"),
         Index("idx_folder_members_folder", "folder_id"),
     )
+
+
+class ViewerAccount(Base):
+    """Viewer accounts for multi-user web viewer access control.
+
+    v7.0.0: DB-backed viewer accounts with per-user chat whitelists.
+    Master account uses env vars; these are additional restricted viewers.
+    """
+
+    __tablename__ = "viewer_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array of chat IDs, NULL = all
+    is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+    )
+
+
+class ViewerAuditLog(Base):
+    """Audit log for viewer access and admin operations.
+
+    v7.0.0: Tracks login attempts, admin CRUD, and API access.
+    Username is denormalized so audit records survive viewer deletion.
+    """
+
+    __tablename__ = "viewer_audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master" or "viewer"
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    endpoint: Mapped[str | None] = mapped_column(String(255))
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    ip_address: Mapped[str | None] = mapped_column(String(45))
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
