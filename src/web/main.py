@@ -468,17 +468,6 @@ def _get_secure_cookies(request: Request) -> bool:
     return forwarded_proto == "https" or str(request.url.scheme) == "https"
 
 
-def _get_client_ip(request: Request) -> str:
-    """Extract client IP, preferring X-Forwarded-For (first hop) then X-Real-IP."""
-    xff = request.headers.get("x-forwarded-for", "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
-    xri = request.headers.get("x-real-ip", "").strip()
-    if xri:
-        return xri
-    return request.client.host if request.client else "unknown"
-
-
 def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
     """Dependency that enforces session-based auth. Returns UserContext."""
     if not AUTH_ENABLED:
@@ -605,7 +594,11 @@ async def login(request: Request):
     if not AUTH_ENABLED:
         return JSONResponse({"success": True, "message": "Auth disabled"})
 
-    client_ip = _get_client_ip(request)
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or request.headers.get("x-real-ip", "")
+        or (request.client.host if request.client else "unknown")
+    )
 
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
@@ -983,7 +976,7 @@ async def refresh_stats(user: UserContext = Depends(require_auth)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics()
-        stats["stats"] = config.viewer_timezone
+        stats["timezone"] = config.viewer_timezone
         return stats
     except Exception as e:
         logger.error(f"Error calculating stats: {e}", exc_info=True)
@@ -1035,7 +1028,7 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         endpoint = data.get("endpoint")
         keys = data.get("keys", {})
         p256dh = keys.get("p256dh")
-        auth = data.get("keys", {}).get("auth")
+        auth = keys.get("auth")
         chat_id = data.get("chat_id")
 
         if not endpoint or not p256dh or not auth:
