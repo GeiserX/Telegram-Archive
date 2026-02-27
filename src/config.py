@@ -53,7 +53,7 @@ class Config:
         #   When set, CHAT_TYPES and all INCLUDE/EXCLUDE filters are IGNORED
         #
         # MODE 2: Type-based Mode (default) - use CHAT_TYPES + INCLUDE/EXCLUDE
-        #   CHAT_TYPES=private,groups  → Backup all chats of these types
+        #   CHAT_TYPES=private,groups,bots  → Backup all chats of these types
         #   *_INCLUDE_CHAT_IDS         → ALSO include these (additive)
         #   *_EXCLUDE_CHAT_IDS         → Exclude these (takes priority)
         #
@@ -317,7 +317,7 @@ class Config:
         Empty chat_types list is allowed - this enables "whitelist-only" mode
         where only explicitly included chat IDs are backed up.
         """
-        valid_types = {"private", "groups", "channels"}
+        valid_types = {"private", "groups", "channels", "bots"}
         invalid_types = set(self.chat_types) - valid_types
 
         if invalid_types:
@@ -335,18 +335,23 @@ class Config:
         if self.download_media:
             os.makedirs(self.media_path, exist_ok=True)
 
-    def should_backup_chat_type(self, is_user: bool, is_group: bool, is_channel: bool) -> bool:
+    def should_backup_chat_type(
+        self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False
+    ) -> bool:
         """
         Determine if a chat should be backed up based on its type.
 
         Args:
-            is_user: True if chat is a private conversation
+            is_user: True if chat is a private conversation (non-bot)
             is_group: True if chat is a group
             is_channel: True if chat is a channel
+            is_bot: True if chat is a bot conversation
 
         Returns:
             True if chat should be backed up, False otherwise
         """
+        if is_bot and "bots" in self.chat_types:
+            return True
         if is_user and "private" in self.chat_types:
             return True
         if is_group and "groups" in self.chat_types:
@@ -355,7 +360,9 @@ class Config:
             return True
         return False
 
-    def should_backup_chat(self, chat_id: int, is_user: bool, is_group: bool, is_channel: bool) -> bool:
+    def should_backup_chat(
+        self, chat_id: int, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False
+    ) -> bool:
         """
         Determine if a chat should be backed up based on its ID and type.
 
@@ -375,9 +382,10 @@ class Config:
 
         Args:
             chat_id: Telegram chat ID
-            is_user: True if chat is a private conversation
+            is_user: True if chat is a private conversation (non-bot)
             is_group: True if chat is a group
             is_channel: True if chat is a channel
+            is_bot: True if chat is a bot conversation
 
         Returns:
             True if chat should be backed up, False otherwise
@@ -396,8 +404,8 @@ class Config:
         if chat_id in self.global_exclude_ids:
             return False
 
-        # 2. Type-Specific Exclude
-        if is_user and chat_id in self.private_exclude_ids:
+        # 2. Type-Specific Exclude (bots use private exclude lists)
+        if (is_user or is_bot) and chat_id in self.private_exclude_ids:
             return False
         if is_group and chat_id in self.groups_exclude_ids:
             return False
@@ -408,8 +416,8 @@ class Config:
         if self.global_include_ids:
             return chat_id in self.global_include_ids
 
-        # 4. Type-Specific Include (acts as whitelist for that type)
-        if is_user and self.private_include_ids:
+        # 4. Type-Specific Include (bots use private include lists)
+        if (is_user or is_bot) and self.private_include_ids:
             return chat_id in self.private_include_ids
         if is_group and self.groups_include_ids:
             return chat_id in self.groups_include_ids
@@ -417,7 +425,7 @@ class Config:
             return chat_id in self.channels_include_ids
 
         # 5. Chat Type Filter (only if no include lists are set)
-        return self.should_backup_chat_type(is_user, is_group, is_channel)
+        return self.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
 
     def get_max_media_size_bytes(self) -> int:
         """Get maximum media file size in bytes."""
