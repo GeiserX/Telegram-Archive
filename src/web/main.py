@@ -388,7 +388,7 @@ AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 _MAX_SESSIONS_PER_USER = 10
 _SESSION_CLEANUP_INTERVAL = 900  # 15 minutes
-_LOGIN_RATE_LIMIT = 5  # max attempts
+_LOGIN_RATE_LIMIT = 15  # max attempts
 _LOGIN_RATE_WINDOW = 300  # per 5 minutes
 
 if AUTH_ENABLED:
@@ -466,6 +466,17 @@ def _get_secure_cookies(request: Request) -> bool:
         return False
     forwarded_proto = request.headers.get("x-forwarded-proto", "")
     return forwarded_proto == "https" or str(request.url.scheme) == "https"
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP, preferring X-Forwarded-For (first hop) then X-Real-IP."""
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = request.headers.get("x-real-ip", "").strip()
+    if xri:
+        return xri
+    return request.client.host if request.client else "unknown"
 
 
 def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
@@ -594,7 +605,7 @@ async def login(request: Request):
     if not AUTH_ENABLED:
         return JSONResponse({"success": True, "message": "Auth disabled"})
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _get_client_ip(request)
 
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
@@ -972,7 +983,7 @@ async def refresh_stats(user: UserContext = Depends(require_auth)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics()
-        stats["timezone"] = config.viewer_timezone
+        stats["stats"] = config.viewer_timezone
         return stats
     except Exception as e:
         logger.error(f"Error calculating stats: {e}", exc_info=True)
@@ -1024,7 +1035,7 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         endpoint = data.get("endpoint")
         keys = data.get("keys", {})
         p256dh = keys.get("p256dh")
-        auth = keys.get("auth")
+        auth = data.get("keys", {}).get("auth")
         chat_id = data.get("chat_id")
 
         if not endpoint or not p256dh or not auth:
