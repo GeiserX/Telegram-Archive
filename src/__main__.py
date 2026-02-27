@@ -33,6 +33,10 @@ GETTING STARTED:
      telegram-archive stats        # Show backup statistics
      telegram-archive export -o file.json  # Export to JSON
 
+  4. Import Telegram Desktop exports:
+     telegram-archive import -p /path/to/export
+     telegram-archive import -p /path/to/export -c -1001234567890 --merge
+
 LOCAL DEVELOPMENT:
 
   Use --data-dir to specify an alternative data location (default: /data):
@@ -109,6 +113,26 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         "list-chats", help="List all backed up chats", description="Show a table of all chats in the backup database."
     )
 
+    # Import command
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Import Telegram Desktop chat export",
+        description="Import a Telegram Desktop chat export (result.json + media) into the database.",
+    )
+    import_parser.add_argument("-p", "--path", required=True, help="Path to export folder containing result.json")
+    import_parser.add_argument(
+        "-c", "--chat-id", type=int, help="Override chat ID (marked format, e.g. -1001234567890)"
+    )
+    import_parser.add_argument(
+        "--dry-run", action="store_true", help="Parse and validate without writing to DB or copying media"
+    )
+    import_parser.add_argument(
+        "--skip-media", action="store_true", help="Import only messages/metadata, skip media files"
+    )
+    import_parser.add_argument(
+        "--merge", action="store_true", help="Allow importing into a chat that already has messages"
+    )
+
     return parser
 
 
@@ -172,6 +196,42 @@ async def run_list_chats(args) -> int:
         return 1
 
 
+async def run_import(args) -> int:
+    """Run import command."""
+    from .config import Config, setup_logging
+    from .telegram_import import TelegramImporter
+
+    try:
+        config = Config()
+        setup_logging(config)
+
+        importer = await TelegramImporter.create(config.media_path)
+        try:
+            summary = await importer.run(
+                export_path=args.path,
+                chat_id_override=args.chat_id,
+                dry_run=args.dry_run,
+                skip_media=args.skip_media,
+                merge=args.merge,
+            )
+            prefix = "[DRY RUN] " if args.dry_run else ""
+            print(f"\n{prefix}Import complete:")
+            print(f"  Chats: {summary['chats_imported']}")
+            print(f"  Messages: {summary['total_messages']}")
+            print(f"  Media files: {summary['total_media']}")
+            for detail in summary["details"]:
+                print(
+                    f"  - {detail['chat_name']} (ID {detail['chat_id']}): "
+                    f"{detail['messages']} messages, {detail['media']} media"
+                )
+        finally:
+            await importer.close()
+        return 0
+    except Exception as e:
+        print(f"Import failed: {e}", file=sys.stderr)
+        return 1
+
+
 def run_auth(args) -> int:
     """Run authentication setup."""
     from .setup_auth import main as auth_main
@@ -231,6 +291,8 @@ def main() -> int:
         return asyncio.run(run_stats(args))
     elif args.command == "list-chats":
         return asyncio.run(run_list_chats(args))
+    elif args.command == "import":
+        return asyncio.run(run_import(args))
     else:
         parser.print_help()
         return 0

@@ -6,6 +6,18 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+
+- **Import Telegram Desktop chat exports** — New `telegram-archive import` CLI command reads Telegram Desktop exports (`result.json` + media folders) and inserts them into the database. Imported chats appear in the web viewer like any other backed-up chat. Supports both single-chat and full-account exports. Closes [#81](https://github.com/GeiserX/Telegram-Archive/issues/81).
+  - `--path` — Path to export folder containing `result.json`
+  - `--chat-id` — Override chat ID (marked format)
+  - `--dry-run` — Validate without writing to DB or copying media
+  - `--skip-media` — Import only messages/metadata
+  - `--merge` — Allow importing into a chat that already has messages
+- Handles text messages, photos, videos, documents, voice messages, stickers, and service messages (pins, group actions, etc.)
+- Forwards, replies, and edited messages are preserved with full metadata
+- Media files are copied into the standard media directory structure
+
 ## [6.4.0] - 2026-02-27
 
 ### Added
