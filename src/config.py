@@ -335,9 +335,7 @@ class Config:
         if self.download_media:
             os.makedirs(self.media_path, exist_ok=True)
 
-    def should_backup_chat_type(
-        self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False
-    ) -> bool:
+    def should_backup_chat_type(self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False) -> bool:
         """
         Determine if a chat should be backed up based on its type.
 
