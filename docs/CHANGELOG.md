@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.0.3] - 2026-02-27
+
+### Added
+
+- **Viewer-only mode** — When a reverse proxy sets `X-Viewer-Only: true`, master/admin login and all admin API endpoints are blocked. Allows sharing the same backend instance across domains with different access levels.
+
+### Fixed
+
+- **Chat names in admin panel** — Private chats now show `first_name last_name` instead of numeric IDs in the chat picker and viewer list
+- **Viewer list shows chat names** — The viewer account list now displays assigned chat titles instead of just a count
+
 ## [7.0.2] - 2026-02-27
 
 ### Security

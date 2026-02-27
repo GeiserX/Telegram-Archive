@@ -1236,7 +1236,10 @@
                                 <div class="flex-1">
                                     <div class="text-sm text-white font-medium">{{ viewer.username }}</div>
                                     <div class="text-xs text-gray-400">
-                                        {{ viewer.allowed_chat_ids ? viewer.allowed_chat_ids.length + ' chats' : 'All chats' }}
+                                        <template v-if="viewer.allowed_chat_ids && viewer.allowed_chat_ids.length">
+                                            {{ viewer.allowed_chat_ids.map(id => { const c = adminChats.find(ch => ch.id === id); return c ? c.title : id }).join(', ') }}
+                                        </template>
+                                        <template v-else>All chats</template>
                                         · {{ viewer.is_active ? 'Active' : 'Inactive' }}
                                     </div>
                                 </div>
