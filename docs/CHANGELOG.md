@@ -6,6 +6,8 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-02-27
+
 ### Added
 
 - **Import Telegram Desktop chat exports** — New `telegram-archive import` CLI command reads Telegram Desktop exports (`result.json` + media folders) and inserts them into the database. Imported chats appear in the web viewer like any other backed-up chat. Supports both single-chat and full-account exports. Closes [#81](https://github.com/GeiserX/Telegram-Archive/issues/81).
