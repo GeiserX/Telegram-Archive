@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-02-27
+
+### Added
+
+- **`bots` chat type** — New `bots` option for `CHAT_TYPES` to back up bot conversations. Previously, bot chats were silently skipped because they didn't match any chat type (`private`, `groups`, `channels`). Add `bots` to your `CHAT_TYPES` to include them. Bots share `PRIVATE_INCLUDE/EXCLUDE_CHAT_IDS` lists for per-type filtering. Backward compatible — existing configs without `bots` are unaffected.
+
 ## [6.3.2] - 2026-02-17
 
 ### Fixed

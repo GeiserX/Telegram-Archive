@@ -63,7 +63,7 @@ Project description: Own your Telegram history. Automated, incremental backups w
 
 | Environment | Image Tag | Purpose |
 |-------------|-----------|---------|
-| **Production** | `v4.x.x` (semver) | Stable releases only |
+| **Production** | `vX.Y.Z` (semver) | Stable releases only |
 | **Development** | `:dev` | PR builds, pre-release testing |
 
 - **PRs build `:dev` tag** via `docker-publish-dev.yml` workflow
