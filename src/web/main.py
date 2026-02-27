@@ -1066,9 +1066,16 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
                 raise HTTPException(status_code=403, detail="Access denied to this chat")
 
         user_agent = request.headers.get("user-agent", "")[:500]
+        user_chat_ids_list = get_user_chat_ids(user)
 
         success = await push_manager.subscribe(
-            endpoint=endpoint, p256dh=p256dh, auth=auth, chat_id=chat_id, user_agent=user_agent
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
+            chat_id=chat_id,
+            user_agent=user_agent,
+            username=user.username,
+            allowed_chat_ids=list(user_chat_ids_list) if user_chat_ids_list is not None else None,
         )
 
         if success:
