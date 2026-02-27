@@ -32,20 +32,17 @@ class TestAuthConfiguration:
 
             assert auth_enabled is True
 
-    def test_auth_token_generation(self):
-        """Auth token should be PBKDF2-SHA256 derived hex string."""
-        username = "testuser"
+    def test_password_hashing(self):
+        """Password hashing should produce consistent PBKDF2-SHA256 hex digests."""
         password = "testpass123"
+        salt = "test_salt_value"
 
-        expected_token = hashlib.pbkdf2_hmac(
-            "sha256",
-            f"{username}:{password}".encode(),
-            b"telegram-archive-viewer",
-            600_000,
-        ).hex()
+        result = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600_000).hex()
 
-        # Token should be 64 characters (SHA256 hex digest)
-        assert len(expected_token) == 64
+        assert len(result) == 64
+        # Deterministic: same inputs produce same output
+        result2 = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600_000).hex()
+        assert result == result2
 
     def test_whitespace_trimming(self):
         """Whitespace should be trimmed from credentials."""
