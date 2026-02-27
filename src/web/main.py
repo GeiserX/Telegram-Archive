@@ -1051,7 +1051,7 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         endpoint = data.get("endpoint")
         keys = data.get("keys", {})
         p256dh = keys.get("p256dh")
-        auth = data.get("auth")
+        auth = keys.get("auth")
         chat_id = data.get("chat_id")
 
         if not endpoint or not p256dh or not auth:
