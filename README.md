@@ -36,8 +36,10 @@ Automated Telegram backup with Docker. Performs incremental backups of messages 
 - **JSON export** — Download chat history with date range filters
 
 ### 🔒 Security & Privacy
-- **Optional authentication** — Password-protect your viewer
-- **Restricted sharing** — Share specific chats via `DISPLAY_CHAT_IDS`
+- **Multi-user access control** — Master account + DB-backed viewer accounts with per-user chat whitelists
+- **Admin panel** — Create, edit, delete viewer accounts with fine-grained chat permissions
+- **Audit logging** — Track all login attempts, admin actions, and API access
+- **Authenticated media** — Media files require login and respect per-user permissions
 - **Mass deletion protection** — Rate limiting prevents accidental data loss
 - **Runs as non-root** — Docker best practices
 
@@ -462,43 +464,7 @@ docker compose exec telegram-backup python -m src backup
 
 # Re-authenticate (if session expires)
 docker compose exec -it telegram-backup python -m src auth
-
-# Import a Telegram Desktop export
-docker compose exec telegram-backup python -m src import -p /data/exports/ChatExport
 ```
-
-### Importing Telegram Desktop Exports
-
-You can import chat history exported from Telegram Desktop (Settings > Advanced > Export Telegram data) into Telegram-Archive. The exported chat will appear in the web viewer just like live-backed-up chats.
-
-```bash
-# Basic import (auto-detects chat ID from export)
-telegram-archive import -p /path/to/ChatExport_2024-01-15
-
-# Import with explicit chat ID (marked format)
-telegram-archive import -p /path/to/export -c -1001234567890
-
-# Dry run — validate without writing anything
-telegram-archive import -p /path/to/export --dry-run
-
-# Import text only, skip media files
-telegram-archive import -p /path/to/export --skip-media
-
-# Merge into an existing chat (add/update messages)
-telegram-archive import -p /path/to/export --merge
-```
-
-**Flags:**
-
-| Flag | Description |
-|------|-------------|
-| `-p, --path` | Path to export folder containing `result.json` (required) |
-| `-c, --chat-id` | Override chat ID in marked format (e.g., `-1001234567890`) |
-| `--dry-run` | Parse and validate without writing to DB or copying media |
-| `--skip-media` | Import only messages and metadata, skip media files |
-| `--merge` | Allow importing into a chat that already has messages |
-
-**Supported content:** Text messages, photos, videos, documents, voice messages, stickers, animations, service messages (pins, group actions), forwarded messages, replies, and edited messages.
 
 ## Data Storage
 
