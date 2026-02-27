@@ -319,6 +319,16 @@
             <!-- Sidebar - hidden on mobile when chat is selected -->
             <div class="bg-tg-sidebar flex flex-col border-r border-gray-700"
                 :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
+                <!-- User bar -->
+                <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-gray-700">
+                    <span class="text-xs text-gray-400 truncate flex-1">{{ currentUsername }}</span>
+                    <button v-if="userRole === 'master'" @click="openAdminPanel" class="text-gray-400 hover:text-white p-1" title="Admin Settings">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                    <button @click="performLogout" class="text-gray-400 hover:text-red-400 p-1" title="Logout">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
                 <!-- Header with Stats Dropdown -->
                 <div class="p-4 border-b border-gray-700">
                     <div class="flex items-center justify-between mb-3">
@@ -1057,13 +1067,6 @@
                             Beginning of chat history
                         </div>
 
-                        <div v-if="!loading && !hasMore && messages.length === 0 && selectedChat" class="flex flex-col items-center justify-center py-16 text-tg-muted">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                            </svg>
-                            <p class="text-sm">No messages backed up for this chat yet</p>
-                        </div>
-
                         <div ref="scrollAnchor"></div>
                     </div>
 
@@ -1172,6 +1175,94 @@
                 </span>
             </div>
         </div>
+
+        <!-- Admin Panel (v7.0.0) -->
+        <div v-if="showAdminPanel" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+                <!-- Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+                    <h2 class="text-lg font-semibold text-white">Admin Settings</h2>
+                    <button @click="showAdminPanel = false" class="text-gray-400 hover:text-white">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+
+                <!-- Tabs -->
+                <div class="flex border-b border-gray-700 px-6">
+                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                        Viewer Accounts
+                    </button>
+                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                        Audit Log
+                    </button>
+                </div>
+
+                <!-- Content -->
+                <div class="flex-1 overflow-y-auto p-6">
+                    <!-- Viewers Tab -->
+                    <div v-if="adminActiveTab === 'viewers'">
+                        <!-- Create/Edit Form -->
+                        <div class="bg-gray-900 rounded-lg p-4 mb-4">
+                            <h3 class="text-sm font-medium text-gray-300 mb-3">{{ adminEditingId ? 'Edit Viewer' : 'Create Viewer' }}</h3>
+                            <div v-if="adminError" class="text-red-400 text-sm mb-3">{{ adminError }}</div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input v-model="adminViewerForm.username" :disabled="!!adminEditingId" placeholder="Username" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                                <input v-model="adminViewerForm.password" type="password" :placeholder="adminEditingId ? 'New password (leave empty to keep)' : 'Password'" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                            </div>
+                            <div class="mt-3">
+                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (leave empty for all)</label>
+                                <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
+                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
+                                        <input type="checkbox" :value="chat.id" v-model="adminViewerForm.allowed_chat_ids" class="rounded" />
+                                        {{ chat.title || chat.id }}
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex items-center gap-4">
+                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                    <input type="checkbox" v-model="adminViewerForm.is_active" class="rounded" /> Active
+                                </label>
+                                <div class="flex-1"></div>
+                                <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+                                <button @click="saveViewer" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
+                                    {{ adminEditingId ? 'Update' : 'Create' }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Viewers List -->
+                        <div class="space-y-2">
+                            <div v-for="viewer in adminViewers" :key="viewer.id" class="flex items-center gap-3 bg-gray-900 rounded-lg p-3">
+                                <div class="flex-1">
+                                    <div class="text-sm text-white font-medium">{{ viewer.username }}</div>
+                                    <div class="text-xs text-gray-400">
+                                        {{ viewer.allowed_chat_ids ? viewer.allowed_chat_ids.length + ' chats' : 'All chats' }}
+                                        · {{ viewer.is_active ? 'Active' : 'Inactive' }}
+                                    </div>
+                                </div>
+                                <button @click="editViewer(viewer)" class="text-gray-400 hover:text-blue-400 p-1"><i class="fas fa-edit"></i></button>
+                                <button @click="deleteViewer(viewer)" class="text-gray-400 hover:text-red-400 p-1"><i class="fas fa-trash"></i></button>
+                            </div>
+                            <div v-if="adminViewers.length === 0" class="text-gray-500 text-sm text-center py-4">No viewer accounts yet</div>
+                        </div>
+                    </div>
+
+                    <!-- Audit Log Tab -->
+                    <div v-if="adminActiveTab === 'audit'">
+                        <div class="space-y-1">
+                            <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-gray-900 rounded px-3 py-2">
+                                <span class="text-gray-500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
+                                <span :class="log.role === 'master' ? 'text-yellow-400' : 'text-blue-400'" class="w-16 shrink-0">{{ log.role }}</span>
+                                <span class="text-gray-300 w-24 shrink-0 truncate">{{ log.username }}</span>
+                                <span class="text-gray-400 flex-1 truncate">{{ log.action }}</span>
+                                <span class="text-gray-600 truncate w-28">{{ log.ip_address }}</span>
+                            </div>
+                            <div v-if="adminAuditLogs.length === 0" class="text-gray-500 text-sm text-center py-4">No audit logs yet</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1198,6 +1289,9 @@
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
                 const loginError = ref('')
+                const userRole = ref('')
+                const currentUsername = ref('')
+                const showAdminPanel = ref(false)
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
@@ -1716,6 +1810,8 @@
                             console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
+                            userRole.value = data.role || ''
+                            currentUsername.value = data.username || ''
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
@@ -2169,6 +2265,8 @@
                         const data = await res.json()
                         if (data.success) {
                             isAuthenticated.value = true
+                            userRole.value = data.role || 'master'
+                            currentUsername.value = data.username || ''
                             await loadChats()
                             await loadStats()
                             // Re-initialize notifications after login (cookie now set)
@@ -2182,6 +2280,16 @@
                     } finally {
                         loadingAuth.value = false
                     }
+                }
+
+                const performLogout = async () => {
+                    try {
+                        await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+                    } catch (e) { /* ignore */ }
+                    isAuthenticated.value = false
+                    userRole.value = ''
+                    currentUsername.value = ''
+                    showAdminPanel.value = false
                 }
 
                 const filteredChats = computed(() => {
@@ -2959,11 +3067,17 @@
                     else if (e.key === 'ArrowRight') lightboxNext()
                 }
 
+                const escapeHtml = (text) => {
+                    const div = document.createElement('div')
+                    div.textContent = text
+                    return div.innerHTML
+                }
+
                 const linkifyText = (text) => {
                     if (!text) return ''
-                    // Basic URL regex
-                    const urlRegex = /(https?:\/\/[^\s]+)/g
-                    return text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>')
+                    const escaped = escapeHtml(text)
+                    const urlRegex = /(https?:\/\/[^\s<]+)/g
+                    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>')
                 }
 
                 const scrollToMessage = (msgId) => {
@@ -3148,6 +3262,101 @@
                     }
                 }
 
+                // Admin panel (v7.0.0)
+                const adminViewers = ref([])
+                const adminChats = ref([])
+                const adminAuditLogs = ref([])
+                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: null, is_active: true })
+                const adminEditingId = ref(null)
+                const adminError = ref('')
+                const adminActiveTab = ref('viewers')
+
+                const loadAdminViewers = async () => {
+                    try {
+                        const res = await fetch('/api/admin/viewers', { credentials: 'include' })
+                        if (res.ok) { const data = await res.json(); adminViewers.value = data.viewers }
+                    } catch (e) { console.error('Failed to load viewers:', e) }
+                }
+
+                const loadAdminChats = async () => {
+                    try {
+                        const res = await fetch('/api/admin/chats', { credentials: 'include' })
+                        if (res.ok) { const data = await res.json(); adminChats.value = data.chats }
+                    } catch (e) { console.error('Failed to load chats:', e) }
+                }
+
+                const loadAdminAudit = async () => {
+                    try {
+                        const res = await fetch('/api/admin/audit?limit=50', { credentials: 'include' })
+                        if (res.ok) { const data = await res.json(); adminAuditLogs.value = data.logs }
+                    } catch (e) { console.error('Failed to load audit logs:', e) }
+                }
+
+                const openAdminPanel = async () => {
+                    showAdminPanel.value = true
+                    await Promise.all([loadAdminViewers(), loadAdminChats(), loadAdminAudit()])
+                }
+
+                const saveViewer = async () => {
+                    adminError.value = ''
+                    const body = {
+                        username: adminViewerForm.value.username,
+                        password: adminViewerForm.value.password,
+                        allowed_chat_ids: adminViewerForm.value.allowed_chat_ids,
+                        is_active: adminViewerForm.value.is_active ? 1 : 0
+                    }
+                    try {
+                        let res
+                        if (adminEditingId.value) {
+                            res = await fetch(`/api/admin/viewers/${adminEditingId.value}`, {
+                                method: 'PUT', credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body)
+                            })
+                        } else {
+                            res = await fetch('/api/admin/viewers', {
+                                method: 'POST', credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body)
+                            })
+                        }
+                        if (!res.ok) {
+                            const err = await res.json()
+                            adminError.value = err.detail || 'Failed to save'
+                            return
+                        }
+                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: null, is_active: true }
+                        adminEditingId.value = null
+                        await loadAdminViewers()
+                    } catch (e) { adminError.value = 'Network error' }
+                }
+
+                const editViewer = (viewer) => {
+                    adminEditingId.value = viewer.id
+                    adminViewerForm.value = {
+                        username: viewer.username,
+                        password: '',
+                        allowed_chat_ids: viewer.allowed_chat_ids,
+                        is_active: !!viewer.is_active
+                    }
+                }
+
+                const deleteViewer = async (viewer) => {
+                    if (!confirm(`Delete viewer "${viewer.username}"?`)) return
+                    try {
+                        await fetch(`/api/admin/viewers/${viewer.id}`, {
+                            method: 'DELETE', credentials: 'include'
+                        })
+                        await loadAdminViewers()
+                    } catch (e) { adminError.value = 'Failed to delete' }
+                }
+
+                const cancelEdit = () => {
+                    adminEditingId.value = null
+                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: null, is_active: true }
+                    adminError.value = ''
+                }
+
                 return {
                     chats,
                     filteredChats,
@@ -3214,6 +3423,24 @@
                     loginForm,
                     loginError,
                     performLogin,
+                    // Admin (v7.0.0)
+                    userRole,
+                    currentUsername,
+                    showAdminPanel,
+                    performLogout,
+                    adminViewers,
+                    adminChats,
+                    adminAuditLogs,
+                    adminViewerForm,
+                    adminEditingId,
+                    adminError,
+                    adminActiveTab,
+                    openAdminPanel,
+                    saveViewer,
+                    editViewer,
+                    deleteViewer,
+                    cancelEdit,
+                    loadAdminAudit,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
