@@ -34,8 +34,9 @@ GETTING STARTED:
      telegram-archive export -o file.json  # Export to JSON
 
   4. Import Telegram Desktop exports:
-     telegram-archive import -p /path/to/export
+     telegram-archive import -p /path/to/export              # JSON (full account export)
      telegram-archive import -p /path/to/export -c -1001234567890 --merge
+     telegram-archive import -p /path/to/chat_folder -c 123  # HTML (per-chat export)
 
 LOCAL DEVELOPMENT:
 
@@ -117,11 +118,21 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
     import_parser = subparsers.add_parser(
         "import",
         help="Import Telegram Desktop chat export",
-        description="Import a Telegram Desktop chat export (result.json + media) into the database.",
+        description=(
+            "Import a Telegram Desktop chat export into the database. "
+            "Supports both JSON format (result.json from Settings > Advanced > Export Telegram data) "
+            "and HTML format (messages.html from per-chat export). "
+            "For HTML exports, --chat-id is required."
+        ),
     )
-    import_parser.add_argument("-p", "--path", required=True, help="Path to export folder containing result.json")
     import_parser.add_argument(
-        "-c", "--chat-id", type=int, help="Override chat ID (marked format, e.g. -1001234567890)"
+        "-p", "--path", required=True, help="Path to export folder (containing result.json or messages.html)"
+    )
+    import_parser.add_argument(
+        "-c",
+        "--chat-id",
+        type=int,
+        help="Chat ID (marked format, e.g. -1001234567890). Required for HTML exports.",
     )
     import_parser.add_argument(
         "--dry-run", action="store_true", help="Parse and validate without writing to DB or copying media"
