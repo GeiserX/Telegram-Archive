@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -364,3 +365,25 @@ class ViewerAuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45))
     user_agent: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+
+
+class ViewerSession(Base):
+    """Persistent viewer sessions for web authentication.
+
+    v7.1.0: DB-backed sessions survive container restarts.
+    In-memory cache in main.py provides fast lookups; DB is the persistence layer.
+    """
+
+    __tablename__ = "viewer_sessions"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master" or "viewer"
+    allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array or NULL = all chats
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("idx_viewer_sessions_username", "username"),
+        Index("idx_viewer_sessions_created_at", "created_at"),
+    )
