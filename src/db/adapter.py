@@ -33,6 +33,7 @@ from .models import (
     User,
     ViewerAccount,
     ViewerAuditLog,
+    ViewerSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -1795,6 +1796,110 @@ class DatabaseAdapter:
                 }
                 for log in result.scalars().all()
             ]
+
+    # ========================================================================
+    # Viewer Sessions (v7.1.0 - persistent sessions)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def save_session(
+        self,
+        token: str,
+        username: str,
+        role: str,
+        allowed_chat_ids: str | None,
+        created_at: float,
+        last_accessed: float,
+    ) -> None:
+        """Save or update a session in the database."""
+        async with self.db_manager.async_session_factory() as session:
+            if self._is_sqlite:
+                stmt = sqlite_insert(ViewerSession).values(
+                    token=token,
+                    username=username,
+                    role=role,
+                    allowed_chat_ids=allowed_chat_ids,
+                    created_at=created_at,
+                    last_accessed=last_accessed,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["token"],
+                    set_={"last_accessed": last_accessed},
+                )
+            else:
+                stmt = pg_insert(ViewerSession).values(
+                    token=token,
+                    username=username,
+                    role=role,
+                    allowed_chat_ids=allowed_chat_ids,
+                    created_at=created_at,
+                    last_accessed=last_accessed,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["token"],
+                    set_={"last_accessed": last_accessed},
+                )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def get_session(self, token: str) -> dict[str, Any] | None:
+        """Get a session by token."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(ViewerSession).where(ViewerSession.token == token)
+            )
+            row = result.scalar_one_or_none()
+            return self._viewer_session_to_dict(row) if row else None
+
+    async def load_all_sessions(self) -> list[dict[str, Any]]:
+        """Load all sessions from the database (used on startup)."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(ViewerSession))
+            return [self._viewer_session_to_dict(s) for s in result.scalars().all()]
+
+    @retry_on_locked()
+    async def delete_session(self, token: str) -> bool:
+        """Delete a single session by token."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                delete(ViewerSession).where(ViewerSession.token == token)
+            )
+            await session.commit()
+            return result.rowcount > 0
+
+    @retry_on_locked()
+    async def delete_user_sessions(self, username: str) -> int:
+        """Delete all sessions for a given username. Returns count deleted."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                delete(ViewerSession).where(ViewerSession.username == username)
+            )
+            await session.commit()
+            return result.rowcount
+
+    @retry_on_locked()
+    async def cleanup_expired_sessions(self, max_age_seconds: float) -> int:
+        """Delete all expired sessions. Returns count deleted."""
+        import time
+
+        cutoff = time.time() - max_age_seconds
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                delete(ViewerSession).where(ViewerSession.created_at < cutoff)
+            )
+            await session.commit()
+            return result.rowcount
+
+    @staticmethod
+    def _viewer_session_to_dict(row: ViewerSession) -> dict[str, Any]:
+        return {
+            "token": row.token,
+            "username": row.username,
+            "role": row.role,
+            "allowed_chat_ids": row.allowed_chat_ids,
+            "created_at": row.created_at,
+            "last_accessed": row.last_accessed,
+        }
 
     async def close(self) -> None:
         """Close database connections."""

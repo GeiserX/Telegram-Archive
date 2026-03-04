@@ -6,6 +6,18 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-03-05
+
+### Added
+
+- **Persistent sessions** — Viewer sessions now survive container restarts. Sessions are backed by a `viewer_sessions` database table with an in-memory write-through cache for zero-latency lookups. On startup, active sessions are restored from the database so users stay logged in across restarts, Docker updates, and server reboots. Closes [#84](https://github.com/GeiserX/Telegram-Archive/issues/84).
+  - **Alembic migration 009** — Creates `viewer_sessions` table (auto-created for SQLite, requires `alembic upgrade head` for PostgreSQL)
+  - Graceful degradation: if the database is unavailable, sessions fall back to in-memory only (same behavior as v7.0.x)
+
+### Security
+
+- **Corrupted chat permissions denial** — Sessions with corrupted `allowed_chat_ids` JSON now deny access instead of silently granting access to all chats
+
 ## [7.0.3] - 2026-02-27
 
 ### Added

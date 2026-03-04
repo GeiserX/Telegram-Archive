@@ -47,6 +47,7 @@ from .models import (
     User,
     ViewerAccount,
     ViewerAuditLog,
+    ViewerSession,
 )
 
 __all__ = [
@@ -64,6 +65,7 @@ __all__ = [
     "ChatFolderMember",
     "ViewerAccount",
     "ViewerAuditLog",
+    "ViewerSession",
     # Database management
     "DatabaseManager",
     "init_database",

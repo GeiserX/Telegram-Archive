@@ -229,7 +229,15 @@ async def session_cleanup_task():
             for k in expired:
                 _sessions.pop(k, None)
             if expired:
-                logger.info(f"Cleaned up {len(expired)} expired sessions")
+                logger.info(f"Cleaned up {len(expired)} expired sessions from cache")
+            # Also clean DB
+            if db:
+                try:
+                    db_cleaned = await db.cleanup_expired_sessions(AUTH_SESSION_SECONDS)
+                    if db_cleaned:
+                        logger.info(f"Cleaned up {db_cleaned} expired sessions from database")
+                except Exception as e:
+                    logger.warning(f"DB session cleanup failed: {e}")
             stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
             for ip in stale_ips:
                 _login_attempts.pop(ip, None)
@@ -296,6 +304,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             await db.calculate_and_store_statistics()
         except Exception as e:
             logger.warning(f"Initial stats calculation failed: {e}")
+
+    # Restore persistent sessions from database
+    if AUTH_ENABLED:
+        try:
+            rows = await db.load_all_sessions()
+            now = time.time()
+            restored = 0
+            for row in rows:
+                if now - row["created_at"] > AUTH_SESSION_SECONDS:
+                    continue  # skip expired, cleanup task will purge from DB
+                allowed = None
+                if row["allowed_chat_ids"]:
+                    try:
+                        allowed = set(json.loads(row["allowed_chat_ids"]))
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Skipping session with corrupted allowed_chat_ids for {row['username']}")
+                        continue
+                _sessions[row["token"]] = SessionData(
+                    username=row["username"],
+                    role=row["role"],
+                    allowed_chat_ids=allowed,
+                    created_at=row["created_at"],
+                    last_accessed=row["last_accessed"],
+                )
+                restored += 1
+            if restored:
+                logger.info(f"Restored {restored} sessions from database")
+        except Exception as e:
+            logger.warning(f"Failed to restore sessions from database: {e}")
 
     # Start background tasks
     stats_task = asyncio.create_task(stats_calculation_scheduler())
@@ -445,24 +482,54 @@ def _record_login_attempt(ip: str) -> None:
     _login_attempts.setdefault(ip, []).append(time.time())
 
 
-def _create_session(username: str, role: str, allowed_chat_ids: set[int] | None = None) -> str:
+async def _create_session(username: str, role: str, allowed_chat_ids: set[int] | None = None) -> str:
     """Create a new session, evicting oldest if user exceeds max sessions."""
     user_sessions = [(k, v) for k, v in _sessions.items() if v.username == username]
     if len(user_sessions) >= _MAX_SESSIONS_PER_USER:
         user_sessions.sort(key=lambda x: x[1].created_at)
         for token, _ in user_sessions[: len(user_sessions) - _MAX_SESSIONS_PER_USER + 1]:
             _sessions.pop(token, None)
+            if db:
+                try:
+                    await db.delete_session(token)
+                except Exception:
+                    pass
 
+    now = time.time()
     token = secrets.token_urlsafe(32)
-    _sessions[token] = SessionData(username=username, role=role, allowed_chat_ids=allowed_chat_ids)
+    _sessions[token] = SessionData(
+        username=username, role=role, allowed_chat_ids=allowed_chat_ids,
+        created_at=now, last_accessed=now,
+    )
+
+    # Persist to database
+    if db:
+        try:
+            chat_ids_json = json.dumps(list(allowed_chat_ids)) if allowed_chat_ids is not None else None
+            await db.save_session(
+                token=token,
+                username=username,
+                role=role,
+                allowed_chat_ids=chat_ids_json,
+                created_at=now,
+                last_accessed=now,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to persist session to database: {e}")
+
     return token
 
 
-def _invalidate_user_sessions(username: str) -> None:
+async def _invalidate_user_sessions(username: str) -> None:
     """Remove all sessions for a given username."""
     to_remove = [k for k, v in _sessions.items() if v.username == username]
     for k in to_remove:
         _sessions.pop(k, None)
+    if db:
+        try:
+            await db.delete_user_sessions(username)
+        except Exception as e:
+            logger.warning(f"Failed to delete DB sessions for {username}: {e}")
 
 
 def _get_secure_cookies(request: Request) -> bool:
@@ -475,7 +542,43 @@ def _get_secure_cookies(request: Request) -> bool:
     return forwarded_proto == "https" or str(request.url.scheme) == "https"
 
 
-def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
+async def _resolve_session(auth_cookie: str) -> SessionData | None:
+    """Look up session from in-memory cache, falling back to DB if needed."""
+    session = _sessions.get(auth_cookie)
+    if session:
+        return session
+
+    if not db:
+        return None
+
+    try:
+        row = await db.get_session(auth_cookie)
+    except Exception:
+        return None
+
+    if not row or time.time() - row["created_at"] > AUTH_SESSION_SECONDS:
+        return None
+
+    allowed = None
+    if row["allowed_chat_ids"]:
+        try:
+            allowed = set(json.loads(row["allowed_chat_ids"]))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Corrupted allowed_chat_ids for session {row['username']}, denying access")
+            return None
+
+    session = SessionData(
+        username=row["username"],
+        role=row["role"],
+        allowed_chat_ids=allowed,
+        created_at=row["created_at"],
+        last_accessed=row["last_accessed"],
+    )
+    _sessions[auth_cookie] = session
+    return session
+
+
+async def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
     """Dependency that enforces session-based auth. Returns UserContext."""
     if not AUTH_ENABLED:
         return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
@@ -483,7 +586,7 @@ def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKI
     if not auth_cookie:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    session = _sessions.get(auth_cookie)
+    session = await _resolve_session(auth_cookie)
     if not session:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -599,8 +702,11 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
     if not auth_cookie:
         return {"authenticated": False, "auth_required": True}
 
-    session = _sessions.get(auth_cookie)
-    if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
+    session = await _resolve_session(auth_cookie)
+    if not session:
+        return {"authenticated": False, "auth_required": True}
+    if time.time() - session.created_at > AUTH_SESSION_SECONDS:
+        _sessions.pop(auth_cookie, None)
         return {"authenticated": False, "auth_required": True}
 
     return {
@@ -656,7 +762,7 @@ async def login(request: Request):
                     except (json.JSONDecodeError, TypeError):
                         allowed = None
 
-                token = _create_session(username, "viewer", allowed)
+                token = await _create_session(username, "viewer", allowed)
                 response = JSONResponse({"success": True, "role": "viewer", "username": username})
                 response.set_cookie(
                     key=AUTH_COOKIE_NAME,
@@ -683,7 +789,7 @@ async def login(request: Request):
     if secrets.compare_digest(username, VIEWER_USERNAME) and secrets.compare_digest(password, VIEWER_PASSWORD):
         if viewer_only:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        token = _create_session(username, "master", None)
+        token = await _create_session(username, "master", None)
         response = JSONResponse({"success": True, "role": "master", "username": username})
         response.set_cookie(
             key=AUTH_COOKIE_NAME,
@@ -724,16 +830,26 @@ async def logout(
     auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
 ):
     """Invalidate current session and clear cookie."""
-    if auth_cookie and auth_cookie in _sessions:
-        session = _sessions.pop(auth_cookie)
+    if auth_cookie:
+        session = _sessions.pop(auth_cookie, None)
         if db:
-            await db.create_audit_log(
-                username=session.username,
-                role=session.role,
-                action="logout",
-                endpoint="/api/logout",
-                ip_address=request.client.host if request.client else None,
-            )
+            # Always attempt DB delete (session may exist in DB but not in memory cache)
+            try:
+                if not session:
+                    row = await db.get_session(auth_cookie)
+                    if row:
+                        session = SessionData(username=row["username"], role=row["role"])
+                await db.delete_session(auth_cookie)
+            except Exception:
+                pass
+            if session:
+                await db.create_audit_log(
+                    username=session.username,
+                    role=session.role,
+                    action="logout",
+                    endpoint="/api/logout",
+                    ip_address=request.client.host if request.client else None,
+                )
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
@@ -1385,7 +1501,7 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
         raise HTTPException(status_code=400, detail="No fields to update")
 
     account = await db.update_viewer_account(viewer_id, **updates)
-    _invalidate_user_sessions(existing["username"])
+    await _invalidate_user_sessions(existing["username"])
 
     await db.create_audit_log(
         username=user.username,
@@ -1410,7 +1526,7 @@ async def delete_viewer(viewer_id: int, request: Request, user: UserContext = De
     if not existing:
         raise HTTPException(status_code=404, detail="Viewer not found")
 
-    _invalidate_user_sessions(existing["username"])
+    await _invalidate_user_sessions(existing["username"])
     await db.delete_viewer_account(viewer_id)
 
     await db.create_audit_log(
@@ -1459,7 +1575,7 @@ async def get_audit_log(
 async def get_notification_settings(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Get notification settings for the viewer."""
     if AUTH_ENABLED:
-        session = _sessions.get(auth_cookie) if auth_cookie else None
+        session = (await _resolve_session(auth_cookie)) if auth_cookie else None
         if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
             return {"enabled": False, "reason": "Not authenticated"}
 
@@ -1492,7 +1608,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if not auth_cookie:
             await websocket.close(code=4001, reason="Unauthorized")
             return
-        session = _sessions.get(auth_cookie)
+        session = await _resolve_session(auth_cookie)
         if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
             await websocket.close(code=4001, reason="Session expired")
             return
