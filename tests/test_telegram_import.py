@@ -12,11 +12,15 @@ from src.telegram_import import (
     TelegramImporter,
     _build_service_text,
     _detect_media,
+    _find_html_files,
+    _parse_html_duration,
+    _parse_html_export,
     derive_chat_id,
     flatten_text,
     parse_date,
     parse_edited_date,
     parse_from_id,
+    parse_html_date,
 )
 
 
@@ -473,6 +477,616 @@ class TestTelegramImporterRun(unittest.TestCase):
         self.assertEqual(summary["details"][0]["chat_id"], -1009999)
         chat_call = db.upsert_chat.call_args[0][0]
         self.assertEqual(chat_call["id"], -1009999)
+
+
+# ---------------------------------------------------------------------------
+# HTML import tests
+# ---------------------------------------------------------------------------
+
+SAMPLE_HTML_MESSAGE = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Test Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message100">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00 UTC+02:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="text">Hello world!</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_JOINED = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Group Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message200">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="text">First message</div>
+   </div>
+  </div>
+  <div class="message default clearfix joined" id="message201">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:01:00">10:01</div>
+    <div class="text">Second message (same sender)</div>
+   </div>
+  </div>
+  <div class="message default clearfix" id="message202">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:02:00">10:02</div>
+    <div class="from_name">Bob</div>
+    <div class="text">Different sender</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_SERVICE = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Group</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message service" id="message300">
+   <div class="body details">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    Alice joined group via invite link
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_REPLY = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message400">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="text">Original message</div>
+   </div>
+  </div>
+  <div class="message default clearfix" id="message401">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:01:00">10:01</div>
+    <div class="from_name">Bob</div>
+    <div class="reply_to details">
+     In reply to <a href="#go_to_message400">this message</a>
+    </div>
+    <div class="text">This is a reply</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_FORWARDED = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message500">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="forwarded body">
+     <div class="from_name">Original Channel</div>
+     <div class="text">Forwarded content</div>
+    </div>
+    <div class="text">Alice's comment</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_PHOTO = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Media Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message600">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <a class="photo_wrap clearfix pull_left" href="photos/photo_1@15-01-2024_10-00-00.jpg">
+     <img class="photo" src="photos/photo_1@15-01-2024_10-00-00.jpg" style="width: 320px; height: 240px">
+    </a>
+    <div class="text">Check this photo!</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_VIDEO = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message700">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="media_wrap clearfix">
+     <div class="media clearfix pull_left media_video">
+      <a href="video_files/video@15-01-2024_10-00-00.mp4">Video</a>
+      <div class="description">01:30</div>
+     </div>
+    </div>
+    <div class="text"></div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_VOICE = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message800">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="media_wrap clearfix">
+     <div class="media clearfix pull_left media_voice_message">
+      <a href="voice_messages/audio_1@15-01-2024_10-00-00.ogg">Voice message</a>
+      <div class="description">00:15</div>
+     </div>
+    </div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+SAMPLE_HTML_FILE = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message900">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="media_wrap clearfix">
+     <div class="media clearfix pull_left media_file">
+      <a href="files/document.pdf">document.pdf (1.2 MB)</a>
+     </div>
+    </div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>
+"""
+
+
+class TestParseHtmlDate(unittest.TestCase):
+    def test_basic_date(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00"), "2024-01-15T10:30:00")
+
+    def test_date_with_timezone(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+02:00"), "2024-01-15T10:30:00")
+
+    def test_empty_string(self):
+        self.assertIsNone(parse_html_date(""))
+
+    def test_none(self):
+        self.assertIsNone(parse_html_date(None))
+
+    def test_invalid_format(self):
+        self.assertIsNone(parse_html_date("not a date"))
+
+    def test_partial_date(self):
+        self.assertIsNone(parse_html_date("15.01.2024"))
+
+
+class TestFindHtmlFiles(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_single_file(self):
+        Path(self.temp_dir, "messages.html").touch()
+        files = _find_html_files(Path(self.temp_dir))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "messages.html")
+
+    def test_multiple_files(self):
+        Path(self.temp_dir, "messages.html").touch()
+        Path(self.temp_dir, "messages2.html").touch()
+        Path(self.temp_dir, "messages3.html").touch()
+        files = _find_html_files(Path(self.temp_dir))
+        self.assertEqual(len(files), 3)
+        self.assertEqual([f.name for f in files], ["messages.html", "messages2.html", "messages3.html"])
+
+    def test_no_html_files(self):
+        files = _find_html_files(Path(self.temp_dir))
+        self.assertEqual(files, [])
+
+    def test_only_numbered_files(self):
+        # messages2.html without messages.html - starts from messages2
+        Path(self.temp_dir, "messages2.html").touch()
+        files = _find_html_files(Path(self.temp_dir))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "messages2.html")
+
+
+class TestParseHtmlDuration(unittest.TestCase):
+    def test_minutes_seconds(self):
+        self.assertEqual(_parse_html_duration("01:30"), 90)
+
+    def test_hours_minutes_seconds(self):
+        self.assertEqual(_parse_html_duration("1:30:00"), 5400)
+
+    def test_zero_duration(self):
+        self.assertEqual(_parse_html_duration("00:00"), 0)
+
+    def test_invalid(self):
+        self.assertIsNone(_parse_html_duration("not a duration"))
+
+    def test_empty(self):
+        self.assertIsNone(_parse_html_duration(""))
+
+
+class TestParseHtmlExport(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write_html(self, content, filename="messages.html"):
+        filepath = os.path.join(self.temp_dir, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return filepath
+
+    def test_basic_message(self):
+        self._write_html(SAMPLE_HTML_MESSAGE)
+        html_files = _find_html_files(Path(self.temp_dir))
+        chat_name, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(chat_name, "Test Chat")
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["id"], 100)
+        self.assertEqual(messages[0]["from"], "Alice")
+        self.assertEqual(messages[0]["text"], "Hello world!")
+        self.assertEqual(messages[0]["date"], "2024-01-15T10:00:00")
+        self.assertEqual(messages[0]["type"], "message")
+
+    def test_joined_messages(self):
+        self._write_html(SAMPLE_HTML_JOINED)
+        html_files = _find_html_files(Path(self.temp_dir))
+        chat_name, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(chat_name, "Group Chat")
+        self.assertEqual(len(messages), 3)
+        # Joined message inherits sender from previous
+        self.assertEqual(messages[0]["from"], "Alice")
+        self.assertEqual(messages[1]["from"], "Alice")
+        self.assertEqual(messages[1]["text"], "Second message (same sender)")
+        self.assertEqual(messages[2]["from"], "Bob")
+
+    def test_service_message(self):
+        self._write_html(SAMPLE_HTML_SERVICE)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["type"], "service")
+        self.assertEqual(messages[0]["id"], 300)
+        self.assertIn("Alice joined group", messages[0]["text"])
+
+    def test_reply_reference(self):
+        self._write_html(SAMPLE_HTML_REPLY)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 2)
+        self.assertIsNone(messages[0].get("reply_to_message_id"))
+        self.assertEqual(messages[1]["reply_to_message_id"], 400)
+        self.assertEqual(messages[1]["text"], "This is a reply")
+
+    def test_forwarded_message(self):
+        self._write_html(SAMPLE_HTML_FORWARDED)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        # Sender should be the forwarder (Alice), not the original (from .forwarded body)
+        self.assertEqual(messages[0]["from"], "Alice")
+        self.assertEqual(messages[0]["forwarded_from"], "Original Channel")
+        self.assertEqual(messages[0]["text"], "Alice's comment")
+
+    def test_photo_media(self):
+        self._write_html(SAMPLE_HTML_PHOTO)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["photo"], "photos/photo_1@15-01-2024_10-00-00.jpg")
+        self.assertEqual(messages[0]["width"], 320)
+        self.assertEqual(messages[0]["height"], 240)
+        self.assertEqual(messages[0]["text"], "Check this photo!")
+
+    def test_video_media(self):
+        self._write_html(SAMPLE_HTML_VIDEO)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["file"], "video_files/video@15-01-2024_10-00-00.mp4")
+        self.assertEqual(messages[0]["media_type"], "video_file")
+        self.assertEqual(messages[0]["duration_seconds"], 90)
+
+    def test_voice_media(self):
+        self._write_html(SAMPLE_HTML_VOICE)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["file"], "voice_messages/audio_1@15-01-2024_10-00-00.ogg")
+        self.assertEqual(messages[0]["media_type"], "voice_message")
+        self.assertEqual(messages[0]["duration_seconds"], 15)
+
+    def test_file_media(self):
+        self._write_html(SAMPLE_HTML_FILE)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["file"], "files/document.pdf")
+        self.assertEqual(messages[0]["file_name"], "document.pdf")
+
+    def test_multi_file_html(self):
+        """Test that multiple HTML files are combined in order."""
+        html1 = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_header"><div class="content"><div class="text bold">Multi Chat</div></div></div>
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message1">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="text">Message in file 1</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>"""
+        html2 = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix" id="message2">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 11:00:00">11:00</div>
+    <div class="from_name">Bob</div>
+    <div class="text">Message in file 2</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>"""
+        self._write_html(html1, "messages.html")
+        self._write_html(html2, "messages2.html")
+
+        html_files = _find_html_files(Path(self.temp_dir))
+        chat_name, messages = _parse_html_export(html_files, Path(self.temp_dir))
+
+        self.assertEqual(chat_name, "Multi Chat")
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["text"], "Message in file 1")
+        self.assertEqual(messages[1]["text"], "Message in file 2")
+
+    def test_message_without_id_skipped(self):
+        html = """\
+<html><body>
+<div class="page_wrap">
+ <div class="page_body chat_page"><div class="history">
+  <div class="message default clearfix">
+   <div class="body">
+    <div class="from_name">Alice</div>
+    <div class="text">No ID message</div>
+   </div>
+  </div>
+  <div class="message default clearfix" id="message1">
+   <div class="body">
+    <div class="pull_right date details" title="15.01.2024 10:00:00">10:00</div>
+    <div class="from_name">Alice</div>
+    <div class="text">Has ID</div>
+   </div>
+  </div>
+ </div></div>
+</div>
+</body></html>"""
+        self._write_html(html)
+        html_files = _find_html_files(Path(self.temp_dir))
+        _, messages = _parse_html_export(html_files, Path(self.temp_dir))
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["text"], "Has ID")
+
+
+class TestHtmlImportIntegration(unittest.TestCase):
+    """Integration tests for HTML import through TelegramImporter."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.export_dir = os.path.join(self.temp_dir, "export")
+        os.makedirs(self.export_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _write_html(self, content, filename="messages.html"):
+        filepath = os.path.join(self.export_dir, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def test_html_import_requires_chat_id(self):
+        self._write_html(SAMPLE_HTML_MESSAGE)
+        db = AsyncMock()
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        with self.assertRaises(ValueError) as ctx:
+            self._run(importer.run(self.export_dir))
+        self.assertIn("chat ID", str(ctx.exception))
+
+    def test_html_import_basic(self):
+        self._write_html(SAMPLE_HTML_MESSAGE)
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir, chat_id_override=-1001234567890))
+
+        self.assertEqual(summary["total_messages"], 1)
+        self.assertEqual(summary["chats_imported"], 1)
+        self.assertEqual(summary["details"][0]["chat_name"], "Test Chat")
+        self.assertEqual(summary["details"][0]["chat_id"], -1001234567890)
+        db.upsert_chat.assert_called_once()
+        db.insert_messages_batch.assert_called_once()
+
+    def test_html_import_dry_run(self):
+        self._write_html(SAMPLE_HTML_MESSAGE)
+        db = AsyncMock()
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir, chat_id_override=42, dry_run=True))
+
+        self.assertEqual(summary["total_messages"], 1)
+        db.upsert_chat.assert_not_called()
+        db.insert_messages_batch.assert_not_called()
+
+    def test_html_import_with_media(self):
+        self._write_html(SAMPLE_HTML_PHOTO)
+
+        # Create the actual photo file
+        photos_dir = os.path.join(self.export_dir, "photos")
+        os.makedirs(photos_dir)
+        with open(os.path.join(photos_dir, "photo_1@15-01-2024_10-00-00.jpg"), "wb") as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        media_dir = os.path.join(self.temp_dir, "media")
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, media_dir)
+
+        summary = self._run(importer.run(self.export_dir, chat_id_override=42))
+
+        self.assertEqual(summary["total_media"], 1)
+        db.insert_media.assert_called_once()
+        media_call = db.insert_media.call_args[0][0]
+        self.assertEqual(media_call["type"], "photo")
+        self.assertTrue(Path(media_dir, "42").exists())
+
+    def test_html_import_skip_media(self):
+        self._write_html(SAMPLE_HTML_PHOTO)
+
+        photos_dir = os.path.join(self.export_dir, "photos")
+        os.makedirs(photos_dir)
+        with open(os.path.join(photos_dir, "photo_1@15-01-2024_10-00-00.jpg"), "wb") as f:
+            f.write(b"\x00" * 50)
+
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir, chat_id_override=42, skip_media=True))
+
+        self.assertEqual(summary["total_media"], 0)
+        db.insert_media.assert_not_called()
+
+    def test_html_import_forwarded(self):
+        self._write_html(SAMPLE_HTML_FORWARDED)
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        self._run(importer.run(self.export_dir, chat_id_override=42))
+
+        call_args = db.insert_messages_batch.call_args[0][0]
+        self.assertEqual(call_args[0]["raw_data"]["forward_from_name"], "Original Channel")
+
+    def test_html_import_reply(self):
+        self._write_html(SAMPLE_HTML_REPLY)
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        self._run(importer.run(self.export_dir, chat_id_override=42))
+
+        call_args = db.insert_messages_batch.call_args[0][0]
+        # First message has no reply
+        self.assertIsNone(call_args[0]["reply_to_msg_id"])
+        # Second message replies to first
+        self.assertEqual(call_args[1]["reply_to_msg_id"], 400)
+
+    def test_json_takes_priority_over_html(self):
+        """When both result.json and messages.html exist, JSON is used."""
+        self._write_html(SAMPLE_HTML_MESSAGE)
+        # Also write a result.json
+        with open(os.path.join(self.export_dir, "result.json"), "w") as f:
+            json.dump(
+                {
+                    "name": "JSON Chat",
+                    "type": "personal_chat",
+                    "id": 42,
+                    "messages": [
+                        {"id": 1, "type": "message", "date": "2024-01-15T10:00:00", "text": "From JSON"},
+                    ],
+                },
+                f,
+            )
+
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir))
+
+        # Should use JSON (chat_id derived from JSON data, not requiring override)
+        self.assertEqual(summary["details"][0]["chat_name"], "JSON Chat")
+
+    def test_no_export_files_raises_error(self):
+        """Neither result.json nor messages.html should raise FileNotFoundError."""
+        db = AsyncMock()
+        importer = TelegramImporter(db, "/tmp/media")
+
+        with self.assertRaises(FileNotFoundError) as ctx:
+            self._run(importer.run(self.export_dir))
+        self.assertIn("No result.json or messages.html", str(ctx.exception))
 
 
 if __name__ == "__main__":

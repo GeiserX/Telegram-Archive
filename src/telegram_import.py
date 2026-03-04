@@ -1,12 +1,16 @@
 """
 Import Telegram Desktop chat exports into Telegram-Archive.
 
-Reads result.json from Telegram Desktop exports (single-chat or full-account)
-and inserts messages, users, and media into the existing database schema.
+Supports two export formats:
+- JSON format: result.json from Telegram Desktop "Export Telegram data" (full account export)
+- HTML format: messages.html from Telegram Desktop per-chat export (single chat)
+
+Both formats insert messages, users, and media into the existing database schema.
 """
 
 import json
 import logging
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +40,30 @@ MEDIA_TYPE_MAP = {
     "voice_message": "voice",
     "audio_file": "audio",
     "sticker": "sticker",
+}
+
+# Maps HTML media CSS classes to media_type values used by MEDIA_TYPE_MAP
+HTML_CSS_MEDIA_TYPE = {
+    "media_photo": "photo",
+    "media_video": "video_file",
+    "media_voice_message": "voice_message",
+    "media_audio_file": "audio_file",
+    "media_video_message": "video_message",
+    "media_animation": "animation",
+    "media_sticker": "sticker",
+    "media_file": "",
+    "media_document": "",
+}
+
+# Maps HTML export folder names to media_type values
+HTML_FOLDER_MEDIA_TYPE = {
+    "photos": "photo",
+    "video_files": "video_file",
+    "voice_messages": "voice_message",
+    "round_video_messages": "video_message",
+    "stickers": "sticker",
+    "files": "",
+    "images": "photo",
 }
 
 
@@ -95,12 +123,12 @@ def parse_date(msg: dict) -> datetime | None:
     if "date_unixtime" in msg:
         try:
             return datetime.fromtimestamp(int(msg["date_unixtime"]), tz=UTC).replace(tzinfo=None)
-        except ValueError, TypeError, OSError:
+        except (ValueError, TypeError, OSError):
             pass
     if "date" in msg:
         try:
             return datetime.fromisoformat(msg["date"]).replace(tzinfo=None)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             pass
     return None
 
@@ -110,12 +138,12 @@ def parse_edited_date(msg: dict) -> datetime | None:
     if "edited_unixtime" in msg:
         try:
             return datetime.fromtimestamp(int(msg["edited_unixtime"]), tz=UTC).replace(tzinfo=None)
-        except ValueError, TypeError, OSError:
+        except (ValueError, TypeError, OSError):
             pass
     if "edited" in msg:
         try:
             return datetime.fromisoformat(msg["edited"]).replace(tzinfo=None)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             pass
     return None
 
@@ -175,6 +203,304 @@ def _build_service_text(msg: dict) -> str:
     return " ".join(text_parts)
 
 
+# ---------------------------------------------------------------------------
+# HTML export parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_html_date(date_str: str) -> str | None:
+    """Convert HTML export date title to ISO format string.
+
+    Input: 'DD.MM.YYYY HH:MM:SS' or 'DD.MM.YYYY HH:MM:SS UTC+HH:MM'
+    Output: ISO 8601 string like '2024-01-01T12:00:00'
+    """
+    if not date_str:
+        return None
+    parts = date_str.strip().split()
+    if len(parts) < 2:
+        return None
+    try:
+        day, month, year = parts[0].split(".")
+        return f"{year}-{month}-{day}T{parts[1]}"
+    except (ValueError, IndexError):
+        return None
+
+
+def _find_html_files(path: Path) -> list[Path]:
+    """Find and sort HTML message files in export directory.
+
+    Returns sorted list: messages.html, messages2.html, messages3.html, ...
+    """
+    files: list[Path] = []
+    main = path / "messages.html"
+    if main.exists():
+        files.append(main)
+
+    idx = 2
+    while True:
+        f = path / f"messages{idx}.html"
+        if not f.exists():
+            break
+        files.append(f)
+        idx += 1
+
+    return files
+
+
+def _parse_html_duration(text: str) -> int | None:
+    """Parse duration string like '1:30:00' or '00:30' into seconds."""
+    match = re.match(r"(\d+):(\d{2}):(\d{2})", text)
+    if match:
+        return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + int(match.group(3))
+    match = re.match(r"(\d+):(\d{2})", text)
+    if match:
+        return int(match.group(1)) * 60 + int(match.group(2))
+    return None
+
+
+def _extract_html_media_info(body_el, export_path: Path) -> dict[str, Any] | None:
+    """Extract media info from an HTML message body element.
+
+    Returns dict with keys compatible with the JSON export format
+    (photo, file, media_type, file_name, width, height, duration_seconds)
+    or None if no media found.
+    """
+    result: dict[str, Any] = {}
+
+    # Check for photo link (appears as a.photo_wrap directly in body or inside media_wrap)
+    photo_link = body_el.select_one("a.photo_wrap")
+    if photo_link:
+        href = photo_link.get("href", "")
+        if href and not href.startswith(("#", "http")):
+            result["photo"] = href
+            img = photo_link.select_one("img")
+            if img:
+                style = img.get("style", "")
+                w = re.search(r"width:\s*(\d+)", style)
+                h = re.search(r"height:\s*(\d+)", style)
+                if w:
+                    result["width"] = int(w.group(1))
+                if h:
+                    result["height"] = int(h.group(1))
+            return result
+
+    # Check for media_wrap container (used for video, audio, voice, documents, etc.)
+    media_wrap = body_el.select_one(".media_wrap")
+    if not media_wrap:
+        return None
+
+    media_el = media_wrap.select_one(".media")
+    if not media_el:
+        # Bare link in media_wrap (fallback)
+        link = media_wrap.select_one("a[href]")
+        if link:
+            href = link.get("href", "")
+            if href and not href.startswith(("#", "http")):
+                folder = href.split("/")[0] if "/" in href else ""
+                if folder in ("photos", "images"):
+                    result["photo"] = href
+                else:
+                    result["file"] = href
+                    result["media_type"] = HTML_FOLDER_MEDIA_TYPE.get(folder, "")
+                    result["file_name"] = Path(href).name
+                return result
+        return None
+
+    classes = set(media_el.get("class", []))
+
+    # Determine media type from CSS class
+    media_type = ""
+    is_photo = False
+    for css_class, m_type in HTML_CSS_MEDIA_TYPE.items():
+        if css_class in classes:
+            media_type = m_type
+            is_photo = css_class == "media_photo"
+            break
+
+    # Find the link to the actual file
+    link = media_el.select_one("a[href]")
+    if not link:
+        return None
+
+    href = link.get("href", "")
+    if not href or href.startswith(("#", "http")):
+        return None
+
+    if is_photo or media_type == "photo":
+        result["photo"] = href
+        img = media_el.select_one("img")
+        if img:
+            style = img.get("style", "")
+            w = re.search(r"width:\s*(\d+)", style)
+            h = re.search(r"height:\s*(\d+)", style)
+            if w:
+                result["width"] = int(w.group(1))
+            if h:
+                result["height"] = int(h.group(1))
+    else:
+        result["file"] = href
+        result["file_name"] = Path(href).name
+
+        # If CSS class didn't identify the type, infer from folder name
+        if not media_type:
+            folder = href.split("/")[0] if "/" in href else ""
+            media_type = HTML_FOLDER_MEDIA_TYPE.get(folder, "")
+
+        result["media_type"] = media_type
+
+    # Extract duration from description element (e.g. "00:30")
+    desc = media_el.select_one(".description")
+    if desc:
+        duration = _parse_html_duration(desc.get_text(strip=True))
+        if duration is not None:
+            result["duration_seconds"] = duration
+
+    return result
+
+
+def _parse_html_export(html_files: list[Path], export_path: Path) -> tuple[str, list[dict]]:
+    """Parse Telegram Desktop HTML export files into message dicts.
+
+    Reads messages.html (and messages2.html, etc.) and extracts messages
+    into the same dict format used by the JSON result.json parser.
+
+    Returns (chat_name, messages_list).
+    """
+    from bs4 import BeautifulSoup
+
+    chat_name = "Unknown"
+    messages: list[dict] = []
+    last_sender_name: str | None = None
+
+    for html_file in html_files:
+        logger.info(f"Parsing {html_file.name}...")
+        with open(html_file, encoding="utf-8") as f:
+            soup = BeautifulSoup(f.read(), "html.parser")
+
+        # Extract chat name from the first file's page header
+        if chat_name == "Unknown":
+            header = soup.select_one(".page_header .text.bold")
+            if not header:
+                header = soup.select_one(".page_header .content .text")
+            if header:
+                chat_name = header.get_text(strip=True)
+
+        for msg_div in soup.select("div.message"):
+            classes = set(msg_div.get("class", []))
+
+            # Extract message ID from id="message12345"
+            div_id = msg_div.get("id", "")
+            msg_id = None
+            if div_id.startswith("message"):
+                try:
+                    msg_id = int(div_id[len("message") :])
+                except ValueError:
+                    pass
+
+            if msg_id is None:
+                continue
+
+            is_service = "service" in classes
+            is_joined = "joined" in classes
+
+            # --- Service messages ---
+            if is_service:
+                body = msg_div.select_one(".body")
+                if not body:
+                    continue
+                text = body.get_text(" ", strip=True)
+
+                date_el = body.select_one(".date") or msg_div.select_one(".date")
+                date_str = date_el.get("title", "") if date_el else ""
+                date_iso = parse_html_date(date_str)
+
+                messages.append(
+                    {
+                        "id": msg_id,
+                        "type": "service",
+                        "date": date_iso,
+                        "text": text,
+                        "action": "custom_action",
+                    }
+                )
+                continue
+
+            # --- Regular / joined messages ---
+            body = msg_div.select_one(".body")
+            if not body:
+                continue
+
+            # Sender name (use recursive=False to avoid matching nested forwarded names)
+            from_name_el = body.find("div", class_="from_name", recursive=False)
+            if from_name_el:
+                sender_name = from_name_el.get_text(strip=True)
+                # Strip "via @BotName" suffix
+                via_idx = sender_name.find(" via @")
+                if via_idx > 0:
+                    sender_name = sender_name[:via_idx].strip()
+                last_sender_name = sender_name
+            elif is_joined:
+                sender_name = last_sender_name
+            else:
+                sender_name = last_sender_name
+
+            # Date from title attribute
+            date_el = body.select_one(".date")
+            date_str = date_el.get("title", "") if date_el else ""
+            date_iso = parse_html_date(date_str)
+
+            # Message text (convert <br> to newlines, use recursive=False to skip forwarded text)
+            text_el = body.find("div", class_="text", recursive=False)
+            text = ""
+            if text_el:
+                for br in text_el.find_all("br"):
+                    br.replace_with("\n")
+                text = text_el.get_text()
+
+            # Reply reference from href="#go_to_message12345"
+            reply_to_id = None
+            reply_el = body.select_one(".reply_to")
+            if reply_el:
+                reply_link = reply_el.select_one("a[href]")
+                if reply_link:
+                    href = reply_link.get("href", "")
+                    match = re.search(r"go_to_message(\d+)", href)
+                    if match:
+                        reply_to_id = int(match.group(1))
+
+            # Forwarded message source
+            forwarded_from = None
+            fwd_el = body.select_one(".forwarded")
+            if fwd_el:
+                fwd_name = fwd_el.select_one(".from_name")
+                if fwd_name:
+                    forwarded_from = fwd_name.get_text(strip=True)
+
+            msg_data: dict[str, Any] = {
+                "id": msg_id,
+                "type": "message",
+                "date": date_iso,
+                "from": sender_name or "",
+                "text": text,
+                "reply_to_message_id": reply_to_id,
+                "forwarded_from": forwarded_from,
+            }
+
+            # Extract media references
+            media_info = _extract_html_media_info(body, export_path)
+            if media_info:
+                msg_data.update(media_info)
+
+            messages.append(msg_data)
+
+    return chat_name, messages
+
+
+# ---------------------------------------------------------------------------
+# Main importer
+# ---------------------------------------------------------------------------
+
+
 class TelegramImporter:
     """Import Telegram Desktop exports into Telegram-Archive database."""
 
@@ -201,18 +527,34 @@ class TelegramImporter:
     ) -> dict[str, Any]:
         """Run the import process.
 
+        Auto-detects JSON (result.json) or HTML (messages.html) export format.
         Returns a summary dict with counts per chat.
         """
         path = Path(export_path)
         result_file = path / "result.json"
-        if not result_file.exists():
-            raise FileNotFoundError(f"result.json not found in {path}")
+        html_files = _find_html_files(path)
 
-        logger.info(f"Reading {result_file}...")
-        with open(result_file, encoding="utf-8") as f:
-            data = json.load(f)
+        if result_file.exists():
+            logger.info(f"Reading {result_file}...")
+            with open(result_file, encoding="utf-8") as f:
+                data = json.load(f)
+            chats = self._extract_chats(data)
+        elif html_files:
+            logger.info(f"Detected HTML export format ({len(html_files)} file(s))")
+            if not chat_id_override:
+                raise ValueError(
+                    "HTML exports (per-chat) don't include a chat ID. "
+                    "Please provide --chat-id (-c) with the Telegram chat ID "
+                    "(e.g., -c 123456789 for a private chat, -c -1001234567890 for a supergroup)."
+                )
+            chat_name, messages = _parse_html_export(html_files, path)
+            chats = [{"name": chat_name, "type": "html_export", "id": 0, "messages": messages}]
+        else:
+            raise FileNotFoundError(
+                f"No result.json or messages.html found in {path}. "
+                "Expected a Telegram Desktop export directory."
+            )
 
-        chats = self._extract_chats(data)
         if not chats:
             raise ValueError("No chats found in export file")
 
