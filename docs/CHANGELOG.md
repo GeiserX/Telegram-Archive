@@ -11,7 +11,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ### Added
 
 - **Persistent sessions** — Viewer sessions now survive container restarts. Sessions are backed by a `viewer_sessions` database table with an in-memory write-through cache for zero-latency lookups. On startup, active sessions are restored from the database so users stay logged in across restarts, Docker updates, and server reboots. Closes [#84](https://github.com/GeiserX/Telegram-Archive/issues/84).
-  - **Alembic migration 009** — Creates `viewer_sessions` table (auto-created for SQLite, requires `alembic upgrade head` for PostgreSQL)
+  - **Alembic migration 009** — Creates `viewer_sessions` table (auto-applied on container startup for both SQLite and PostgreSQL)
   - Graceful degradation: if the database is unavailable, sessions fall back to in-memory only (same behavior as v7.0.x)
 
 ### Security
