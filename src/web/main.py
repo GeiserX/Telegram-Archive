@@ -674,7 +674,7 @@ async def serve_media(path: str, user: UserContext = Depends(require_auth)):
     candidate = _media_root / path
     try:
         resolved = candidate.resolve(strict=True)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
