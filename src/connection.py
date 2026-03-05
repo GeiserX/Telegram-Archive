@@ -13,6 +13,8 @@ Architecture:
 
 import asyncio
 import logging
+import os
+import shutil
 
 from telethon import TelegramClient
 
@@ -86,6 +88,16 @@ class TelegramConnection:
 
         logger.info("Connecting to Telegram...")
 
+        session_file = self.config.session_path + ".session"
+        backup_file = self.config.session_path + ".session.bak"
+
+        # Protect existing authenticated session: back it up before TelegramClient
+        # touches it. Telethon overwrites sessions on connect, so if the container
+        # crash-loops (e.g. DB permission errors) the authenticated session would be
+        # replaced with an empty one. The backup lets us recover.
+        if os.path.isfile(session_file) and os.path.getsize(session_file) > 0:
+            shutil.copy2(session_file, backup_file)
+
         self._client = TelegramClient(self.config.session_path, self.config.api_id, self.config.api_hash)
 
         # Enable WAL mode for session DB to handle concurrent access
@@ -96,10 +108,16 @@ class TelegramConnection:
 
         # Check authorization
         if not await self._client.is_user_authorized():
+            await self._client.disconnect()
+            # Restore the backup if the live file was overwritten with an empty session
+            if os.path.isfile(backup_file) and os.path.getsize(backup_file) > os.path.getsize(session_file):
+                logger.warning("Session lost during connect — restoring from backup")
+                shutil.copy2(backup_file, session_file)
             logger.error("❌ Session not authorized!")
             logger.error("Please run the authentication setup first:")
             logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
             logger.error("  Local:  python -m src.setup_auth")
+            logger.error("  Non-interactive: python scripts/auth_noninteractive.py send")
             raise RuntimeError("Session not authorized. Please run authentication setup.")
 
         self._me = await self._client.get_me()

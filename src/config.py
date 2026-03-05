@@ -118,9 +118,7 @@ class Config:
         # If BACKUP_PATH is /data/backups, session goes to /data/session
         backup_parent = os.path.dirname(self.backup_path.rstrip("/\\"))
         self.session_dir = os.getenv("SESSION_DIR", os.path.join(backup_parent, "session"))
-        self.session_path = os.path.join(self.session_dir, f"{self.session_name}.session")
-
-        self.session_path = os.path.join(self.session_dir, f"{self.session_name}.session")
+        self.session_path = os.path.join(self.session_dir, self.session_name)
 
         # Database path configuration
         # Default: inside backup_path
