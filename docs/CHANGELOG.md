@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.1.1] - 2026-03-05
+
+### Added
+
+- **Non-interactive auth script** — `scripts/auth_noninteractive.py` for authenticating Telegram sessions without a TTY (useful for SSH automation, CI pipelines)
+
+### Fixed
+
+- **Session file protection** — Telethon session files are now backed up before each connect attempt. If the container crash-loops (e.g. due to database permission errors), the authenticated session is preserved and restored instead of being overwritten with an empty one
+- **Duplicate session_path assignment** in config.py removed
+
 ## [7.1.0] - 2026-03-05
 
 ### Added
