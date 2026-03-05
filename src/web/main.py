@@ -666,7 +666,16 @@ async def serve_media(path: str, user: UserContext = Depends(require_auth)):
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
-    resolved = (_media_root / path).resolve()
+    # Reject path traversal and absolute paths before any filesystem operations
+    if ".." in path.split("/") or path.startswith("/"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Construct and resolve path, then verify it stays within media root
+    candidate = _media_root / path
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 

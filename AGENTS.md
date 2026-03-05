@@ -43,6 +43,7 @@ You assist developers working on telegram-archive.
 - Create a descriptive branch name (e.g., `feat/add-login`, `fix/button-styling`)
 - Open a PR for review before merging
 - Do NOT commit directly to main/master branch
+- **After every push/merge**, check CI status with `gh run list` or `gh pr checks` and fix any test or lint failures before moving on
 
 ## Boundaries
 
