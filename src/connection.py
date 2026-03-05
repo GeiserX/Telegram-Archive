@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sqlite3
 
 from telethon import TelegramClient
 
@@ -72,9 +73,37 @@ class TelegramConnection:
         """Get the current user info (available after connect)."""
         return self._me
 
+    @staticmethod
+    def _session_has_auth(session_file: str) -> bool:
+        """Check if a session file contains a non-empty auth_key (i.e. was once authenticated)."""
+        try:
+            if not os.path.isfile(session_file) or os.path.getsize(session_file) == 0:
+                return False
+            conn = sqlite3.connect(session_file)
+            cur = conn.cursor()
+            cur.execute("SELECT auth_key FROM sessions LIMIT 1")
+            row = cur.fetchone()
+            conn.close()
+            return row is not None and row[0] and len(row[0]) > 0
+        except Exception:
+            return False
+
     async def connect(self) -> TelegramClient:
         """
         Connect to Telegram and authenticate.
+
+        Session protection: Telethon's .connect() silently replaces the auth_key
+        in the session DB via DH key exchange when the existing key is invalid
+        server-side. This means a single failed connect permanently destroys the
+        old auth_key. During crash-loops this is catastrophic — the authenticated
+        session is replaced with a useless one on the first attempt.
+
+        We guard against this with two backup tiers:
+        - `.session.authenticated` — golden backup, only written after successful auth
+        - `.session.bak` — pre-connect snapshot, written before every connect attempt
+
+        On auth failure we restore from the golden backup first (known-good state),
+        falling back to the pre-connect snapshot.
 
         Returns:
             The connected TelegramClient instance
@@ -89,14 +118,19 @@ class TelegramConnection:
         logger.info("Connecting to Telegram...")
 
         session_file = self.config.session_path + ".session"
-        backup_file = self.config.session_path + ".session.bak"
+        snapshot_file = self.config.session_path + ".session.bak"
+        golden_file = self.config.session_path + ".session.authenticated"
 
-        # Protect existing authenticated session: back it up before TelegramClient
-        # touches it. Telethon overwrites sessions on connect, so if the container
-        # crash-loops (e.g. DB permission errors) the authenticated session would be
-        # replaced with an empty one. The backup lets us recover.
-        if os.path.isfile(session_file) and os.path.getsize(session_file) > 0:
-            shutil.copy2(session_file, backup_file)
+        # Tier 1: if the golden backup exists and the live session lost its auth,
+        # restore BEFORE TelegramClient even touches the file.
+        if os.path.isfile(golden_file) and not self._session_has_auth(session_file):
+            if self._session_has_auth(golden_file):
+                logger.warning("Session file has no auth — restoring from authenticated backup")
+                shutil.copy2(golden_file, session_file)
+
+        # Tier 2: snapshot the current state before TelegramClient can modify it.
+        if self._session_has_auth(session_file):
+            shutil.copy2(session_file, snapshot_file)
 
         self._client = TelegramClient(self.config.session_path, self.config.api_id, self.config.api_hash)
 
@@ -109,10 +143,17 @@ class TelegramConnection:
         # Check authorization
         if not await self._client.is_user_authorized():
             await self._client.disconnect()
-            # Restore the backup if the live file was overwritten with an empty session
-            if os.path.isfile(backup_file) and os.path.getsize(backup_file) > os.path.getsize(session_file):
-                logger.warning("Session lost during connect — restoring from backup")
-                shutil.copy2(backup_file, session_file)
+            # Restore from the best available backup.
+            # Golden backup is preferred (known-good); snapshot is the fallback.
+            restored = False
+            for backup in (golden_file, snapshot_file):
+                if self._session_has_auth(backup):
+                    logger.warning(f"Auth failed — restoring session from {os.path.basename(backup)}")
+                    shutil.copy2(backup, session_file)
+                    restored = True
+                    break
+            if restored:
+                logger.info("Session restored. Will retry on next scheduler cycle.")
             logger.error("❌ Session not authorized!")
             logger.error("Please run the authentication setup first:")
             logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
@@ -122,6 +163,15 @@ class TelegramConnection:
 
         self._me = await self._client.get_me()
         self._connected = True
+
+        # Auth succeeded — update the golden backup (known-good state).
+        # Flush Telethon's WAL to ensure the file is complete before copying.
+        try:
+            if hasattr(self._client.session, "_conn") and self._client.session._conn:
+                self._client.session._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        shutil.copy2(session_file, golden_file)
 
         logger.info(f"Connected as {self._me.first_name} ({self._me.phone})")
 
