@@ -1845,9 +1845,7 @@ class DatabaseAdapter:
     async def get_session(self, token: str) -> dict[str, Any] | None:
         """Get a session by token."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(
-                select(ViewerSession).where(ViewerSession.token == token)
-            )
+            result = await session.execute(select(ViewerSession).where(ViewerSession.token == token))
             row = result.scalar_one_or_none()
             return self._viewer_session_to_dict(row) if row else None
 
@@ -1861,9 +1859,7 @@ class DatabaseAdapter:
     async def delete_session(self, token: str) -> bool:
         """Delete a single session by token."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(
-                delete(ViewerSession).where(ViewerSession.token == token)
-            )
+            result = await session.execute(delete(ViewerSession).where(ViewerSession.token == token))
             await session.commit()
             return result.rowcount > 0
 
@@ -1871,9 +1867,7 @@ class DatabaseAdapter:
     async def delete_user_sessions(self, username: str) -> int:
         """Delete all sessions for a given username. Returns count deleted."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(
-                delete(ViewerSession).where(ViewerSession.username == username)
-            )
+            result = await session.execute(delete(ViewerSession).where(ViewerSession.username == username))
             await session.commit()
             return result.rowcount
 
@@ -1884,9 +1878,7 @@ class DatabaseAdapter:
 
         cutoff = time.time() - max_age_seconds
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(
-                delete(ViewerSession).where(ViewerSession.created_at < cutoff)
-            )
+            result = await session.execute(delete(ViewerSession).where(ViewerSession.created_at < cutoff))
             await session.commit()
             return result.rowcount
 
