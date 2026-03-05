@@ -318,7 +318,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 if row["allowed_chat_ids"]:
                     try:
                         allowed = set(json.loads(row["allowed_chat_ids"]))
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         logger.warning(f"Skipping session with corrupted allowed_chat_ids for {row['username']}")
                         continue
                 _sessions[row["token"]] = SessionData(
@@ -498,8 +498,11 @@ async def _create_session(username: str, role: str, allowed_chat_ids: set[int] |
     now = time.time()
     token = secrets.token_urlsafe(32)
     _sessions[token] = SessionData(
-        username=username, role=role, allowed_chat_ids=allowed_chat_ids,
-        created_at=now, last_accessed=now,
+        username=username,
+        role=role,
+        allowed_chat_ids=allowed_chat_ids,
+        created_at=now,
+        last_accessed=now,
     )
 
     # Persist to database
@@ -563,7 +566,7 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
     if row["allowed_chat_ids"]:
         try:
             allowed = set(json.loads(row["allowed_chat_ids"]))
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             logger.warning(f"Corrupted allowed_chat_ids for session {row['username']}, denying access")
             return None
 
@@ -759,7 +762,7 @@ async def login(request: Request):
                 if viewer["allowed_chat_ids"]:
                     try:
                         allowed = set(json.loads(viewer["allowed_chat_ids"]))
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         allowed = None
 
                 token = await _create_session(username, "viewer", allowed)
@@ -1259,8 +1262,7 @@ async def internal_push(request: Request):
 
     allowed = False
     if client_host and (
-        client_host in ("127.0.0.1", "localhost", "::1")
-        or client_host.startswith(("172.", "10.", "192.168."))
+        client_host in ("127.0.0.1", "localhost", "::1") or client_host.startswith(("172.", "10.", "192.168."))
     ):
         allowed = True
 
@@ -1436,7 +1438,7 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     if allowed_chat_ids is not None:
         try:
             chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
     account = await db.create_viewer_account(
@@ -1491,7 +1493,7 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
         else:
             try:
                 updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
     if "is_active" in data:

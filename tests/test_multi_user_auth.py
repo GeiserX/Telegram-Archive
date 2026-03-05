@@ -48,6 +48,8 @@ def _make_mock_db():
     db.calculate_and_store_statistics = AsyncMock(return_value={"total_chats": 3})
     db.get_all_folders = AsyncMock(return_value=[])
     db.get_archived_chat_count = AsyncMock(return_value=0)
+    db.get_session = AsyncMock(return_value=None)
+    db.delete_session = AsyncMock()
     return db
 
 
@@ -246,7 +248,7 @@ class TestRateLimiting:
 
     def test_rate_limit_blocks_after_threshold(self, auth_env):
         client, mod, _ = _get_client()
-        for _ in range(5):
+        for _ in range(15):
             client.post("/api/login", json={"username": "admin", "password": "wrong"})
 
         resp = client.post("/api/login", json={"username": "admin", "password": "wrong"})

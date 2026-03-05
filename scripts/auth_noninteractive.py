@@ -74,7 +74,11 @@ async def main():
             await client.sign_in(phone, code)
         except Exception as e:
             error_str = str(e)
-            if "Two-steps verification" in error_str or "password" in error_str.lower() or "SessionPasswordNeeded" in error_str:
+            if (
+                "Two-steps verification" in error_str
+                or "password" in error_str.lower()
+                or "SessionPasswordNeeded" in error_str
+            ):
                 if not password:
                     print("2FA is enabled. Re-run with: verify CODE 2FA_PASSWORD")
                     await client.disconnect()
