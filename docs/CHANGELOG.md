@@ -6,6 +6,17 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.1.2] - 2026-03-05
+
+### Fixed
+
+- **Two-tier session protection** — Replaces the single-backup approach from v7.1.1 with a robust two-tier system:
+  - **Golden backup** (`.session.authenticated`) — only written after a successful login, guarantees a known-good recovery point that crash-loops can never corrupt
+  - **Pre-connect snapshot** (`.session.bak`) — taken before every connect attempt as a secondary fallback
+  - On auth failure, restores from golden backup first, then snapshot. Prevents Telethon's silent DH key renegotiation from permanently destroying authenticated sessions during crash-loops.
+  - Uses raw `sqlite3` to verify `auth_key` presence before deciding whether to back up or restore, avoiding false positives from empty/corrupted session files
+  - Flushes WAL checkpoint before creating golden backup to ensure file completeness
+
 ## [7.1.1] - 2026-03-05
 
 ### Added
