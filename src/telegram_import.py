@@ -123,12 +123,12 @@ def parse_date(msg: dict) -> datetime | None:
     if "date_unixtime" in msg:
         try:
             return datetime.fromtimestamp(int(msg["date_unixtime"]), tz=UTC).replace(tzinfo=None)
-        except (ValueError, TypeError, OSError):
+        except ValueError, TypeError, OSError:
             pass
     if "date" in msg:
         try:
             return datetime.fromisoformat(msg["date"]).replace(tzinfo=None)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             pass
     return None
 
@@ -138,12 +138,12 @@ def parse_edited_date(msg: dict) -> datetime | None:
     if "edited_unixtime" in msg:
         try:
             return datetime.fromtimestamp(int(msg["edited_unixtime"]), tz=UTC).replace(tzinfo=None)
-        except (ValueError, TypeError, OSError):
+        except ValueError, TypeError, OSError:
             pass
     if "edited" in msg:
         try:
             return datetime.fromisoformat(msg["edited"]).replace(tzinfo=None)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             pass
     return None
 
@@ -222,7 +222,7 @@ def parse_html_date(date_str: str) -> str | None:
     try:
         day, month, year = parts[0].split(".")
         return f"{year}-{month}-{day}T{parts[1]}"
-    except (ValueError, IndexError):
+    except ValueError, IndexError:
         return None
 
 
@@ -551,8 +551,7 @@ class TelegramImporter:
             chats = [{"name": chat_name, "type": "html_export", "id": 0, "messages": messages}]
         else:
             raise FileNotFoundError(
-                f"No result.json or messages.html found in {path}. "
-                "Expected a Telegram Desktop export directory."
+                f"No result.json or messages.html found in {path}. Expected a Telegram Desktop export directory."
             )
 
         if not chats:

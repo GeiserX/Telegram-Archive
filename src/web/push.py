@@ -219,7 +219,7 @@ class PushNotificationManager:
                             user_chats = json.loads(sub.allowed_chat_ids)
                             if chat_id not in user_chats:
                                 continue
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError, TypeError:
                             continue
                     filtered.append({"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}})
 
