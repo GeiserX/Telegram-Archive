@@ -6,6 +6,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.1.3] - 2026-03-05
+
+### Fixed
+
+- **Alembic stamping detects all migrations** — The entrypoint's pre-Alembic database stamping logic now detects migrations 008 (`push_subscriptions.username` column) and 009 (`viewer_sessions` table). Previously it only checked up to 007, causing `CREATE TABLE` failures when `Base.metadata.create_all()` had already created newer tables (e.g. SQLite containers crash-looping on `viewer_accounts already exists`)
+
 ## [7.1.2] - 2026-03-05
 
 ### Fixed

@@ -57,7 +57,7 @@ cur = conn.cursor()
 # Check if alembic_version table exists
 cur.execute(\"\"\"
     SELECT EXISTS (
-        SELECT FROM information_schema.tables 
+        SELECT FROM information_schema.tables
         WHERE table_name = 'alembic_version'
     );
 \"\"\")
@@ -66,7 +66,7 @@ has_alembic = cur.fetchone()[0]
 # Check if chats table exists (pre-existing database)
 cur.execute(\"\"\"
     SELECT EXISTS (
-        SELECT FROM information_schema.tables 
+        SELECT FROM information_schema.tables
         WHERE table_name = 'chats'
     );
 \"\"\")
@@ -81,6 +81,24 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check if viewer_sessions table exists (added in migration 009)
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'viewer_sessions'
+        );
+    \"\"\")
+    has_009_table = cur.fetchone()[0]
+
+    # Check if push_subscriptions.username column exists (added in migration 008)
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.columns
+            WHERE table_name = 'push_subscriptions' AND column_name = 'username'
+        );
+    \"\"\")
+    has_008_column = cur.fetchone()[0]
+
     # Check if viewer_accounts table exists (added in migration 007)
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -111,23 +129,27 @@ if has_tables and not has_alembic:
     # Check if is_pinned column exists (added in migration 004)
     cur.execute(\"\"\"
         SELECT EXISTS (
-            SELECT FROM information_schema.columns 
+            SELECT FROM information_schema.columns
             WHERE table_name = 'messages' AND column_name = 'is_pinned'
         );
     \"\"\")
     has_is_pinned = cur.fetchone()[0]
-    
+
     # Check if push_subscriptions table exists (added in migration 003)
     cur.execute(\"\"\"
         SELECT EXISTS (
-            SELECT FROM information_schema.tables 
+            SELECT FROM information_schema.tables
             WHERE table_name = 'push_subscriptions'
         );
     \"\"\")
     has_push_subs = cur.fetchone()[0]
-    
+
     # Determine which version to stamp based on existing schema
-    if has_007_table:
+    if has_009_table:
+        stamp_version = '009'
+    elif has_008_column:
+        stamp_version = '008'
+    elif has_007_table:
         stamp_version = '007'
     elif has_006_table:
         stamp_version = '006'
@@ -140,7 +162,7 @@ if has_tables and not has_alembic:
     else:
         # Assume at least 002 (chat_date_index) - indexes are harder to check
         stamp_version = '002'
-    
+
     cur.execute(f\"INSERT INTO alembic_version (version_num) VALUES ('{stamp_version}')\")
     conn.commit()
     print(f'Database stamped at version {stamp_version}')
@@ -190,6 +212,15 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check if viewer_sessions table exists (added in migration 009)
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_sessions'\")
+    has_009_table = cur.fetchone() is not None
+
+    # Check if push_subscriptions.username column exists (added in migration 008)
+    cur.execute(\"PRAGMA table_info(push_subscriptions)\")
+    push_columns = {row[1] for row in cur.fetchall()}
+    has_008_column = 'username' in push_columns
+
     # Check if viewer_accounts table exists (added in migration 007)
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_accounts'\")
     has_007_table = cur.fetchone() is not None
@@ -212,7 +243,11 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_007_table:
+    if has_009_table:
+        stamp_version = '009'
+    elif has_008_column:
+        stamp_version = '008'
+    elif has_007_table:
         stamp_version = '007'
     elif has_006_table:
         stamp_version = '006'
