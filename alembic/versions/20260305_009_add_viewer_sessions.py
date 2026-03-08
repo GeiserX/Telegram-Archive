@@ -23,18 +23,29 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "viewer_sessions",
-        sa.Column("token", sa.String(64), nullable=False),
-        sa.Column("username", sa.String(255), nullable=False),
-        sa.Column("role", sa.String(20), nullable=False),
-        sa.Column("allowed_chat_ids", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.Float(), nullable=False),
-        sa.Column("last_accessed", sa.Float(), nullable=False),
-        sa.PrimaryKeyConstraint("token"),
-    )
-    op.create_index("idx_viewer_sessions_username", "viewer_sessions", ["username"])
-    op.create_index("idx_viewer_sessions_created_at", "viewer_sessions", ["created_at"])
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+
+    if "viewer_sessions" not in inspector.get_table_names():
+        op.create_table(
+            "viewer_sessions",
+            sa.Column("token", sa.String(64), nullable=False),
+            sa.Column("username", sa.String(255), nullable=False),
+            sa.Column("role", sa.String(20), nullable=False),
+            sa.Column("allowed_chat_ids", sa.Text(), nullable=True),
+            sa.Column("created_at", sa.Float(), nullable=False),
+            sa.Column("last_accessed", sa.Float(), nullable=False),
+            sa.PrimaryKeyConstraint("token"),
+        )
+        op.create_index("idx_viewer_sessions_username", "viewer_sessions", ["username"])
+        op.create_index("idx_viewer_sessions_created_at", "viewer_sessions", ["created_at"])
+    else:
+        # Table exists (from create_all), ensure indexes exist
+        existing_indexes = {idx["name"] for idx in inspector.get_indexes("viewer_sessions")}
+        if "idx_viewer_sessions_username" not in existing_indexes:
+            op.create_index("idx_viewer_sessions_username", "viewer_sessions", ["username"])
+        if "idx_viewer_sessions_created_at" not in existing_indexes:
+            op.create_index("idx_viewer_sessions_created_at", "viewer_sessions", ["created_at"])
 
 
 def downgrade() -> None:
