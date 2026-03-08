@@ -1938,9 +1938,11 @@
                 const handleWebSocketMessage = (data) => {
                     switch (data.type) {
                         case 'new_message':
-                            // Add to messages if we're viewing that chat
-                            if (selectedChat.value?.id === data.chat_id) {
-                                messages.value.push(data.message)
+                            // Add to messages if we're viewing that chat (deduplicate by ID)
+                            if (selectedChat.value?.id === data.chat_id && data.message?.id != null) {
+                                if (!messages.value.some(m => m.id === data.message.id)) {
+                                    messages.value.push(data.message)
+                                }
                             }
                             // Show notification
                             if (notificationPermission.value === 'granted' && document.hidden) {
@@ -2500,9 +2502,11 @@
                 }
                 
                 // Check for new messages and deletions
+                let isRefreshing = false
                 const checkForNewMessages = async () => {
-                    if (!selectedChat.value) return
-                    
+                    if (!selectedChat.value || isRefreshing) return
+
+                    isRefreshing = true
                     const myVersion = chatVersion
                     try {
                         // Get latest messages (just first page)
@@ -2516,41 +2520,42 @@
                             credentials: 'include'
                         })
                         if (!res.ok || chatVersion !== myVersion) return
-                        
+
                         const latestMessages = await res.json()
                         const latestIds = new Set(latestMessages.map(m => m.id))
+                        // Re-read existing IDs right before mutation to avoid stale snapshots
                         const existingIds = new Set(messages.value.map(m => m.id))
-                        
+
                         // Find new messages (in server response but not in our view)
                         const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
-                        
+
                         // Find deleted messages - ONLY check messages that overlap with our fetch
                         // We fetched the latest 50/20 from server. Compare with our newest messages.
                         // Sort our messages by date descending to get the newest ones
-                        const sortedByDate = [...messages.value].sort((a, b) => 
+                        const sortedByDate = [...messages.value].sort((a, b) =>
                             new Date(b.date) - new Date(a.date)
                         )
                         // Get our newest messages (same count as server returned)
                         const ourNewestMessages = sortedByDate.slice(0, latestMessages.length)
-                        
+
                         // Only messages that SHOULD be in the latest fetch but aren't = deleted
                         // A message is deleted if: it's in our newest messages AND not in server's latest
                         const deletedIds = ourNewestMessages
                             .filter(m => !latestIds.has(m.id))
                             .map(m => m.id)
-                        
+
                         // Remove deleted messages
                         if (deletedIds.length > 0) {
                             const deletedSet = new Set(deletedIds)
                             messages.value = messages.value.filter(m => !deletedSet.has(m.id))
                             console.log(`[Auto-refresh] Removed ${deletedIds.length} deleted message(s)`)
                         }
-                        
+
                         // Add new messages
                         if (newMessages.length > 0) {
                             messages.value.push(...newMessages)
                             console.log(`[Auto-refresh] Added ${newMessages.length} new message(s)`)
-                            
+
                             // Scroll to bottom if user is near bottom
                             await nextTick()
                             const container = messagesContainer.value
@@ -2563,6 +2568,8 @@
                         }
                     } catch (e) {
                         console.warn('[Auto-refresh] Error checking for messages:', e)
+                    } finally {
+                        isRefreshing = false
                     }
                 }
 

@@ -188,7 +188,7 @@ async def handle_realtime_notification(payload: dict):
         return
 
     if notification_type == "new_message":
-        await ws_manager.broadcast_to_chat(chat_id, {"type": "new_message", "message": data.get("message")})
+        await ws_manager.broadcast_to_chat(chat_id, {"type": "new_message", "chat_id": chat_id, "message": data.get("message")})
 
         # Send Web Push notification for new messages
         if push_manager and push_manager.is_enabled:
