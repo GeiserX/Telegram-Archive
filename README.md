@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/banner.svg" alt="Telegram Archive banner" width="900"/>
+</p>
+
 <div align="center">
   <img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="200"/>
 </div>
