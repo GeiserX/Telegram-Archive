@@ -1,8 +1,17 @@
+<p align="center">
+  <img src="docs/images/banner.svg" alt="Telegram Archive banner" width="900"/>
+</p>
+
 <div align="center">
   <img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="200"/>
 </div>
 
 # Telegram Archive
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker)](https://hub.docker.com/r/drumsergio/telegram-archive)
+[![GitHub Stars](https://img.shields.io/github/stars/GeiserX/Telegram-Archive?style=flat-square&logo=github)](https://github.com/GeiserX/Telegram-Archive/stargazers)
+[![License](https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/GeiserX/Telegram-Archive?style=flat-square)](https://github.com/GeiserX/Telegram-Archive/releases)
 
 Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.
 
@@ -390,7 +399,7 @@ For production stability, pin to specific versions instead of `latest`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:v5.3.7  # Pin to specific version
+    image: drumsergio/telegram-archive:v7.1.7  # Pin to specific version
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available versions.
