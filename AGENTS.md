@@ -124,6 +124,15 @@ Use: pytest
 
 - **`Base.metadata.create_all(checkfirst=True)`** creates ALL tables from SQLAlchemy models at once, including tables that should be created by future Alembic migrations. This means pre-Alembic databases can have schema objects from migrations that haven't "run" yet.
 - **`scripts/entrypoint.sh`** stamps pre-Alembic databases by detecting which schema objects exist. **Every time you add a new migration, you MUST update the stamping logic in entrypoint.sh** — both the PostgreSQL block and the SQLite block — to detect the new migration's artifacts (tables, columns, indexes). If you forget, existing databases that were created via `create_all()` will be stamped at a lower version, and Alembic will try to re-create objects that already exist, causing crash-loops.
+- **Every migration MUST be idempotent.** Use `sa.inspect(conn)` to check if tables/columns/indexes exist before creating them. The stamping logic only helps fresh databases (no `alembic_version` table); databases already stamped at an older version skip stamping entirely, so Alembic runs the migration against a schema that `create_all()` may have already populated. Pattern:
+  ```python
+  conn = op.get_bind()
+  inspector = sa.inspect(conn)
+  if "my_column" not in {c["name"] for c in inspector.get_columns("my_table")}:
+      op.add_column(...)
+  if "my_table" not in inspector.get_table_names():
+      op.create_table(...)
+  ```
 - Check highest migration first, then descend (009 → 008 → 007 → ...).
 - Test with both PostgreSQL and SQLite paths.
 
