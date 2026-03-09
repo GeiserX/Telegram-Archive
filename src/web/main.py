@@ -6,6 +6,8 @@ v3.0: Async database operations with SQLAlchemy.
 v5.0: WebSocket support for real-time updates and notifications.
 """
 
+from __future__ import annotations
+
 import asyncio
 import glob
 import hashlib
@@ -16,7 +18,6 @@ import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..realtime import RealtimeListener
+from .thumbnails import ALLOWED_SIZES, ensure_thumbnail
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -54,26 +56,22 @@ class ConnectionManager:
     """Manages WebSocket connections for real-time updates."""
 
     def __init__(self):
+        # Active connections: {websocket: set of subscribed chat_ids}
         self.active_connections: dict[WebSocket, set[int]] = {}
-        self._allowed_chats: dict[WebSocket, set[int] | None] = {}
 
-    async def connect(self, websocket: WebSocket, allowed_chat_ids: set[int] | None = None):
+    async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections[websocket] = set()
-        self._allowed_chats[websocket] = allowed_chat_ids
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.pop(websocket, None)
-        self._allowed_chats.pop(websocket, None)
+        if websocket in self.active_connections:
+            del self.active_connections[websocket]
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     def subscribe(self, websocket: WebSocket, chat_id: int):
         """Subscribe a connection to updates for a specific chat."""
         if websocket in self.active_connections:
-            allowed = self._allowed_chats.get(websocket)
-            if allowed is not None and chat_id not in allowed:
-                return
             self.active_connections[websocket].add(chat_id)
 
     def unsubscribe(self, websocket: WebSocket, chat_id: int):
@@ -85,10 +83,7 @@ class ConnectionManager:
         """Broadcast a message to all connections subscribed to a chat."""
         disconnected = []
         for websocket, subscribed_chats in self.active_connections.items():
-            allowed = self._allowed_chats.get(websocket)
-            if allowed is not None and chat_id not in allowed:
-                continue
-            if chat_id in subscribed_chats or not subscribed_chats:
+            if chat_id in subscribed_chats or not subscribed_chats:  # Empty set = subscribed to all
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
@@ -165,9 +160,8 @@ async def _normalize_display_chat_ids():
     config.display_chat_ids = normalized
 
 
-# Background tasks
+# Background task for stats calculation
 stats_task: asyncio.Task | None = None
-_session_cleanup_task: asyncio.Task | None = None
 
 # Real-time listener (PostgreSQL LISTEN/NOTIFY)
 realtime_listener: RealtimeListener | None = None
@@ -221,34 +215,6 @@ async def handle_realtime_notification(payload: dict):
         await ws_manager.broadcast_to_chat(chat_id, {"type": "delete", "message_id": data.get("message_id")})
 
 
-async def session_cleanup_task():
-    """Periodically evict expired sessions and stale rate limit entries."""
-    while True:
-        try:
-            await asyncio.sleep(_SESSION_CLEANUP_INTERVAL)
-            now = time.time()
-            expired = [k for k, v in _sessions.items() if now - v.created_at > AUTH_SESSION_SECONDS]
-            for k in expired:
-                _sessions.pop(k, None)
-            if expired:
-                logger.info(f"Cleaned up {len(expired)} expired sessions from cache")
-            # Also clean DB
-            if db:
-                try:
-                    db_cleaned = await db.cleanup_expired_sessions(AUTH_SESSION_SECONDS)
-                    if db_cleaned:
-                        logger.info(f"Cleaned up {db_cleaned} expired sessions from database")
-                except Exception as e:
-                    logger.warning(f"DB session cleanup failed: {e}")
-            stale_ips = [ip for ip, ts in _login_attempts.items() if all(now - t > _LOGIN_RATE_WINDOW for t in ts)]
-            for ip in stale_ips:
-                _login_attempts.pop(ip, None)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Session cleanup error: {e}")
-
-
 async def stats_calculation_scheduler():
     """Background task that runs stats calculation daily at configured hour."""
     while True:
@@ -289,7 +255,7 @@ async def stats_calculation_scheduler():
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifecycle - initialize and cleanup database."""
-    global db, stats_task, _session_cleanup_task
+    global db, stats_task
     logger.info("Initializing database connection...")
     db_manager = await init_database()
     db = DatabaseAdapter(db_manager)
@@ -307,38 +273,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         except Exception as e:
             logger.warning(f"Initial stats calculation failed: {e}")
 
-    # Restore persistent sessions from database
-    if AUTH_ENABLED:
-        try:
-            rows = await db.load_all_sessions()
-            now = time.time()
-            restored = 0
-            for row in rows:
-                if now - row["created_at"] > AUTH_SESSION_SECONDS:
-                    continue  # skip expired, cleanup task will purge from DB
-                allowed = None
-                if row["allowed_chat_ids"]:
-                    try:
-                        allowed = set(json.loads(row["allowed_chat_ids"]))
-                    except json.JSONDecodeError, TypeError:
-                        logger.warning(f"Skipping session with corrupted allowed_chat_ids for {row['username']}")
-                        continue
-                _sessions[row["token"]] = SessionData(
-                    username=row["username"],
-                    role=row["role"],
-                    allowed_chat_ids=allowed,
-                    created_at=row["created_at"],
-                    last_accessed=row["last_accessed"],
-                )
-                restored += 1
-            if restored:
-                logger.info(f"Restored {restored} sessions from database")
-        except Exception as e:
-            logger.warning(f"Failed to restore sessions from database: {e}")
-
-    # Start background tasks
+    # Start background stats calculation scheduler
     stats_task = asyncio.create_task(stats_calculation_scheduler())
-    _session_cleanup_task = asyncio.create_task(session_cleanup_task())
     logger.info(
         f"Stats calculation scheduler started (runs daily at {config.stats_calculation_hour}:00 {config.viewer_timezone})"
     )
@@ -371,13 +307,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if realtime_listener:
         await realtime_listener.stop()
 
-    for task in [stats_task, _session_cleanup_task]:
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+    if stats_task:
+        stats_task.cancel()
+        try:
+            await stats_task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Closing database connection...")
     await close_database()
@@ -404,7 +339,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    """Add security headers to all responses."""
+    """Add security headers and cache-control to all responses."""
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -418,220 +353,145 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self' ws: wss:; "
         "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com"
     )
+
+    # Cache-Control headers by path
+    path = request.url.path
+    if path.startswith("/media/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+
     return response
 
 
-# ============================================================================
-# Multi-User Authentication (v7.0.0)
-# ============================================================================
-
+# Simple viewer authentication using env vars
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
 AUTH_COOKIE_NAME = "viewer_auth"
+AUTH_TOKEN = None
 
+# Session duration in days (default: 30 days)
 AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
-_MAX_SESSIONS_PER_USER = 10
-_SESSION_CLEANUP_INTERVAL = 900  # 15 minutes
-_LOGIN_RATE_LIMIT = 15  # max attempts
-_LOGIN_RATE_WINDOW = 300  # per 5 minutes
 
 if AUTH_ENABLED:
-    logger.info(f"Viewer authentication is ENABLED (Master: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
+    # Use PBKDF2 with SHA256 (600k iterations per OWASP 2023) for token derivation
+    AUTH_TOKEN = hashlib.pbkdf2_hmac(
+        "sha256",
+        f"{VIEWER_USERNAME}:{VIEWER_PASSWORD}".encode(),
+        b"telegram-archive-viewer",
+        600_000,
+    ).hex()
+    logger.info(f"Viewer authentication is ENABLED (User: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
 else:
     logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
 
 
-@dataclass
-class UserContext:
-    username: str
-    role: str  # "master" or "viewer"
-    allowed_chat_ids: set[int] | None = None  # None = all chats
+def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """Hash password with PBKDF2-SHA256. Returns (hash_hex, salt_hex)."""
+    if salt is None:
+        salt = secrets.token_hex(32)
+    hash_bytes = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000)
+    return hash_bytes.hex(), salt
 
 
-@dataclass
-class SessionData:
-    username: str
-    role: str
-    allowed_chat_ids: set[int] | None = None
-    created_at: float = field(default_factory=time.time)
-    last_accessed: float = field(default_factory=time.time)
+def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    """Verify password against stored hash."""
+    computed_hash, _ = _hash_password(password, salt)
+    return secrets.compare_digest(computed_hash, stored_hash)
 
 
-_sessions: dict[str, SessionData] = {}
-_login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
+# In-memory session store: token -> user_info (viewer accounts only; master uses AUTH_TOKEN)
+# Sessions expire after 24 hours to prevent memory leaks
+_viewer_sessions: dict[str, dict] = {}
+_SESSION_MAX_AGE = 86400  # 24 hours in seconds
 
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600_000).hex()
+def _get_current_user(auth_cookie: str | None) -> dict | None:
+    """Resolve cookie to user info. Returns None if not authenticated.
 
+    Returns dict with keys: role, username, allowed_chat_ids, viewer_id
+    """
+    if not auth_cookie:
+        return None
 
-def _verify_password(password: str, salt: str, password_hash: str) -> bool:
-    return secrets.compare_digest(_hash_password(password, salt), password_hash)
+    # Check master token first
+    if AUTH_TOKEN and auth_cookie == AUTH_TOKEN:
+        return {
+            "role": "master",
+            "username": VIEWER_USERNAME,
+            "allowed_chat_ids": None,  # master sees ALL chats
+            "viewer_id": None,
+        }
 
-
-def _check_rate_limit(ip: str) -> bool:
-    """Returns True if the request is within rate limits."""
-    now = time.time()
-    attempts = _login_attempts.get(ip, [])
-    attempts = [t for t in attempts if now - t < _LOGIN_RATE_WINDOW]
-    _login_attempts[ip] = attempts
-    return len(attempts) < _LOGIN_RATE_LIMIT
-
-
-def _record_login_attempt(ip: str) -> None:
-    _login_attempts.setdefault(ip, []).append(time.time())
-
-
-async def _create_session(username: str, role: str, allowed_chat_ids: set[int] | None = None) -> str:
-    """Create a new session, evicting oldest if user exceeds max sessions."""
-    user_sessions = [(k, v) for k, v in _sessions.items() if v.username == username]
-    if len(user_sessions) >= _MAX_SESSIONS_PER_USER:
-        user_sessions.sort(key=lambda x: x[1].created_at)
-        for token, _ in user_sessions[: len(user_sessions) - _MAX_SESSIONS_PER_USER + 1]:
-            _sessions.pop(token, None)
-            if db:
-                try:
-                    await db.delete_session(token)
-                except Exception:
-                    pass
-
-    now = time.time()
-    token = secrets.token_urlsafe(32)
-    _sessions[token] = SessionData(
-        username=username,
-        role=role,
-        allowed_chat_ids=allowed_chat_ids,
-        created_at=now,
-        last_accessed=now,
-    )
-
-    # Persist to database
-    if db:
-        try:
-            chat_ids_json = json.dumps(list(allowed_chat_ids)) if allowed_chat_ids is not None else None
-            await db.save_session(
-                token=token,
-                username=username,
-                role=role,
-                allowed_chat_ids=chat_ids_json,
-                created_at=now,
-                last_accessed=now,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to persist session to database: {e}")
-
-    return token
-
-
-async def _invalidate_user_sessions(username: str) -> None:
-    """Remove all sessions for a given username."""
-    to_remove = [k for k, v in _sessions.items() if v.username == username]
-    for k in to_remove:
-        _sessions.pop(k, None)
-    if db:
-        try:
-            await db.delete_user_sessions(username)
-        except Exception as e:
-            logger.warning(f"Failed to delete DB sessions for {username}: {e}")
-
-
-def _get_secure_cookies(request: Request) -> bool:
-    secure_env = os.getenv("SECURE_COOKIES", "").strip().lower()
-    if secure_env == "true":
-        return True
-    if secure_env == "false":
-        return False
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    return forwarded_proto == "https" or str(request.url.scheme) == "https"
-
-
-async def _resolve_session(auth_cookie: str) -> SessionData | None:
-    """Look up session from in-memory cache, falling back to DB if needed."""
-    session = _sessions.get(auth_cookie)
+    # Check viewer sessions (with TTL eviction)
+    session = _viewer_sessions.get(auth_cookie)
     if session:
-        return session
-
-    if not db:
-        return None
-
-    try:
-        row = await db.get_session(auth_cookie)
-    except Exception:
-        return None
-
-    if not row or time.time() - row["created_at"] > AUTH_SESSION_SECONDS:
-        return None
-
-    allowed = None
-    if row["allowed_chat_ids"]:
-        try:
-            allowed = set(json.loads(row["allowed_chat_ids"]))
-        except json.JSONDecodeError, TypeError:
-            logger.warning(f"Corrupted allowed_chat_ids for session {row['username']}, denying access")
+        if time.time() - session.get("_created_at", 0) > _SESSION_MAX_AGE:
+            del _viewer_sessions[auth_cookie]
             return None
-
-    session = SessionData(
-        username=row["username"],
-        role=row["role"],
-        allowed_chat_ids=allowed,
-        created_at=row["created_at"],
-        last_accessed=row["last_accessed"],
-    )
-    _sessions[auth_cookie] = session
     return session
 
 
-async def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
-    """Dependency that enforces session-based auth. Returns UserContext."""
+def require_auth(request: Request, auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
+    """Dependency that enforces cookie-based auth. Stores user info on request.state."""
     if not AUTH_ENABLED:
-        return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
+        request.state.user = {
+            "role": "master",
+            "username": "anonymous",
+            "allowed_chat_ids": None,
+            "viewer_id": None,
+        }
+        return
 
-    if not auth_cookie:
+    user = _get_current_user(auth_cookie)
+    if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    session = await _resolve_session(auth_cookie)
-    if not session:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    if time.time() - session.created_at > AUTH_SESSION_SECONDS:
-        _sessions.pop(auth_cookie, None)
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    session.last_accessed = time.time()
-    return UserContext(
-        username=session.username,
-        role=session.role,
-        allowed_chat_ids=session.allowed_chat_ids,
-    )
+    request.state.user = user
 
 
-def require_master(request: Request, user: UserContext = Depends(require_auth)) -> UserContext:
-    """Dependency that requires master role. Blocked when X-Viewer-Only header is set."""
-    if user.role != "master":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    if request.headers.get("x-viewer-only", "").lower() == "true":
+def _get_user_chat_ids(request: Request) -> set[int] | None:
+    """Resolve allowed chat IDs for current user. None = all chats (no restriction)."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        # No auth — fall back to DISPLAY_CHAT_IDS for backward compat
+        return config.display_chat_ids if config.display_chat_ids else None
+
+    if user["role"] == "master":
+        # Master still respects DISPLAY_CHAT_IDS if configured (backward compat)
+        return config.display_chat_ids if config.display_chat_ids else None
+
+    # Viewer: use their allowed_chat_ids
+    return user.get("allowed_chat_ids") or set()
+
+
+def require_admin(request: Request, _=Depends(require_auth)):
+    """Dependency: requires master role. Must be used with require_auth."""
+    user = getattr(request.state, "user", None)
+    if not user or user["role"] != "master":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 
-def get_user_chat_ids(user: UserContext) -> set[int] | None:
-    """Get the effective chat IDs a user can access.
-
-    Returns None if the user can see all chats (no restriction).
-    """
-    master_filter = config.display_chat_ids or None  # empty set -> None
-
-    if user.role == "master":
-        return master_filter
-
-    # Viewer: use their allowed_chat_ids, intersected with master filter
-    if user.allowed_chat_ids is None:
-        return master_filter
-    if master_filter is None:
-        return user.allowed_chat_ids
-    return user.allowed_chat_ids & master_filter
+async def _log_viewer_audit(request: Request, chat_id: int | None = None):
+    """Log viewer API access for audit trail. Only logs viewer (non-master) requests."""
+    user = getattr(request.state, "user", None)
+    if not user or user["role"] != "viewer" or not db:
+        return
+    try:
+        await db.create_audit_log(
+            viewer_id=user["viewer_id"],
+            username=user["username"],
+            endpoint=str(request.url.path),
+            chat_id=chat_id,
+            ip_address=request.client.host if request.client else None,
+        )
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
 
 # Setup paths
@@ -654,219 +514,145 @@ async def serve_service_worker():
     return FileResponse(sw_path, media_type="application/javascript", headers={"Service-Worker-Allowed": "/"})
 
 
-# Mount static directory (no auth needed for CSS/JS/icons)
+# Thumbnail endpoint — registered BEFORE StaticFiles so it takes priority
+@app.get("/media/thumb/{size}/{folder:path}/{filename}", dependencies=[Depends(require_auth)])
+async def serve_thumbnail(size: int, folder: str, filename: str):
+    """Serve a cached WebP thumbnail, generating on first request."""
+    if size not in ALLOWED_SIZES:
+        raise HTTPException(status_code=400, detail=f"Invalid size. Allowed: {sorted(ALLOWED_SIZES)}")
+
+    media_root = Path(config.media_path)
+    thumb = await ensure_thumbnail(media_root, size, folder, filename)
+    if thumb is None:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    return FileResponse(
+        thumb,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+# Mount static directory
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Media is served via authenticated endpoint below (not StaticFiles)
-_media_root = Path(config.media_path).resolve() if os.path.exists(config.media_path) else None
-
-
-@app.get("/media/{path:path}")
-async def serve_media(path: str, user: UserContext = Depends(require_auth)):
-    """Serve media files with authentication and path traversal protection."""
-    if not _media_root:
-        raise HTTPException(status_code=404, detail="Media directory not configured")
-
-    # Reject path traversal and absolute paths before any filesystem operations
-    if ".." in path.split("/") or path.startswith("/"):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Construct and resolve path, then verify it stays within media root
-    candidate = _media_root / path
-    try:
-        resolved = candidate.resolve(strict=True)
-    except OSError, ValueError:
-        raise HTTPException(status_code=404, detail="File not found")
-    if not resolved.is_relative_to(_media_root):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None:
-        parts = path.split("/")
-        if len(parts) >= 2 and parts[0] != "avatars":
-            try:
-                media_chat_id = int(parts[0])
-                if media_chat_id not in user_chat_ids:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            except ValueError:
-                pass
-
-    if not resolved.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    return FileResponse(resolved)
+# Mount media directory (includes avatars)
+if os.path.exists(config.media_path):
+    app.mount("/media", StaticFiles(directory=config.media_path), name="media")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the main application page."""
-    return FileResponse(
-        templates_dir / "index.html",
-        headers={"Cache-Control": "no-cache, must-revalidate"},
-    )
+    return FileResponse(templates_dir / "index.html")
 
 
 @app.get("/api/auth/check")
 async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
-    """Check current authentication status. Returns role and username if authenticated."""
+    """Check current authentication status and return user role."""
     if not AUTH_ENABLED:
-        return {"authenticated": True, "auth_required": False, "role": "master", "username": "anonymous"}
+        return {"authenticated": True, "auth_required": False, "role": "master"}
 
-    if not auth_cookie:
-        return {"authenticated": False, "auth_required": True}
-
-    session = await _resolve_session(auth_cookie)
-    if not session:
-        return {"authenticated": False, "auth_required": True}
-    if time.time() - session.created_at > AUTH_SESSION_SECONDS:
-        _sessions.pop(auth_cookie, None)
-        return {"authenticated": False, "auth_required": True}
-
+    user = _get_current_user(auth_cookie)
     return {
-        "authenticated": True,
+        "authenticated": user is not None,
         "auth_required": True,
-        "role": session.role,
-        "username": session.username,
+        "role": user["role"] if user else None,
+        "username": user["username"] if user else None,
     }
 
 
 @app.post("/api/login")
 async def login(request: Request):
-    """Authenticate user (master via env vars or viewer via DB accounts)."""
+    """Authenticate user — checks DB viewer accounts first, then master env vars."""
     if not AUTH_ENABLED:
         return JSONResponse({"success": True, "message": "Auth disabled"})
-
-    direct_ip = request.client.host if request.client else "unknown"
-    _trusted = direct_ip.startswith(("172.", "10.", "192.168.", "127.")) or direct_ip in ("::1", "localhost")
-    if _trusted:
-        client_ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or request.headers.get("x-real-ip", "")
-            or direct_ip
-        )
-    else:
-        client_ip = direct_ip
-
-    if not _check_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
 
     try:
         data = await request.json()
         username = data.get("username", "").strip()
         password = data.get("password", "").strip()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request")
 
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="Username and password required")
+        token = None
+        user_info = None
 
-    _record_login_attempt(client_ip)
-    user_agent = request.headers.get("user-agent", "")[:500]
+        # 1. Try viewer accounts from DB
+        if db:
+            try:
+                viewer = await db.get_viewer_account_by_username(username)
+                if (
+                    viewer
+                    and viewer.get("is_active")
+                    and _verify_password(password, viewer["password_hash"], viewer["salt"])
+                ):
+                    token = secrets.token_hex(32)
+                    allowed_ids_raw = json.loads(viewer["allowed_chat_ids"] or "[]")
+                    user_info = {
+                        "role": "viewer",
+                        "username": viewer["username"],
+                        "allowed_chat_ids": set(int(cid) for cid in allowed_ids_raw),
+                        "viewer_id": viewer["id"],
+                    }
+                    user_info["_created_at"] = time.time()
+                    _viewer_sessions[token] = user_info
+            except Exception as e:
+                logger.warning(f"DB viewer account lookup failed: {e}")
 
-    # 1. Check DB viewer accounts first
-    if db:
-        viewer = await db.get_viewer_by_username(username)
-        if viewer and viewer["is_active"]:
-            if _verify_password(password, viewer["salt"], viewer["password_hash"]):
-                allowed = None
-                if viewer["allowed_chat_ids"]:
-                    try:
-                        allowed = set(json.loads(viewer["allowed_chat_ids"]))
-                    except json.JSONDecodeError, TypeError:
-                        allowed = None
+        # 2. Fallback: master env-var credentials
+        if token is None and username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
+            token = AUTH_TOKEN
+            user_info = {
+                "role": "master",
+                "username": VIEWER_USERNAME,
+                "allowed_chat_ids": None,
+                "viewer_id": None,
+            }
 
-                token = await _create_session(username, "viewer", allowed)
-                response = JSONResponse({"success": True, "role": "viewer", "username": username})
-                response.set_cookie(
-                    key=AUTH_COOKIE_NAME,
-                    value=token,
-                    httponly=True,
-                    secure=_get_secure_cookies(request),
-                    samesite="lax",
-                    max_age=AUTH_SESSION_SECONDS,
-                )
-
-                if db:
-                    await db.create_audit_log(
-                        username=username,
-                        role="viewer",
-                        action="login_success",
-                        endpoint="/api/login",
-                        ip_address=client_ip,
-                        user_agent=user_agent,
-                    )
-                return response
-
-    # 2. Fall back to master env var credentials
-    viewer_only = request.headers.get("x-viewer-only", "").lower() == "true"
-    if secrets.compare_digest(username, VIEWER_USERNAME) and secrets.compare_digest(password, VIEWER_PASSWORD):
-        if viewer_only:
+        if token is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        token = await _create_session(username, "master", None)
-        response = JSONResponse({"success": True, "role": "master", "username": username})
+
+        response = JSONResponse(
+            {
+                "success": True,
+                "role": user_info["role"],
+                "username": user_info["username"],
+            }
+        )
+        # Determine Secure flag for auth cookie
+        secure_env = os.getenv("SECURE_COOKIES", "").strip().lower()
+        if secure_env == "true":
+            secure_cookies = True
+        elif secure_env == "false":
+            secure_cookies = False
+        else:
+            forwarded_proto = request.headers.get("x-forwarded-proto", "")
+            secure_cookies = forwarded_proto == "https" or str(request.url.scheme) == "https"
+
         response.set_cookie(
             key=AUTH_COOKIE_NAME,
             value=token,
             httponly=True,
-            secure=_get_secure_cookies(request),
+            secure=secure_cookies,
             samesite="lax",
             max_age=AUTH_SESSION_SECONDS,
         )
-
-        if db:
-            await db.create_audit_log(
-                username=username,
-                role="master",
-                action="login_success",
-                endpoint="/api/login",
-                ip_address=client_ip,
-                user_agent=user_agent,
-            )
         return response
-
-    # Failed login
-    if db:
-        await db.create_audit_log(
-            username=username or "(empty)",
-            role="unknown",
-            action="login_failed",
-            endpoint="/api/login",
-            ip_address=client_ip,
-            user_agent=user_agent,
-        )
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid request")
 
 
 @app.post("/api/logout")
-async def logout(
-    request: Request,
-    auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
-):
-    """Invalidate current session and clear cookie."""
-    if auth_cookie:
-        session = _sessions.pop(auth_cookie, None)
-        if db:
-            # Always attempt DB delete (session may exist in DB but not in memory cache)
-            try:
-                if not session:
-                    row = await db.get_session(auth_cookie)
-                    if row:
-                        session = SessionData(username=row["username"], role=row["role"])
-                await db.delete_session(auth_cookie)
-            except Exception:
-                pass
-            if session:
-                await db.create_audit_log(
-                    username=session.username,
-                    role=session.role,
-                    action="logout",
-                    endpoint="/api/logout",
-                    ip_address=request.client.host if request.client else None,
-                )
+async def logout(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
+    """Log out and clear session."""
+    if auth_cookie and auth_cookie in _viewer_sessions:
+        del _viewer_sessions[auth_cookie]
 
     response = JSONResponse({"success": True})
-    response.delete_cookie(AUTH_COOKIE_NAME)
+    response.delete_cookie(key=AUTH_COOKIE_NAME)
     return response
 
 
@@ -929,9 +715,9 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     return avatar_path
 
 
-@app.get("/api/chats")
+@app.get("/api/chats", dependencies=[Depends(require_auth)])
 async def get_chats(
-    user: UserContext = Depends(require_auth),
+    request: Request,
     limit: int = Query(50, ge=1, le=1000, description="Number of chats to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     search: str = Query(None, description="Search query for chat names/usernames"),
@@ -946,14 +732,11 @@ async def get_chats(
     v6.2.0: Added archived and folder_id filters.
     """
     try:
-        user_chat_ids = get_user_chat_ids(user)
-        # If user has chat restrictions, we need to load all matching chats
-        # Otherwise, use pagination
-        if user_chat_ids is not None:
+        user_chats = _get_user_chat_ids(request)
+        if user_chats is not None:
             chats = await db.get_all_chats(search=search, archived=archived, folder_id=folder_id)
-            chats = [c for c in chats if c["id"] in user_chat_ids]
+            chats = [c for c in chats if c["id"] in user_chats]
             total = len(chats)
-            # Apply pagination after filtering
             chats = chats[offset : offset + limit]
         else:
             chats = await db.get_all_chats(
@@ -982,19 +765,132 @@ async def get_chats(
         }
     except Exception as e:
         logger.error(f"Error fetching chats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/chats/{chat_id}/messages")
-async def get_messages(
+@app.get("/api/search", dependencies=[Depends(require_auth)])
+async def global_search(
+    request: Request,
+    q: str = "",
+    sender: str | None = None,
+    media_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Global cross-chat search. Returns results grouped by relevance."""
+    parsed_from = None
+    parsed_to = None
+    try:
+        if date_from:
+            parsed_from = datetime.fromisoformat(date_from)
+            if parsed_from.tzinfo:
+                parsed_from = parsed_from.replace(tzinfo=None)
+        if date_to:
+            parsed_to = datetime.fromisoformat(date_to)
+            if parsed_to.tzinfo:
+                parsed_to = parsed_to.replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO 8601.")
+
+    try:
+        user_chats = _get_user_chat_ids(request)
+        results = await db.search_messages_global(
+            query=q,
+            display_chat_ids=list(user_chats) if user_chats else None,
+            sender=sender,
+            media_type=media_type,
+            date_from=parsed_from,
+            date_to=parsed_to,
+            limit=limit,
+            offset=offset,
+        )
+        return results
+    except Exception as e:
+        logger.error(f"Error in global search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/media", dependencies=[Depends(require_auth)])
+async def get_chat_media(
+    request: Request,
     chat_id: int,
-    user: UserContext = Depends(require_auth),
+    type: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Get media items for a chat gallery view."""
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
+        raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
+
+    try:
+        result = await db.get_chat_media(chat_id=chat_id, media_type=type, limit=limit, offset=offset)
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching chat media: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/messages/{message_id}/context", dependencies=[Depends(require_auth)])
+async def get_message_context(request: Request, chat_id: int, message_id: int, limit: int = 25):
+    """Get messages surrounding a specific message for deep link navigation."""
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
+        raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
+
+    try:
+        # Find the target message date, then get messages around it
+        target = await db.find_message_by_id(chat_id, message_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Get messages before and after the target
+        before = await db.get_messages_paginated(
+            chat_id=chat_id,
+            limit=limit,
+            before_date=target["date"],
+            before_id=target["id"],
+        )
+        after = await db.get_messages_paginated(
+            chat_id=chat_id,
+            limit=limit,
+            date_from=target["date"],
+        )
+
+        # Combine: after (older first) + target area
+        all_msgs = {m["id"]: m for m in before}
+        for m in after:
+            all_msgs[m["id"]] = m
+
+        # Also get the target message itself with full joins
+        # The target should be in before or after, but ensure it's there
+        messages = sorted(all_msgs.values(), key=lambda m: m.get("date", ""), reverse=True)
+        return messages
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting message context: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chats/{chat_id}/messages", dependencies=[Depends(require_auth)])
+async def get_messages(
+    request: Request,
+    chat_id: int,
     limit: int = 50,
     offset: int = 0,
     search: str | None = None,
     before_date: str | None = None,
     before_id: int | None = None,
     topic_id: int | None = None,
+    sender_id: int | None = None,
+    media_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ):
     """
     Get messages for a specific chat with user and media info.
@@ -1004,23 +900,38 @@ async def get_messages(
     - Cursor-based: ?before_date=2026-01-15T12:00:00&before_id=12345 (O(1) performance)
 
     v6.2.0: Added topic_id filter for forum topic messages.
-
-    Cursor-based pagination is preferred for infinite scroll.
+    v7.0: Added sender_id, media_type, date_from, date_to filters.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    # Restrict access per user
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     # Parse before_date if provided
     parsed_before_date = None
     if before_date:
         try:
             parsed_before_date = datetime.fromisoformat(before_date.replace("Z", "+00:00"))
-            # Strip timezone for DB compatibility
             if parsed_before_date.tzinfo:
                 parsed_before_date = parsed_before_date.replace(tzinfo=None)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid before_date format. Use ISO 8601.")
+
+    # Parse date range filters
+    parsed_date_from = None
+    parsed_date_to = None
+    try:
+        if date_from:
+            parsed_date_from = datetime.fromisoformat(date_from)
+            if parsed_date_from.tzinfo:
+                parsed_date_from = parsed_date_from.replace(tzinfo=None)
+        if date_to:
+            parsed_date_to = datetime.fromisoformat(date_to)
+            if parsed_date_to.tzinfo:
+                parsed_date_to = parsed_date_to.replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO 8601.")
 
     try:
         messages = await db.get_messages_paginated(
@@ -1031,30 +942,35 @@ async def get_messages(
             before_date=parsed_before_date,
             before_id=before_id,
             topic_id=topic_id,
+            sender_id=sender_id,
+            media_type=media_type,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
         )
         return messages
     except Exception as e:
         logger.error(f"Error fetching messages: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/chats/{chat_id}/pinned")
-async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_id}/pinned", dependencies=[Depends(require_auth)])
+async def get_pinned_messages(request: Request, chat_id: int):
     """Get all pinned messages for a chat, ordered by date descending (newest first)."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     try:
         pinned_messages = await db.get_pinned_messages(chat_id)
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
         logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/folders")
-async def get_folders(user: UserContext = Depends(require_auth)):
+@app.get("/api/folders", dependencies=[Depends(require_auth)])
+async def get_folders():
     """Get all chat folders with their chat counts.
 
     v6.2.0: Returns user-created Telegram folders (dialog filters).
@@ -1064,49 +980,50 @@ async def get_folders(user: UserContext = Depends(require_auth)):
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/chats/{chat_id}/topics")
-async def get_chat_topics(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_id}/topics", dependencies=[Depends(require_auth)])
+async def get_chat_topics(request: Request, chat_id: int):
     """Get forum topics for a chat.
 
     v6.2.0: Returns topic list with message counts for forum-enabled chats.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     try:
         topics = await db.get_forum_topics(chat_id)
         return {"topics": topics}
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/archived/count")
-async def get_archived_count(user: UserContext = Depends(require_auth)):
+@app.get("/api/archived/count", dependencies=[Depends(require_auth)])
+async def get_archived_count(request: Request):
     """Get the number of archived chats.
 
     v6.2.0: Used by the viewer to display the archived section badge.
-    Respects DISPLAY_CHAT_IDS so restricted viewers only see relevant archived chats.
+    Respects per-user allowed chat IDs.
     """
     try:
-        user_chat_ids = get_user_chat_ids(user)
-        if user_chat_ids is not None:
+        user_chats = _get_user_chat_ids(request)
+        if user_chats is not None:
             all_archived = await db.get_all_chats(archived=True)
-            count = sum(1 for c in all_archived if c["id"] in user_chat_ids)
+            count = sum(1 for c in all_archived if c["id"] in user_chats)
         else:
             count = await db.get_archived_chat_count()
         return {"count": count}
     except Exception as e:
         logger.error(f"Error fetching archived count: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/stats")
-async def get_stats(user: UserContext = Depends(require_auth)):
+@app.get("/api/stats", dependencies=[Depends(require_auth)])
+async def get_stats():
     """Get cached backup statistics (fast, calculated daily)."""
     try:
         stats = await db.get_cached_statistics()
@@ -1129,11 +1046,11 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         return stats
     except Exception as e:
         logger.error(f"Error fetching stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/stats/refresh")
-async def refresh_stats(user: UserContext = Depends(require_master)):
+@app.post("/api/stats/refresh", dependencies=[Depends(require_auth)])
+async def refresh_stats():
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics()
@@ -1141,7 +1058,7 @@ async def refresh_stats(user: UserContext = Depends(require_master)):
         return stats
     except Exception as e:
         logger.error(f"Error calculating stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -1169,8 +1086,8 @@ async def get_push_config():
     return result
 
 
-@app.post("/api/push/subscribe")
-async def push_subscribe(request: Request, user: UserContext = Depends(require_auth)):
+@app.post("/api/push/subscribe", dependencies=[Depends(require_auth)])
+async def push_subscribe(request: Request):
     """
     Subscribe to push notifications.
 
@@ -1195,22 +1112,11 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         if not endpoint or not p256dh or not auth:
             raise HTTPException(status_code=400, detail="Missing required subscription data")
 
-        if chat_id:
-            user_chat_ids = get_user_chat_ids(user)
-            if user_chat_ids is not None and chat_id not in user_chat_ids:
-                raise HTTPException(status_code=403, detail="Access denied to this chat")
-
+        # Get user agent for debugging
         user_agent = request.headers.get("user-agent", "")[:500]
-        user_chat_ids_list = get_user_chat_ids(user)
 
         success = await push_manager.subscribe(
-            endpoint=endpoint,
-            p256dh=p256dh,
-            auth=auth,
-            chat_id=chat_id,
-            user_agent=user_agent,
-            username=user.username,
-            allowed_chat_ids=list(user_chat_ids_list) if user_chat_ids_list is not None else None,
+            endpoint=endpoint, p256dh=p256dh, auth=auth, chat_id=chat_id, user_agent=user_agent
         )
 
         if success:
@@ -1224,11 +1130,11 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         raise
     except Exception as e:
         logger.error(f"Push subscribe error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/push/unsubscribe")
-async def push_unsubscribe(request: Request, user: UserContext = Depends(require_auth)):
+@app.post("/api/push/unsubscribe", dependencies=[Depends(require_auth)])
+async def push_unsubscribe(request: Request):
     """
     Unsubscribe from push notifications.
 
@@ -1254,7 +1160,7 @@ async def push_unsubscribe(request: Request, user: UserContext = Depends(require
         raise
     except Exception as e:
         logger.error(f"Push unsubscribe error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/internal/push")
@@ -1271,9 +1177,12 @@ async def internal_push(request: Request):
     """
     client_host = request.client.host if request.client else None
 
+    # Allow loopback addresses and Docker internal networks (172.x.x.x, 10.x.x.x, 192.168.x.x)
     allowed = False
-    if client_host and (
-        client_host in ("127.0.0.1", "localhost", "::1") or client_host.startswith(("172.", "10.", "192.168."))
+    if (
+        client_host in ("127.0.0.1", "localhost", "::1", None)
+        or client_host
+        and (client_host.startswith("172.") or client_host.startswith("10.") or client_host.startswith("192.168."))
     ):
         allowed = True
 
@@ -1291,25 +1200,26 @@ async def internal_push(request: Request):
         return {"status": "error", "detail": "Internal push processing failed"}
 
 
-@app.get("/api/chats/{chat_id}/stats")
-async def get_chat_stats(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_id}/stats", dependencies=[Depends(require_auth)])
+async def get_chat_stats(request: Request, chat_id: int):
     """Get statistics for a specific chat (message count, media files, size)."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     try:
         stats = await db.get_chat_stats(chat_id)
         return stats
     except Exception as e:
         logger.error(f"Error getting chat stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/chats/{chat_id}/messages/by-date")
+@app.get("/api/chats/{chat_id}/messages/by-date", dependencies=[Depends(require_auth)])
 async def get_message_by_date(
+    request: Request,
     chat_id: int,
-    user: UserContext = Depends(require_auth),
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     timezone: str = Query(None, description="Timezone for date interpretation (e.g., 'Europe/Madrid')"),
 ):
@@ -1317,9 +1227,10 @@ async def get_message_by_date(
     Find the first message on or after a specific date for navigation.
     Used by the date picker to jump to a specific date.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     try:
         # Use provided timezone, fall back to config, then UTC
@@ -1349,15 +1260,16 @@ async def get_message_by_date(
         raise
     except Exception as e:
         logger.error(f"Error finding message by date: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/chats/{chat_id}/export")
-async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_id}/export", dependencies=[Depends(require_auth)])
+async def export_chat(request: Request, chat_id: int):
     """Export chat history to JSON."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
+    user_chats = _get_user_chat_ids(request)
+    if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
+    await _log_viewer_audit(request, chat_id)
 
     try:
         chat = await db.get_chat_by_id(chat_id)
@@ -1391,192 +1303,165 @@ async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Error exporting chat: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# Admin Endpoints (v7.0.0) — Master-only viewer account management
+# Admin: Viewer Account Management
 # ============================================================================
 
 
-@app.get("/api/admin/viewers")
-async def list_viewers(user: UserContext = Depends(require_master)):
-    """List all viewer accounts."""
-    viewers = await db.get_all_viewer_accounts()
-    safe = []
-    for v in viewers:
-        safe.append(
-            {
-                "id": v["id"],
-                "username": v["username"],
-                "allowed_chat_ids": json.loads(v["allowed_chat_ids"]) if v["allowed_chat_ids"] else None,
-                "is_active": v["is_active"],
-                "created_by": v["created_by"],
-                "created_at": v["created_at"],
-                "updated_at": v["updated_at"],
-            }
-        )
-    return {"viewers": safe}
+@app.get("/api/admin/viewers", dependencies=[Depends(require_admin)])
+async def list_viewer_accounts():
+    """List all viewer accounts (admin only)."""
+    try:
+        accounts = await db.get_all_viewer_accounts()
+        return {"viewers": accounts}
+    except Exception as e:
+        logger.error(f"Error listing viewer accounts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/admin/viewers")
-async def create_viewer(request: Request, user: UserContext = Depends(require_master)):
-    """Create a new viewer account."""
+@app.post("/api/admin/viewers", dependencies=[Depends(require_admin)])
+async def create_viewer_account(request: Request):
+    """Create a new viewer account (admin only)."""
     try:
         data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        username = data.get("username", "").strip()
+        password = data.get("password", "").strip()
+        allowed_chat_ids = data.get("allowed_chat_ids", [])
 
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    allowed_chat_ids = data.get("allowed_chat_ids")
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Username and password required")
 
-    if not username or len(username) < 3:
-        raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
-    if not password or len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    if AUTH_ENABLED and VIEWER_USERNAME and username.lower() == VIEWER_USERNAME.lower():
-        raise HTTPException(status_code=409, detail="Username conflicts with master account")
+        if len(password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
 
-    existing = await db.get_viewer_by_username(username)
-    if existing:
-        raise HTTPException(status_code=409, detail="Username already exists")
+        # Reject if username matches master username
+        if VIEWER_USERNAME and username.lower() == VIEWER_USERNAME.lower():
+            raise HTTPException(status_code=400, detail="Username conflicts with master account")
 
-    salt = secrets.token_hex(32)
-    password_hash = _hash_password(password, salt)
+        # Check uniqueness
+        existing = await db.get_viewer_account_by_username(username)
+        if existing:
+            raise HTTPException(status_code=409, detail="Username already exists")
 
-    chat_ids_json = None
-    if allowed_chat_ids is not None:
+        # Validate chat IDs are integers
         try:
-            chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
-        except ValueError, TypeError:
+            allowed_chat_ids = [int(cid) for cid in allowed_chat_ids]
+        except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
-    account = await db.create_viewer_account(
-        username=username,
-        password_hash=password_hash,
-        salt=salt,
-        allowed_chat_ids=chat_ids_json,
-        created_by=user.username,
-    )
+        password_hash, salt = _hash_password(password)
+        result = await db.create_viewer_account(username, password_hash, salt, allowed_chat_ids)
 
-    await db.create_audit_log(
-        username=user.username,
-        role="master",
-        action="viewer_created",
-        endpoint="/api/admin/viewers",
-        ip_address=request.client.host if request.client else None,
-    )
-
-    return {
-        "id": account["id"],
-        "username": account["username"],
-        "allowed_chat_ids": json.loads(chat_ids_json) if chat_ids_json else None,
-        "is_active": account["is_active"],
-    }
+        return {"success": True, "viewer": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating viewer account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/api/admin/viewers/{viewer_id}")
-async def update_viewer(viewer_id: int, request: Request, user: UserContext = Depends(require_master)):
-    """Update a viewer account. Invalidates their existing sessions."""
+@app.put("/api/admin/viewers/{viewer_id}", dependencies=[Depends(require_admin)])
+async def update_viewer_account(viewer_id: int, request: Request):
+    """Update a viewer account (admin only). Password optional."""
     try:
         data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        updates = {}
 
-    existing = await db.get_viewer_account(viewer_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Viewer not found")
+        password = data.get("password", "").strip()
+        if password:
+            if len(password) < 4:
+                raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+            password_hash, salt = _hash_password(password)
+            updates["password_hash"] = password_hash
+            updates["salt"] = salt
 
-    updates = {}
-    if "password" in data and data["password"]:
-        pwd = data["password"].strip()
-        if len(pwd) < 8:
-            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-        salt = secrets.token_hex(32)
-        updates["password_hash"] = _hash_password(pwd, salt)
-        updates["salt"] = salt
-
-    if "allowed_chat_ids" in data:
-        allowed = data["allowed_chat_ids"]
-        if allowed is None:
-            updates["allowed_chat_ids"] = None
-        else:
+        if "allowed_chat_ids" in data:
             try:
-                updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
-            except ValueError, TypeError:
+                allowed = [int(cid) for cid in data["allowed_chat_ids"]]
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid chat ID format")
+            updates["allowed_chat_ids"] = json.dumps(allowed)
 
-    if "is_active" in data:
-        updates["is_active"] = 1 if data["is_active"] else 0
+        if "is_active" in data:
+            updates["is_active"] = 1 if data["is_active"] else 0
 
-    if not updates:
-        raise HTTPException(status_code=400, detail="No fields to update")
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
 
-    account = await db.update_viewer_account(viewer_id, **updates)
-    await _invalidate_user_sessions(existing["username"])
+        success = await db.update_viewer_account(viewer_id, **updates)
+        if not success:
+            raise HTTPException(status_code=404, detail="Viewer account not found")
 
-    await db.create_audit_log(
-        username=user.username,
-        role="master",
-        action=f"viewer_updated:{existing['username']}",
-        endpoint=f"/api/admin/viewers/{viewer_id}",
-        ip_address=request.client.host if request.client else None,
-    )
+        # Invalidate active sessions for this viewer
+        tokens_to_remove = [token for token, info in _viewer_sessions.items() if info.get("viewer_id") == viewer_id]
+        for token in tokens_to_remove:
+            del _viewer_sessions[token]
 
-    return {
-        "id": account["id"],
-        "username": account["username"],
-        "allowed_chat_ids": json.loads(account["allowed_chat_ids"]) if account["allowed_chat_ids"] else None,
-        "is_active": account["is_active"],
-    }
-
-
-@app.delete("/api/admin/viewers/{viewer_id}")
-async def delete_viewer(viewer_id: int, request: Request, user: UserContext = Depends(require_master)):
-    """Delete a viewer account and invalidate their sessions."""
-    existing = await db.get_viewer_account(viewer_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Viewer not found")
-
-    await _invalidate_user_sessions(existing["username"])
-    await db.delete_viewer_account(viewer_id)
-
-    await db.create_audit_log(
-        username=user.username,
-        role="master",
-        action=f"viewer_deleted:{existing['username']}",
-        endpoint=f"/api/admin/viewers/{viewer_id}",
-        ip_address=request.client.host if request.client else None,
-    )
-
-    return {"success": True}
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating viewer account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/admin/chats")
-async def admin_list_chats(user: UserContext = Depends(require_master)):
-    """List all chats for the admin chat picker."""
-    chats = await db.get_all_chats()
-    result = []
-    for c in chats:
-        title = c.get("title")
-        if not title:
-            parts = [c.get("first_name", ""), c.get("last_name", "")]
-            title = " ".join(p for p in parts if p) or c.get("username") or str(c["id"])
-        result.append({"id": c["id"], "title": title, "type": c.get("type")})
-    return {"chats": result}
+@app.delete("/api/admin/viewers/{viewer_id}", dependencies=[Depends(require_admin)])
+async def delete_viewer_account_endpoint(viewer_id: int):
+    """Delete a viewer account (admin only)."""
+    try:
+        # Invalidate sessions first
+        tokens_to_remove = [token for token, info in _viewer_sessions.items() if info.get("viewer_id") == viewer_id]
+        for token in tokens_to_remove:
+            del _viewer_sessions[token]
+
+        success = await db.delete_viewer_account(viewer_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Viewer account not found")
+
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting viewer account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/admin/audit")
+@app.get("/api/admin/chats", dependencies=[Depends(require_admin)])
+async def list_all_chats_admin():
+    """List ALL chats (ignores display_chat_ids). For admin chat picker."""
+    try:
+        chats = await db.get_all_chats()
+        return {
+            "chats": [
+                {
+                    "id": c["id"],
+                    "title": c.get("title") or c.get("first_name") or str(c["id"]),
+                    "type": c.get("type", ""),
+                }
+                for c in chats
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing admin chats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/audit", dependencies=[Depends(require_admin)])
 async def get_audit_log(
-    limit: int = Query(100, ge=1, le=500),
+    viewer_id: int | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    username: str | None = Query(None),
-    user: UserContext = Depends(require_master),
 ):
-    """Get paginated audit log entries."""
-    logs = await db.get_audit_logs(limit=limit, offset=offset, username=username)
-    return {"logs": logs, "limit": limit, "offset": offset}
+    """Get viewer activity audit log (admin only)."""
+    try:
+        entries = await db.get_audit_log(viewer_id=viewer_id, limit=limit, offset=offset)
+        return {"entries": entries, "total": len(entries)}
+    except Exception as e:
+        logger.error(f"Error fetching audit log: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -1587,10 +1472,9 @@ async def get_audit_log(
 @app.get("/api/notifications/settings")
 async def get_notification_settings(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Get notification settings for the viewer."""
-    if AUTH_ENABLED:
-        session = (await _resolve_session(auth_cookie)) if auth_cookie else None
-        if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
-            return {"enabled": False, "reason": "Not authenticated"}
+    # Check auth if enabled
+    if AUTH_ENABLED and not _get_current_user(auth_cookie):
+        return {"enabled": False, "reason": "Not authenticated"}
 
     # Notifications enabled if:
     # - ENABLE_NOTIFICATIONS=true (legacy), OR
@@ -1609,26 +1493,33 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time updates.
 
-    Auth is enforced via cookie sent during WebSocket upgrade.
-    Per-user chat filtering is applied to subscriptions.
+    Clients can subscribe to specific chats or receive all updates.
+
+    Message format (client -> server):
+        {"action": "subscribe", "chat_id": 123456}
+        {"action": "unsubscribe", "chat_id": 123456}
+        {"action": "ping"}
+
+    Message format (server -> client):
+        {"type": "new_message", "chat_id": 123, "message": {...}}
+        {"type": "edit", "chat_id": 123, "message_id": 456, "new_text": "..."}
+        {"type": "delete", "chat_id": 123, "message_id": 456}
+        {"type": "pong"}
+        {"type": "subscribed", "chat_id": 123}
+        {"type": "unsubscribed", "chat_id": 123}
     """
-    # Validate auth from cookie before accepting
+    # Resolve user from WebSocket cookies for per-user access control
     cookies = websocket.cookies
-    auth_cookie = cookies.get(AUTH_COOKIE_NAME)
-    ws_user_chat_ids: set[int] | None = None
+    ws_auth_cookie = cookies.get(AUTH_COOKIE_NAME)
+    ws_user = _get_current_user(ws_auth_cookie) if AUTH_ENABLED else {"role": "master", "allowed_chat_ids": None}
+    if ws_user and ws_user["role"] == "master":
+        ws_allowed_chats = None
+    elif ws_user:
+        ws_allowed_chats = ws_user.get("allowed_chat_ids") or set()
+    else:
+        ws_allowed_chats = set()
 
-    if AUTH_ENABLED:
-        if not auth_cookie:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-        session = await _resolve_session(auth_cookie)
-        if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
-            await websocket.close(code=4001, reason="Session expired")
-            return
-        user_ctx = UserContext(session.username, session.role, session.allowed_chat_ids)
-        ws_user_chat_ids = get_user_chat_ids(user_ctx)
-
-    await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
+    await ws_manager.connect(websocket)
 
     try:
         while True:
@@ -1638,8 +1529,11 @@ async def websocket_endpoint(websocket: WebSocket):
             if action == "subscribe":
                 chat_id = data.get("chat_id")
                 if chat_id:
-                    ws_manager.subscribe(websocket, chat_id)
-                    await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+                    if ws_allowed_chats is not None and chat_id not in ws_allowed_chats:
+                        await websocket.send_json({"type": "error", "message": "Access denied"})
+                    else:
+                        ws_manager.subscribe(websocket, chat_id)
+                        await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
 
             elif action == "unsubscribe":
                 chat_id = data.get("chat_id")

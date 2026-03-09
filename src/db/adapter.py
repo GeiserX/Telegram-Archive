@@ -5,6 +5,8 @@ Provides all database operations using SQLAlchemy async.
 This is a drop-in replacement for the old Database class.
 """
 
+from __future__ import annotations
+
 import asyncio
 import glob
 import json
@@ -33,7 +35,6 @@ from .models import (
     User,
     ViewerAccount,
     ViewerAuditLog,
-    ViewerSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -912,7 +913,7 @@ class DatabaseAdapter:
 
             try:
                 result.update(json.loads(cached_stats))
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):
                 pass
 
         if last_backup_time:
@@ -1023,6 +1024,10 @@ class DatabaseAdapter:
         before_date: datetime | None = None,
         before_id: int | None = None,
         topic_id: int | None = None,
+        sender_id: int | None = None,
+        media_type: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
@@ -1074,8 +1079,17 @@ class DatabaseAdapter:
                 stmt = stmt.where(Message.reply_to_top_id == topic_id)
 
             if search:
-                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-                stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
+                stmt = stmt.where(Message.text.ilike(f"%{search}%"))
+
+            # Advanced search filters
+            if sender_id is not None:
+                stmt = stmt.where(Message.sender_id == sender_id)
+            if media_type is not None:
+                stmt = stmt.where(Media.type == media_type)
+            if date_from is not None:
+                stmt = stmt.where(Message.date >= date_from)
+            if date_to is not None:
+                stmt = stmt.where(Message.date <= date_to)
 
             # Cursor-based pagination (preferred - O(1) performance)
             if before_date is not None:
@@ -1121,7 +1135,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1151,6 +1165,164 @@ class DatabaseAdapter:
                 msg["reactions"] = list(reactions_by_emoji.values())
 
             return messages
+
+    async def search_messages_global(
+        self,
+        query: str,
+        display_chat_ids: list[int] | None = None,
+        sender: str | None = None,
+        media_type: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Search messages across all chats for the web viewer global search.
+
+        Returns dict with results list and total count.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(
+                    Message.id,
+                    Message.chat_id,
+                    Message.text,
+                    Message.date,
+                    Message.sender_id,
+                    User.first_name,
+                    User.last_name,
+                    User.username,
+                    Chat.title.label("chat_title"),
+                    Chat.type.label("chat_type"),
+                    Media.type.label("media_type"),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
+                .outerjoin(Chat, Message.chat_id == Chat.id)
+                .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+            )
+
+            # Restrict to allowed chats
+            if display_chat_ids:
+                stmt = stmt.where(Message.chat_id.in_(display_chat_ids))
+
+            # Text search
+            if query:
+                stmt = stmt.where(Message.text.ilike(f"%{query}%"))
+
+            # Sender name filter
+            if sender:
+                stmt = stmt.where(
+                    or_(
+                        User.first_name.ilike(f"%{sender}%"),
+                        User.last_name.ilike(f"%{sender}%"),
+                        User.username.ilike(f"%{sender}%"),
+                    )
+                )
+
+            if media_type:
+                stmt = stmt.where(Media.type == media_type)
+            if date_from:
+                stmt = stmt.where(Message.date >= date_from)
+            if date_to:
+                stmt = stmt.where(Message.date <= date_to)
+
+            # Count total
+            from sqlalchemy import func as sa_func
+
+            count_stmt = select(sa_func.count()).select_from(stmt.subquery())
+            total = (await session.execute(count_stmt)).scalar() or 0
+
+            # Fetch results
+            stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+            result = await session.execute(stmt)
+
+            results = []
+            for row in result:
+                sender_name = row.first_name or ""
+                if row.last_name:
+                    sender_name += f" {row.last_name}"
+                text_snippet = (row.text or "")[:150]
+                results.append(
+                    {
+                        "message_id": row.id,
+                        "chat_id": row.chat_id,
+                        "chat_title": row.chat_title or str(row.chat_id),
+                        "chat_type": row.chat_type,
+                        "text_snippet": text_snippet,
+                        "sender_name": sender_name.strip() or row.username or str(row.sender_id or ""),
+                        "date": row.date,
+                        "media_type": row.media_type,
+                    }
+                )
+
+            return {"results": results, "total": total}
+
+    async def get_chat_media(
+        self,
+        chat_id: int,
+        media_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Get media items for a chat, for the media gallery view."""
+        async with self.db_manager.async_session_factory() as session:
+            base = (
+                select(
+                    Media.id,
+                    Media.message_id,
+                    Media.type,
+                    Media.file_path,
+                    Media.file_name,
+                    Media.file_size,
+                    Media.width,
+                    Media.height,
+                    Media.duration,
+                    Message.date,
+                )
+                .join(Message, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                .where(Media.chat_id == chat_id)
+                .where(Media.file_path.isnot(None))
+            )
+
+            if media_type:
+                base = base.where(Media.type == media_type)
+
+            # Count
+            count_stmt = select(func.count()).select_from(base.subquery())
+            total = (await session.execute(count_stmt)).scalar() or 0
+
+            # Fetch
+            stmt = base.order_by(Message.date.desc()).limit(limit).offset(offset)
+            result = await session.execute(stmt)
+
+            media_list = []
+            for row in result:
+                media_list.append(
+                    {
+                        "id": row.id,
+                        "message_id": row.message_id,
+                        "type": row.type,
+                        "file_path": row.file_path,
+                        "file_name": row.file_name,
+                        "file_size": row.file_size,
+                        "width": row.width,
+                        "height": row.height,
+                        "duration": row.duration,
+                        "date": row.date,
+                    }
+                )
+
+            return {"media": media_list, "total": total, "has_more": offset + len(media_list) < total}
+
+    async def find_message_by_id(self, chat_id: int, message_id: int) -> dict[str, Any] | None:
+        """Find a single message by ID with basic info."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+            result = await session.execute(stmt)
+            msg = result.scalar_one_or_none()
+            if msg:
+                return self._message_to_dict(msg)
+            return None
 
     async def find_message_by_date_with_joins(self, chat_id: int, target_date: datetime) -> dict[str, Any] | None:
         """
@@ -1338,7 +1510,7 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1665,233 +1837,130 @@ class DatabaseAdapter:
             return result.scalar() or 0
 
     # ========================================================================
-    # Viewer Account Management (v7.0.0)
+    # Viewer Account Management (multi-user access control)
     # ========================================================================
 
     @retry_on_locked()
+    async def get_viewer_account_by_username(self, username: str) -> dict | None:
+        """Get viewer account by username (case-insensitive)."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(
+                select(ViewerAccount).where(func.lower(ViewerAccount.username) == username.lower())
+            )
+            account = result.scalar_one_or_none()
+            if not account:
+                return None
+            return {
+                "id": account.id,
+                "username": account.username,
+                "password_hash": account.password_hash,
+                "salt": account.salt,
+                "allowed_chat_ids": account.allowed_chat_ids,
+                "is_active": account.is_active,
+                "created_at": account.created_at,
+                "updated_at": account.updated_at,
+            }
+
+    @retry_on_locked()
+    async def get_all_viewer_accounts(self) -> list[dict]:
+        """Get all viewer accounts (for admin panel)."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(ViewerAccount).order_by(ViewerAccount.created_at))
+            accounts = result.scalars().all()
+            return [
+                {
+                    "id": a.id,
+                    "username": a.username,
+                    "allowed_chat_ids": json.loads(a.allowed_chat_ids or "[]"),
+                    "is_active": a.is_active,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in accounts
+            ]
+
+    @retry_on_locked()
     async def create_viewer_account(
-        self,
-        username: str,
-        password_hash: str,
-        salt: str,
-        allowed_chat_ids: str | None = None,
-        created_by: str | None = None,
-    ) -> dict[str, Any]:
-        """Create a new viewer account. Returns the created account dict."""
-        async with self.db_manager.async_session_factory() as session:
+        self, username: str, password_hash: str, salt: str, allowed_chat_ids: list[int]
+    ) -> dict:
+        """Create a new viewer account."""
+        async with self.db_manager.get_session() as session:
             account = ViewerAccount(
                 username=username,
                 password_hash=password_hash,
                 salt=salt,
-                allowed_chat_ids=allowed_chat_ids,
-                created_by=created_by,
+                allowed_chat_ids=json.dumps(allowed_chat_ids),
             )
             session.add(account)
+            await session.flush()
+            result = {"id": account.id, "username": account.username}
             await session.commit()
-            await session.refresh(account)
-            return self._viewer_account_to_dict(account)
-
-    async def get_viewer_account(self, account_id: int) -> dict[str, Any] | None:
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
-            account = result.scalar_one_or_none()
-            return self._viewer_account_to_dict(account) if account else None
-
-    async def get_viewer_by_username(self, username: str) -> dict[str, Any] | None:
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(ViewerAccount).where(ViewerAccount.username == username))
-            account = result.scalar_one_or_none()
-            return self._viewer_account_to_dict(account) if account else None
-
-    async def get_all_viewer_accounts(self) -> list[dict[str, Any]]:
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(ViewerAccount).order_by(ViewerAccount.created_at.desc()))
-            return [self._viewer_account_to_dict(a) for a in result.scalars().all()]
+            return result
 
     @retry_on_locked()
-    async def update_viewer_account(self, account_id: int, **kwargs) -> dict[str, Any] | None:
-        """Update viewer account fields. Returns updated account or None if not found."""
-        async with self.db_manager.async_session_factory() as session:
+    async def update_viewer_account(self, account_id: int, **kwargs) -> bool:
+        """Update viewer account fields. Supports: password_hash, salt, allowed_chat_ids, is_active."""
+        async with self.db_manager.get_session() as session:
             result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
             account = result.scalar_one_or_none()
             if not account:
-                return None
+                return False
+            allowed_fields = {"password_hash", "salt", "allowed_chat_ids", "is_active"}
             for key, value in kwargs.items():
-                if hasattr(account, key):
+                if key in allowed_fields:
                     setattr(account, key, value)
             account.updated_at = datetime.utcnow()
             await session.commit()
-            await session.refresh(account)
-            return self._viewer_account_to_dict(account)
+            return True
 
     @retry_on_locked()
     async def delete_viewer_account(self, account_id: int) -> bool:
-        async with self.db_manager.async_session_factory() as session:
+        """Delete a viewer account."""
+        async with self.db_manager.get_session() as session:
             result = await session.execute(delete(ViewerAccount).where(ViewerAccount.id == account_id))
             await session.commit()
             return result.rowcount > 0
 
-    @staticmethod
-    def _viewer_account_to_dict(account: ViewerAccount) -> dict[str, Any]:
-        return {
-            "id": account.id,
-            "username": account.username,
-            "password_hash": account.password_hash,
-            "salt": account.salt,
-            "allowed_chat_ids": account.allowed_chat_ids,
-            "is_active": account.is_active,
-            "created_by": account.created_by,
-            "created_at": account.created_at.isoformat() if account.created_at else None,
-            "updated_at": account.updated_at.isoformat() if account.updated_at else None,
-        }
-
     # ========================================================================
-    # Viewer Audit Log (v7.0.0)
+    # Viewer Audit Log
     # ========================================================================
 
     @retry_on_locked()
     async def create_audit_log(
-        self,
-        username: str,
-        role: str,
-        action: str,
-        endpoint: str | None = None,
-        chat_id: int | None = None,
-        ip_address: str | None = None,
-        user_agent: str | None = None,
-    ) -> None:
-        async with self.db_manager.async_session_factory() as session:
+        self, viewer_id: int, username: str, endpoint: str, chat_id: int | None = None, ip_address: str | None = None
+    ):
+        """Log a viewer API access for audit trail."""
+        async with self.db_manager.get_session() as session:
             entry = ViewerAuditLog(
+                viewer_id=viewer_id,
                 username=username,
-                role=role,
-                action=action,
                 endpoint=endpoint,
                 chat_id=chat_id,
                 ip_address=ip_address,
-                user_agent=user_agent,
             )
             session.add(entry)
             await session.commit()
 
-    async def get_audit_logs(
-        self, limit: int = 100, offset: int = 0, username: str | None = None
-    ) -> list[dict[str, Any]]:
-        async with self.db_manager.async_session_factory() as session:
-            stmt = select(ViewerAuditLog).order_by(ViewerAuditLog.created_at.desc())
-            if username:
-                stmt = stmt.where(ViewerAuditLog.username == username)
-            stmt = stmt.limit(limit).offset(offset)
-            result = await session.execute(stmt)
+    @retry_on_locked()
+    async def get_audit_log(self, viewer_id: int | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Get viewer activity audit log entries."""
+        async with self.db_manager.get_session() as session:
+            query = select(ViewerAuditLog).order_by(ViewerAuditLog.timestamp.desc())
+            if viewer_id:
+                query = query.where(ViewerAuditLog.viewer_id == viewer_id)
+            query = query.offset(offset).limit(limit)
+            result = await session.execute(query)
             return [
                 {
-                    "id": log.id,
-                    "username": log.username,
-                    "role": log.role,
-                    "action": log.action,
-                    "endpoint": log.endpoint,
-                    "chat_id": log.chat_id,
-                    "ip_address": log.ip_address,
-                    "user_agent": log.user_agent,
-                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                    "id": e.id,
+                    "viewer_id": e.viewer_id,
+                    "username": e.username,
+                    "endpoint": e.endpoint,
+                    "chat_id": e.chat_id,
+                    "ip_address": e.ip_address,
+                    "timestamp": e.timestamp.isoformat() if e.timestamp else None,
                 }
-                for log in result.scalars().all()
+                for e in result.scalars().all()
             ]
-
-    # ========================================================================
-    # Viewer Sessions (v7.1.0 - persistent sessions)
-    # ========================================================================
-
-    @retry_on_locked()
-    async def save_session(
-        self,
-        token: str,
-        username: str,
-        role: str,
-        allowed_chat_ids: str | None,
-        created_at: float,
-        last_accessed: float,
-    ) -> None:
-        """Save or update a session in the database."""
-        async with self.db_manager.async_session_factory() as session:
-            if self._is_sqlite:
-                stmt = sqlite_insert(ViewerSession).values(
-                    token=token,
-                    username=username,
-                    role=role,
-                    allowed_chat_ids=allowed_chat_ids,
-                    created_at=created_at,
-                    last_accessed=last_accessed,
-                )
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["token"],
-                    set_={"last_accessed": last_accessed},
-                )
-            else:
-                stmt = pg_insert(ViewerSession).values(
-                    token=token,
-                    username=username,
-                    role=role,
-                    allowed_chat_ids=allowed_chat_ids,
-                    created_at=created_at,
-                    last_accessed=last_accessed,
-                )
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["token"],
-                    set_={"last_accessed": last_accessed},
-                )
-            await session.execute(stmt)
-            await session.commit()
-
-    async def get_session(self, token: str) -> dict[str, Any] | None:
-        """Get a session by token."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(ViewerSession).where(ViewerSession.token == token))
-            row = result.scalar_one_or_none()
-            return self._viewer_session_to_dict(row) if row else None
-
-    async def load_all_sessions(self) -> list[dict[str, Any]]:
-        """Load all sessions from the database (used on startup)."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(ViewerSession))
-            return [self._viewer_session_to_dict(s) for s in result.scalars().all()]
-
-    @retry_on_locked()
-    async def delete_session(self, token: str) -> bool:
-        """Delete a single session by token."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(delete(ViewerSession).where(ViewerSession.token == token))
-            await session.commit()
-            return result.rowcount > 0
-
-    @retry_on_locked()
-    async def delete_user_sessions(self, username: str) -> int:
-        """Delete all sessions for a given username. Returns count deleted."""
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(delete(ViewerSession).where(ViewerSession.username == username))
-            await session.commit()
-            return result.rowcount
-
-    @retry_on_locked()
-    async def cleanup_expired_sessions(self, max_age_seconds: float) -> int:
-        """Delete all expired sessions. Returns count deleted."""
-        import time
-
-        cutoff = time.time() - max_age_seconds
-        async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(delete(ViewerSession).where(ViewerSession.created_at < cutoff))
-            await session.commit()
-            return result.rowcount
-
-    @staticmethod
-    def _viewer_session_to_dict(row: ViewerSession) -> dict[str, Any]:
-        return {
-            "token": row.token,
-            "username": row.username,
-            "role": row.role,
-            "allowed_chat_ids": row.allowed_chat_ids,
-            "created_at": row.created_at,
-            "last_accessed": row.last_accessed,
-        }
 
     async def close(self) -> None:
         """Close database connections."""

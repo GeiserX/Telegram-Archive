@@ -980,11 +980,11 @@
                                 class="aspect-square relative overflow-hidden rounded cursor-pointer hover:opacity-80 transition gallery-placeholder"
                                 @click="openMedia({ media: item, id: item.message_id, chat_id: selectedChat.id, date: item.date })">
                                 <img v-if="item.type === 'photo'"
-                                    :src="`/media/thumb/200/${item.file_path}`"
+                                    :src="`/media/thumb/200/${extractMediaPath(item.file_path)}`"
                                     loading="lazy" decoding="async"
                                     class="w-full h-full object-cover thumb-fade"
                                     @load="$event.target.classList.add('loaded')"
-                                    @error="$event.target.src.includes('/thumb/') ? ($event.target.src = `/media/${item.file_path}`) : $event.target.style.display='none'">
+                                    @error="$event.target.src.includes('/thumb/') ? ($event.target.src = `/media/${extractMediaPath(item.file_path)}`) : $event.target.style.display='none'">
                                 <div v-else-if="item.type === 'video'" class="w-full h-full flex items-center justify-center bg-gray-800">
                                     <div class="text-center">
                                         <svg class="w-8 h-8 text-white/50 mx-auto" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -3339,6 +3339,15 @@
                     return `/media/thumb/${size}/${folder}/${filename}`
                 }
 
+                // Extract folder/filename from a raw absolute file_path string
+                const extractMediaPath = (filePath) => {
+                    if (!filePath) return ''
+                    const parts = filePath.split(/[/\\]/)
+                    const filename = parts.pop()
+                    const folder = parts.pop()
+                    return `${folder}/${filename}`
+                }
+
                 const getDocumentDisplayName = (msg) => {
                     // Prefer file name from media table when available
                     let name = msg.media?.file_name || ''
@@ -3691,6 +3700,7 @@
                     formatReactionEmoji,
                     getMediaUrl,
                     getThumbUrl,
+                    extractMediaPath,
                     getDocumentDisplayName,
                     isImageDocument,
                     handleImageError,
