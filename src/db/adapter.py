@@ -890,6 +890,42 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    # ========== Gap Detection ==========
+
+    async def detect_message_gaps(self, chat_id: int, threshold: int = 50) -> list[tuple[int, int, int]]:
+        """Detect gaps in message ID sequences for a chat.
+
+        Finds consecutive message IDs where the jump between them exceeds
+        the threshold. Small gaps are normal (deleted/service messages) —
+        large gaps indicate backup failures.
+
+        Returns list of (gap_start_id, gap_end_id, gap_size) tuples.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            query = text("""
+                WITH ordered AS (
+                    SELECT id, LAG(id) OVER (ORDER BY id) AS prev_id
+                    FROM messages
+                    WHERE chat_id = :chat_id
+                )
+                SELECT prev_id AS gap_start,
+                       id AS gap_end,
+                       id - prev_id AS gap_size
+                FROM ordered
+                WHERE prev_id IS NOT NULL
+                  AND id - prev_id > :threshold
+                ORDER BY gap_start
+            """)
+            result = await session.execute(query, {"chat_id": chat_id, "threshold": threshold})
+            return [(row.gap_start, row.gap_end, row.gap_size) for row in result]
+
+    async def get_chats_with_messages(self) -> list[int]:
+        """Get all chat IDs that have at least one message."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.chat_id).distinct()
+            result = await session.execute(stmt)
+            return [row[0] for row in result]
+
     # ========== Statistics ==========
 
     async def get_statistics(self) -> dict[str, Any]:

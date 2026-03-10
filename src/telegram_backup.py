@@ -692,6 +692,117 @@ class TelegramBackup:
                 if reactions_list:
                     await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
 
+    async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
+        """Fetch messages for a single gap range and insert them.
+
+        Args:
+            entity: Telegram entity for the chat.
+            chat_id: Marked chat ID.
+            gap_start: Last message ID before the gap (exclusive lower bound).
+            gap_end: First message ID after the gap (exclusive upper bound).
+
+        Returns:
+            Number of messages recovered.
+        """
+        batch_data: list[dict] = []
+        batch_size = self.config.batch_size
+        total = 0
+
+        async for message in self.client.iter_messages(
+            entity, min_id=gap_start, max_id=gap_end, reverse=True
+        ):
+            msg_data = await self._process_message(message, chat_id)
+            batch_data.append(msg_data)
+
+            if len(batch_data) >= batch_size:
+                await self._commit_batch(batch_data, chat_id)
+                total += len(batch_data)
+                batch_data = []
+
+        if batch_data:
+            await self._commit_batch(batch_data, chat_id)
+            total += len(batch_data)
+
+        return total
+
+    async def _fill_gaps(self, chat_id: int | None = None) -> dict:
+        """Detect and fill message gaps for backed-up chats.
+
+        Args:
+            chat_id: If provided, scan only this chat. Otherwise scan all.
+
+        Returns:
+            Summary dict with total_gaps, total_recovered, per_chat details.
+        """
+        threshold = self.config.gap_threshold
+
+        if chat_id:
+            chat_ids = [chat_id]
+        else:
+            chat_ids = await self.db.get_chats_with_messages()
+
+        total_gaps = 0
+        total_recovered = 0
+        per_chat: list[dict] = []
+
+        for cid in chat_ids:
+            gaps = await self.db.detect_message_gaps(cid, threshold)
+            if not gaps:
+                continue
+
+            total_gaps += len(gaps)
+            chat_recovered = 0
+
+            try:
+                entity = await self.client.get_entity(cid)
+            except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError):
+                logger.warning(f"Gap-fill: skipping chat {cid} (no access)")
+                continue
+            except Exception as e:
+                logger.error(f"Gap-fill: cannot get entity for chat {cid}: {e}")
+                continue
+
+            chat_name = self._get_chat_name(entity)
+            logger.info(f"Gap-fill: {chat_name} (ID: {cid}) — {len(gaps)} gap(s) detected")
+
+            for gap_start, gap_end, gap_size in gaps:
+                logger.info(f"  → Gap [{gap_start}..{gap_end}] (~{gap_size} IDs missing)")
+                try:
+                    recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
+                    chat_recovered += recovered
+                    if recovered > 0:
+                        logger.info(f"    Recovered {recovered} messages")
+                    else:
+                        logger.info("    No messages found (likely deleted)")
+                except Exception as e:
+                    logger.error(f"    Error filling gap: {e}", exc_info=True)
+
+            total_recovered += chat_recovered
+            per_chat.append({
+                "chat_id": cid,
+                "chat_name": chat_name,
+                "gaps": len(gaps),
+                "recovered": chat_recovered,
+            })
+
+        summary = {
+            "chats_scanned": len(chat_ids),
+            "chats_with_gaps": len(per_chat),
+            "total_gaps": total_gaps,
+            "total_recovered": total_recovered,
+            "details": per_chat,
+        }
+
+        logger.info("=" * 60)
+        logger.info("Gap-fill completed!")
+        logger.info(f"Chats scanned: {summary['chats_scanned']}")
+        logger.info(f"Chats with gaps: {summary['chats_with_gaps']}")
+        logger.info(f"Total gaps: {summary['total_gaps']}")
+        logger.info(f"Messages recovered: {summary['total_recovered']}")
+        logger.info("=" * 60)
+
+        return summary
+
     async def _sync_deletions_and_edits(self, chat_id: int, entity):
         """
         Sync deletions and edits for existing messages in the database.
@@ -1635,6 +1746,25 @@ async def run_backup(config: Config, client: TelegramClient | None = None):
     try:
         await backup.connect()
         await backup.backup_all()
+    finally:
+        await backup.disconnect()
+        await backup.db.close()
+
+
+async def run_fill_gaps(
+    config: Config, client: TelegramClient | None = None, chat_id: int | None = None
+) -> dict:
+    """Run gap-fill operation.
+
+    Args:
+        config: Configuration object.
+        client: Optional shared TelegramClient.
+        chat_id: If provided, fill gaps only for this chat.
+    """
+    backup = await TelegramBackup.create(config, client=client)
+    try:
+        await backup.connect()
+        return await backup._fill_gaps(chat_id=chat_id)
     finally:
         await backup.disconnect()
         await backup.db.close()
