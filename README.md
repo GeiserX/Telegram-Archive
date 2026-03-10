@@ -2,16 +2,22 @@
   <img src="docs/images/banner.svg" alt="Telegram Archive banner" width="900"/>
 </p>
 
-<img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="150"/>
+<p align="center">
+  <img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="150"/>
+</p>
 
-# Telegram Archive
+<h1 align="center">Telegram Archive</h1>
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker)](https://hub.docker.com/r/drumsergio/telegram-archive)
-[![GitHub Stars](https://img.shields.io/github/stars/GeiserX/Telegram-Archive?style=flat-square&logo=github)](https://github.com/GeiserX/Telegram-Archive/stargazers)
-[![License](https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/GeiserX/Telegram-Archive?style=flat-square)](https://github.com/GeiserX/Telegram-Archive/releases)
+<p align="center">
+  <a href="https://hub.docker.com/r/drumsergio/telegram-archive"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-archive?style=flat-square&logo=docker" alt="Docker Pulls"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/stargazers"><img src="https://img.shields.io/github/stars/GeiserX/Telegram-Archive?style=flat-square&logo=github" alt="GitHub Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/GeiserX/Telegram-Archive?style=flat-square" alt="License"></a>
+  <a href="https://github.com/GeiserX/Telegram-Archive/releases"><img src="https://img.shields.io/github/v/release/GeiserX/Telegram-Archive?style=flat-square" alt="Release"></a>
+</p>
 
-Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.
+<p align="center">
+  <strong>Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.</strong>
+</p>
 
 ## Features
 
