@@ -34,6 +34,7 @@ from .adapter import DatabaseAdapter
 from .base import DatabaseManager, close_database, get_db_manager, init_database
 from .migrate import migrate_sqlite_to_postgres, verify_migration
 from .models import (
+    AppSettings,
     Base,
     Chat,
     ChatFolder,
@@ -48,6 +49,7 @@ from .models import (
     ViewerAccount,
     ViewerAuditLog,
     ViewerSession,
+    ViewerToken,
 )
 
 __all__ = [
@@ -66,6 +68,8 @@ __all__ = [
     "ViewerAccount",
     "ViewerAuditLog",
     "ViewerSession",
+    "ViewerToken",
+    "AppSettings",
     # Database management
     "DatabaseManager",
     "init_database",

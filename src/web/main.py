@@ -327,6 +327,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     username=row["username"],
                     role=row["role"],
                     allowed_chat_ids=allowed,
+                    no_download=bool(row.get("no_download", 0)),
+                    source_token_id=row.get("source_token_id"),
                     created_at=row["created_at"],
                     last_accessed=row["last_accessed"],
                 )
@@ -446,8 +448,9 @@ else:
 @dataclass
 class UserContext:
     username: str
-    role: str  # "master" or "viewer"
+    role: str  # "master", "viewer", or "token"
     allowed_chat_ids: set[int] | None = None  # None = all chats
+    no_download: bool = False  # v7.2.0: restrict file downloads
 
 
 @dataclass
@@ -455,6 +458,8 @@ class SessionData:
     username: str
     role: str
     allowed_chat_ids: set[int] | None = None
+    no_download: bool = False
+    source_token_id: int | None = None  # v7.2.0: tracks originating share token for revocation
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
 
@@ -484,7 +489,13 @@ def _record_login_attempt(ip: str) -> None:
     _login_attempts.setdefault(ip, []).append(time.time())
 
 
-async def _create_session(username: str, role: str, allowed_chat_ids: set[int] | None = None) -> str:
+async def _create_session(
+    username: str,
+    role: str,
+    allowed_chat_ids: set[int] | None = None,
+    no_download: bool = False,
+    source_token_id: int | None = None,
+) -> str:
     """Create a new session, evicting oldest if user exceeds max sessions."""
     user_sessions = [(k, v) for k, v in _sessions.items() if v.username == username]
     if len(user_sessions) >= _MAX_SESSIONS_PER_USER:
@@ -503,6 +514,8 @@ async def _create_session(username: str, role: str, allowed_chat_ids: set[int] |
         username=username,
         role=role,
         allowed_chat_ids=allowed_chat_ids,
+        no_download=no_download,
+        source_token_id=source_token_id,
         created_at=now,
         last_accessed=now,
     )
@@ -518,6 +531,8 @@ async def _create_session(username: str, role: str, allowed_chat_ids: set[int] |
                 allowed_chat_ids=chat_ids_json,
                 created_at=now,
                 last_accessed=now,
+                no_download=1 if no_download else 0,
+                source_token_id=source_token_id,
             )
         except Exception as e:
             logger.warning(f"Failed to persist session to database: {e}")
@@ -535,6 +550,18 @@ async def _invalidate_user_sessions(username: str) -> None:
             await db.delete_user_sessions(username)
         except Exception as e:
             logger.warning(f"Failed to delete DB sessions for {username}: {e}")
+
+
+async def _invalidate_token_sessions(token_id: int) -> None:
+    """Remove all sessions created from a specific share token (on revoke/delete/update)."""
+    to_remove = [k for k, v in _sessions.items() if v.source_token_id == token_id]
+    for k in to_remove:
+        _sessions.pop(k, None)
+    if db:
+        try:
+            await db.delete_sessions_by_source_token_id(token_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete token sessions for token_id={token_id}: {e}")
 
 
 def _get_secure_cookies(request: Request) -> bool:
@@ -576,6 +603,8 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
         username=row["username"],
         role=row["role"],
         allowed_chat_ids=allowed,
+        no_download=bool(row.get("no_download", 0)),
+        source_token_id=row.get("source_token_id"),
         created_at=row["created_at"],
         last_accessed=row["last_accessed"],
     )
@@ -604,6 +633,7 @@ async def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH
         username=session.username,
         role=session.role,
         allowed_chat_ids=session.allowed_chat_ids,
+        no_download=session.no_download,
     )
 
 
@@ -662,11 +692,43 @@ if static_dir.exists():
 _media_root = Path(config.media_path).resolve() if os.path.exists(config.media_path) else None
 
 
-@app.get("/media/{path:path}")
-async def serve_media(path: str, user: UserContext = Depends(require_auth)):
-    """Serve media files with authentication and path traversal protection."""
+# Thumbnail endpoint MUST be defined before the catch-all /media/{path:path} route
+@app.get("/media/thumb/{size}/{folder:path}/{filename}")
+async def serve_thumbnail(size: int, folder: str, filename: str, user: UserContext = Depends(require_auth)):
+    """Serve on-demand generated thumbnails with auth and path traversal protection."""
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    # Chat-level access check
+    user_chat_ids = get_user_chat_ids(user)
+    if user_chat_ids is not None:
+        try:
+            media_chat_id = int(folder.split("/")[0])
+            if media_chat_id not in user_chat_ids:
+                raise HTTPException(status_code=403, detail="Access denied")
+        except ValueError:
+            pass
+
+    from .thumbnails import ensure_thumbnail
+
+    thumb_path = await ensure_thumbnail(_media_root, size, folder, filename)
+    if not thumb_path:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/media/{path:path}")
+async def serve_media(path: str, download: int = Query(0), user: UserContext = Depends(require_auth)):
+    """Serve media files with authentication, path traversal protection, and no_download enforcement."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    # v7.2.0: Server-side download restriction
+    # Inline rendering (images, video, audio in browser) is always allowed.
+    # Explicit downloads (download=1 query param) are blocked for restricted users.
+    if user.no_download and download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
     # Reject path traversal and absolute paths before any filesystem operations
     if ".." in path.split("/") or path.startswith("/"):
@@ -728,6 +790,7 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
         "auth_required": True,
         "role": session.role,
         "username": session.username,
+        "no_download": session.no_download,
     }
 
 
@@ -776,7 +839,8 @@ async def login(request: Request):
                     except json.JSONDecodeError, TypeError:
                         allowed = None
 
-                token = await _create_session(username, "viewer", allowed)
+                viewer_no_download = bool(viewer.get("no_download", 0))
+                token = await _create_session(username, "viewer", allowed, no_download=viewer_no_download)
                 response = JSONResponse({"success": True, "role": "viewer", "username": username})
                 response.set_cookie(
                     key=AUTH_COOKIE_NAME,
@@ -867,6 +931,98 @@ async def logout(
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
+
+
+# ============================================================================
+# Share Token Authentication (v7.2.0)
+# ============================================================================
+
+
+@app.post("/auth/token")
+async def auth_via_token(request: Request):
+    """Authenticate using a share token. Creates a session scoped to the token's allowed chats."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    direct_ip = request.client.host if request.client else "unknown"
+    _trusted = direct_ip.startswith(("172.", "10.", "192.168.", "127.")) or direct_ip in ("::1", "localhost")
+    if _trusted:
+        client_ip = (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or request.headers.get("x-real-ip", "")
+            or direct_ip
+        )
+    else:
+        client_ip = direct_ip
+
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+    try:
+        data = await request.json()
+        plaintext_token = data.get("token", "").strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    if not plaintext_token:
+        raise HTTPException(status_code=400, detail="Token required")
+
+    _record_login_attempt(client_ip)
+
+    token_record = await db.verify_viewer_token(plaintext_token)
+    if not token_record:
+        await db.create_audit_log(
+            username="(token)",
+            role="token",
+            action="token_auth_failed",
+            endpoint="/auth/token",
+            ip_address=client_ip,
+        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    allowed = None
+    if token_record["allowed_chat_ids"]:
+        try:
+            allowed = set(json.loads(token_record["allowed_chat_ids"]))
+        except json.JSONDecodeError, TypeError:
+            allowed = None
+
+    token_no_download = bool(token_record.get("no_download", 0))
+    token_label = token_record.get("label") or f"token:{token_record['id']}"
+    session_token = await _create_session(
+        username=f"token:{token_label}",
+        role="token",
+        allowed_chat_ids=allowed,
+        no_download=token_no_download,
+        source_token_id=token_record["id"],
+    )
+
+    response = JSONResponse(
+        {
+            "success": True,
+            "role": "token",
+            "username": f"token:{token_label}",
+            "no_download": token_no_download,
+        }
+    )
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=_get_secure_cookies(request),
+        samesite="lax",
+        max_age=AUTH_SESSION_SECONDS,
+    )
+
+    await db.create_audit_log(
+        username=f"token:{token_label}",
+        role="token",
+        action="token_auth_success",
+        endpoint="/auth/token",
+        ip_address=client_ip,
+    )
+
     return response
 
 
@@ -1355,6 +1511,8 @@ async def get_message_by_date(
 @app.get("/api/chats/{chat_id}/export")
 async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
     """Export chat history to JSON."""
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is not None and chat_id not in user_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1411,6 +1569,7 @@ async def list_viewers(user: UserContext = Depends(require_master)):
                 "username": v["username"],
                 "allowed_chat_ids": json.loads(v["allowed_chat_ids"]) if v["allowed_chat_ids"] else None,
                 "is_active": v["is_active"],
+                "no_download": v.get("no_download", 0),
                 "created_by": v["created_by"],
                 "created_at": v["created_at"],
                 "updated_at": v["updated_at"],
@@ -1430,6 +1589,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
     allowed_chat_ids = data.get("allowed_chat_ids")
+    is_active = 1 if data.get("is_active", 1) else 0
+    viewer_no_download = 1 if data.get("no_download", 0) else 0
 
     if not username or len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
@@ -1458,6 +1619,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         salt=salt,
         allowed_chat_ids=chat_ids_json,
         created_by=user.username,
+        is_active=is_active,
+        no_download=viewer_no_download,
     )
 
     await db.create_audit_log(
@@ -1473,6 +1636,7 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         "username": account["username"],
         "allowed_chat_ids": json.loads(chat_ids_json) if chat_ids_json else None,
         "is_active": account["is_active"],
+        "no_download": account["no_download"],
     }
 
 
@@ -1509,6 +1673,9 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
 
     if "is_active" in data:
         updates["is_active"] = 1 if data["is_active"] else 0
+
+    if "no_download" in data:
+        updates["no_download"] = 1 if data["no_download"] else 0
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -1555,7 +1722,7 @@ async def delete_viewer(viewer_id: int, request: Request, user: UserContext = De
 
 @app.get("/api/admin/chats")
 async def admin_list_chats(user: UserContext = Depends(require_master)):
-    """List all chats for the admin chat picker."""
+    """List all chats for the admin chat picker (includes user metadata for display)."""
     chats = await db.get_all_chats()
     result = []
     for c in chats:
@@ -1563,7 +1730,16 @@ async def admin_list_chats(user: UserContext = Depends(require_master)):
         if not title:
             parts = [c.get("first_name", ""), c.get("last_name", "")]
             title = " ".join(p for p in parts if p) or c.get("username") or str(c["id"])
-        result.append({"id": c["id"], "title": title, "type": c.get("type")})
+        result.append(
+            {
+                "id": c["id"],
+                "title": title,
+                "type": c.get("type"),
+                "username": c.get("username"),
+                "first_name": c.get("first_name"),
+                "last_name": c.get("last_name"),
+            }
+        )
     return {"chats": result}
 
 
@@ -1572,11 +1748,213 @@ async def get_audit_log(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     username: str | None = Query(None),
+    action: str | None = Query(None),
     user: UserContext = Depends(require_master),
 ):
-    """Get paginated audit log entries."""
-    logs = await db.get_audit_logs(limit=limit, offset=offset, username=username)
+    """Get paginated audit log entries with optional username and action filters."""
+    logs = await db.get_audit_logs(limit=limit, offset=offset, username=username, action=action)
     return {"logs": logs, "limit": limit, "offset": offset}
+
+
+# ============================================================================
+# Share Token Admin Endpoints (v7.2.0) — Master-only token management
+# ============================================================================
+
+
+@app.get("/api/admin/tokens")
+async def list_tokens(user: UserContext = Depends(require_master)):
+    """List all share tokens."""
+    tokens = await db.get_all_viewer_tokens()
+    safe = []
+    for t in tokens:
+        safe.append(
+            {
+                "id": t["id"],
+                "label": t["label"],
+                "created_by": t["created_by"],
+                "allowed_chat_ids": json.loads(t["allowed_chat_ids"]) if t["allowed_chat_ids"] else None,
+                "is_revoked": t["is_revoked"],
+                "no_download": t["no_download"],
+                "expires_at": t["expires_at"],
+                "last_used_at": t["last_used_at"],
+                "use_count": t["use_count"],
+                "created_at": t["created_at"],
+            }
+        )
+    return {"tokens": safe}
+
+
+@app.post("/api/admin/tokens")
+async def create_token(request: Request, user: UserContext = Depends(require_master)):
+    """Create a new share token. Returns the plaintext token only once."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    label = (data.get("label") or "").strip() or None
+    allowed_chat_ids = data.get("allowed_chat_ids")
+    no_download = 1 if data.get("no_download") else 0
+    expires_at = None
+    if data.get("expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expires_at format. Use ISO 8601.")
+
+    if not allowed_chat_ids or not isinstance(allowed_chat_ids, list):
+        raise HTTPException(status_code=400, detail="allowed_chat_ids is required (list of chat IDs)")
+
+    try:
+        chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
+    except ValueError, TypeError:
+        raise HTTPException(status_code=400, detail="Invalid chat ID format")
+
+    # Generate token: 32 bytes = 64 hex chars
+    plaintext_token = secrets.token_hex(32)
+    salt = secrets.token_hex(32)
+    token_hash = hashlib.pbkdf2_hmac("sha256", plaintext_token.encode(), bytes.fromhex(salt), 600_000).hex()
+
+    token_record = await db.create_viewer_token(
+        label=label,
+        token_hash=token_hash,
+        token_salt=salt,
+        created_by=user.username,
+        allowed_chat_ids=chat_ids_json,
+        no_download=no_download,
+        expires_at=expires_at,
+    )
+
+    await db.create_audit_log(
+        username=user.username,
+        role="master",
+        action=f"token_created:{token_record['id']}",
+        endpoint="/api/admin/tokens",
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return {
+        "id": token_record["id"],
+        "label": token_record["label"],
+        "token": plaintext_token,  # Only returned once at creation time
+        "allowed_chat_ids": json.loads(chat_ids_json),
+        "no_download": token_record["no_download"],
+        "expires_at": token_record["expires_at"],
+        "created_at": token_record["created_at"],
+    }
+
+
+@app.put("/api/admin/tokens/{token_id}")
+async def update_token(token_id: int, request: Request, user: UserContext = Depends(require_master)):
+    """Update a share token (label, allowed_chat_ids, is_revoked, no_download)."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    updates = {}
+    if "label" in data:
+        updates["label"] = (data["label"] or "").strip() or None
+    if "allowed_chat_ids" in data:
+        allowed = data["allowed_chat_ids"]
+        if allowed is None or not isinstance(allowed, list):
+            raise HTTPException(status_code=400, detail="allowed_chat_ids must be a list")
+        try:
+            updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
+        except ValueError, TypeError:
+            raise HTTPException(status_code=400, detail="Invalid chat ID format")
+    if "is_revoked" in data:
+        updates["is_revoked"] = 1 if data["is_revoked"] else 0
+    if "no_download" in data:
+        updates["no_download"] = 1 if data["no_download"] else 0
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    updated = await db.update_viewer_token(token_id, **updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    # Invalidate all active sessions from this token when scope/access changes
+    scope_changed = any(k in updates for k in ("is_revoked", "allowed_chat_ids", "no_download"))
+    if scope_changed:
+        await _invalidate_token_sessions(token_id)
+
+    await db.create_audit_log(
+        username=user.username,
+        role="master",
+        action=f"token_updated:{token_id}",
+        endpoint=f"/api/admin/tokens/{token_id}",
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return {
+        "id": updated["id"],
+        "label": updated["label"],
+        "allowed_chat_ids": json.loads(updated["allowed_chat_ids"]) if updated["allowed_chat_ids"] else None,
+        "is_revoked": updated["is_revoked"],
+        "no_download": updated["no_download"],
+        "expires_at": updated["expires_at"],
+    }
+
+
+@app.delete("/api/admin/tokens/{token_id}")
+async def delete_token(token_id: int, request: Request, user: UserContext = Depends(require_master)):
+    """Delete a share token permanently and invalidate all its active sessions."""
+    await _invalidate_token_sessions(token_id)
+    deleted = await db.delete_viewer_token(token_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    await db.create_audit_log(
+        username=user.username,
+        role="master",
+        action=f"token_deleted:{token_id}",
+        endpoint=f"/api/admin/tokens/{token_id}",
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return {"success": True}
+
+
+# ============================================================================
+# App Settings Endpoints (v7.2.0) — Master-only key-value configuration
+# ============================================================================
+
+
+@app.get("/api/admin/settings")
+async def get_settings(user: UserContext = Depends(require_master)):
+    """Get all app settings."""
+    settings = await db.get_all_settings()
+    return {"settings": settings}
+
+
+@app.put("/api/admin/settings/{key}")
+async def set_setting(key: str, request: Request, user: UserContext = Depends(require_master)):
+    """Set an app setting value."""
+    if not key or len(key) > 255:
+        raise HTTPException(status_code=400, detail="Invalid key")
+
+    try:
+        data = await request.json()
+        value = data.get("value")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if value is None:
+        raise HTTPException(status_code=400, detail="value is required")
+
+    await db.set_setting(key, str(value))
+
+    await db.create_audit_log(
+        username=user.username,
+        role="master",
+        action=f"setting_updated:{key}",
+        endpoint=f"/api/admin/settings/{key}",
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return {"key": key, "value": str(value)}
 
 
 # ============================================================================

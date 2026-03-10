@@ -284,6 +284,7 @@ class TestAdminEndpoints:
                 "salt": "y",
                 "allowed_chat_ids": None,
                 "is_active": 1,
+                "no_download": 0,
                 "created_by": "admin",
                 "created_at": "2026-01-01T00:00:00",
                 "updated_at": "2026-01-01T00:00:00",
