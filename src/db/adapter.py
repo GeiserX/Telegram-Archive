@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 from datetime import datetime
 from functools import wraps
@@ -23,6 +25,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .base import DatabaseManager
 from .models import (
+    AppSettings,
     Chat,
     ChatFolder,
     ChatFolderMember,
@@ -35,6 +38,7 @@ from .models import (
     User,
     ViewerAccount,
     ViewerAuditLog,
+    ViewerToken,
 )
 
 logger = logging.getLogger(__name__)
@@ -307,6 +311,30 @@ class DatabaseAdapter:
                     "last_message_date": row.last_message_date,
                 }
                 chats.append(chat_dict)
+
+            # Batch-fetch last message text for returned chats (single query)
+            if chats:
+                chat_ids = [c["id"] for c in chats]
+                # Subquery: max date per chat
+                max_date_sq = (
+                    select(Message.chat_id, func.max(Message.date).label("md"))
+                    .where(Message.chat_id.in_(chat_ids))
+                    .group_by(Message.chat_id)
+                    .subquery()
+                )
+                # Join back to get the text of the latest message
+                txt_stmt = (
+                    select(Message.chat_id, Message.text)
+                    .join(max_date_sq, and_(
+                        Message.chat_id == max_date_sq.c.chat_id,
+                        Message.date == max_date_sq.c.md,
+                    ))
+                )
+                txt_result = await session.execute(txt_stmt)
+                last_texts = {row.chat_id: row.text for row in txt_result}
+                for chat_dict in chats:
+                    chat_dict["last_message_text"] = last_texts.get(chat_dict["id"])
+
             return chats
 
     async def get_chat_count(
@@ -1581,6 +1609,36 @@ class DatabaseAdapter:
                 "is_bot": user.is_bot,
             }
 
+    async def get_user_info(self, user_id: int, chat_id: int | None = None) -> dict[str, Any] | None:
+        """Get user with message stats (count, first/last seen). Optionally scoped to a chat."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                return None
+
+            # Message stats
+            count_q = select(
+                func.count().label("cnt"),
+                func.min(Message.date).label("first_seen"),
+                func.max(Message.date).label("last_seen"),
+            ).where(Message.sender_id == user_id)
+            if chat_id:
+                count_q = count_q.where(Message.chat_id == chat_id)
+            stats = (await session.execute(count_q)).one()
+
+            return {
+                "id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "phone": user.phone,
+                "is_bot": bool(user.is_bot),
+                "message_count": stats.cnt,
+                "first_seen": stats.first_seen.isoformat() if stats.first_seen else None,
+                "last_seen": stats.last_seen.isoformat() if stats.last_seen else None,
+            }
+
     async def get_messages_for_export(self, chat_id: int, include_media: bool = False):
         """
         Get messages for export with user info.
@@ -1857,6 +1915,7 @@ class DatabaseAdapter:
                 "salt": account.salt,
                 "allowed_chat_ids": account.allowed_chat_ids,
                 "is_active": account.is_active,
+                "no_download": getattr(account, "no_download", 1),
                 "created_at": account.created_at,
                 "updated_at": account.updated_at,
             }
@@ -1873,6 +1932,7 @@ class DatabaseAdapter:
                     "username": a.username,
                     "allowed_chat_ids": json.loads(a.allowed_chat_ids or "[]"),
                     "is_active": a.is_active,
+                    "no_download": getattr(a, "no_download", 1),
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                 }
                 for a in accounts
@@ -1880,7 +1940,7 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def create_viewer_account(
-        self, username: str, password_hash: str, salt: str, allowed_chat_ids: list[int]
+        self, username: str, password_hash: str, salt: str, allowed_chat_ids: list[int], no_download: int = 1
     ) -> dict:
         """Create a new viewer account."""
         async with self.db_manager.get_session() as session:
@@ -1889,6 +1949,7 @@ class DatabaseAdapter:
                 password_hash=password_hash,
                 salt=salt,
                 allowed_chat_ids=json.dumps(allowed_chat_ids),
+                no_download=no_download,
             )
             session.add(account)
             await session.flush()
@@ -1898,13 +1959,13 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def update_viewer_account(self, account_id: int, **kwargs) -> bool:
-        """Update viewer account fields. Supports: password_hash, salt, allowed_chat_ids, is_active."""
+        """Update viewer account fields. Supports: password_hash, salt, allowed_chat_ids, is_active, no_download."""
         async with self.db_manager.get_session() as session:
             result = await session.execute(select(ViewerAccount).where(ViewerAccount.id == account_id))
             account = result.scalar_one_or_none()
             if not account:
                 return False
-            allowed_fields = {"password_hash", "salt", "allowed_chat_ids", "is_active"}
+            allowed_fields = {"password_hash", "salt", "allowed_chat_ids", "is_active", "no_download"}
             for key, value in kwargs.items():
                 if key in allowed_fields:
                     setattr(account, key, value)
@@ -1926,41 +1987,214 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def create_audit_log(
-        self, viewer_id: int, username: str, endpoint: str, chat_id: int | None = None, ip_address: str | None = None
+        self,
+        username: str,
+        role: str,
+        action: str,
+        endpoint: str | None = None,
+        chat_id: int | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
     ):
-        """Log a viewer API access for audit trail."""
+        """Log a viewer/admin action for audit trail."""
         async with self.db_manager.get_session() as session:
             entry = ViewerAuditLog(
-                viewer_id=viewer_id,
                 username=username,
+                role=role,
+                action=action,
                 endpoint=endpoint,
                 chat_id=chat_id,
                 ip_address=ip_address,
+                user_agent=user_agent,
             )
             session.add(entry)
             await session.commit()
 
     @retry_on_locked()
-    async def get_audit_log(self, viewer_id: int | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
-        """Get viewer activity audit log entries."""
+    async def get_audit_log(
+        self,
+        username: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Get audit log entries sorted by created_at descending."""
         async with self.db_manager.get_session() as session:
-            query = select(ViewerAuditLog).order_by(ViewerAuditLog.timestamp.desc())
-            if viewer_id:
-                query = query.where(ViewerAuditLog.viewer_id == viewer_id)
+            query = select(ViewerAuditLog).order_by(ViewerAuditLog.created_at.desc())
+            if username:
+                query = query.where(ViewerAuditLog.username == username)
+            if action:
+                query = query.where(ViewerAuditLog.action == action)
             query = query.offset(offset).limit(limit)
             result = await session.execute(query)
             return [
                 {
                     "id": e.id,
-                    "viewer_id": e.viewer_id,
                     "username": e.username,
+                    "role": e.role,
+                    "action": e.action,
                     "endpoint": e.endpoint,
                     "chat_id": e.chat_id,
                     "ip_address": e.ip_address,
-                    "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                    "user_agent": e.user_agent,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
                 }
                 for e in result.scalars().all()
             ]
+
+    # ========================================================================
+    # Share Tokens (v7.2.0)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def create_viewer_token(
+        self,
+        token_hash: str,
+        token_salt: str,
+        created_by: str,
+        allowed_chat_ids: list[int],
+        label: str | None = None,
+        expires_at: datetime | None = None,
+        no_download: int = 1,
+    ) -> int:
+        """Create share token. Returns token ID."""
+        async with self.db_manager.get_session() as session:
+            token = ViewerToken(
+                label=label,
+                token_hash=token_hash,
+                token_salt=token_salt,
+                created_by=created_by,
+                allowed_chat_ids=json.dumps([int(c) for c in allowed_chat_ids]),
+                expires_at=expires_at,
+                no_download=no_download,
+            )
+            session.add(token)
+            await session.flush()
+            token_id = token.id
+            await session.commit()
+            return token_id
+
+    @retry_on_locked()
+    async def verify_viewer_token(self, plaintext_token: str) -> dict | None:
+        """Validate token against active (non-revoked, non-expired) tokens.
+
+        Returns dict with id, label, allowed_chat_ids if valid. None otherwise.
+        """
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(
+                select(ViewerToken).where(ViewerToken.is_revoked == 0)
+            )
+            now = datetime.utcnow()
+
+            for record in result.scalars().all():
+                if record.expires_at and record.expires_at < now:
+                    continue
+                computed = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    plaintext_token.encode(),
+                    bytes.fromhex(record.token_salt),
+                    600_000,
+                ).hex()
+                if secrets.compare_digest(computed, record.token_hash):
+                    record.last_used_at = now
+                    record.use_count = (record.use_count or 0) + 1
+                    await session.commit()
+                    return {
+                        "id": record.id,
+                        "label": record.label,
+                        "allowed_chat_ids": json.loads(record.allowed_chat_ids or "[]"),
+                        "no_download": getattr(record, "no_download", 1),
+                    }
+
+            return None
+
+    @retry_on_locked()
+    async def revoke_viewer_token(self, token_id: int) -> bool:
+        """Revoke token by ID. Returns True if found and revoked."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(
+                select(ViewerToken).where(ViewerToken.id == token_id)
+            )
+            token = result.scalar_one_or_none()
+            if not token:
+                return False
+            token.is_revoked = 1
+            await session.commit()
+            return True
+
+    @retry_on_locked()
+    async def update_viewer_token(self, token_id: int, **kwargs) -> bool:
+        """Update token fields. Supports: label, allowed_chat_ids, no_download. Returns True if found."""
+        allowed_fields = {"label", "allowed_chat_ids", "no_download"}
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(ViewerToken).where(ViewerToken.id == token_id))
+            token = result.scalar_one_or_none()
+            if not token:
+                return False
+            for field, value in kwargs.items():
+                if field in allowed_fields:
+                    setattr(token, field, value)
+            await session.commit()
+            return True
+
+    @retry_on_locked()
+    async def get_viewer_tokens(self) -> list[dict]:
+        """List all tokens (plaintext hidden). Returns metadata only."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(
+                select(ViewerToken).order_by(ViewerToken.created_at.desc())
+            )
+            return [
+                {
+                    "id": t.id,
+                    "label": t.label,
+                    "created_by": t.created_by,
+                    "allowed_chat_ids": json.loads(t.allowed_chat_ids or "[]"),
+                    "is_revoked": bool(t.is_revoked),
+                    "no_download": getattr(t, "no_download", 1),
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                    "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
+                    "use_count": t.use_count or 0,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                }
+                for t in result.scalars().all()
+            ]
+
+    # ========================================================================
+    # App Settings (v7.3.0 — cross-container key-value store)
+    # ========================================================================
+
+    @retry_on_locked()
+    async def get_setting(self, key: str) -> str | None:
+        """Get a single app setting value by key."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(AppSettings).where(AppSettings.key == key))
+            row = result.scalar_one_or_none()
+            return row.value if row else None
+
+    @retry_on_locked()
+    async def set_setting(self, key: str, value: str) -> None:
+        """Set an app setting (upsert)."""
+        async with self.db_manager.get_session() as session:
+            if self.db_manager.is_sqlite:
+                stmt = sqlite_insert(AppSettings).values(key=key, value=value)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["key"], set_={"value": value, "updated_at": datetime.utcnow()}
+                )
+            else:
+                stmt = pg_insert(AppSettings).values(key=key, value=value)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["key"], set_={"value": value, "updated_at": datetime.utcnow()}
+                )
+            await session.execute(stmt)
+            await session.commit()
+
+    @retry_on_locked()
+    async def get_all_settings(self) -> dict[str, str]:
+        """Get all app settings as a dict."""
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(AppSettings))
+            return {row.key: row.value for row in result.scalars().all()}
 
     async def close(self) -> None:
         """Close database connections."""
