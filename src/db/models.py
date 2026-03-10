@@ -342,7 +342,7 @@ class ViewerAccount(Base):
     salt: Mapped[str] = mapped_column(String(64), nullable=False)
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array of chat IDs, NULL = all
     is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
-    created_by: Mapped[str | None] = mapped_column(String(255))
+    no_download: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
@@ -388,4 +388,48 @@ class ViewerSession(Base):
     __table_args__ = (
         Index("idx_viewer_sessions_username", "username"),
         Index("idx_viewer_sessions_created_at", "created_at"),
+    )
+
+
+class ViewerToken(Base):
+    """Share tokens for scoped chat access without username/password.
+
+    v7.2.0: Admins create tokens granting time-bound access to specific chats.
+    Tokens are hashed (PBKDF2-SHA256) — plaintext shown only at creation.
+    """
+
+    __tablename__ = "viewer_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str | None] = mapped_column(String(255))
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    token_salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    allowed_chat_ids: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array of chat IDs
+    is_revoked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    no_download: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = no expiry
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    use_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_viewer_tokens_created_by", "created_by"),
+        Index("idx_viewer_tokens_is_revoked", "is_revoked"),
+    )
+
+
+class AppSettings(Base):
+    """Key-value settings shared between backup and viewer containers.
+
+    v7.3.0: Used for backup schedule override, active viewer tracking,
+    backup status, and master password override.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
     )
