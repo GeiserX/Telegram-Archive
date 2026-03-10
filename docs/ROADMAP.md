@@ -30,7 +30,7 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 
 ### Viewer Polish
 
-- [ ] Custom themes (light mode, OLED dark, Telegram classic)
+- [x] Custom themes — Per-chat background preferences with 6 themes × 5-8 presets (v7.2.0)
 - [ ] Voice message player with waveform visualization
 - [ ] Keyboard shortcuts (j/k navigation, Esc to close, etc.)
 - [ ] Message deep links (shareable URLs to specific messages)
@@ -196,6 +196,10 @@ Features that were previously on this roadmap and have been implemented:
 | Ruff linter/formatter | v6.2.3 | CI enforcement + pre-commit hooks |
 | Security hardening | v6.2.3 | CSP, CORS, secure cookies, container hardening |
 | PBKDF2 auth tokens | v6.2.4 | Replaced weak SHA256 hashing |
+| Per-chat background themes | v7.2.0 | 6 themes × 5-8 presets, localStorage persistence |
+| Download control per viewer | v7.2.0 | Admin-configurable per account/token |
+| Activity audit log UI | v7.2.0 | New settings tab with filtering and color-coded rows |
+| Infinite scroll optimization | v7.2.0 | Message cache, debounce, rootMargin 800px |
 
 ---
 

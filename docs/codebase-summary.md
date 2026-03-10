@@ -1,6 +1,6 @@
 # Codebase Summary
 
-**Version:** 7.0 | **Last Updated:** 2026-02-17
+**Version:** 7.2.0 | **Last Updated:** 2026-03-10
 
 ## Project Overview
 
@@ -68,7 +68,24 @@ Telegram Archive is an automated backup system for Telegram messages and media w
 **Reaction** - Message reactions
 - id, message_id, emoji, count, recent_senders
 
-## API Endpoints (v7.0)
+**ViewerAccount** (v7.0, extended v7.2.0)
+- id, username, password_hash, allowed_chat_ids
+- no_download (NEW v7.2.0) - Boolean flag to disable media downloads
+- created_at, updated_at
+
+**ViewerToken** (v7.0, extended v7.2.0)
+- id, viewer_id, token_hash, no_download (NEW v7.2.0)
+- created_at, expires_at
+
+**ViewerAuditLog** (v7.0)
+- id, username, action (login/logout/settings_change)
+- ip_address, user_agent, success, timestamp
+
+**ViewerSessions** (v7.1)
+- session_id, username, allowed_chat_ids (JSON)
+- created_at, expires_at, last_accessed
+
+## API Endpoints (v7.2.0)
 
 ### Search & Discovery
 - `GET /api/search` - Global full-text search with filters (sender, media_type, date range)
@@ -99,7 +116,14 @@ Telegram Archive is an automated backup system for Telegram messages and media w
 - `POST /api/push/subscribe` - Subscribe to notifications
 - `WebSocket /ws/updates` - Real-time message sync
 
-## Frontend Features (v7.0)
+### Admin & Viewer Management (v7.2.0)
+- `GET /api/admin/chats` - List chats with user details (username, first_name, last_name)
+- `GET /api/admin/audit` - Paginated audit log with username and action filtering
+- `PUT /api/admin/viewers/{viewer_id}` - Update viewer settings including download control
+- `POST /api/admin/viewers` - Create viewer account with no_download flag
+- `DELETE /api/admin/viewers/{viewer_id}` - Remove viewer account
+
+## Frontend Features (v7.2.0)
 
 ### Search Enhancement
 - Advanced filters: sender, media type, date range
@@ -122,12 +146,31 @@ Telegram Archive is an automated backup system for Telegram messages and media w
 - Type filters: photo, video, document, audio
 - Lightbox with fullscreen mode
 
-### Transaction View (NEW)
+### Transaction View
 - Auto-detect monetary patterns
 - Spreadsheet-like table interface
 - Inline editing of transactions
 - CSV export with running balance
 - Category classification
+
+### Viewer Preferences (v7.2.0)
+- Per-chat background themes: 6 themes × 5-8 presets each
+- Background picker modal with context menu integration
+- localStorage persistence of per-chat preferences
+- Infinite scroll optimization: LRU message cache (10 chats), 150ms debounce, 800px rootMargin
+- Activity log tab in settings: color-coded rows (green/red), filterable by action
+- Download control: admin can disable downloads per viewer/token, frontend enforces via CSS
+
+## v7.2.0 Technical Changes
+
+### New Files
+- Database migration 012 - Adds `no_download` column to viewer_accounts and viewer_tokens
+
+### Modified Files
+- `src/db/models.py` - Extended ViewerAccount and ViewerToken with no_download column
+- `src/web/main.py` - Enhanced /api/admin/chats and /api/admin/audit endpoints
+- `src/web/templates/index.html` - Added background picker modal, activity tab, infinite scroll improvements
+- Tests: `tests/test_viewer_preferences.py` - 18 unit tests for models, migrations, endpoints, and audit log
 
 ## v7.0 Technical Changes
 
@@ -178,8 +221,8 @@ Alembic migration handles:
 ## Deployment
 
 **Docker Images**
-- `drumsergio/telegram-archive:v7.0` - Full backup + viewer
-- `drumsergio/telegram-archive-viewer:v7.0` - Viewer only
+- `drumsergio/telegram-archive:v7.2.0` - Full backup + viewer
+- `drumsergio/telegram-archive-viewer:v7.2.0` - Viewer only
 
 **Database**
 - SQLite: Single-file, zero-config (default)

@@ -1,6 +1,6 @@
 # System Architecture
 
-**Version:** 7.0 | **Last Updated:** 2026-02-17
+**Version:** 7.2.0 | **Last Updated:** 2026-03-10
 
 ## High-Level Design
 
@@ -173,7 +173,86 @@ Frontend
     └→ Keyboard Navigation (arrow keys)
 ```
 
-## Database Schema (v7.0)
+### Viewer Preferences Flow (v7.2.0)
+
+#### Per-Chat Background Preferences
+```
+User Action: Select Background Theme
+    ↓
+Background Picker Modal
+    ├→ 6 Themes (light, dark, forest, ocean, sunset, custom)
+    └→ 5-8 Presets per theme (SVG patterns, gradients, solids)
+
+Save to localStorage (key: background_theme_{chat_id})
+    ↓
+Frontend Context Injection
+    ├→ Apply CSS variables
+    ├→ Render background SVG/gradient
+    └→ Persist across sessions
+
+Context Menu Integration
+    └→ Right-click chat → "Change Background"
+```
+
+#### Download Control per Viewer
+```
+Admin Action: Disable Downloads
+    ↓
+PUT /api/admin/viewers/{viewer_id}
+    └→ Set no_download=true
+
+Frontend Enforcement
+    ├→ CSS: .download-btn { display: none; }
+    ├→ Hide download links in message actions
+    └→ Block /media download attempts via auth layer
+
+Database
+    └→ viewer_accounts.no_download (boolean)
+    └→ viewer_tokens.no_download (boolean)
+```
+
+#### Activity Log & Audit
+```
+User Action: Login, Logout, Settings Change
+    ↓
+Audit Log Adapter (src/web/main.py)
+    ├→ Log login_event with timestamp
+    ├→ Track action type (login/logout/settings)
+    └→ Record IP, user agent
+
+/api/admin/audit Endpoint
+    ├→ Filter by username
+    ├→ Filter by action (login, logout, settings)
+    ├→ Pagination support
+    └→ Color-coded rows (green=success, red=failure)
+
+Activity Tab in Settings (Frontend)
+    ├→ Render audit log table
+    ├→ Sortable columns (date, action, status)
+    ├→ Session history display
+    └→ Logout all sessions option
+```
+
+#### Infinite Scroll & Message Cache (v7.2.0)
+```
+User Scroll Action
+    ↓
+Intersection Observer (rootMargin: 800px)
+    ├→ Detect sentinel element near viewport
+    ├→ 150ms debounce to reduce API calls
+    └→ Trigger /api/chats/{chat_id}/messages?before_date=X
+
+Message LRU Cache (in-memory, 10 chat max)
+    ├→ Cache last 50-100 messages per chat
+    ├→ Evict oldest chat on overflow
+    ├→ Reduce API calls for rapid scroll-back
+    └→ Preserve scroll position on navigation
+
+Fallback: Scroll Event Listener
+    └→ If Intersection Observer unavailable
+```
+
+## Database Schema (v7.2.0)
 
 ### Transaction Table (NEW)
 ```sql
@@ -212,6 +291,48 @@ CREATE INDEX idx_message_sender ON messages(sender_id);
 CREATE INDEX idx_message_media_type ON messages(media_type, chat_id);
 CREATE INDEX idx_message_date_range ON messages(chat_id, date DESC);
 CREATE INDEX idx_transaction_chat ON transactions(chat_id, date DESC);
+```
+
+### Viewer Preferences Tables (v7.2.0)
+
+**ViewerAccount Extensions:**
+```sql
+ALTER TABLE viewer_accounts ADD COLUMN no_download BOOLEAN DEFAULT FALSE;
+```
+- Controls whether account can download media via `/media/*` endpoints
+- When enabled, frontend hides download buttons via CSS
+- Backend enforces at authentication layer
+
+**ViewerToken Extensions:**
+```sql
+ALTER TABLE viewer_tokens ADD COLUMN no_download BOOLEAN DEFAULT FALSE;
+```
+- Per-token download restriction (overrides account setting if more restrictive)
+- Useful for API clients or temporary access grants
+
+**Audit Log Table (existing, v7.0):**
+```sql
+CREATE TABLE viewer_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username VARCHAR(255) NOT NULL,
+    action VARCHAR(50) NOT NULL,  -- 'login', 'logout', 'settings_change'
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    success BOOLEAN DEFAULT TRUE,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Viewer Sessions Table (v7.1, persisted sessions):**
+```sql
+CREATE TABLE viewer_sessions (
+    session_id VARCHAR(64) PRIMARY KEY,
+    username VARCHAR(255) NOT NULL,
+    allowed_chat_ids TEXT,  -- JSON array
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
+    last_accessed DATETIME
+);
 ```
 
 ## API Request/Response Patterns
@@ -287,6 +408,86 @@ GET /api/chats/-1234567890/transactions/summary
 }
 ```
 
+### Chat List with User Details (v7.2.0)
+**Request:**
+```
+GET /api/admin/chats
+```
+
+**Response:**
+```json
+{
+  "chats": [
+    {
+      "id": -1001234567890,
+      "title": "Group Name",
+      "username": "group_username",
+      "first_name": "John",
+      "last_name": "Doe",
+      "type": "private|group|supergroup|channel",
+      "message_count": 5000
+    }
+  ]
+}
+```
+- `username`, `first_name`, `last_name` fields improve chat picker display in admin panel
+- All fields nullable for channels/groups without usernames
+
+### Audit Log Endpoint (v7.2.0)
+**Request:**
+```
+GET /api/admin/audit?username=john_doe&action=login&limit=50&offset=0
+```
+
+**Response:**
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "username": "john_doe",
+      "action": "login",
+      "ip_address": "192.168.1.100",
+      "user_agent": "Mozilla/5.0...",
+      "success": true,
+      "timestamp": "2026-03-10T15:30:00Z"
+    }
+  ],
+  "total": 150,
+  "took_ms": 12
+}
+```
+- Supports filtering by `username` and `action` (login, logout, settings_change)
+- Color-coded in UI: green (success), red (failure)
+- Pagination via `limit` and `offset`
+
+### Download Control (v7.2.0)
+**Update Viewer Account:**
+```
+PUT /api/admin/viewers/{viewer_id}
+```
+
+**Request:**
+```json
+{
+  "username": "john_doe",
+  "no_download": true
+}
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "username": "john_doe",
+  "no_download": true,
+  "allowed_chat_ids": [123, 456]
+}
+```
+- Setting `no_download=true` disables media downloads for the account
+- Frontend enforces via CSS + hidden download links
+- Backend validates at `/media/*` authentication layer
+
 ## Deployment Architecture
 
 ### Docker Compose Services
@@ -334,7 +535,7 @@ data/
         └── {chat_id_2}/
 ```
 
-## Performance Characteristics (v7.0)
+## Performance Characteristics (v7.2.0)
 
 | Operation | Time | Notes |
 |-----------|------|-------|
@@ -343,6 +544,9 @@ data/
 | Transaction scan | 200-500ms | Pattern matching + DB insert |
 | Deep link navigation | <100ms | Direct message_id lookup |
 | WebSocket broadcast | 10-50ms | PostgreSQL LISTEN or polling fallback |
+| Infinite scroll sentinel check | <5ms | Intersection Observer, 150ms debounced |
+| Background theme load | <10ms | localStorage lookup + CSS var injection |
+| Audit log query | 15-30ms | Indexed on (username, action) |
 
 ## Error Handling & Recovery
 

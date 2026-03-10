@@ -6,6 +6,22 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+## [7.2.0] - 2026-03-10
+
+### Added
+
+- **Viewer UX & Preferences System** — Comprehensive feature set for enhanced viewer experience with per-user customization:
+  - **Chat Picker Display Enhancement** (`/api/admin/chats`) — Now returns `username`, `first_name`, `last_name` fields for improved chat selection UI in admin panel
+  - **Download Control** — New `no_download` column on `ViewerAccount` and `ViewerToken` models. Admins can disable downloads per viewer or token. Frontend enforces via CSS and hidden download links. Alembic migration 012 adds the column.
+  - **Audit Log Improvements** — Fixed audit log adapter field mismatches. Added login event logging. New "Activity" tab in settings with action filtering and color-coded status rows. `/api/admin/audit` endpoint supports `username` and `action` filtering.
+  - **Infinite Scroll Performance** — Removed `!loading` guard on sentinel element, increased rootMargin to 800px, added 150ms debounce, scroll event fallback, and LRU message cache (10 chats max) for improved perceived performance on large message lists
+  - **Per-Chat Background Preferences** — Uses localStorage for persistent background customization. 6 themes × 5-8 presets per theme (SVG patterns, gradients, solid colors). Background picker modal with context menu integration.
+  - **Comprehensive Test Coverage** — 18 new unit tests in `test_viewer_preferences.py` covering model structure, migration integrity, endpoints, and audit log behavior
+
+### Migration
+
+- **Alembic migration 012** — Adds `no_download` column to `viewer_accounts` and `viewer_tokens` tables (auto-applied on startup)
+
 ## [7.1.3] - 2026-03-05
 
 ### Fixed
