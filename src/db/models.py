@@ -342,6 +342,7 @@ class ViewerAccount(Base):
     salt: Mapped[str] = mapped_column(String(64), nullable=False)
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array of chat IDs, NULL = all
     is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -380,12 +381,58 @@ class ViewerSession(Base):
 
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master" or "viewer"
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master", "viewer", or "token"
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array or NULL = all chats
+    no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
+    source_token_id: Mapped[int | None] = mapped_column(Integer)  # v7.2.0: FK to viewer_tokens.id for revocation
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
     last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
 
     __table_args__ = (
         Index("idx_viewer_sessions_username", "username"),
         Index("idx_viewer_sessions_created_at", "created_at"),
+        Index("idx_viewer_sessions_source_token", "source_token_id"),
+    )
+
+
+class ViewerToken(Base):
+    """Share tokens for scoped chat access without username/password.
+
+    v7.2.0: Admins create tokens granting time-bound access to specific chats.
+    Tokens are hashed (PBKDF2-SHA256) - plaintext shown only at creation.
+    """
+
+    __tablename__ = "viewer_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str | None] = mapped_column(String(255))
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    token_salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    allowed_chat_ids: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array of chat IDs
+    is_revoked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = no expiry
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    use_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_viewer_tokens_created_by", "created_by"),
+        Index("idx_viewer_tokens_is_revoked", "is_revoked"),
+    )
+
+
+class AppSettings(Base):
+    """Key-value settings shared between backup and viewer containers.
+
+    v7.2.0: Used for backup schedule override, viewer tracking, and status.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
     )
