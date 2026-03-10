@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -57,6 +58,9 @@ def _make_mock_db():
     db.get_session = AsyncMock(return_value=None)
     db.delete_session = AsyncMock()
     db.save_session = AsyncMock()
+    db.delete_user_sessions = AsyncMock()
+    db.delete_sessions_by_source_token_id = AsyncMock(return_value=0)
+    db.load_all_sessions = AsyncMock(return_value=[])
     db.calculate_and_store_statistics = AsyncMock(return_value={"total_chats": 1})
     return db
 
@@ -312,6 +316,311 @@ class TestNoDownload:
         data = resp.json()
         # Master should not have no_download
         assert data.get("no_download") is False or data.get("no_download") is None or not data.get("no_download")
+
+    def test_no_download_blocks_explicit_download(self, auth_env, tmp_path):
+        """no_download users cannot explicitly download files (download=1)."""
+        client, mod, db = _get_client()
+        # Create a token session with no_download=True
+        db.verify_viewer_token.return_value = {
+            "id": 10,
+            "label": "restricted-tok",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 1,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        assert resp.status_code == 200
+        cookie = resp.cookies.get("viewer_auth")
+
+        # Create a test media file
+        media_dir = tmp_path / "media" / "-1001"
+        media_dir.mkdir(parents=True)
+        (media_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        # Override media root
+        mod._media_root = tmp_path / "media"
+
+        # Explicit download should be blocked
+        resp = client.get("/media/-1001/photo.jpg?download=1", cookies={"viewer_auth": cookie})
+        assert resp.status_code == 403
+
+    def test_no_download_allows_inline_media(self, auth_env, tmp_path):
+        """no_download users can still view media inline (without download=1)."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 10,
+            "label": "restricted-tok",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 1,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        cookie = resp.cookies.get("viewer_auth")
+
+        media_dir = tmp_path / "media" / "-1001"
+        media_dir.mkdir(parents=True)
+        (media_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+        mod._media_root = tmp_path / "media"
+
+        # Inline request (no download param) should succeed
+        resp = client.get("/media/-1001/photo.jpg", cookies={"viewer_auth": cookie})
+        assert resp.status_code == 200
+
+    def test_no_download_blocks_export(self, auth_env):
+        """no_download users cannot export chat history."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 10,
+            "label": "restricted-tok",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 1,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        cookie = resp.cookies.get("viewer_auth")
+
+        resp = client.get("/api/chats/-1001/export", cookies={"viewer_auth": cookie})
+        assert resp.status_code == 403
+
+
+class TestTokenRevocation:
+    """Tests that token revocation/deletion invalidates active sessions."""
+
+    def test_revoke_token_invalidates_sessions(self, auth_env):
+        """Revoking a token should invalidate all sessions created from it."""
+        client, mod, db = _get_client()
+        # Authenticate with a token
+        db.verify_viewer_token.return_value = {
+            "id": 5,
+            "label": "my-token",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 0,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        assert resp.status_code == 200
+        token_cookie = resp.cookies.get("viewer_auth")
+
+        # Verify session is active
+        assert token_cookie in mod._sessions
+        assert mod._sessions[token_cookie].source_token_id == 5
+
+        # Now login as master and revoke the token
+        cookie = _login_master(client)
+        db.update_viewer_token.return_value = {
+            "id": 5,
+            "label": "my-token",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "is_revoked": 1,
+            "no_download": 0,
+            "expires_at": None,
+        }
+        resp = client.put(
+            "/api/admin/tokens/5",
+            json={"is_revoked": True},
+            cookies={"viewer_auth": cookie},
+        )
+        assert resp.status_code == 200
+
+        # The token session should be invalidated
+        assert token_cookie not in mod._sessions
+        db.delete_sessions_by_source_token_id.assert_called_with(5)
+
+    def test_delete_token_invalidates_sessions(self, auth_env):
+        """Deleting a token should invalidate all sessions created from it."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 7,
+            "label": "temp-token",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 0,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        token_cookie = resp.cookies.get("viewer_auth")
+        assert token_cookie in mod._sessions
+
+        cookie = _login_master(client)
+        resp = client.delete("/api/admin/tokens/7", cookies={"viewer_auth": cookie})
+        assert resp.status_code == 200
+
+        # Session should be gone
+        assert token_cookie not in mod._sessions
+        db.delete_sessions_by_source_token_id.assert_called_with(7)
+
+    def test_update_token_scope_invalidates_sessions(self, auth_env):
+        """Changing a token's allowed_chat_ids should invalidate sessions."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 8,
+            "label": "scoped",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 0,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        token_cookie = resp.cookies.get("viewer_auth")
+        assert token_cookie in mod._sessions
+
+        cookie = _login_master(client)
+        db.update_viewer_token.return_value = {
+            "id": 8,
+            "label": "scoped",
+            "allowed_chat_ids": json.dumps([-1002]),
+            "is_revoked": 0,
+            "no_download": 0,
+            "expires_at": None,
+        }
+        resp = client.put(
+            "/api/admin/tokens/8",
+            json={"allowed_chat_ids": [-1002]},
+            cookies={"viewer_auth": cookie},
+        )
+        assert resp.status_code == 200
+        assert token_cookie not in mod._sessions
+
+    def test_update_token_label_only_keeps_sessions(self, auth_env):
+        """Changing only a token's label should NOT invalidate sessions."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 9,
+            "label": "old-label",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 0,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        token_cookie = resp.cookies.get("viewer_auth")
+
+        cookie = _login_master(client)
+        db.update_viewer_token.return_value = {
+            "id": 9,
+            "label": "new-label",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "is_revoked": 0,
+            "no_download": 0,
+            "expires_at": None,
+        }
+        resp = client.put(
+            "/api/admin/tokens/9",
+            json={"label": "new-label"},
+            cookies={"viewer_auth": cookie},
+        )
+        assert resp.status_code == 200
+        # Label-only change should NOT invalidate
+        assert token_cookie in mod._sessions
+
+
+class TestSessionPersistence:
+    """Tests that no_download and source_token_id survive session persistence."""
+
+    def test_no_download_persisted_in_session(self, auth_env):
+        """no_download should be passed to save_session for DB persistence."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 3,
+            "label": "nd-token",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 1,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        assert resp.status_code == 200
+
+        # Verify save_session was called with no_download=1 and source_token_id=3
+        db.save_session.assert_called()
+        call_kwargs = db.save_session.call_args
+        assert call_kwargs.kwargs.get("no_download") == 1 or call_kwargs[1].get("no_download") == 1
+
+    def test_source_token_id_persisted(self, auth_env):
+        """source_token_id should be stored in the session."""
+        client, mod, db = _get_client()
+        db.verify_viewer_token.return_value = {
+            "id": 42,
+            "label": "tracked",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 0,
+        }
+        resp = client.post("/auth/token", json={"token": "validtoken"})
+        cookie = resp.cookies.get("viewer_auth")
+
+        assert mod._sessions[cookie].source_token_id == 42
+
+        # Check DB persistence
+        db.save_session.assert_called()
+        call_kwargs = db.save_session.call_args
+        assert call_kwargs.kwargs.get("source_token_id") == 42 or call_kwargs[1].get("source_token_id") == 42
+
+    def test_no_download_restored_from_db(self, auth_env):
+        """no_download should be correctly restored when loading session from DB."""
+        client, mod, db = _get_client()
+        # Simulate a DB-backed session with no_download
+        db.get_session.return_value = {
+            "token": "fake-session-token",
+            "username": "token:test",
+            "role": "token",
+            "allowed_chat_ids": json.dumps([-1001]),
+            "no_download": 1,
+            "source_token_id": 99,
+            "created_at": time.time(),
+            "last_accessed": time.time(),
+        }
+
+        # Attempt auth check with the fake session token
+        resp = client.get("/api/auth/check", cookies={"viewer_auth": "fake-session-token"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["no_download"] is True
+
+
+class TestCreateViewerFlags:
+    """Tests that create_viewer passes is_active and no_download correctly."""
+
+    def test_create_viewer_with_no_download(self, auth_env):
+        """Creating a viewer with no_download=1 should persist the flag."""
+        client, _, db = _get_client()
+        cookie = _login_master(client)
+        db.create_viewer_account.return_value = {
+            "id": 1,
+            "username": "testviewer",
+            "password_hash": "h",
+            "salt": "s",
+            "allowed_chat_ids": None,
+            "is_active": 1,
+            "no_download": 1,
+            "created_by": "admin",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-01",
+        }
+        resp = client.post(
+            "/api/admin/viewers",
+            json={"username": "testviewer", "password": "securepass1", "no_download": 1},
+            cookies={"viewer_auth": cookie},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["no_download"] == 1
+        # Verify the flag was passed to the DB method
+        db.create_viewer_account.assert_called_once()
+        call_kwargs = db.create_viewer_account.call_args
+        assert call_kwargs.kwargs.get("no_download") == 1 or call_kwargs[1].get("no_download") == 1
+
+    def test_create_viewer_with_inactive(self, auth_env):
+        """Creating a viewer with is_active=0 should persist the flag."""
+        client, _, db = _get_client()
+        cookie = _login_master(client)
+        db.create_viewer_account.return_value = {
+            "id": 2,
+            "username": "inactive",
+            "password_hash": "h",
+            "salt": "s",
+            "allowed_chat_ids": None,
+            "is_active": 0,
+            "no_download": 0,
+            "created_by": "admin",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-01",
+        }
+        resp = client.post(
+            "/api/admin/viewers",
+            json={"username": "inactive", "password": "securepass1", "is_active": 0},
+            cookies={"viewer_auth": cookie},
+        )
+        assert resp.status_code == 200
+        db.create_viewer_account.assert_called_once()
+        call_kwargs = db.create_viewer_account.call_args
+        assert call_kwargs.kwargs.get("is_active") == 0 or call_kwargs[1].get("is_active") == 0
 
 
 class TestAuditLogFilter:

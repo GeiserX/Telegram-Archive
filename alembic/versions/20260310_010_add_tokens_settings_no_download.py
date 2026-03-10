@@ -1,9 +1,10 @@
-"""Add viewer tokens, app settings, and no_download columns (v7.2.0).
+"""Add viewer tokens, app settings, session fields, and no_download columns (v7.2.0).
 
 Creates:
 1. viewer_tokens table for share-token authentication
 2. app_settings table for cross-container configuration
 3. no_download column on viewer_accounts
+4. no_download + source_token_id columns on viewer_sessions
 
 Revision ID: 010
 Revises: 009
@@ -70,8 +71,22 @@ def upgrade() -> None:
     if "no_download" not in existing_va_cols:
         op.add_column("viewer_accounts", sa.Column("no_download", sa.Integer(), server_default="0", nullable=True))
 
+    # -- no_download and source_token_id columns on viewer_sessions --
+    if "viewer_sessions" in existing_tables:
+        existing_vs_cols = {c["name"] for c in inspector.get_columns("viewer_sessions")}
+        if "no_download" not in existing_vs_cols:
+            op.add_column("viewer_sessions", sa.Column("no_download", sa.Integer(), server_default="0", nullable=True))
+        if "source_token_id" not in existing_vs_cols:
+            op.add_column("viewer_sessions", sa.Column("source_token_id", sa.Integer(), nullable=True))
+        existing_vs_indexes = {idx["name"] for idx in inspector.get_indexes("viewer_sessions")}
+        if "idx_viewer_sessions_source_token" not in existing_vs_indexes:
+            op.create_index("idx_viewer_sessions_source_token", "viewer_sessions", ["source_token_id"])
+
 
 def downgrade() -> None:
+    op.drop_index("idx_viewer_sessions_source_token", table_name="viewer_sessions")
+    op.drop_column("viewer_sessions", "source_token_id")
+    op.drop_column("viewer_sessions", "no_download")
     op.drop_column("viewer_accounts", "no_download")
     op.drop_table("app_settings")
     op.drop_index("idx_viewer_tokens_is_revoked", table_name="viewer_tokens")
