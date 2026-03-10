@@ -18,7 +18,7 @@ import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import Config
@@ -477,18 +477,20 @@ def require_admin(request: Request, _=Depends(require_auth)):
     return user
 
 
-async def _log_viewer_audit(request: Request, chat_id: int | None = None):
+async def _log_viewer_audit(request: Request, action: str = "api_access", chat_id: int | None = None):
     """Log viewer API access for audit trail. Only logs viewer (non-master) requests."""
     user = getattr(request.state, "user", None)
     if not user or user["role"] != "viewer" or not db:
         return
     try:
         await db.create_audit_log(
-            viewer_id=user["viewer_id"],
             username=user["username"],
+            role=user["role"],
+            action=action,
             endpoint=str(request.url.path),
             chat_id=chat_id,
             ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
         )
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
@@ -543,8 +545,10 @@ if os.path.exists(config.media_path):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root():
-    """Serve the main application page."""
+async def read_root(token: str | None = Query(default=None)):
+    """Serve the main application page. Redirects ?token= to /auth/token."""
+    if token:
+        return RedirectResponse(url=f"/auth/token?token={token}", status_code=302)
     return FileResponse(templates_dir / "index.html")
 
 
@@ -560,6 +564,7 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
         "auth_required": True,
         "role": user["role"] if user else None,
         "username": user["username"] if user else None,
+        "no_download": user.get("no_download", 0) if user else 0,
     }
 
 
@@ -593,24 +598,66 @@ async def login(request: Request):
                         "username": viewer["username"],
                         "allowed_chat_ids": set(int(cid) for cid in allowed_ids_raw),
                         "viewer_id": viewer["id"],
+                        "no_download": viewer.get("no_download", 1),
                     }
                     user_info["_created_at"] = time.time()
                     _viewer_sessions[token] = user_info
             except Exception as e:
                 logger.warning(f"DB viewer account lookup failed: {e}")
 
-        # 2. Fallback: master env-var credentials
-        if token is None and username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
-            token = AUTH_TOKEN
-            user_info = {
-                "role": "master",
-                "username": VIEWER_USERNAME,
-                "allowed_chat_ids": None,
-                "viewer_id": None,
-            }
+        # 2. Master credentials: check DB override first, then env vars
+        if token is None and VIEWER_USERNAME and username.lower() == VIEWER_USERNAME.lower():
+            master_matched = False
+            has_db_override = False
+            try:
+                override_hash = await db.get_metadata("master_password_hash")
+                override_salt = await db.get_metadata("master_password_salt")
+                if override_hash and override_salt:
+                    has_db_override = True
+                    master_matched = _verify_password(password, override_hash, override_salt)
+            except Exception:
+                pass
+            # Only fall back to env var if no DB override exists
+            if not master_matched and not has_db_override:
+                master_matched = (password == VIEWER_PASSWORD)
+            if master_matched:
+                token = AUTH_TOKEN
+                user_info = {
+                    "role": "master",
+                    "username": VIEWER_USERNAME,
+                    "allowed_chat_ids": None,
+                    "viewer_id": None,
+                }
 
         if token is None:
+            # Log failed login attempt
+            if db:
+                try:
+                    await db.create_audit_log(
+                        username=username or "(empty)",
+                        role="unknown",
+                        action="login_failed",
+                        endpoint="/api/login",
+                        ip_address=request.client.host if request.client else None,
+                        user_agent=request.headers.get("user-agent"),
+                    )
+                except Exception:
+                    pass
             raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # Log successful login
+        if db:
+            try:
+                await db.create_audit_log(
+                    username=user_info["username"],
+                    role=user_info["role"],
+                    action="login_success",
+                    endpoint="/api/login",
+                    ip_address=request.client.host if request.client else None,
+                    user_agent=request.headers.get("user-agent"),
+                )
+            except Exception:
+                pass
 
         response = JSONResponse(
             {
@@ -654,6 +701,47 @@ async def logout(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKI
     response = JSONResponse({"success": True})
     response.delete_cookie(key=AUTH_COOKIE_NAME)
     return response
+
+
+@app.put("/api/auth/password")
+async def change_password(request: Request, _=Depends(require_auth)):
+    """Change own password. Master: stores override in metadata. Viewer: updates DB account."""
+    user = request.state.user
+    data = await request.json()
+    current_pw = data.get("current_password", "")
+    new_pw = data.get("new_password", "")
+
+    if len(new_pw) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+
+    if user["role"] == "master":
+        # Verify against DB override first, then env var
+        override_hash = await db.get_metadata("master_password_hash")
+        override_salt = await db.get_metadata("master_password_salt")
+        if override_hash and override_salt:
+            if not _verify_password(current_pw, override_hash, override_salt):
+                raise HTTPException(status_code=403, detail="Current password incorrect")
+        else:
+            if current_pw != VIEWER_PASSWORD:
+                raise HTTPException(status_code=403, detail="Current password incorrect")
+        # Store new password in metadata (DB override)
+        new_hash, new_salt = _hash_password(new_pw)
+        await db.set_metadata("master_password_hash", new_hash)
+        await db.set_metadata("master_password_salt", new_salt)
+        return {"success": True}
+
+    elif user["role"] == "viewer":
+        viewer_id = user.get("viewer_id")
+        if not viewer_id:
+            raise HTTPException(status_code=400, detail="Token sessions cannot change password")
+        account = await db.get_viewer_account_by_username(user["username"])
+        if not account or not _verify_password(current_pw, account["password_hash"], account["salt"]):
+            raise HTTPException(status_code=403, detail="Current password incorrect")
+        new_hash, new_salt = _hash_password(new_pw)
+        await db.update_viewer_account(viewer_id, password_hash=new_hash, salt=new_salt)
+        return {"success": True}
+
+    raise HTTPException(status_code=400, detail="Unknown role")
 
 
 def _find_avatar_path(chat_id: int, chat_type: str) -> str | None:
@@ -824,7 +912,7 @@ async def get_chat_media(
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         result = await db.get_chat_media(chat_id=chat_id, media_type=type, limit=limit, offset=offset)
@@ -840,7 +928,7 @@ async def get_message_context(request: Request, chat_id: int, message_id: int, l
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         # Find the target message date, then get messages around it
@@ -906,7 +994,7 @@ async def get_messages(
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     # Parse before_date if provided
     parsed_before_date = None
@@ -959,7 +1047,7 @@ async def get_pinned_messages(request: Request, chat_id: int):
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         pinned_messages = await db.get_pinned_messages(chat_id)
@@ -992,7 +1080,7 @@ async def get_chat_topics(request: Request, chat_id: int):
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         topics = await db.get_forum_topics(chat_id)
@@ -1206,7 +1294,7 @@ async def get_chat_stats(request: Request, chat_id: int):
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         stats = await db.get_chat_stats(chat_id)
@@ -1230,7 +1318,7 @@ async def get_message_by_date(
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         # Use provided timezone, fall back to config, then UTC
@@ -1269,7 +1357,7 @@ async def export_chat(request: Request, chat_id: int):
     user_chats = _get_user_chat_ids(request)
     if user_chats is not None and chat_id not in user_chats:
         raise HTTPException(status_code=403, detail="Access denied")
-    await _log_viewer_audit(request, chat_id)
+    await _log_viewer_audit(request, chat_id=chat_id)
 
     try:
         chat = await db.get_chat_by_id(chat_id)
@@ -1352,8 +1440,10 @@ async def create_viewer_account(request: Request):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid chat ID format")
 
+        no_download = 1 if data.get("no_download", True) else 0
+
         password_hash, salt = _hash_password(password)
-        result = await db.create_viewer_account(username, password_hash, salt, allowed_chat_ids)
+        result = await db.create_viewer_account(username, password_hash, salt, allowed_chat_ids, no_download=no_download)
 
         return {"success": True, "viewer": result}
     except HTTPException:
@@ -1387,6 +1477,9 @@ async def update_viewer_account(viewer_id: int, request: Request):
 
         if "is_active" in data:
             updates["is_active"] = 1 if data["is_active"] else 0
+
+        if "no_download" in data:
+            updates["no_download"] = 1 if data["no_download"] else 0
 
         if not updates:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -1440,6 +1533,9 @@ async def list_all_chats_admin():
                     "id": c["id"],
                     "title": c.get("title") or c.get("first_name") or str(c["id"]),
                     "type": c.get("type", ""),
+                    "username": c.get("username"),
+                    "first_name": c.get("first_name"),
+                    "last_name": c.get("last_name"),
                 }
                 for c in chats
             ]
@@ -1451,17 +1547,291 @@ async def list_all_chats_admin():
 
 @app.get("/api/admin/audit", dependencies=[Depends(require_admin)])
 async def get_audit_log(
-    viewer_id: int | None = Query(None),
+    username: str | None = Query(None),
+    action: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
     """Get viewer activity audit log (admin only)."""
     try:
-        entries = await db.get_audit_log(viewer_id=viewer_id, limit=limit, offset=offset)
+        entries = await db.get_audit_log(username=username, action=action, limit=limit, offset=offset)
         return {"entries": entries, "total": len(entries)}
     except Exception as e:
         logger.error(f"Error fetching audit log: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Share Token Endpoints (v7.2.0)
+# ============================================================================
+
+
+@app.post("/api/admin/tokens", dependencies=[Depends(require_admin)])
+async def create_share_token(request: Request):
+    """Create share token for scoped chat access. Token shown once only."""
+    try:
+        data = await request.json()
+        chat_ids = data.get("chat_ids", [])
+        expires_hours = data.get("expires_hours")
+        label = data.get("label", "").strip()
+
+        if not chat_ids:
+            raise HTTPException(status_code=400, detail="chat_ids required")
+
+        try:
+            chat_ids = [int(cid) for cid in chat_ids]
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid chat ID format")
+
+        no_download = 1 if data.get("no_download", True) else 0
+
+        plaintext_token = secrets.token_hex(32)
+        token_hash, token_salt = _hash_password(plaintext_token)
+
+        expires_at = None
+        if expires_hours:
+            expires_at = datetime.utcnow() + timedelta(hours=int(expires_hours))
+
+        token_id = await db.create_viewer_token(
+            token_hash=token_hash,
+            token_salt=token_salt,
+            created_by=request.state.user["username"],
+            allowed_chat_ids=chat_ids,
+            label=label or None,
+            expires_at=expires_at,
+            no_download=no_download,
+        )
+
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("host", request.url.netloc)
+        share_url = f"{scheme}://{host}/?token={plaintext_token}"
+
+        return {
+            "success": True,
+            "token_id": token_id,
+            "token": plaintext_token,
+            "share_url": share_url,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "chat_ids": chat_ids,
+            "label": label,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating share token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/tokens", dependencies=[Depends(require_admin)])
+async def list_share_tokens():
+    """List all share tokens (plaintext hidden)."""
+    try:
+        tokens = await db.get_viewer_tokens()
+        return {"tokens": tokens}
+    except Exception as e:
+        logger.error(f"Error listing share tokens: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/admin/tokens/{token_id}", dependencies=[Depends(require_admin)])
+async def revoke_share_token(token_id: int, request: Request):
+    """Revoke token by ID. Also kills active sessions from this token."""
+    try:
+        success = await db.revoke_viewer_token(token_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        # Kill active sessions created by this token
+        to_remove = [k for k, v in _viewer_sessions.items() if v.get("_token_id") == token_id]
+        for k in to_remove:
+            del _viewer_sessions[k]
+
+        return {"success": True, "sessions_removed": len(to_remove)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error revoking share token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/admin/tokens/{token_id}", dependencies=[Depends(require_admin)])
+async def update_share_token(token_id: int, request: Request):
+    """Update token fields (label, allowed_chat_ids). Admin only."""
+    try:
+        data = await request.json()
+        updates = {}
+
+        if "label" in data:
+            updates["label"] = str(data["label"]).strip() or None
+
+        if "allowed_chat_ids" in data:
+            try:
+                chat_ids = [int(cid) for cid in data["allowed_chat_ids"]]
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid chat ID format")
+            if not chat_ids:
+                raise HTTPException(status_code=400, detail="At least 1 chat required")
+            updates["allowed_chat_ids"] = json.dumps(chat_ids)
+
+        if "no_download" in data:
+            updates["no_download"] = 1 if data["no_download"] else 0
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        success = await db.update_viewer_token(token_id, **updates)
+        if not success:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        # Invalidate active sessions for this token so new scope takes effect
+        to_remove = [k for k, v in _viewer_sessions.items() if v.get("_token_id") == token_id]
+        for k in to_remove:
+            del _viewer_sessions[k]
+
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating share token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================================================
+# App Settings & Backup Control (v7.3.0)
+# ========================================================================
+
+
+@app.get("/api/admin/settings", dependencies=[Depends(require_admin)])
+async def get_admin_settings(request: Request):
+    """Get all app settings (admin only)."""
+    settings = await db.get_all_settings()
+    return {"settings": settings}
+
+
+@app.put("/api/admin/settings", dependencies=[Depends(require_admin)])
+async def update_admin_settings(request: Request):
+    """Update whitelisted app settings (admin only)."""
+    data = await request.json()
+    allowed_keys = {"backup_schedule"}
+    for key, value in data.items():
+        if key not in allowed_keys:
+            continue
+        if key == "backup_schedule":
+            parts = str(value).split()
+            if len(parts) != 5:
+                raise HTTPException(status_code=400, detail="Invalid cron expression (need 5 parts)")
+            # Semantic validation — each field must be digits, *, or cron syntax (*/N, ranges)
+            import re
+
+            cron_field = re.compile(r"^(\*|[0-9]+)(/[0-9]+)?(-[0-9]+)?$")
+            for part in parts:
+                # Split on commas for lists like "1,15,30"
+                for sub in part.split(","):
+                    if not cron_field.match(sub):
+                        raise HTTPException(status_code=400, detail=f"Invalid cron field: {sub}")
+        await db.set_setting(key, str(value))
+    return {"success": True}
+
+
+@app.get("/api/users/{user_id}", dependencies=[Depends(require_auth)])
+async def get_user_info(user_id: int, request: Request):
+    """Get user profile with message stats. Phone hidden for non-admin."""
+    chat_id = request.query_params.get("chat_id")
+    info = await db.get_user_info(user_id, int(chat_id) if chat_id else None)
+    if not info:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Hide phone for non-admin
+    user = getattr(request.state, "user", None)
+    if not user or user["role"] != "master":
+        info["phone"] = None
+    # Resolve avatar
+    avatar_rel = _find_avatar_path(user_id, "private")
+    info["avatar_url"] = f"/media/{avatar_rel}" if avatar_rel else None
+    return info
+
+
+@app.get("/api/backup-status", dependencies=[Depends(require_auth)])
+async def get_backup_status(request: Request):
+    """Backup status visible to any authenticated user."""
+    status = await db.get_setting("backup_status") or "unknown"
+    last_completed = await db.get_setting("last_backup_completed_at")
+    last_started = await db.get_setting("last_backup_started_at")
+    schedule = await db.get_setting("backup_schedule") or os.getenv("SCHEDULE", "0 */6 * * *")
+    return {
+        "status": status,
+        "last_completed_at": last_completed,
+        "last_started_at": last_started,
+        "schedule": schedule,
+    }
+
+
+@app.post("/api/activity/ping", dependencies=[Depends(require_auth)])
+async def activity_ping(request: Request):
+    """Mark user as actively viewing. Extends active-viewer deadline by 2 min."""
+    deadline = (datetime.utcnow() + timedelta(minutes=2)).isoformat()
+    await db.set_setting("active_viewers_deadline", deadline)
+    return {"ok": True}
+
+
+@app.get("/auth/token")
+async def auth_with_token(request: Request, token: str = Query(...)):
+    """Validate share token, issue 24h session cookie, redirect to /."""
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=400, detail="Auth not enabled")
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    token_info = await db.verify_viewer_token(token)
+    if not token_info:
+        # Redirect to home with error flag (SPA shows login with error message)
+        return RedirectResponse(url="/?auth_error=invalid_token", status_code=302)
+
+    session_token = secrets.token_hex(32)
+    allowed = set(int(c) for c in token_info["allowed_chat_ids"])
+    token_username = f"token:{token_info.get('label') or token_info['id']}"
+    _viewer_sessions[session_token] = {
+        "role": "viewer",
+        "username": token_username,
+        "allowed_chat_ids": allowed,
+        "viewer_id": None,
+        "_token_id": token_info["id"],
+        "_created_at": time.time(),
+        "no_download": token_info.get("no_download", 1),
+    }
+
+    # Log token auth event
+    try:
+        await db.create_audit_log(
+            username=token_username,
+            role="viewer",
+            action="token_auth",
+            endpoint="/auth/token",
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except Exception:
+        pass
+
+    response = RedirectResponse(url="/", status_code=302)
+    secure_env = os.getenv("SECURE_COOKIES", "").strip().lower()
+    if secure_env == "true":
+        secure_cookies = True
+    elif secure_env == "false":
+        secure_cookies = False
+    else:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        secure_cookies = forwarded_proto == "https" or str(request.url.scheme) == "https"
+
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=secure_cookies,
+        samesite="lax",
+        max_age=86400,  # 24 hours
+    )
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 # ============================================================================

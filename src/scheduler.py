@@ -16,6 +16,7 @@ import asyncio
 import logging
 import signal
 import sys
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -45,6 +46,8 @@ class BackupScheduler:
         self.config = config
         self.scheduler = AsyncIOScheduler()
         self.running = False
+        self._db = None  # Database adapter for settings polling (v7.3.0)
+        self._current_schedule = config.schedule
 
         # Shared Telegram connection (used by both backup and listener)
         self._connection: TelegramConnection | None = None
@@ -69,6 +72,15 @@ class BackupScheduler:
         Uses the shared connection - no need to pause the listener since both
         use the same TelegramClient.
         """
+        # Track backup status in DB (v7.3.0)
+        if self._db:
+            try:
+                await self._db.set_setting("backup_status", "running")
+                await self._db.set_setting("last_backup_started_at", datetime.utcnow().isoformat())
+            except Exception:
+                pass
+
+        _failed = False
         try:
             logger.info("Scheduled backup starting...")
 
@@ -86,7 +98,15 @@ class BackupScheduler:
             logger.info("Scheduled backup completed successfully")
 
         except Exception as e:
+            _failed = True
             logger.error(f"Scheduled backup failed: {e}", exc_info=True)
+        finally:
+            if self._db:
+                try:
+                    await self._db.set_setting("backup_status", "failed" if _failed else "idle")
+                    await self._db.set_setting("last_backup_completed_at", datetime.utcnow().isoformat())
+                except Exception:
+                    pass
 
     def start(self):
         """Start the scheduler."""
@@ -190,6 +210,48 @@ class BackupScheduler:
             self._listener = None
             logger.info("Real-time listener stopped")
 
+    async def _poll_settings(self):
+        """Poll app_settings every 60s. Reschedule if backup_schedule changed (v7.3.0)."""
+        while self.running:
+            await asyncio.sleep(60)
+            try:
+                db_schedule = await self._db.get_setting("backup_schedule")
+                if db_schedule and db_schedule != self._current_schedule:
+                    parts = db_schedule.split()
+                    if len(parts) == 5:
+                        logger.info(f"Schedule changed: {self._current_schedule} -> {db_schedule}")
+                        trigger = CronTrigger(
+                            minute=parts[0], hour=parts[1], day=parts[2],
+                            month=parts[3], day_of_week=parts[4],
+                        )
+                        self.scheduler.reschedule_job("telegram_backup", trigger=trigger)
+                        self._current_schedule = db_schedule
+
+                # Active viewer boost: every 5 min while someone is browsing
+                deadline_str = await self._db.get_setting("active_viewers_deadline")
+                if deadline_str:
+                    deadline_dt = datetime.fromisoformat(deadline_str)
+                    if deadline_dt > datetime.utcnow():
+                        if self._current_schedule != "*/5 * * * *":
+                            logger.info("Active viewer detected — switching to 5-min backup interval")
+                            self.scheduler.reschedule_job(
+                                "telegram_backup", trigger=CronTrigger(minute="*/5"),
+                            )
+                            self._current_schedule = "*/5 * * * *"
+                    elif self._current_schedule == "*/5 * * * *":
+                        normal = db_schedule or self.config.schedule
+                        parts = normal.split()
+                        if len(parts) == 5:
+                            logger.info("No active viewers — restoring normal schedule")
+                            trigger = CronTrigger(
+                                minute=parts[0], hour=parts[1], day=parts[2],
+                                month=parts[3], day_of_week=parts[4],
+                            )
+                            self.scheduler.reschedule_job("telegram_backup", trigger=trigger)
+                            self._current_schedule = normal
+            except Exception as e:
+                logger.warning(f"Settings poll error: {e}")
+
     async def run_forever(self):
         """
         Keep the scheduler running with optional listener.
@@ -201,6 +263,16 @@ class BackupScheduler:
         4. Run initial backup (uses shared connection)
         5. Keep running until stopped
         """
+        # Initialize DB adapter for settings polling (v7.3.0)
+        try:
+            from .db import get_adapter
+            self._db = await get_adapter()
+            await self._db.set_setting("backup_status", "idle")
+            logger.info("Database adapter initialized for settings polling")
+        except Exception as e:
+            logger.warning(f"Could not initialize DB adapter for settings: {e}")
+            self._db = None
+
         # Establish shared connection
         await self._connect()
 
@@ -210,8 +282,20 @@ class BackupScheduler:
         # Start real-time listener if enabled (uses shared connection)
         await self._start_listener()
 
+        # Start settings polling loop (v7.3.0)
+        _poll_task = None
+        if self._db:
+            _poll_task = asyncio.create_task(self._poll_settings())
+
         # Run initial backup immediately on startup (uses shared connection)
         logger.info("Running initial backup on startup...")
+        if self._db:
+            try:
+                await self._db.set_setting("backup_status", "running")
+                await self._db.set_setting("last_backup_started_at", datetime.utcnow().isoformat())
+            except Exception:
+                pass
+        _init_failed = False
         try:
             await run_backup(self.config, client=self._connection.client)
             logger.info("Initial backup completed")
@@ -221,7 +305,15 @@ class BackupScheduler:
                 await self._listener._load_tracked_chats()
 
         except Exception as e:
+            _init_failed = True
             logger.error(f"Initial backup failed: {e}", exc_info=True)
+        finally:
+            if self._db:
+                try:
+                    await self._db.set_setting("backup_status", "failed" if _init_failed else "idle")
+                    await self._db.set_setting("last_backup_completed_at", datetime.utcnow().isoformat())
+                except Exception:
+                    pass
 
         # Keep running until stopped
         try:
@@ -247,6 +339,8 @@ class BackupScheduler:
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
         finally:
+            if _poll_task:
+                _poll_task.cancel()
             await self._stop_listener()
             self.stop()
             await self._disconnect()
