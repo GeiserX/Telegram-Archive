@@ -61,3 +61,10 @@ Thumbs.db
 logs/
 docker_logs.txt
 error.log
+
+# Backup files
+*.bak
+
+# Claude-flow sessions and agent state
+.claude-flow/sessions/
+.claude/agent-memory/
