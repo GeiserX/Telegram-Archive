@@ -81,6 +81,15 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check if viewer_tokens table exists (added in migration 010)
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'viewer_tokens'
+        );
+    \"\"\")
+    has_010_table = cur.fetchone()[0]
+
     # Check if viewer_sessions table exists (added in migration 009)
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -145,7 +154,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_009_table:
+    if has_010_table:
+        stamp_version = '010'
+    elif has_009_table:
         stamp_version = '009'
     elif has_008_column:
         stamp_version = '008'
@@ -212,6 +223,10 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check if viewer_tokens table exists (added in migration 010)
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")
+    has_010_table = cur.fetchone() is not None
+
     # Check if viewer_sessions table exists (added in migration 009)
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_sessions'\")
     has_009_table = cur.fetchone() is not None
@@ -243,7 +258,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_009_table:
+    if has_010_table:
+        stamp_version = '010'
+    elif has_009_table:
         stamp_version = '009'
     elif has_008_column:
         stamp_version = '008'
