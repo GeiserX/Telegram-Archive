@@ -144,6 +144,25 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         "--merge", action="store_true", help="Allow importing into a chat that already has messages"
     )
 
+    # Fill gaps command
+    fill_gaps_parser = subparsers.add_parser(
+        "fill-gaps",
+        help="Detect and fill message gaps from failed backups",
+        description=(
+            "Scans backed-up chats for gaps in message ID sequences "
+            "and recovers skipped messages from Telegram. "
+            "Gaps are caused by API errors, rate limits, or interruptions "
+            "during previous backup runs."
+        ),
+    )
+    fill_gaps_parser.add_argument(
+        "-c", "--chat-id", type=int, help="Fill gaps only for this specific chat ID"
+    )
+    fill_gaps_parser.add_argument(
+        "-t", "--threshold", type=int, default=None,
+        help="Minimum gap size to investigate (overrides GAP_THRESHOLD env var)",
+    )
+
     return parser
 
 
@@ -243,6 +262,35 @@ async def run_import(args) -> int:
         return 1
 
 
+async def run_fill_gaps_cmd(args) -> int:
+    """Run fill-gaps command."""
+    from .config import Config, setup_logging
+    from .telegram_backup import run_fill_gaps
+
+    try:
+        config = Config()
+        if args.threshold is not None:
+            config.gap_threshold = args.threshold
+        setup_logging(config)
+
+        summary = await run_fill_gaps(config, chat_id=args.chat_id)
+        print("\nGap-fill complete:")
+        print(f"  Chats scanned: {summary['chats_scanned']}")
+        print(f"  Chats with gaps: {summary['chats_with_gaps']}")
+        print(f"  Total gaps found: {summary['total_gaps']}")
+        print(f"  Messages recovered: {summary['total_recovered']}")
+        if summary["details"]:
+            for detail in summary["details"]:
+                print(
+                    f"  - {detail['chat_name']} (ID {detail['chat_id']}): "
+                    f"{detail['gaps']} gaps, {detail['recovered']} recovered"
+                )
+        return 0
+    except Exception as e:
+        print(f"Gap-fill failed: {e}", file=sys.stderr)
+        return 1
+
+
 def run_auth(args) -> int:
     """Run authentication setup."""
     from .setup_auth import main as auth_main
@@ -304,6 +352,8 @@ def main() -> int:
         return asyncio.run(run_list_chats(args))
     elif args.command == "import":
         return asyncio.run(run_import(args))
+    elif args.command == "fill-gaps":
+        return asyncio.run(run_fill_gaps_cmd(args))
     else:
         parser.print_help()
         return 0

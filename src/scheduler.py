@@ -76,6 +76,15 @@ class BackupScheduler:
             # Run backup using shared client
             await run_backup(self.config, client=client)
 
+            # Run gap-fill if enabled
+            if self.config.fill_gaps:
+                try:
+                    from .telegram_backup import run_fill_gaps
+                    logger.info("Running gap-fill after backup...")
+                    await run_fill_gaps(self.config, client=client)
+                except Exception as e:
+                    logger.error(f"Gap-fill failed: {e}", exc_info=True)
+
             # Reload tracked chats in listener after backup
             # (new chats may have been added)
             if self._listener:
@@ -213,6 +222,15 @@ class BackupScheduler:
         try:
             await run_backup(self.config, client=self._connection.client)
             logger.info("Initial backup completed")
+
+            # Run gap-fill after initial backup if enabled
+            if self.config.fill_gaps:
+                try:
+                    from .telegram_backup import run_fill_gaps
+                    logger.info("Running initial gap-fill...")
+                    await run_fill_gaps(self.config, client=self._connection.client)
+                except Exception as e:
+                    logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
 
             # Reload tracked chats in listener after initial backup
             if self._listener:
