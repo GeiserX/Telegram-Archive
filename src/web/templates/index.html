@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f172a">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="manifest" href="/static/manifest.json">
@@ -15,12 +15,57 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Flatpickr for date picker -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <!-- Theme loader: apply before paint to prevent flash -->
+    <script>
+    (function(){
+        var t = localStorage.getItem('tg-theme') || 'midnight';
+        document.documentElement.className = (t === 'light' ? '' : 'dark') + ' theme-' + t;
+    })();
+    </script>
     <style>
+        /* Theme system — CSS variable presets */
+        :root, .theme-midnight {
+            --tg-bg: #0f172a; --tg-sidebar: #1e293b; --tg-hover: #334155;
+            --tg-active: #2b5278; --tg-text: #e2e8f0; --tg-muted: #94a3b8;
+            --tg-own: #2b5278; --tg-other: #182533; --tg-accent: #3b82f6;
+            --tg-border: #374151; --tg-input: #111827;
+        }
+        .theme-dark {
+            --tg-bg: #111827; --tg-sidebar: #1f2937; --tg-hover: #374151;
+            --tg-active: #4b5563; --tg-text: #f3f4f6; --tg-muted: #9ca3af;
+            --tg-own: #4338ca; --tg-other: #1f2937; --tg-accent: #6366f1;
+            --tg-border: #4b5563; --tg-input: #111827;
+        }
+        .theme-nord {
+            --tg-bg: #2e3440; --tg-sidebar: #3b4252; --tg-hover: #434c5e;
+            --tg-active: #5e81ac; --tg-text: #eceff4; --tg-muted: #d8dee9;
+            --tg-own: #5e81ac; --tg-other: #3b4252; --tg-accent: #88c0d0;
+            --tg-border: #4c566a; --tg-input: #2e3440;
+        }
+        .theme-solarized {
+            --tg-bg: #002b36; --tg-sidebar: #073642; --tg-hover: #586e75;
+            --tg-active: #268bd2; --tg-text: #eee8d5; --tg-muted: #93a1a1;
+            --tg-own: #268bd2; --tg-other: #073642; --tg-accent: #2aa198;
+            --tg-border: #586e75; --tg-input: #002b36;
+        }
+        .theme-oled {
+            --tg-bg: #000000; --tg-sidebar: #0a0a0a; --tg-hover: #1a1a1a;
+            --tg-active: #1d4ed8; --tg-text: #e5e5e5; --tg-muted: #a3a3a3;
+            --tg-own: #1d4ed8; --tg-other: #0a0a0a; --tg-accent: #3b82f6;
+            --tg-border: #262626; --tg-input: #0a0a0a;
+        }
+        .theme-light {
+            --tg-bg: #f8fafc; --tg-sidebar: #ffffff; --tg-hover: #f1f5f9;
+            --tg-active: #dbeafe; --tg-text: #1e293b; --tg-muted: #64748b;
+            --tg-own: #2563eb; --tg-other: #f1f5f9; --tg-accent: #2563eb;
+            --tg-border: #e2e8f0; --tg-input: #f1f5f9;
+        }
+
         /* iOS Safe Area Support */
         :root {
             --sat: env(safe-area-inset-top, 0px);
@@ -28,36 +73,62 @@
             --sab: env(safe-area-inset-bottom, 0px);
             --sal: env(safe-area-inset-left, 0px);
         }
-        
+
         html {
-            background-color: #0f172a;
+            background-color: var(--tg-bg);
         }
-        
+
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             padding-top: var(--sat);
             padding-bottom: var(--sab);
             padding-left: var(--sal);
             padding-right: var(--sar);
-            background-color: #0f172a;
+            background-color: var(--tg-bg);
+            touch-action: manipulation;
+            overscroll-behavior: contain;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
+        /* Mobile touch target enforcement — min 44x44 for interactive elements */
+        @media (max-width: 767px) {
+            .ctx-menu-item {
+                padding: 12px 16px;
+                min-height: 44px;
+            }
         }
 
-        ::-webkit-scrollbar-track {
-            background: #1e293b;
-        }
+        /* Custom Scrollbar (Webkit + Firefox) */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--tg-muted); border-radius: 3px; opacity: 0.5; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--tg-text); }
+        * { scrollbar-width: thin; scrollbar-color: var(--tg-muted) transparent; }
 
-        ::-webkit-scrollbar-thumb {
-            background: #475569;
-            border-radius: 3px;
+        /* Chat list items — separators + active indicator */
+        .chat-item-styled {
+            border-bottom: 1px solid color-mix(in srgb, var(--tg-border) 35%, transparent);
+            transition: background 0.12s ease, border-left 0.12s ease;
+            border-left: 3px solid transparent;
         }
+        .chat-item-styled.chat-active {
+            border-left-color: var(--tg-accent);
+            background: var(--tg-active);
+        }
+        .chat-item-styled:hover { background: var(--tg-hover); }
 
-        ::-webkit-scrollbar-thumb:hover {
-            background: #64748b;
+        /* Micro-interaction hover effects */
+        .hover-lift { transition: transform 0.15s ease; }
+        .hover-lift:hover { transform: scale(1.02); }
+
+        /* Chat switch fade */
+        .msg-fade-enter { animation: msgAreaFade 0.15s ease; }
+        @keyframes msgAreaFade { from { opacity: 0.6; } to { opacity: 1; } }
+
+        /* Native select/option dropdown fix — prevent white-on-white */
+        select, select option {
+            background-color: var(--tg-input);
+            color: var(--tg-text);
         }
 
         /* Message Bubbles */
@@ -158,6 +229,13 @@
             height: auto;
         }
 
+        /* Message density (Phase 4) */
+        .density-compact .msg-row { margin-bottom: 1px; }
+        .density-compact .message-bubble { padding: 4px 8px; font-size: 13px; }
+        .density-compact .msg-row.msg-grouped { margin-bottom: -3px; }
+        .density-normal .msg-row { margin-bottom: 4px; }
+        .density-comfortable .msg-row { margin-bottom: 10px; }
+        .density-comfortable .message-bubble { padding: 14px 16px; }
 
         /* Date Separator */
         .date-separator {
@@ -166,7 +244,7 @@
         }
 
         .date-separator span {
-            background-color: #334155;
+            background-color: var(--tg-hover);
             padding: 6px 16px;
             border-radius: 16px;
             font-size: 0.75rem;
@@ -179,6 +257,113 @@
         .date-separator span:hover {
             background-color: #475569;
             color: #cbd5e1;
+        }
+
+        /* Context Menu */
+        .ctx-menu-backdrop {
+            position: fixed; inset: 0; z-index: 9998;
+        }
+        .ctx-menu {
+            position: fixed; z-index: 9999;
+            background: var(--tg-sidebar);
+            border: 1px solid var(--tg-border);
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+            min-width: 180px;
+            padding: 4px 0;
+            animation: ctxFadeIn 0.12s ease-out;
+        }
+        @keyframes ctxFadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .ctx-menu-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 9px 16px;
+            cursor: pointer;
+            color: var(--tg-text);
+            font-size: 14px;
+            transition: background 0.1s;
+        }
+        .ctx-menu-item:hover {
+            background: var(--tg-hover);
+        }
+        .ctx-menu-item.danger {
+            color: #ef4444;
+        }
+        .ctx-menu-sep {
+            height: 1px;
+            background: var(--tg-border);
+            margin: 4px 0;
+        }
+
+        /* User Info Panel */
+        .user-panel-backdrop {
+            position: fixed; inset: 0; z-index: 9990;
+            background: rgba(0,0,0,0.4);
+            animation: backdropIn 0.2s ease;
+        }
+        @keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
+        .user-panel {
+            position: fixed; top: 0; right: 0; bottom: 0;
+            width: min(380px, 90vw); z-index: 9991;
+            background: var(--tg-sidebar);
+            border-left: 1px solid var(--tg-border);
+            animation: panelSlideIn 0.25s cubic-bezier(.4,0,.2,1);
+            display: flex; flex-direction: column;
+            overflow-y: auto;
+        }
+        @keyframes panelSlideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .user-panel-avatar {
+            width: 80px; height: 80px; border-radius: 50%;
+            object-fit: cover;
+        }
+        .user-panel-initials {
+            width: 80px; height: 80px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 28px; font-weight: 700; color: white;
+            background: linear-gradient(135deg, #5288c1, #6ab2f2);
+        }
+        .user-stat { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--tg-border); }
+        .user-stat:last-child { border-bottom: none; }
+
+        /* Login Character Animations */
+        .login-char svg {
+            animation: charBreathe 3s ease-in-out infinite;
+        }
+        @keyframes charBreathe {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+        }
+        .char-hand-l, .char-hand-r { transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
+        .char-pupil-l, .char-pupil-r { transition: transform 0.3s ease; }
+        .char-smile { transition: d 0.3s ease; }
+        /* Username focus: eyes look down */
+        .char-username .char-pupil-l,
+        .char-username .char-pupil-r { transform: translate(0, 2px); }
+        /* Password focus: hands cover eyes */
+        .char-password .char-hand-l { transform: translate(18px, -36px); }
+        .char-password .char-hand-r { transform: translate(-18px, -36px); }
+        .char-password .char-smile { opacity: 0.6; }
+        /* Token focus: peek (one eye) */
+        .char-token .char-hand-l { transform: translate(18px, -36px); }
+        .char-token .char-hand-r { transform: translate(-14px, -30px) rotate(-8deg); }
+
+        /* Media download restriction */
+        .no-download img, .no-download video {
+            pointer-events: none;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+        .no-download .lightbox-media {
+            pointer-events: none;
+            user-select: none;
+        }
+
+        /* Subtle background pattern for message area */
+        .msg-area-pattern {
+            background-image: url("data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23888' opacity='0.06'/%3E%3C/svg%3E");
+            background-repeat: repeat;
         }
 
         /* Flatpickr dark theme customization */
@@ -358,14 +543,14 @@
                 extend: {
                     colors: {
                         tg: {
-                            bg: '#0f172a',
-                            sidebar: '#1e293b',
-                            hover: '#334155',
-                            active: '#2b5278',
-                            text: '#e2e8f0',
-                            muted: '#94a3b8',
-                            own: '#2b5278',
-                            other: '#182533',
+                            bg: 'var(--tg-bg)',
+                            sidebar: 'var(--tg-sidebar)',
+                            hover: 'var(--tg-hover)',
+                            active: 'var(--tg-active)',
+                            text: 'var(--tg-text)',
+                            muted: 'var(--tg-muted)',
+                            own: 'var(--tg-own)',
+                            other: 'var(--tg-other)',
                         }
                     }
                 }
@@ -379,11 +564,27 @@
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
-                class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/20">
-                <!-- Telegram Logo -->
-                <div class="flex justify-center mb-6">
-                    <div class="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg">
-                        <i class="fab fa-telegram-plane text-5xl text-blue-500"></i>
+                class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 sm:p-10 w-full max-w-md border border-white/20 mx-4 sm:mx-0">
+                <!-- Animated Login Character -->
+                <div class="flex justify-center mb-4">
+                    <div class="login-char" :class="'char-' + loginCharState">
+                        <svg viewBox="0 0 120 100" width="100" height="84">
+                            <!-- Face circle -->
+                            <circle cx="60" cy="40" r="34" fill="#5288c1"/>
+                            <!-- Eyes (white sclera) -->
+                            <g class="char-eyes">
+                                <ellipse cx="46" cy="36" rx="7" ry="7.5" fill="white"/>
+                                <ellipse cx="74" cy="36" rx="7" ry="7.5" fill="white"/>
+                                <!-- Pupils -->
+                                <circle cx="47" cy="37" r="3.5" fill="#17212b" class="char-pupil-l"/>
+                                <circle cx="75" cy="37" r="3.5" fill="#17212b" class="char-pupil-r"/>
+                            </g>
+                            <!-- Smile -->
+                            <path d="M 48 52 Q 60 62 72 52" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" class="char-smile"/>
+                            <!-- Hands -->
+                            <rect x="14" y="68" width="24" height="13" rx="6.5" fill="#4477aa" class="char-hand-l"/>
+                            <rect x="82" y="68" width="24" height="13" rx="6.5" fill="#4477aa" class="char-hand-r"/>
+                        </svg>
                     </div>
                 </div>
 
@@ -398,17 +599,34 @@
                     Authentication is disabled
                 </p>
 
-                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
+                <!-- Login mode toggle -->
+                <div v-if="authRequired || authCheckFailed" class="flex justify-center mb-6 bg-white/10 rounded-xl p-1">
+                    <button @click="loginMode = 'password'; loginError = ''"
+                        :class="loginMode === 'password' ? 'bg-white/25 text-white shadow' : 'text-blue-200 hover:text-white'"
+                        class="flex-1 py-2 px-4 rounded-lg text-sm font-medium transition">
+                        Password
+                    </button>
+                    <button @click="loginMode = 'token'; loginError = ''"
+                        :class="loginMode === 'token' ? 'bg-white/25 text-white shadow' : 'text-blue-200 hover:text-white'"
+                        class="flex-1 py-2 px-4 rounded-lg text-sm font-medium transition">
+                        Token
+                    </button>
+                </div>
+
+                <!-- Password login form -->
+                <form @submit.prevent="performLogin" class="space-y-5" v-if="(authRequired || authCheckFailed) && loginMode === 'password'">
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                         <input v-model="loginForm.username" type="text" autocomplete="username"
                             placeholder="Enter your username"
+                            @focus="loginCharState = 'username'" @blur="loginCharState = 'idle'"
                             class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-2 text-blue-100">Password</label>
                         <input v-model="loginForm.password" type="password" autocomplete="current-password"
                             placeholder="Enter your password"
+                            @focus="loginCharState = 'password'" @blur="loginCharState = 'idle'"
                             class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
                     </div>
                     <p v-if="loginError" class="text-sm text-red-200 bg-red-500/20 rounded-lg p-2 text-center">{{
@@ -416,6 +634,23 @@
                     <button type="submit" :disabled="loadingAuth"
                         class="w-full bg-white text-blue-600 hover:bg-blue-50 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition shadow-lg hover:shadow-xl">
                         {{ loadingAuth ? 'Signing in...' : 'Sign in' }}
+                    </button>
+                </form>
+
+                <!-- Token login form -->
+                <form @submit.prevent="performTokenLogin" class="space-y-5" v-if="(authRequired || authCheckFailed) && loginMode === 'token'">
+                    <div>
+                        <label class="block text-sm font-medium mb-2 text-blue-100">Share Token</label>
+                        <input v-model="tokenInput" type="text" autocomplete="off"
+                            placeholder="Paste your share token"
+                            @focus="loginCharState = 'token'" @blur="loginCharState = 'idle'"
+                            class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition font-mono text-sm">
+                    </div>
+                    <p v-if="loginError" class="text-sm text-red-200 bg-red-500/20 rounded-lg p-2 text-center">{{
+                        loginError }}</p>
+                    <button type="submit" :disabled="!tokenInput.trim() || loadingAuth"
+                        class="w-full bg-white text-blue-600 hover:bg-blue-50 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition shadow-lg hover:shadow-xl">
+                        {{ loadingAuth ? 'Accessing...' : 'Access with Token' }}
                     </button>
                 </form>
             </div>
@@ -430,11 +665,19 @@
                 <div class="p-4 border-b border-gray-700">
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
-                            <h1 class="text-xl font-bold">Telegram Archive</h1>
+                            <h1 class="text-xl font-bold text-tg-text">Telegram Archive</h1>
+                            <!-- Settings gear (admin only) -->
+                            <button v-if="isAuthenticated" @click="showSettings = true"
+                                class="p-2.5 sm:p-1.5 text-tg-muted hover:text-tg-text hover:bg-tg-hover rounded-lg transition min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center" title="Settings">
+                                <svg class="w-5 h-5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                    <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+                                    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                                </svg>
+                            </button>
                             <!-- Stats Dropdown Button (hidden if SHOW_STATS=false) -->
                             <div class="relative" v-if="showStatsUI && statsData.stats_calculated_at">
-                                <button @click="statsPopupOpen = !statsPopupOpen" 
-                                    class="flex items-center gap-1.5 px-2 py-1 text-xs text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition">
+                                <button @click="statsPopupOpen = !statsPopupOpen"
+                                    class="flex items-center gap-1.5 px-2.5 py-2 sm:px-2 sm:py-1 text-xs text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition min-h-[44px] sm:min-h-0">
                                     <span>📊</span>
                                     <span>Stats</span>
                                     <svg :class="{'rotate-180': statsPopupOpen}" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -486,8 +729,8 @@
                         <!-- v7.0: Global search toggle -->
                         <button @click="globalSearchMode = !globalSearchMode; if(!globalSearchMode) globalSearchResults = {results:[],total:0}"
                             :class="globalSearchMode ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'"
-                            class="absolute right-2 top-2 p-0.5 transition" title="Toggle global search (Ctrl+K)">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            class="absolute right-1 top-0.5 p-2 sm:p-1.5 transition min-w-[40px] min-h-[40px] sm:min-w-0 sm:min-h-0 flex items-center justify-center" title="Toggle global search (Ctrl+K)">
+                            <svg class="w-5 h-5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                         </button>
                     </div>
 
@@ -507,16 +750,16 @@
                     </div>
 
                     <!-- v6.2.0: Folder Tabs -->
-                    <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
-                        <button @click="showAllChats()" 
+                    <div v-if="folders.length > 0" class="flex gap-1.5 sm:gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin" style="-webkit-overflow-scrolling: touch;">
+                        <button @click="showAllChats()"
                             :class="activeTab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
-                            class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
+                            class="px-3.5 py-2 sm:px-3 sm:py-1 text-xs rounded-full whitespace-nowrap transition shrink-0 min-h-[36px] sm:min-h-0">
                             All Chats
                         </button>
-                        <button v-for="folder in folders" :key="folder.id" 
+                        <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
                             :class="activeTab === 'folder_' + folder.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
-                            class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
+                            class="px-3.5 py-2 sm:px-3 sm:py-1 text-xs rounded-full whitespace-nowrap transition shrink-0 min-h-[36px] sm:min-h-0">
                             {{ folder.emoticon || '📁' }} {{ folder.title }}
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
                         </button>
@@ -554,7 +797,7 @@
                                 d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                         </svg>
                         <span>{{ chatsError }}</span>
-                        <button @click="loadChats()" class="ml-auto text-amber-300 hover:text-white text-xs underline">
+                        <button @click="loadChats()" class="ml-auto text-amber-300 hover:text-white text-xs underline px-2 py-1.5 min-h-[36px] sm:min-h-0">
                             Retry
                         </button>
                     </div>
@@ -569,8 +812,8 @@
                                 d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
                         </svg>
                         <span>Enable notifications for new messages</span>
-                        <button @click="requestNotificationPermission()" 
-                            class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
+                        <button @click="requestNotificationPermission()"
+                            class="ml-auto px-3 py-2 sm:px-2 sm:py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition min-h-[36px] sm:min-h-0">
                             Enable
                         </button>
                     </div>
@@ -585,20 +828,20 @@
                                 d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                         </svg>
                         <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
-                        <button @click="unsubscribeFromPush()" 
-                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
+                        <button @click="unsubscribeFromPush()"
+                            class="ml-auto px-3 py-2 sm:px-2 sm:py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition min-h-[36px] sm:min-h-0">
                             Unsubscribe
                         </button>
                     </div>
                 </div>
 
                 <!-- Chat List / Topics View -->
-                <div class="flex-1 overflow-y-auto">
+                <div class="flex-1 overflow-y-auto" style="overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;">
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
                         <div class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBackToChats()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                            <button @click="navigateBackToChats()" class="p-2.5 sm:p-1.5 hover:bg-gray-700 rounded-full transition min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
@@ -655,7 +898,7 @@
                         <!-- v6.2.0: Back button for archived/folder views -->
                         <div v-if="canGoBack && currentNav.type === 'chatList'" 
                             class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                            <button @click="navigateBack()" class="p-2.5 sm:p-1.5 hover:bg-gray-700 rounded-full transition min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
@@ -705,8 +948,9 @@
                             
                             <!-- Chat items -->
                             <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
-                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
-                                :class="{'bg-tg-active': selectedChat?.id === chat.id}">
+                                @contextmenu.prevent="showCtxMenu($event, 'chat', chat)"
+                                class="p-3 cursor-pointer flex items-center gap-3 chat-item-styled"
+                                :class="{'chat-active': selectedChat?.id === chat.id}">
                                 <!-- Avatar -->
                                 <div
                                     class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
@@ -735,14 +979,15 @@
                                         <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
                                     </div>
                                     <p class="text-sm text-tg-muted truncate">
-                                        {{ chat.type }}
-                                        <span v-if="chat.is_forum" class="text-blue-400/70"> • Forum</span>
-                                        <span v-if="chat.type !== 'private' && chat.participants_count">
-                                            • {{ chat.participants_count }} participants
-                                        </span>
-                                        <span class="text-tg-muted/70 text-xs font-mono ml-1">
-                                            • ID: {{ chat.id }}
-                                        </span>
+                                        <template v-if="chat.last_message_text">{{ chat.last_message_text }}</template>
+                                        <template v-else>
+                                            <span v-if="chat.username" class="opacity-70">@{{ chat.username }} · </span>
+                                            {{ chat.type }}
+                                            <span v-if="chat.is_forum" class="text-blue-400/70"> • Forum</span>
+                                            <span v-if="chat.type !== 'private' && chat.participants_count">
+                                                • {{ chat.participants_count }} participants
+                                            </span>
+                                        </template>
                                     </p>
                                 </div>
                             </div>
@@ -792,7 +1037,7 @@
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
-                                class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
+                                class="md:hidden p-2.5 -ml-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M15 19l-7-7 7-7"></path>
@@ -816,7 +1061,7 @@
                                     {{ getInitials(selectedChat) }}
                                 </template>
                             </div>
-                            <div class="min-w-0 flex-1 max-w-[180px] sm:max-w-xs">
+                            <div class="min-w-0 flex-1 max-w-[45vw] sm:max-w-xs">
                                 <h2 class="font-bold text-base sm:text-lg truncate">{{ getChatName(selectedChat) }}</h2>
                                 <p class="text-xs text-tg-muted truncate">
                                     <template v-if="currentNav.type === 'chat' && currentNav.topicTitle">
@@ -855,29 +1100,29 @@
 
                             <!-- Filter Toggle Button -->
                             <button @click="showSearchFilters = !showSearchFilters"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="p-2.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 :class="showSearchFilters ? 'text-blue-400 bg-blue-500/20' : ''"
                                 title="Search Filters">
-                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
                                 </svg>
                             </button>
 
                             <!-- Gallery Toggle Button -->
                             <button @click="toggleGallery()"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="p-2.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 :class="showMediaGallery ? 'text-blue-400 bg-blue-500/20' : ''"
                                 title="Media Gallery">
-                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
                                 </svg>
                             </button>
 
                             <!-- Export Button -->
                             <button @click="exportChat"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="p-2.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
-                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                                 </svg>
@@ -886,12 +1131,12 @@
                     </div>
 
                     <!-- v7.0: Search Filters Bar (collapsible) -->
-                    <div v-if="showSearchFilters && selectedChat" class="px-4 py-2 bg-gray-800/50 border-b border-gray-700 space-y-2">
+                    <div v-if="showSearchFilters && selectedChat" class="px-3 sm:px-4 py-2 bg-gray-800/50 border-b border-gray-700 space-y-2 overflow-x-auto">
                         <div class="flex flex-wrap gap-2 items-center">
                             <input v-model="searchFilters.sender" type="text" placeholder="Sender name..."
-                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                class="bg-gray-900 text-white text-xs sm:text-sm rounded px-3 py-2 sm:py-1 w-full sm:w-28 focus:outline-none focus:ring-1 focus:ring-blue-500">
                             <select v-model="searchFilters.mediaType"
-                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                class="bg-gray-900 text-white text-xs sm:text-sm rounded px-3 py-2 sm:py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
                                 <option value="">All types</option>
                                 <option value="photo">Photos</option>
                                 <option value="video">Videos</option>
@@ -899,12 +1144,12 @@
                                 <option value="audio">Audio</option>
                             </select>
                             <input v-model="searchFilters.dateFrom" type="date"
-                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                class="bg-gray-900 text-white text-xs sm:text-sm rounded px-3 py-2 sm:py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1 min-w-[120px]">
                             <span class="text-gray-500 text-xs">to</span>
                             <input v-model="searchFilters.dateTo" type="date"
-                                class="bg-gray-900 text-white text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
-                            <button @click="applySearchFilters" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition">Apply</button>
-                            <button @click="clearSearchFilters" class="text-gray-400 hover:text-white text-xs px-2 py-1 transition">Clear</button>
+                                class="bg-gray-900 text-white text-xs sm:text-sm rounded px-3 py-2 sm:py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1 min-w-[120px]">
+                            <button @click="applySearchFilters" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-4 py-2 sm:py-1 rounded transition min-h-[36px] sm:min-h-0">Apply</button>
+                            <button @click="clearSearchFilters" class="text-gray-400 hover:text-white text-xs px-3 py-2 sm:py-1 transition min-h-[36px] sm:min-h-0">Clear</button>
                         </div>
                     </div>
 
@@ -939,7 +1184,7 @@
                             </div>
                             <!-- Open pinned messages view button -->
                             <button @click.stop="openPinnedView"
-                                class="w-6 h-6 flex items-center justify-center rounded-full bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 transition"
+                                class="w-9 h-9 sm:w-7 sm:h-7 flex items-center justify-center rounded-full bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 transition"
                                 :title="`View all ${pinnedMessages.length} pinned messages`">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
@@ -953,7 +1198,7 @@
                         class="px-4 py-3 bg-tg-sidebar border-b border-gray-700 flex items-center gap-3">
                         <!-- Back button -->
                         <button @click="closePinnedView"
-                            class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-gray-300 transition">
+                            class="w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-gray-300 transition">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
                             </svg>
@@ -966,13 +1211,13 @@
                     </div>
 
                     <!-- v7.0: Media Gallery Panel (replaces messages when active) -->
-                    <div v-if="showMediaGallery && selectedChat" class="flex-1 relative min-h-0 overflow-y-auto p-4">
+                    <div v-if="showMediaGallery && selectedChat" class="flex-1 relative min-h-0 overflow-y-auto p-3 sm:p-4" style="overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;">
                         <!-- Gallery Filter Tabs -->
                         <div class="flex gap-2 mb-4 flex-wrap">
                             <button v-for="t in [{v:'',l:'All'},{v:'photo',l:'Photos'},{v:'video',l:'Videos'},{v:'document',l:'Docs'},{v:'audio',l:'Audio'}]"
                                 :key="t.v" @click="setGalleryFilter(t.v)"
                                 :class="galleryFilter === t.v ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
-                                class="px-3 py-1 text-xs rounded-full transition">{{ t.l }}</button>
+                                class="px-4 py-2 sm:px-3 sm:py-1 text-xs rounded-full transition min-h-[36px] sm:min-h-0">{{ t.l }}</button>
                         </div>
                         <!-- Gallery Grid -->
                         <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1">
@@ -1001,7 +1246,7 @@
                         </div>
                         <!-- Load More -->
                         <div v-if="galleryHasMore" class="text-center py-4">
-                            <button @click="loadGalleryMedia()" class="text-blue-400 hover:text-blue-300 text-sm" :disabled="galleryLoading">
+                            <button @click="loadGalleryMedia()" class="text-blue-400 hover:text-blue-300 text-sm px-6 py-3 sm:py-2 min-h-[44px] sm:min-h-0" :disabled="galleryLoading">
                                 {{ galleryLoading ? 'Loading...' : 'Load more' }}
                             </button>
                         </div>
@@ -1012,7 +1257,7 @@
 
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
                     <div v-else class="flex-1 relative min-h-0">
-                    <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
+                    <div ref="messagesContainer" :class="['density-' + messageDensity, { 'no-download': noDownload }]" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll msg-area-pattern" @scroll="handleScroll" :style="chatBackground ? { backgroundImage: chatBackground } : {}" @contextmenu.prevent.self="showCtxMenu($event, 'background', null)">
                         <!-- v7.0: Skeleton loading -->
                         <div v-if="loading && messages.length === 0" class="space-y-3 py-4">
                             <div v-for="n in 5" :key="n" class="flex" :class="n % 2 === 0 ? 'justify-end' : 'justify-start'">
@@ -1045,10 +1290,13 @@
                                         (!isLastInSenderGroup(index) || msg.media?.type === 'sticker') ? 'no-tail' : '',
                                         msg.media?.type === 'sticker' ? 'bubble-sticker' : ''
                                     ]"
-                                    :style="getSenderStyle(msg)">
+                                    :style="getSenderStyle(msg)"
+                                    @contextmenu.prevent="showCtxMenu($event, 'message', msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
-                                        class="text-xs font-bold mb-1" :style="{ color: getSenderNameColor(msg) }">
+                                        class="text-xs font-bold mb-1 cursor-pointer hover:underline"
+                                        :style="{ color: getSenderNameColor(msg) }"
+                                        @click.stop="openUserInfo(msg.sender_id)">
                                         {{ getSenderName(msg) }}
                                     </div>
 
@@ -1228,7 +1476,7 @@
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
-                                                <a :href="getMediaUrl(msg)" download
+                                                <a v-if="!noDownload" :href="getMediaUrl(msg)" download
                                                     class="text-blue-400 hover:text-blue-300 whitespace-nowrap">
                                                     Download
                                                 </a>
@@ -1236,7 +1484,7 @@
                                         </div>
 
                                         <!-- Other documents / files -->
-                                        <a v-else :href="getMediaUrl(msg)" download
+                                        <component v-else :is="noDownload ? 'div' : 'a'" :href="noDownload ? undefined : getMediaUrl(msg)" :download="noDownload ? undefined : ''"
                                             class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
                                             <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
                                                 viewBox="0 0 24 24">
@@ -1252,7 +1500,7 @@
                                                     {{ msg.media?.type }} file
                                                 </span>
                                             </div>
-                                        </a>
+                                        </component>
                                     </div>
 
                                     <!-- Text with clickable links -->
@@ -1294,8 +1542,8 @@
                             <div class="loading-spinner"></div>
                         </div>
 
-                        <!-- Scroll sentinel for intersection observer - triggers loading when visible -->
-                        <div v-if="hasMore && !loading && messages.length > 0" ref="loadMoreSentinel" class="h-1"></div>
+                        <!-- Scroll sentinel for intersection observer - always visible when more messages exist -->
+                        <div v-if="hasMore && messages.length > 0" ref="loadMoreSentinel" class="h-1"></div>
                         
                         <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
                             Beginning of chat history
@@ -1332,8 +1580,8 @@
             <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-xl font-bold text-white">Jump to Date</h3>
-                    <button @click="closeDatePicker" 
-                        class="text-gray-400 hover:text-white transition p-1">
+                    <button @click="closeDatePicker"
+                        class="text-gray-400 hover:text-white transition p-2 min-w-[44px] min-h-[44px] flex items-center justify-center">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1367,7 +1615,7 @@
                     <div class="flex justify-between"><span class="text-gray-300">Global search</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">Ctrl+K</kbd></div>
                     <div class="flex justify-between"><span class="text-gray-300">This help</span><kbd class="bg-gray-700 px-2 py-0.5 rounded text-xs">?</kbd></div>
                 </div>
-                <button @click="showShortcutsHelp = false" class="mt-4 w-full py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition text-sm">Close</button>
+                <button @click="showShortcutsHelp = false" class="mt-4 w-full py-3 sm:py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition text-sm min-h-[44px] sm:min-h-0">Close</button>
             </div>
         </div>
 
@@ -1377,16 +1625,16 @@
             @click.self="closeLightbox">
             
             <!-- Close Button -->
-            <button @click="closeLightbox" 
-                class="absolute top-4 right-4 z-60 p-2 text-white/70 hover:text-white transition">
+            <button @click="closeLightbox"
+                class="absolute top-4 right-4 z-60 p-3 text-white/70 hover:text-white transition min-w-[48px] min-h-[48px] flex items-center justify-center">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
             </button>
-            
+
             <!-- Download Button -->
-            <a v-if="lightboxMedia" :href="getMediaUrl(lightboxMedia)" download
-                class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
+            <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia)" download
+                class="absolute top-4 right-[72px] z-60 p-3 text-white/70 hover:text-white transition min-w-[48px] min-h-[48px] flex items-center justify-center">
                 <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
@@ -1423,13 +1671,677 @@
             </video>
             
             <!-- Media Info -->
-            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
+            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-xs sm:text-sm bg-black/50 px-4 py-2 rounded-full max-w-[90vw] text-center">
                 {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
                 <span v-if="mediaMessages.length > 1" class="ml-2 opacity-70">
                     {{ lightboxIndex + 1 }} / {{ mediaMessages.length }}
                 </span>
             </div>
         </div>
+
+        <!-- v7.3.0: Admin Settings Modal -->
+        <div v-if="showSettings" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4"
+            @click.self="showSettings = false">
+            <div class="bg-tg-sidebar sm:rounded-2xl shadow-2xl w-full max-w-3xl h-full sm:h-auto sm:max-h-[90vh] border-0 sm:border border-gray-700 flex flex-col overflow-hidden"
+                style="border-color: var(--tg-border)">
+                <!-- Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b" style="border-color: var(--tg-border)">
+                    <h2 class="text-xl font-bold text-tg-text">Settings</h2>
+                    <button @click="showSettings = false" class="text-tg-muted hover:text-tg-text p-2.5 sm:p-1.5 transition min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <!-- Tab bar -->
+                <div class="flex gap-1 px-3 sm:px-4 py-2 border-b overflow-x-auto scrollbar-thin" style="background: var(--tg-bg); border-color: var(--tg-border); -webkit-overflow-scrolling: touch;">
+                    <button v-for="tab in settingsTabs" :key="tab.id" @click="settingsTab = tab.id"
+                        :class="settingsTab === tab.id ? 'bg-tg-active text-white' : 'text-tg-muted hover:text-tg-text hover:bg-tg-hover'"
+                        class="px-4 py-2.5 sm:px-3 sm:py-1.5 rounded-lg text-sm font-medium transition whitespace-nowrap shrink-0 min-h-[44px] sm:min-h-0">
+                        {{ tab.label }}
+                    </button>
+                </div>
+                <!-- Tab content -->
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6" style="overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;">
+
+                    <!-- === ACCOUNT TAB === -->
+                    <div v-if="settingsTab === 'account'" class="space-y-6">
+                        <div class="bg-tg-bg rounded-xl p-4 border" style="border-color: var(--tg-border)">
+                            <div class="flex items-center gap-3">
+                                <div class="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-lg">
+                                    {{ (currentUsername || '?')[0].toUpperCase() }}
+                                </div>
+                                <div>
+                                    <div class="text-tg-text font-semibold">{{ currentUsername }}</div>
+                                    <div class="text-tg-muted text-sm">{{ userRole === 'master' ? 'Administrator' : 'Viewer' }}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <h3 class="text-lg font-semibold text-tg-text mb-4">Change Password</h3>
+                            <form @submit.prevent="changePassword" class="space-y-3" autocomplete="on">
+                                <input type="text" :value="currentUsername" autocomplete="username" class="hidden" aria-hidden="true">
+                                <input v-model="currentPassword" type="password" placeholder="Current password" autocomplete="current-password"
+                                    class="w-full rounded-lg px-4 py-2.5 border focus:outline-none focus:border-blue-500 text-sm"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <input v-model="newPassword" type="password" placeholder="New password" autocomplete="new-password"
+                                    class="w-full rounded-lg px-4 py-2.5 border focus:outline-none focus:border-blue-500 text-sm"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <input v-model="confirmPassword" type="password" placeholder="Confirm new password" autocomplete="new-password"
+                                    class="w-full rounded-lg px-4 py-2.5 border focus:outline-none focus:border-blue-500 text-sm"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <div v-if="passwordError" class="text-red-400 text-sm">{{ passwordError }}</div>
+                                <div v-if="passwordSuccess" class="text-green-400 text-sm">{{ passwordSuccess }}</div>
+                                <button type="submit" :disabled="changingPassword"
+                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-50 text-sm">
+                                    {{ changingPassword ? 'Changing...' : 'Change Password' }}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- === USERS TAB === -->
+                    <div v-if="settingsTab === 'users'" class="space-y-6">
+                        <div class="bg-tg-bg rounded-xl border" style="border-color: var(--tg-border)">
+                            <button @click="showCreateUser = !showCreateUser"
+                                class="w-full flex items-center justify-between px-4 py-3 text-tg-text hover:bg-tg-hover rounded-xl transition">
+                                <span class="font-semibold">Create Viewer Account</span>
+                                <span class="text-tg-muted text-lg">{{ showCreateUser ? '−' : '+' }}</span>
+                            </button>
+                            <div v-if="showCreateUser" class="px-4 pb-4 space-y-3">
+                                <input v-model="newViewerUsername" type="text" placeholder="Username"
+                                    class="w-full rounded-lg px-4 py-2 border text-sm focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <input v-model="newViewerPassword" type="password" placeholder="Password (min 4 chars)"
+                                    class="w-full rounded-lg px-4 py-2 border text-sm focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <!-- Chat scope picker -->
+                                <div>
+                                    <label class="text-tg-muted text-xs block mb-1">Allowed chats (empty = all)</label>
+                                    <input v-model="userChatSearch" type="text" placeholder="Search chats..."
+                                        class="w-full rounded-lg px-3 py-1.5 border text-xs mb-1 focus:outline-none focus:border-blue-500"
+                                        style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    <div v-if="newViewerChatIds.length" class="flex flex-wrap gap-1 mb-1">
+                                        <span v-for="cid in newViewerChatIds" :key="cid"
+                                            class="inline-flex items-center gap-1 bg-blue-600/30 text-blue-300 text-xs px-2 py-0.5 rounded-full">
+                                            {{ (adminChats.find(c => c.id === cid) || {}).title || cid }}
+                                            <span v-if="(adminChats.find(c => c.id === cid) || {}).username" class="opacity-60">@{{ adminChats.find(c => c.id === cid).username }}</span>
+                                            <button @click="newViewerChatIds = newViewerChatIds.filter(x => x !== cid)" class="hover:text-white">&times;</button>
+                                        </span>
+                                    </div>
+                                    <div class="max-h-32 overflow-y-auto space-y-0.5 bg-tg-bg rounded-lg p-1.5 border" style="border-color: var(--tg-border)">
+                                        <label v-for="chat in adminChats.filter(c => { const q = (userChatSearch || '').toLowerCase().replace(/^@/, ''); return !q || (c.title || '').toLowerCase().includes(q) || (c.username || '').toLowerCase().includes(q) || (c.first_name || '').toLowerCase().includes(q) })" :key="chat.id"
+                                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-tg-hover cursor-pointer text-xs">
+                                            <input type="checkbox" :value="chat.id" v-model="newViewerChatIds" class="rounded border-gray-600">
+                                            <span class="text-tg-text truncate">{{ chat.title || ((chat.first_name || '') + ' ' + (chat.last_name || '')).trim() || 'Chat' }}</span>
+                                            <span v-if="chat.username" class="text-tg-muted opacity-60 text-[10px] truncate">@{{ chat.username }}</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <label class="flex items-center gap-2 text-sm text-tg-text cursor-pointer">
+                                    <input type="checkbox" v-model="newViewerNoDownload" class="rounded border-gray-600">
+                                    Restrict media downloads
+                                </label>
+                                <div v-if="viewerCreateError" class="text-red-400 text-sm">{{ viewerCreateError }}</div>
+                                <button @click="createViewer" :disabled="creatingViewer"
+                                    class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition disabled:opacity-50 text-sm">
+                                    {{ creatingViewer ? 'Creating...' : 'Create Account' }}
+                                </button>
+                            </div>
+                        </div>
+                        <div class="space-y-2">
+                            <h3 class="text-xs font-semibold text-tg-muted uppercase tracking-wider">Viewer Accounts</h3>
+                            <div v-if="!viewers.length" class="text-tg-muted text-sm py-4 text-center">No viewer accounts</div>
+                            <div v-for="viewer in viewers" :key="viewer.id"
+                                class="bg-tg-bg rounded-xl p-3 border" style="border-color: var(--tg-border)">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <div class="text-tg-text font-medium text-sm">{{ viewer.username }}</div>
+                                        <div class="text-tg-muted text-xs">
+                                            {{ viewer.allowed_chat_ids ? (typeof viewer.allowed_chat_ids === 'string' ? JSON.parse(viewer.allowed_chat_ids).length : viewer.allowed_chat_ids.length) + ' chats' : 'All chats' }}
+                                            · {{ viewer.is_active ? 'Active' : 'Disabled' }}
+                                        </div>
+                                    </div>
+                                    <div class="flex gap-2 shrink-0">
+                                        <button @click="startEditViewer(viewer)"
+                                            class="px-3 py-2 sm:px-2.5 sm:py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition min-h-[36px] sm:min-h-0">Edit</button>
+                                        <button @click="toggleViewerActive(viewer)"
+                                            :class="viewer.is_active ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'"
+                                            class="px-3 py-2 sm:px-2.5 sm:py-1 text-white text-xs rounded-lg transition min-h-[36px] sm:min-h-0">
+                                            {{ viewer.is_active ? 'Disable' : 'Enable' }}
+                                        </button>
+                                        <button @click="deleteViewer(viewer)"
+                                            class="px-3 py-2 sm:px-2.5 sm:py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded-lg transition min-h-[36px] sm:min-h-0">Delete</button>
+                                    </div>
+                                </div>
+                                <!-- Inline edit panel -->
+                                <div v-if="editingViewerId === viewer.id" class="mt-3 pt-3 border-t space-y-3" style="border-color: var(--tg-border)">
+                                    <div>
+                                        <label class="text-tg-muted text-xs block mb-1">Allowed chats (empty = all)</label>
+                                        <input v-model="editViewerChatSearch" type="text" placeholder="Search chats..."
+                                            class="w-full rounded-lg px-3 py-1.5 border text-xs mb-1 focus:outline-none focus:border-blue-500"
+                                            style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                        <div v-if="editViewerChatIds.length" class="flex flex-wrap gap-1 mb-1">
+                                            <span v-for="cid in editViewerChatIds" :key="cid"
+                                                class="inline-flex items-center gap-1 bg-blue-600/30 text-blue-300 text-xs px-2 py-0.5 rounded-full">
+                                                {{ (adminChats.find(c => c.id === cid) || {}).title || cid }}
+                                                <span v-if="(adminChats.find(c => c.id === cid) || {}).username" class="opacity-60">@{{ adminChats.find(c => c.id === cid).username }}</span>
+                                                <button @click="editViewerChatIds = editViewerChatIds.filter(x => x !== cid)" class="hover:text-white">&times;</button>
+                                            </span>
+                                        </div>
+                                        <div class="max-h-32 overflow-y-auto space-y-0.5 bg-tg-bg rounded-lg p-1.5 border" style="border-color: var(--tg-border)">
+                                            <label v-for="chat in adminChats.filter(c => { const q = (editViewerChatSearch || '').toLowerCase().replace(/^@/, ''); return !q || (c.title || '').toLowerCase().includes(q) || (c.username || '').toLowerCase().includes(q) || (c.first_name || '').toLowerCase().includes(q) })" :key="chat.id"
+                                                class="flex items-center gap-2 px-2 py-1 rounded hover:bg-tg-hover cursor-pointer text-xs">
+                                                <input type="checkbox" :value="chat.id" v-model="editViewerChatIds" class="rounded border-gray-600">
+                                                <span class="text-tg-text truncate">{{ chat.title || ((chat.first_name || '') + ' ' + (chat.last_name || '')).trim() || 'Chat' }}</span>
+                                                <span v-if="chat.username" class="text-tg-muted opacity-60 text-[10px] truncate">@{{ chat.username }}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <label class="flex items-center gap-2 text-sm text-tg-text cursor-pointer">
+                                        <input type="checkbox" v-model="editViewerNoDownload" class="rounded border-gray-600">
+                                        Restrict media downloads
+                                    </label>
+                                    <div>
+                                        <label class="text-tg-muted text-xs block mb-1">New password (leave blank to keep current)</label>
+                                        <input v-model="editViewerPassword" type="password" placeholder="New password..."
+                                            class="w-full rounded-lg px-3 py-1.5 border text-xs focus:outline-none focus:border-blue-500"
+                                            style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    </div>
+                                    <div v-if="editViewerError" class="text-red-400 text-sm">{{ editViewerError }}</div>
+                                    <div class="flex gap-2">
+                                        <button @click="saveEditViewer" :disabled="savingEditViewer"
+                                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition disabled:opacity-50">
+                                            {{ savingEditViewer ? 'Saving...' : 'Save' }}
+                                        </button>
+                                        <button @click="editingViewerId = null"
+                                            class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-tg-text text-xs rounded-lg transition">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- === TOKENS TAB === -->
+                    <div v-if="settingsTab === 'tokens'" class="space-y-6">
+                        <div class="bg-tg-bg rounded-xl border" style="border-color: var(--tg-border)">
+                            <button @click="showCreateToken = !showCreateToken"
+                                class="w-full flex items-center justify-between px-4 py-3 text-tg-text hover:bg-tg-hover rounded-xl transition">
+                                <span class="font-semibold">Create Share Token</span>
+                                <span class="text-tg-muted text-lg">{{ showCreateToken ? '−' : '+' }}</span>
+                            </button>
+                            <div v-if="showCreateToken" class="px-4 pb-4 space-y-3">
+                                <input v-model="newTokenLabel" type="text" placeholder="Label (optional, e.g. 'For client X')"
+                                    class="w-full rounded-lg px-4 py-2 border text-sm focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                <select v-model="newTokenExpiry"
+                                    class="w-full rounded-lg px-4 py-2 border text-sm focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    <option value="">No expiry</option>
+                                    <option value="1">1 hour</option>
+                                    <option value="24">24 hours</option>
+                                    <option value="168">7 days</option>
+                                    <option value="720">30 days</option>
+                                </select>
+                                <!-- Chat scope picker -->
+                                <div>
+                                    <label class="text-tg-muted text-xs block mb-1">Allowed chats (required)</label>
+                                    <input v-model="tokenChatSearch" type="text" placeholder="Search chats..."
+                                        class="w-full rounded-lg px-3 py-1.5 border text-xs mb-1 focus:outline-none focus:border-blue-500"
+                                        style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    <div v-if="newTokenChatIds.length" class="flex flex-wrap gap-1 mb-1">
+                                        <span v-for="cid in newTokenChatIds" :key="cid"
+                                            class="inline-flex items-center gap-1 bg-blue-600/30 text-blue-300 text-xs px-2 py-0.5 rounded-full">
+                                            {{ (adminChats.find(c => c.id === cid) || {}).title || cid }}
+                                            <span v-if="(adminChats.find(c => c.id === cid) || {}).username" class="opacity-60">@{{ adminChats.find(c => c.id === cid).username }}</span>
+                                            <button @click="newTokenChatIds = newTokenChatIds.filter(x => x !== cid)" class="hover:text-white">&times;</button>
+                                        </span>
+                                    </div>
+                                    <div class="max-h-32 overflow-y-auto space-y-0.5 bg-tg-bg rounded-lg p-1.5 border" style="border-color: var(--tg-border)">
+                                        <label v-for="chat in adminChats.filter(c => { const q = (tokenChatSearch || '').toLowerCase().replace(/^@/, ''); return !q || (c.title || '').toLowerCase().includes(q) || (c.username || '').toLowerCase().includes(q) || (c.first_name || '').toLowerCase().includes(q) })" :key="chat.id"
+                                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-tg-hover cursor-pointer text-xs">
+                                            <input type="checkbox" :value="chat.id" v-model="newTokenChatIds" class="rounded border-gray-600">
+                                            <span class="text-tg-text truncate">{{ chat.title || ((chat.first_name || '') + ' ' + (chat.last_name || '')).trim() || 'Chat' }}</span>
+                                            <span v-if="chat.username" class="text-tg-muted opacity-60 text-[10px] truncate">@{{ chat.username }}</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <label class="flex items-center gap-2 text-sm text-tg-text cursor-pointer">
+                                    <input type="checkbox" v-model="newTokenNoDownload" class="rounded border-gray-600">
+                                    Restrict media downloads
+                                </label>
+                                <div v-if="tokenCreateError" class="text-red-400 text-sm">{{ tokenCreateError }}</div>
+                                <button @click="createToken" :disabled="creatingToken"
+                                    class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition disabled:opacity-50 text-sm">
+                                    {{ creatingToken ? 'Creating...' : 'Create Token' }}
+                                </button>
+                            </div>
+                        </div>
+                        <!-- Created token (one-time display) -->
+                        <div v-if="createdTokenInfo" class="bg-green-900/30 border border-green-700 rounded-xl p-4 space-y-2">
+                            <div class="text-green-300 font-semibold text-sm">Token created! Copy now — won't be shown again.</div>
+                            <div class="flex gap-2">
+                                <input :value="createdTokenInfo.token" readonly
+                                    class="flex-1 bg-black/30 text-green-300 font-mono text-xs rounded-lg px-3 py-2 border border-green-700">
+                                <button @click="copyToClipboard(createdTokenInfo.token)"
+                                    class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded-lg shrink-0">Copy</button>
+                            </div>
+                            <div class="flex gap-2">
+                                <input :value="createdTokenInfo.share_url" readonly
+                                    class="flex-1 bg-black/30 text-green-300 text-xs rounded-lg px-3 py-2 border border-green-700">
+                                <button @click="copyToClipboard(createdTokenInfo.share_url)"
+                                    class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded-lg shrink-0">Copy URL</button>
+                            </div>
+                            <button @click="createdTokenInfo = null" class="text-tg-muted text-xs hover:text-tg-text">Dismiss</button>
+                        </div>
+                        <!-- Token list -->
+                        <div class="space-y-2">
+                            <h3 class="text-xs font-semibold text-tg-muted uppercase tracking-wider">Share Tokens</h3>
+                            <div v-if="!tokens.length" class="text-tg-muted text-sm py-4 text-center">No share tokens</div>
+                            <div v-for="token in tokens" :key="token.id"
+                                class="bg-tg-bg rounded-xl p-3 border" style="border-color: var(--tg-border)">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <div class="text-tg-text font-medium text-sm">{{ token.label || 'Token #' + token.id }}</div>
+                                        <div class="text-tg-muted text-xs">
+                                            {{ (token.allowed_chat_ids || []).length }} chat(s)
+                                            · Used {{ token.use_count || 0 }}x
+                                            <span v-if="token.expires_at"> · Expires {{ token.expires_at }}</span>
+                                            <span v-else> · No expiry</span>
+                                            <span v-if="token.is_revoked" class="text-red-400"> · Revoked</span>
+                                        </div>
+                                    </div>
+                                    <div class="flex gap-2 shrink-0">
+                                        <button v-if="!token.is_revoked" @click="startEditToken(token)"
+                                            class="px-3 py-2 sm:px-2.5 sm:py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition min-h-[36px] sm:min-h-0">Edit</button>
+                                        <button v-if="!token.is_revoked" @click="revokeToken(token)"
+                                            class="px-3 py-2 sm:px-2.5 sm:py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded-lg transition min-h-[36px] sm:min-h-0">Revoke</button>
+                                    </div>
+                                </div>
+                                <!-- Inline edit panel -->
+                                <div v-if="editingTokenId === token.id" class="mt-3 pt-3 border-t space-y-3" style="border-color: var(--tg-border)">
+                                    <input v-model="editTokenLabel" type="text" placeholder="Label (optional)"
+                                        class="w-full rounded-lg px-3 py-1.5 border text-sm focus:outline-none focus:border-blue-500"
+                                        style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    <div>
+                                        <label class="text-tg-muted text-xs block mb-1">Allowed chats</label>
+                                        <input v-model="editTokenChatSearch" type="text" placeholder="Search chats..."
+                                            class="w-full rounded-lg px-3 py-1.5 border text-xs mb-1 focus:outline-none focus:border-blue-500"
+                                            style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                        <div v-if="editTokenChatIds.length" class="flex flex-wrap gap-1 mb-1">
+                                            <span v-for="cid in editTokenChatIds" :key="cid"
+                                                class="inline-flex items-center gap-1 bg-blue-600/30 text-blue-300 text-xs px-2 py-0.5 rounded-full">
+                                                {{ (adminChats.find(c => c.id === cid) || {}).title || cid }}
+                                                <span v-if="(adminChats.find(c => c.id === cid) || {}).username" class="opacity-60">@{{ adminChats.find(c => c.id === cid).username }}</span>
+                                                <button @click="editTokenChatIds = editTokenChatIds.filter(x => x !== cid)" class="hover:text-white">&times;</button>
+                                            </span>
+                                        </div>
+                                        <div class="max-h-32 overflow-y-auto space-y-0.5 bg-tg-bg rounded-lg p-1.5 border" style="border-color: var(--tg-border)">
+                                            <label v-for="chat in adminChats.filter(c => { const q = (editTokenChatSearch || '').toLowerCase().replace(/^@/, ''); return !q || (c.title || '').toLowerCase().includes(q) || (c.username || '').toLowerCase().includes(q) || (c.first_name || '').toLowerCase().includes(q) })" :key="chat.id"
+                                                class="flex items-center gap-2 px-2 py-1 rounded hover:bg-tg-hover cursor-pointer text-xs">
+                                                <input type="checkbox" :value="chat.id" v-model="editTokenChatIds" class="rounded border-gray-600">
+                                                <span class="text-tg-text truncate">{{ chat.title || ((chat.first_name || '') + ' ' + (chat.last_name || '')).trim() || 'Chat' }}</span>
+                                                <span v-if="chat.username" class="text-tg-muted opacity-60 text-[10px] truncate">@{{ chat.username }}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <label class="flex items-center gap-2 text-sm text-tg-text cursor-pointer">
+                                        <input type="checkbox" v-model="editTokenNoDownload" class="rounded border-gray-600">
+                                        Restrict media downloads
+                                    </label>
+                                    <div v-if="editTokenError" class="text-red-400 text-sm">{{ editTokenError }}</div>
+                                    <div class="flex gap-2">
+                                        <button @click="saveEditToken" :disabled="savingEditToken"
+                                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition disabled:opacity-50">
+                                            {{ savingEditToken ? 'Saving...' : 'Save' }}
+                                        </button>
+                                        <button @click="editingTokenId = null"
+                                            class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-tg-text text-xs rounded-lg transition">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- === ACTIVITY TAB === -->
+                    <div v-if="settingsTab === 'activity'" class="space-y-4">
+                        <div class="flex flex-col sm:flex-row gap-2 sm:items-end">
+                            <div class="flex-1">
+                                <label class="text-tg-muted text-xs block mb-1">Filter by action</label>
+                                <select v-model="auditFilter.action" @change="filterAuditLog()"
+                                    class="w-full rounded-lg px-3 py-2.5 sm:py-1.5 border text-sm sm:text-xs focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                                    <option value="">All actions</option>
+                                    <option value="login_success">Login (success)</option>
+                                    <option value="login_failed">Login (failed)</option>
+                                    <option value="token_auth">Token auth</option>
+                                    <option value="api_access">API access</option>
+                                </select>
+                            </div>
+                            <div class="flex-1">
+                                <label class="text-tg-muted text-xs block mb-1">Filter by user</label>
+                                <input v-model="auditFilter.username" @change="filterAuditLog()" type="text" placeholder="Username..."
+                                    class="w-full rounded-lg px-3 py-2.5 sm:py-1.5 border text-sm sm:text-xs focus:outline-none focus:border-blue-500"
+                                    style="background: var(--tg-input); color: var(--tg-text); border-color: var(--tg-border)">
+                            </div>
+                            <button @click="auditFilter = { action: '', username: '' }; filterAuditLog()"
+                                class="px-4 py-2.5 sm:px-3 sm:py-1.5 bg-gray-700 hover:bg-gray-600 text-tg-text text-sm sm:text-xs rounded-lg transition shrink-0 min-h-[44px] sm:min-h-0">Clear</button>
+                        </div>
+                        <div v-if="auditLoading && !auditEntries.length" class="text-center py-8 text-tg-muted text-sm">Loading...</div>
+                        <div v-else-if="!auditEntries.length" class="text-center py-8 text-tg-muted text-sm">No audit entries</div>
+                        <div v-else class="space-y-1 max-h-[50vh] overflow-y-auto overscroll-contain">
+                            <div v-for="entry in auditEntries" :key="entry.id"
+                                class="flex flex-wrap sm:flex-nowrap items-start sm:items-center gap-1.5 sm:gap-3 px-3 py-2.5 sm:py-2 rounded-lg text-xs"
+                                :class="{
+                                    'bg-green-900/20 border border-green-800/30': entry.action === 'login_success' || entry.action === 'token_auth',
+                                    'bg-red-900/20 border border-red-800/30': entry.action === 'login_failed',
+                                    'bg-tg-bg border': entry.action === 'api_access',
+                                }"
+                                :style="entry.action === 'api_access' ? 'border-color: var(--tg-border)' : ''">
+                                <div class="w-full sm:w-20 shrink-0 text-tg-muted flex sm:block items-center gap-2">
+                                    <span>{{ entry.created_at ? new Date(entry.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '' }}</span>
+                                    <span class="sm:hidden px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                        :class="{
+                                            'bg-green-600/30 text-green-300': entry.action === 'login_success',
+                                            'bg-red-600/30 text-red-300': entry.action === 'login_failed',
+                                            'bg-blue-600/30 text-blue-300': entry.action === 'token_auth',
+                                            'bg-gray-600/30 text-gray-300': entry.action === 'api_access',
+                                        }">{{ entry.action?.replace('_', ' ') }}</span>
+                                </div>
+                                <div class="sm:w-28 shrink-0 text-tg-text truncate font-medium">{{ entry.username }}</div>
+                                <div class="hidden sm:block w-16 shrink-0">
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                        :class="{
+                                            'bg-green-600/30 text-green-300': entry.action === 'login_success',
+                                            'bg-red-600/30 text-red-300': entry.action === 'login_failed',
+                                            'bg-blue-600/30 text-blue-300': entry.action === 'token_auth',
+                                            'bg-gray-600/30 text-gray-300': entry.action === 'api_access',
+                                        }">{{ entry.action?.replace('_', ' ') }}</span>
+                                </div>
+                                <div class="text-tg-muted truncate">{{ entry.ip_address }}</div>
+                            </div>
+                        </div>
+                        <button v-if="auditHasMore && auditEntries.length" @click="loadMoreAudit()" :disabled="auditLoading"
+                            class="w-full py-2 text-center text-tg-accent text-sm hover:underline disabled:opacity-50">
+                            {{ auditLoading ? 'Loading...' : 'Load more' }}
+                        </button>
+                    </div>
+
+                    <!-- === APPEARANCE TAB === -->
+                    <div v-if="settingsTab === 'appearance'" class="space-y-6">
+                        <h3 class="text-lg font-semibold text-tg-text">Theme</h3>
+                        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            <button v-for="theme in themes" :key="theme.id" @click="setTheme(theme.id)"
+                                :class="currentTheme === theme.id ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-gray-900' : 'hover:border-gray-500'"
+                                class="rounded-xl p-3 border transition text-left" style="border-color: var(--tg-border)">
+                                <div class="flex gap-1 mb-2 h-8 rounded-lg overflow-hidden">
+                                    <div :style="{backgroundColor: theme.bg}" class="flex-1"></div>
+                                    <div :style="{backgroundColor: theme.sidebar}" class="flex-1"></div>
+                                    <div :style="{backgroundColor: theme.accent}" class="w-4 rounded-r-lg"></div>
+                                </div>
+                                <span class="text-tg-text text-sm font-medium">{{ theme.name }}</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- === GENERAL TAB === -->
+                    <div v-if="settingsTab === 'general'" class="space-y-6">
+                        <!-- Backup Schedule (admin only) -->
+                        <div v-if="userRole === 'master'">
+                            <h3 class="text-lg font-semibold text-tg-text mb-2">Backup Schedule</h3>
+                            <!-- Status indicator -->
+                            <div class="flex items-center gap-2 mb-3">
+                                <span :class="backupStatus === 'running' ? 'bg-green-500 animate-pulse' : 'bg-gray-500'"
+                                    class="w-2 h-2 rounded-full"></span>
+                                <span class="text-tg-text text-sm">{{ backupStatus === 'running' ? 'Backup in progress...' : 'Idle' }}</span>
+                                <span v-if="lastBackupCompleted" class="text-tg-muted text-xs ml-auto">
+                                    Last: {{ lastBackupCompleted }}
+                                </span>
+                            </div>
+                            <!-- Schedule picker -->
+                            <div>
+                                <label class="text-tg-muted text-sm mb-1 block">Schedule</label>
+                                <select v-model="backupSchedulePreset"
+                                    class="w-full bg-tg-input text-tg-text rounded-lg px-4 py-2 border border-gray-700 text-sm">
+                                    <option value="0 */1 * * *">Every hour</option>
+                                    <option value="0 */3 * * *">Every 3 hours</option>
+                                    <option value="0 */6 * * *">Every 6 hours</option>
+                                    <option value="0 */12 * * *">Every 12 hours</option>
+                                    <option value="0 0 * * *">Daily at midnight</option>
+                                    <option value="custom">Custom cron...</option>
+                                </select>
+                                <input v-if="backupSchedulePreset === 'custom'" v-model="customCron"
+                                    placeholder="e.g., 0 */4 * * *"
+                                    class="w-full mt-2 bg-tg-input text-tg-text font-mono rounded-lg px-4 py-2 border border-gray-700 text-sm">
+                                <button @click="saveBackupSchedule" :disabled="savingSchedule"
+                                    class="mt-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-50 text-sm">
+                                    {{ savingSchedule ? 'Saving...' : 'Save Schedule' }}
+                                </button>
+                                <span v-if="scheduleSuccess" class="text-green-400 text-sm ml-2">Saved!</span>
+                            </div>
+                            <!-- Active user boost -->
+                            <div class="flex items-center justify-between mt-4">
+                                <div>
+                                    <span class="text-tg-text text-sm">Active User Boost</span>
+                                    <p class="text-tg-muted text-xs">Run backups every 5 min while someone is actively browsing</p>
+                                </div>
+                                <button @click="activeUserBoost = !activeUserBoost; localStorage.setItem('tg-active-boost', activeUserBoost)"
+                                    :class="activeUserBoost ? 'bg-blue-600' : 'bg-gray-700'"
+                                    class="relative inline-flex h-6 w-11 items-center rounded-full transition shrink-0">
+                                    <span :class="activeUserBoost ? 'translate-x-6' : 'translate-x-1'"
+                                        class="inline-block h-4 w-4 rounded-full bg-white transition"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Timezone -->
+                        <div>
+                            <h3 class="text-lg font-semibold text-tg-text mb-2">Timezone</h3>
+                            <p class="text-tg-muted text-sm mb-3">Detected: {{ detectedTimezone }}</p>
+                            <div class="flex gap-2">
+                                <select v-model="selectedTimezone"
+                                    class="flex-1 bg-tg-input text-tg-text rounded-lg px-4 py-2 border border-gray-700 focus:border-blue-500 focus:outline-none text-sm">
+                                    <option v-for="tz in commonTimezones" :key="tz" :value="tz">{{ tz }}</option>
+                                </select>
+                                <button @click="resetTimezone"
+                                    class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-tg-text text-sm rounded-lg transition">
+                                    Auto
+                                </button>
+                            </div>
+                            <p class="text-tg-muted text-xs mt-1">Used for displaying message timestamps.</p>
+                        </div>
+
+                        <!-- Time Format -->
+                        <div>
+                            <h3 class="text-lg font-semibold text-tg-text mb-2">Time Format</h3>
+                            <div class="flex gap-3">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" v-model="timeFormat" value="12h" class="accent-blue-500">
+                                    <span class="text-tg-text text-sm">12-hour (3:30 PM)</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" v-model="timeFormat" value="24h" class="accent-blue-500">
+                                    <span class="text-tg-text text-sm">24-hour (15:30)</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Message Density -->
+                        <div>
+                            <h3 class="text-lg font-semibold text-tg-text mb-2">Message Density</h3>
+                            <div class="flex gap-2 sm:gap-3 flex-wrap">
+                                <button v-for="d in ['compact', 'normal', 'comfortable']" :key="d"
+                                    @click="messageDensity = d"
+                                    :class="messageDensity === d ? 'bg-blue-600 text-white' : 'bg-gray-700 text-tg-muted hover:bg-gray-600'"
+                                    class="px-4 py-2.5 sm:py-2 rounded-lg text-sm capitalize transition min-h-[44px] sm:min-h-0">
+                                    {{ d }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- About -->
+                        <div>
+                            <h3 class="text-lg font-semibold text-tg-text mb-2">About</h3>
+                            <p class="text-tg-muted text-sm">Telegram Archive v7.3.0</p>
+                            <p class="text-tg-muted text-xs mt-1">
+                                Made by <a href="https://github.com/GeiserX" target="_blank" class="text-blue-400 hover:text-blue-300">GeiserX</a>
+                                · Contributed by <a href="https://github.com/PhenixStar" target="_blank" class="text-blue-400 hover:text-blue-300">phenix</a>
+                            </p>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- User Info Panel (Phase 3) -->
+        <div v-if="userInfoPanel.visible" class="user-panel-backdrop" @click="userInfoPanel.visible = false">
+            <div class="user-panel" @click.stop>
+                <!-- Close button -->
+                <div class="flex justify-between items-center p-4 border-b" style="border-color: var(--tg-border)">
+                    <h3 class="text-lg font-semibold text-tg-text">User Info</h3>
+                    <button @click="userInfoPanel.visible = false" class="text-tg-muted hover:text-tg-text transition text-2xl min-w-[44px] min-h-[44px] flex items-center justify-center">&times;</button>
+                </div>
+                <!-- Loading -->
+                <div v-if="userInfoPanel.loading" class="flex-1 flex items-center justify-center p-8">
+                    <svg class="w-8 h-8 animate-spin text-tg-muted" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </div>
+                <!-- Content -->
+                <div v-else-if="userInfoPanel.user" class="p-6 space-y-5">
+                    <!-- Avatar + Name -->
+                    <div class="flex flex-col items-center text-center gap-3">
+                        <img v-if="userInfoPanel.user.avatar_url" :src="userInfoPanel.user.avatar_url"
+                            class="user-panel-avatar" @error="userInfoPanel.user.avatar_url = null">
+                        <div v-else class="user-panel-initials">
+                            {{ ((userInfoPanel.user.first_name || '')[0] || '?').toUpperCase() }}
+                        </div>
+                        <div>
+                            <div class="text-xl font-bold text-tg-text">
+                                {{ userInfoPanel.user.first_name || '' }} {{ userInfoPanel.user.last_name || '' }}
+                            </div>
+                            <div v-if="userInfoPanel.user.username" class="text-tg-muted text-sm">
+                                @{{ userInfoPanel.user.username }}
+                            </div>
+                            <div v-if="userInfoPanel.user.is_bot" class="mt-1 inline-block bg-blue-600/30 text-blue-300 text-xs px-2 py-0.5 rounded-full">Bot</div>
+                        </div>
+                    </div>
+                    <!-- Stats -->
+                    <div class="bg-tg-bg rounded-xl p-4" style="border: 1px solid var(--tg-border)">
+                        <div class="user-stat">
+                            <span class="text-tg-muted text-sm">User ID</span>
+                            <span class="text-tg-text text-sm font-mono">{{ userInfoPanel.user.id }}</span>
+                        </div>
+                        <div class="user-stat">
+                            <span class="text-tg-muted text-sm">Messages</span>
+                            <span class="text-tg-text text-sm font-semibold">{{ userInfoPanel.user.message_count?.toLocaleString() || 0 }}</span>
+                        </div>
+                        <div v-if="userInfoPanel.user.first_seen" class="user-stat">
+                            <span class="text-tg-muted text-sm">First seen</span>
+                            <span class="text-tg-text text-sm">{{ formatDate(userInfoPanel.user.first_seen) }}</span>
+                        </div>
+                        <div v-if="userInfoPanel.user.last_seen" class="user-stat">
+                            <span class="text-tg-muted text-sm">Last seen</span>
+                            <span class="text-tg-text text-sm">{{ formatDate(userInfoPanel.user.last_seen) }}</span>
+                        </div>
+                        <div v-if="userInfoPanel.user.phone" class="user-stat">
+                            <span class="text-tg-muted text-sm">Phone</span>
+                            <span class="text-tg-text text-sm font-mono">{{ userInfoPanel.user.phone }}</span>
+                        </div>
+                    </div>
+                    <!-- Actions -->
+                    <div class="space-y-2">
+                        <a v-if="userInfoPanel.user.username"
+                            :href="'https://t.me/' + userInfoPanel.user.username" target="_blank"
+                            class="block w-full text-center bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl text-sm font-medium transition">
+                            <i class="fab fa-telegram mr-2"></i>Open in Telegram
+                        </a>
+                        <button @click="copyToClipboard(String(userInfoPanel.user.id)); userInfoPanel.visible = false"
+                            class="block w-full text-center bg-tg-hover hover:bg-tg-active text-tg-text py-2.5 rounded-xl text-sm transition">
+                            <i class="fas fa-copy mr-2"></i>Copy User ID
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Background Picker Modal -->
+        <div v-if="showBgPicker" class="fixed inset-0 z-[9995] bg-black/40 flex items-end justify-center" @click="showBgPicker = false">
+            <div class="w-full max-w-md bg-tg-sidebar rounded-t-2xl p-4 max-h-[60vh] overflow-y-auto" @click.stop>
+                <div class="text-center font-semibold text-tg-text mb-3">Choose Background</div>
+                <div class="grid grid-cols-3 sm:grid-cols-4 gap-3 mb-4">
+                    <div v-for="bg in currentThemeBackgrounds" :key="bg.id"
+                        @click="selectBackground(bg.id)"
+                        class="aspect-square rounded-xl cursor-pointer border-2 transition flex items-end justify-center pb-1"
+                        :class="activeBgId === bg.id ? 'border-tg-accent ring-1 ring-tg-accent' : 'border-transparent hover:border-tg-muted/30'"
+                        :style="{ background: bg.preview || bg.css }">
+                        <span class="text-[10px] drop-shadow font-medium" :class="currentTheme === 'light' ? 'text-gray-700' : 'text-white'">{{ bg.name }}</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="selectBackground(activeBgId, true)"
+                        class="flex-1 py-3 sm:py-2 rounded-lg bg-tg-accent text-white text-sm font-medium min-h-[44px]">
+                        Set for all chats
+                    </button>
+                    <button @click="showBgPicker = false"
+                        class="px-4 py-3 sm:py-2 rounded-lg bg-tg-hover text-tg-text text-sm min-h-[44px]">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Context Menu (fixed position overlay) -->
+        <div v-if="ctxMenu.visible" class="ctx-menu-backdrop" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
+            <div class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
+                <!-- Message context menu -->
+                <template v-if="ctxMenu.type === 'message' && ctxMenu.target">
+                    <div class="ctx-menu-item" @click="ctxCopyText()">
+                        <i class="fas fa-copy w-4 text-center"></i> Copy Text
+                    </div>
+                    <div v-if="ctxMenu.target.text && extractUrl(ctxMenu.target.text)" class="ctx-menu-item" @click="ctxCopyLink()">
+                        <i class="fas fa-link w-4 text-center"></i> Copy Link
+                    </div>
+                    <div v-if="ctxMenu.target.sender_id" class="ctx-menu-item" @click="openUserInfo(ctxMenu.target.sender_id); closeCtxMenu()">
+                        <i class="fas fa-user w-4 text-center"></i> View Sender Info
+                    </div>
+                    <div class="ctx-menu-sep"></div>
+                    <div class="ctx-menu-item" @click="ctxSearchInChat()">
+                        <i class="fas fa-search w-4 text-center"></i> Search in Chat
+                    </div>
+                    <div v-if="ctxMenu.target.id" class="ctx-menu-item" @click="ctxCopyMsgId()">
+                        <i class="fas fa-hashtag w-4 text-center"></i> Copy Message ID
+                    </div>
+                    <div class="ctx-menu-sep"></div>
+                    <div class="ctx-menu-item" @click="showBgPicker = true; closeCtxMenu()">
+                        <i class="fas fa-palette w-4 text-center"></i> Choose Background
+                    </div>
+                </template>
+                <!-- Background area context menu -->
+                <template v-if="ctxMenu.type === 'background'">
+                    <div class="ctx-menu-item" @click="showBgPicker = true; closeCtxMenu()">
+                        <i class="fas fa-palette w-4 text-center"></i> Choose Background
+                    </div>
+                </template>
+                <!-- Chat list context menu -->
+                <template v-if="ctxMenu.type === 'chat' && ctxMenu.target">
+                    <div v-if="ctxMenu.target.username" class="ctx-menu-item" @click="ctxOpenInTelegram()">
+                        <i class="fab fa-telegram w-4 text-center"></i> Open in Telegram
+                    </div>
+                    <div v-if="ctxMenu.target.username" class="ctx-menu-item" @click="ctxCopyChatLink()">
+                        <i class="fas fa-link w-4 text-center"></i> Copy Telegram Link
+                    </div>
+                    <div class="ctx-menu-item" @click="ctxCopyChatId()">
+                        <i class="fas fa-hashtag w-4 text-center"></i> Copy Chat ID
+                    </div>
+                    <div class="ctx-menu-sep"></div>
+                    <div class="ctx-menu-item" @click="ctxSearchInThisChat()">
+                        <i class="fas fa-search w-4 text-center"></i> Search in Chat
+                    </div>
+                </template>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -1455,12 +2367,21 @@
                 const authCheckFailed = ref(false)  // True if auth check request failed
                 const loadingAuth = ref(true)
                 const loginForm = ref({ username: '', password: '' })
+                const loginMode = ref('password')  // 'password' or 'token'
+                const loginCharState = ref('idle')  // 'idle' | 'username' | 'password' | 'token'
+
+                // User info panel state (Phase 3)
+                const userInfoPanel = ref({ visible: false, loading: false, user: null })
+                const tokenInput = ref('')
                 const loginError = ref('')
+                const userRole = ref(null)  // 'master' or 'viewer'
+                const noDownload = ref(false)  // Media download restriction flag
+                const currentUsername = ref('')
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
                 const listenerActive = ref(false)  // Whether real-time listener is active
-                const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
+                const viewerTimezone = ref(localStorage.getItem('tg-timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
                 const showDatePickerModal = ref(false)
                 const datePickerInput = ref(null)
                 const selectedDate = ref(null)
@@ -1483,6 +2404,229 @@
                 let messageRefreshTimer = null  // Timer for auto-refreshing messages
                 let pushSubscription = null  // Current push subscription object
 
+                // Admin Settings Panel (v7.3.0)
+                const showSettings = ref(false)
+                const settingsTab = ref('appearance')
+                const currentTheme = ref(localStorage.getItem('tg-theme') || 'midnight')
+                const settingsTabs = computed(() => {
+                    const tabs = []
+                    if (userRole.value === 'master') {
+                        tabs.push({ id: 'account', label: 'Account' })
+                        tabs.push({ id: 'users', label: 'Users' })
+                        tabs.push({ id: 'tokens', label: 'Tokens' })
+                        tabs.push({ id: 'activity', label: 'Activity' })
+                    }
+                    tabs.push({ id: 'appearance', label: 'Appearance' })
+                    tabs.push({ id: 'general', label: 'General' })
+                    return tabs
+                })
+                const themes = [
+                    { id: 'midnight', name: 'Midnight', bg: '#0f172a', sidebar: '#1e293b', accent: '#3b82f6' },
+                    { id: 'dark', name: 'Dark', bg: '#111827', sidebar: '#1f2937', accent: '#6366f1' },
+                    { id: 'nord', name: 'Nord', bg: '#2e3440', sidebar: '#3b4252', accent: '#88c0d0' },
+                    { id: 'solarized', name: 'Solarized', bg: '#002b36', sidebar: '#073642', accent: '#2aa198' },
+                    { id: 'oled', name: 'OLED', bg: '#000000', sidebar: '#0a0a0a', accent: '#3b82f6' },
+                    { id: 'light', name: 'Light', bg: '#f8fafc', sidebar: '#ffffff', accent: '#2563eb' },
+                ]
+
+                function setTheme(themeId) {
+                    currentTheme.value = themeId
+                    localStorage.setItem('tg-theme', themeId)
+                    const el = document.documentElement
+                    el.className = el.className.replace(/theme-\w+/g, '').trim()
+                    if (themeId === 'light') {
+                        el.classList.remove('dark')
+                    } else {
+                        el.classList.add('dark')
+                    }
+                    el.classList.add('theme-' + themeId)
+                }
+
+                // Users tab state
+                const viewers = ref([])
+                const showCreateUser = ref(false)
+                const newViewerUsername = ref('')
+                const newViewerPassword = ref('')
+                const newViewerChatIds = ref([])
+                const viewerCreateError = ref('')
+                const creatingViewer = ref(false)
+                const editingViewerId = ref(null)
+                const editViewerChatIds = ref([])
+                const newViewerNoDownload = ref(true)
+                const editViewerChatSearch = ref('')
+                const editViewerPassword = ref('')
+                const editViewerNoDownload = ref(true)
+                const editViewerError = ref('')
+                const savingEditViewer = ref(false)
+
+                // Tokens tab state
+                const tokens = ref([])
+                const showCreateToken = ref(false)
+                const newTokenLabel = ref('')
+                const newTokenExpiry = ref('')
+                const newTokenChatIds = ref([])
+                const tokenCreateError = ref('')
+                const creatingToken = ref(false)
+                const createdTokenInfo = ref(null)
+                const editingTokenId = ref(null)
+                const editTokenLabel = ref('')
+                const editTokenChatIds = ref([])
+                const newTokenNoDownload = ref(true)
+                const editTokenChatSearch = ref('')
+                const editTokenNoDownload = ref(true)
+                const editTokenError = ref('')
+                const savingEditToken = ref(false)
+
+                // Per-chat background preferences
+                const showBgPicker = ref(false)
+                const themeBackgrounds = {
+                    midnight: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#0f172a' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23888' opacity='0.06'/%3E%3C/svg%3E\")", preview: '#141e30' },
+                        { id: 'grid', name: 'Grid', css: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0h40v40H0z' fill='none'/%3E%3Cpath d='M40 0v40M0 40h40' stroke='%23ffffff' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")", preview: '#0f1729' },
+                        { id: 'diagonal', name: 'Diagonal', css: "url(\"data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 20L20 0' stroke='%23ffffff' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")", preview: '#111a2e' },
+                        { id: 'gradient-deep', name: 'Deep Blue', css: 'linear-gradient(180deg, #0d1117, #1a2332)', preview: 'linear-gradient(180deg, #0d1117, #1a2332)' },
+                        { id: 'gradient-purple', name: 'Purple Night', css: 'linear-gradient(135deg, #17212b, #2d1b4e)', preview: 'linear-gradient(135deg, #17212b, #2d1b4e)' },
+                        { id: 'solid-dark', name: 'Darker', css: 'linear-gradient(#0e1621, #0e1621)', preview: '#0e1621' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#0f172a' },
+                    ],
+                    dark: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#111827' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23888' opacity='0.06'/%3E%3C/svg%3E\")", preview: '#161f31' },
+                        { id: 'grid', name: 'Grid', css: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0h40v40H0z' fill='none'/%3E%3Cpath d='M40 0v40M0 40h40' stroke='%23ffffff' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")", preview: '#131b2e' },
+                        { id: 'gradient-indigo', name: 'Indigo', css: 'linear-gradient(180deg, #111827, #1e1b4b)', preview: 'linear-gradient(180deg, #111827, #1e1b4b)' },
+                        { id: 'gradient-warm', name: 'Warm Night', css: 'linear-gradient(135deg, #1a1a2e, #16213e)', preview: 'linear-gradient(135deg, #1a1a2e, #16213e)' },
+                        { id: 'solid-dark', name: 'Darker', css: 'linear-gradient(#0a0f1a, #0a0f1a)', preview: '#0a0f1a' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#111827' },
+                    ],
+                    nord: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#2e3440' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23d8dee9' opacity='0.06'/%3E%3C/svg%3E\")", preview: '#333a47' },
+                        { id: 'gradient-frost', name: 'Frost', css: 'linear-gradient(180deg, #2e3440, #3b4252)', preview: 'linear-gradient(180deg, #2e3440, #3b4252)' },
+                        { id: 'gradient-aurora', name: 'Aurora', css: 'linear-gradient(135deg, #2e3440, #2e3e50)', preview: 'linear-gradient(135deg, #2e3440, #2e3e50)' },
+                        { id: 'solid-dark', name: 'Darker', css: 'linear-gradient(#242933, #242933)', preview: '#242933' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#2e3440' },
+                    ],
+                    solarized: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#002b36' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%2393a1a1' opacity='0.06'/%3E%3C/svg%3E\")", preview: '#073642' },
+                        { id: 'gradient-warm', name: 'Warm', css: 'linear-gradient(180deg, #002b36, #073642)', preview: 'linear-gradient(180deg, #002b36, #073642)' },
+                        { id: 'gradient-teal', name: 'Teal', css: 'linear-gradient(135deg, #002b36, #004050)', preview: 'linear-gradient(135deg, #002b36, #004050)' },
+                        { id: 'solid-dark', name: 'Darker', css: 'linear-gradient(#001f27, #001f27)', preview: '#001f27' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#002b36' },
+                    ],
+                    oled: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#000000' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23333' opacity='0.15'/%3E%3C/svg%3E\")", preview: '#0a0a0a' },
+                        { id: 'gradient-subtle', name: 'Subtle', css: 'linear-gradient(180deg, #000000, #0a0a0a)', preview: 'linear-gradient(180deg, #000, #0a0a0a)' },
+                        { id: 'gradient-blue', name: 'Deep Blue', css: 'linear-gradient(135deg, #000000, #050a15)', preview: 'linear-gradient(135deg, #000, #050a15)' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#000000' },
+                    ],
+                    light: [
+                        { id: 'default', name: 'Default', css: 'none', preview: '#f8fafc' },
+                        { id: 'dots', name: 'Dots', css: "url(\"data:image/svg+xml,%3Csvg width='28' height='28' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='14' cy='14' r='1.2' fill='%23000' opacity='0.04'/%3E%3C/svg%3E\")", preview: '#f0f2f5' },
+                        { id: 'grid', name: 'Grid', css: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0h40v40H0z' fill='none'/%3E%3Cpath d='M40 0v40M0 40h40' stroke='%23000' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")", preview: '#eef1f5' },
+                        { id: 'gradient-soft', name: 'Soft', css: 'linear-gradient(180deg, #f8fafc, #e2e8f0)', preview: 'linear-gradient(180deg, #f8fafc, #e2e8f0)' },
+                        { id: 'gradient-warm', name: 'Warm', css: 'linear-gradient(135deg, #fefce8, #f1f5f9)', preview: 'linear-gradient(135deg, #fefce8, #f1f5f9)' },
+                        { id: 'plain', name: 'Plain', css: 'none', preview: '#ffffff' },
+                    ],
+                }
+
+                function getChatBg(chatId) {
+                    try {
+                        const prefs = JSON.parse(localStorage.getItem('tg-chat-bg') || '{}')
+                        return prefs[String(chatId)] || prefs['_default'] || 'default'
+                    } catch { return 'default' }
+                }
+                function setChatBg(chatId, bgId) {
+                    try {
+                        const prefs = JSON.parse(localStorage.getItem('tg-chat-bg') || '{}')
+                        prefs[String(chatId)] = bgId
+                        localStorage.setItem('tg-chat-bg', JSON.stringify(prefs))
+                    } catch {}
+                }
+                function setDefaultBg(bgId) {
+                    try {
+                        const prefs = JSON.parse(localStorage.getItem('tg-chat-bg') || '{}')
+                        prefs['_default'] = bgId
+                        localStorage.setItem('tg-chat-bg', JSON.stringify(prefs))
+                    } catch {}
+                }
+
+                const currentThemeBackgrounds = computed(() => {
+                    return themeBackgrounds[currentTheme.value] || themeBackgrounds['midnight']
+                })
+
+                const activeBgId = computed(() => {
+                    if (!selectedChat.value) return 'default'
+                    return getChatBg(selectedChat.value.id)
+                })
+
+                const chatBackground = computed(() => {
+                    if (!selectedChat.value) return ''
+                    const bgId = getChatBg(selectedChat.value.id)
+                    const presets = themeBackgrounds[currentTheme.value] || themeBackgrounds['midnight']
+                    const preset = presets.find(p => p.id === bgId) || presets[0]
+                    return preset.css === 'none' ? '' : preset.css
+                })
+
+                function selectBackground(bgId, setDefault = false) {
+                    if (setDefault) {
+                        setDefaultBg(bgId)
+                    } else if (selectedChat.value) {
+                        setChatBg(selectedChat.value.id, bgId)
+                    }
+                    showBgPicker.value = false
+                }
+
+                // Audit log state
+                const auditEntries = ref([])
+                const auditLoading = ref(false)
+                const auditFilter = ref({ action: '', username: '' })
+                const auditOffset = ref(0)
+                const auditHasMore = ref(true)
+
+                // Shared chat picker state
+                const adminChats = ref([])
+                const userChatSearch = ref('')
+                const tokenChatSearch = ref('')
+
+                // Context menu state
+                const ctxMenu = ref({ visible: false, x: 0, y: 0, type: null, target: null })
+
+                // Account tab state
+                const currentPassword = ref('')
+                const newPassword = ref('')
+                const confirmPassword = ref('')
+                const passwordError = ref('')
+                const passwordSuccess = ref('')
+                const changingPassword = ref(false)
+
+                // General tab — backup control (Phase 5)
+                const backupStatus = ref('unknown')
+                const lastBackupCompleted = ref(null)
+                const backupSchedulePreset = ref('0 */6 * * *')
+                const customCron = ref('')
+                const savingSchedule = ref(false)
+                const scheduleSuccess = ref(false)
+                const activeUserBoost = ref(localStorage.getItem('tg-active-boost') === 'true')
+
+                // General tab — timezone & display settings (Phase 4)
+                const detectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+                const selectedTimezone = ref(localStorage.getItem('tg-timezone') || detectedTimezone)
+                const timeFormat = ref(localStorage.getItem('tg-timeformat') || '24h')
+                const messageDensity = ref(localStorage.getItem('tg-density') || 'normal')
+                const commonTimezones = [
+                    'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+                    'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
+                    'Europe/Moscow', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Bangkok', 'Asia/Shanghai',
+                    'Asia/Tokyo', 'Asia/Seoul', 'Asia/Manila', 'Asia/Singapore',
+                    'Australia/Sydney', 'Pacific/Auckland',
+                ]
+                if (detectedTimezone && !commonTimezones.includes(detectedTimezone)) {
+                    commonTimezones.unshift(detectedTimezone)
+                }
+
                 // Intersection Observer for GIF autoplay
                 let gifObserver = null
 
@@ -1494,6 +2638,7 @@
                 const infiniteScrollSentinel = ref(null)
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
+                const messageCache = new Map()  // chatId → { messages, hasMore, page }
                 let chatVersion = 0  // Incremented on each selectChat to invalidate stale requests
                 
                 // Server-side search
@@ -1665,7 +2810,9 @@
                     searchDebounceTimer = setTimeout(async () => {
                         try {
                             // Search ALL chats server-side (no pagination limit)
-                            const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
+                            // Strip @ prefix so "@username" matches username field
+                            const cleanQuery = query.replace(/^@/, '')
+                            const res = await fetch(`/api/chats?search=${encodeURIComponent(cleanQuery)}&limit=1000`, {
                                 credentials: 'include'
                             })
                             if (res.ok) {
@@ -1852,25 +2999,26 @@
                 }
                 
                 // Setup observer for loading older messages (Telegram-style auto-load)
+                let loadDebounce = null
                 const setupMessagesScrollObserver = () => {
                     if (messagesScrollObserver) {
                         messagesScrollObserver.disconnect()
                     }
-                    
+
                     messagesScrollObserver = new IntersectionObserver(
                         (entries) => {
-                            // When sentinel becomes visible, load more messages
+                            // When sentinel becomes visible, load more messages (debounced)
                             if (entries[0].isIntersecting && hasMore.value && !loading.value) {
-                                console.log('>>> Loading more messages (sentinel visible)')
-                                loadMessages()
+                                clearTimeout(loadDebounce)
+                                loadDebounce = setTimeout(() => loadMessages(), 150)
                             }
                         },
-                        { 
+                        {
                             root: messagesContainer.value,
-                            rootMargin: '200px'  // Start loading before reaching the top
+                            rootMargin: '800px'  // Start loading 800px before reaching the top
                         }
                     )
-                    
+
                     // Observe the sentinel when it's in DOM
                     nextTick(() => {
                         if (loadMoreSentinel.value) {
@@ -1911,12 +3059,13 @@
                             // Show/hide stats UI based on config
                             showStatsUI.value = stats.show_stats !== false
                             
-                            // Update timezone from config
-                            if (stats.timezone) {
+                            // Update timezone: use user's saved preference, else server config, else browser detect
+                            if (!localStorage.getItem('tg-timezone') && stats.timezone) {
                                 viewerTimezone.value = stats.timezone
-                                if (moment && moment.tz) {
-                                    moment.tz.setDefault(viewerTimezone.value)
-                                }
+                                selectedTimezone.value = stats.timezone
+                            }
+                            if (moment && moment.tz) {
+                                moment.tz.setDefault(viewerTimezone.value)
                             }
                             
                             // Last backup time
@@ -1994,7 +3143,19 @@
                             console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
+                            userRole.value = data.role || null
+                            currentUsername.value = data.username || ''
+                            noDownload.value = !!data.no_download
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
+
+                            // Handle token auth error redirect
+                            const initUrlParams = new URLSearchParams(window.location.search)
+                            if (initUrlParams.get('auth_error') === 'invalid_token') {
+                                loginError.value = 'Invalid or expired share token'
+                                loginMode.value = 'token'
+                                // Clean URL
+                                window.history.replaceState({}, '', '/')
+                            }
 
                             if (isAuthenticated.value) {
                                 await loadChats()
@@ -2002,7 +3163,8 @@
                                 await loadFolders()
                                 await loadArchivedCount()
                                 setupInfiniteScroll()
-                                
+                                startActivityPing()
+
                                 // Handle deep link from push notification
                                 const urlParams = new URLSearchParams(window.location.search)
                                 const chatIdParam = urlParams.get('chat')
@@ -2146,6 +3308,8 @@
                 const handleWebSocketMessage = (data) => {
                     switch (data.type) {
                         case 'new_message':
+                            // Invalidate message cache for this chat
+                            messageCache.delete(data.chat_id)
                             // Add to messages if we're viewing that chat (deduplicate by ID)
                             if (selectedChat.value?.id === data.chat_id && data.message?.id != null) {
                                 if (!messages.value.some(m => m.id === data.message.id)) {
@@ -2478,6 +3642,8 @@
                         const data = await res.json()
                         if (data.success) {
                             isAuthenticated.value = true
+                            userRole.value = data.role || null
+                            currentUsername.value = data.username || ''
                             await loadChats()
                             await loadStats()
                             // Re-initialize notifications after login (cookie now set)
@@ -2491,6 +3657,15 @@
                     } finally {
                         loadingAuth.value = false
                     }
+                }
+
+                const performTokenLogin = () => {
+                    const t = tokenInput.value.trim()
+                    if (!t) return
+                    loadingAuth.value = true
+                    loginError.value = ''
+                    // Redirect to server-side token auth (sets cookie + redirects to /)
+                    window.location.href = '/auth/token?token=' + encodeURIComponent(t)
                 }
 
                 const filteredChats = computed(() => {
@@ -2652,15 +3827,26 @@
                         return
                     }
                     
+                    // Save current chat to cache before switching
+                    if (selectedChat.value && messages.value.length > 0) {
+                        messageCache.set(selectedChat.value.id, {
+                            messages: [...messages.value],
+                            hasMore: hasMore.value,
+                            page: page.value,
+                        })
+                        // LRU eviction: keep last 10 chats
+                        if (messageCache.size > 10) {
+                            const oldest = messageCache.keys().next().value
+                            messageCache.delete(oldest)
+                        }
+                    }
+
                     // Invalidate any in-flight loads from previous chat
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
                     loading.value = false  // Reset gate so loadMessages can proceed
-                    
+
                     selectedChat.value = chat
-                    messages.value = []
-                    page.value = 0
-                    hasMore.value = true
                     messageSearchQuery.value = ''
                     chatStats.value = null
                     pinnedMessages.value = []
@@ -2668,7 +3854,19 @@
                     updateHash(chat.id)  // v7.0: Update URL hash
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
-                    await loadMessages()
+
+                    // Restore from cache if available
+                    const cached = messageCache.get(chat.id)
+                    if (cached) {
+                        messages.value = cached.messages
+                        hasMore.value = cached.hasMore
+                        page.value = cached.page
+                    } else {
+                        messages.value = []
+                        page.value = 0
+                        hasMore.value = true
+                        await loadMessages()
+                    }
                     if (chatVersion !== myVersion) return  // Another chat was selected, abort
                     await loadChatStats(chat.id)  // Load stats for this chat
                     await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
@@ -2774,6 +3972,12 @@
 
                     const myVersion = chatVersion
                     loading.value = true
+
+                    // Capture scroll position for preservation when prepending older messages
+                    const container = messagesContainer.value
+                    const prevScrollHeight = container ? container.scrollHeight : 0
+                    const prevScrollTop = container ? container.scrollTop : 0
+
                     try {
                         const limit = 50
                         let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}`
@@ -2841,6 +4045,16 @@
                         }
                         messages.value = Array.from(existingById.values())
                         page.value++  // Still increment for search pagination
+
+                        // Preserve scroll position after prepending older messages
+                        if (container && prevScrollHeight > 0 && page.value > 1) {
+                            await nextTick()
+                            const newScrollHeight = container.scrollHeight
+                            const delta = newScrollHeight - prevScrollHeight
+                            if (delta > 0) {
+                                container.scrollTop = prevScrollTop - delta
+                            }
+                        }
                     } catch (e) {
                         console.error("Failed to load messages", e)
                     } finally {
@@ -3008,12 +4222,22 @@
                 }
 
                 const handleScroll = (e) => {
-                    const { scrollTop } = e.target
-                    
+                    const el = e.target
+                    const { scrollTop } = el
+
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop is NEGATIVE when scrolled up from bottom
                     // scrollTop=0 is at bottom (newest), scrollTop=-1000 means scrolled up 1000px
                     showScrollToBottom.value = scrollTop < -300
+
+                    // Infinite scroll fallback: trigger load when near the visual "top" (oldest messages)
+                    // With flex-col-reverse, scrollTop is 0 at bottom, negative going up
+                    // scrollHeight + scrollTop gives distance from visual top
+                    const distFromTop = el.scrollHeight + scrollTop - el.clientHeight
+                    if (distFromTop < 800 && hasMore.value && !loading.value) {
+                        clearTimeout(loadDebounce)
+                        loadDebounce = setTimeout(() => loadMessages(), 150)
+                    }
                 }
                 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
@@ -3248,7 +4472,8 @@
 
                 const formatTime = (dateStr) => {
                     // Parse as UTC (DB stores UTC) then convert to viewer timezone
-                    return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
+                    const fmt = timeFormat.value === '12h' ? 'h:mm A' : 'HH:mm'
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format(fmt)
                 }
 
                 const formatReactionEmoji = (emoji) => {
@@ -3660,6 +4885,413 @@
                     }
                 }
 
+                // --- Admin Settings Methods (v7.3.0) ---
+
+                async function loadAdminChats() {
+                    try {
+                        const res = await fetch('/api/admin/chats', { credentials: 'include' })
+                        if (res.ok) adminChats.value = (await res.json()).chats || []
+                    } catch (e) { console.error('Failed to load admin chats', e) }
+                }
+
+                // Backup control methods (Phase 5)
+                async function loadBackupStatus() {
+                    try {
+                        const res = await fetch('/api/backup-status', { credentials: 'include' })
+                        if (res.ok) {
+                            const d = await res.json()
+                            backupStatus.value = d.status || 'unknown'
+                            lastBackupCompleted.value = d.last_completed_at
+                                ? moment.utc(d.last_completed_at).fromNow()
+                                : null
+                            const sched = d.schedule || '0 */6 * * *'
+                            const presets = ['0 */1 * * *','0 */3 * * *','0 */6 * * *','0 */12 * * *','0 0 * * *']
+                            if (presets.includes(sched)) {
+                                backupSchedulePreset.value = sched
+                            } else {
+                                backupSchedulePreset.value = 'custom'
+                                customCron.value = sched
+                            }
+                        }
+                    } catch (e) { console.error('Failed to load backup status', e) }
+                }
+
+                async function saveBackupSchedule() {
+                    savingSchedule.value = true
+                    scheduleSuccess.value = false
+                    const cron = backupSchedulePreset.value === 'custom' ? customCron.value : backupSchedulePreset.value
+                    try {
+                        const res = await fetch('/api/admin/settings', {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ backup_schedule: cron })
+                        })
+                        if (res.ok) {
+                            scheduleSuccess.value = true
+                            setTimeout(() => scheduleSuccess.value = false, 3000)
+                        }
+                    } catch (e) { console.error('Failed to save schedule', e) }
+                    savingSchedule.value = false
+                }
+
+                // Activity heartbeat (Phase 5)
+                let activityInterval = null
+                function startActivityPing() {
+                    if (activityInterval) return
+                    activityInterval = setInterval(async () => {
+                        if (document.visibilityState === 'visible' && activeUserBoost.value) {
+                            await fetch('/api/activity/ping', { method: 'POST', credentials: 'include' }).catch(() => {})
+                        }
+                    }, 90000)
+                }
+
+                async function loadViewers() {
+                    try {
+                        const res = await fetch('/api/admin/viewers', { credentials: 'include' })
+                        if (res.ok) viewers.value = (await res.json()).viewers || []
+                    } catch (e) { console.error('Failed to load viewers', e) }
+                }
+
+                async function loadTokens() {
+                    try {
+                        const res = await fetch('/api/admin/tokens', { credentials: 'include' })
+                        if (res.ok) tokens.value = (await res.json()).tokens || []
+                    } catch (e) { console.error('Failed to load tokens', e) }
+                }
+
+                async function createViewer() {
+                    viewerCreateError.value = ''
+                    if (!newViewerUsername.value.trim()) { viewerCreateError.value = 'Username required'; return }
+                    if (newViewerPassword.value.length < 4) { viewerCreateError.value = 'Password min 4 chars'; return }
+                    creatingViewer.value = true
+                    try {
+                        const res = await fetch('/api/admin/viewers', {
+                            method: 'POST', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                username: newViewerUsername.value.trim(),
+                                password: newViewerPassword.value,
+                                allowed_chat_ids: newViewerChatIds.value,
+                                no_download: newViewerNoDownload.value,
+                            })
+                        })
+                        const data = await res.json()
+                        if (res.ok) {
+                            newViewerUsername.value = ''
+                            newViewerPassword.value = ''
+                            newViewerChatIds.value = []
+                            newViewerNoDownload.value = true
+                            showCreateUser.value = false
+                            await loadViewers()
+                        } else { viewerCreateError.value = data.detail || 'Failed' }
+                    } catch (e) { viewerCreateError.value = 'Network error' }
+                    finally { creatingViewer.value = false }
+                }
+
+                async function toggleViewerActive(viewer) {
+                    try {
+                        await fetch(`/api/admin/viewers/${viewer.id}`, {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ is_active: viewer.is_active ? 0 : 1 })
+                        })
+                        await loadViewers()
+                    } catch (e) { console.error('Toggle viewer failed', e) }
+                }
+
+                async function deleteViewer(viewer) {
+                    if (!confirm(`Delete viewer "${viewer.username}"? Their sessions will be terminated.`)) return
+                    try {
+                        await fetch(`/api/admin/viewers/${viewer.id}`, { method: 'DELETE', credentials: 'include' })
+                        await loadViewers()
+                    } catch (e) { console.error('Delete viewer failed', e) }
+                }
+
+                function startEditViewer(viewer) {
+                    editingViewerId.value = viewer.id
+                    const chatIds = viewer.allowed_chat_ids
+                        ? (typeof viewer.allowed_chat_ids === 'string' ? JSON.parse(viewer.allowed_chat_ids) : viewer.allowed_chat_ids)
+                        : []
+                    editViewerChatIds.value = [...chatIds]
+                    editViewerChatSearch.value = ''
+                    editViewerPassword.value = ''
+                    editViewerNoDownload.value = viewer.no_download !== undefined ? !!viewer.no_download : true
+                    editViewerError.value = ''
+                }
+
+                async function saveEditViewer() {
+                    editViewerError.value = ''
+                    savingEditViewer.value = true
+                    try {
+                        const body = { allowed_chat_ids: editViewerChatIds.value, no_download: editViewerNoDownload.value }
+                        if (editViewerPassword.value) {
+                            if (editViewerPassword.value.length < 4) { editViewerError.value = 'Password min 4 chars'; savingEditViewer.value = false; return }
+                            body.password = editViewerPassword.value
+                        }
+                        const res = await fetch(`/api/admin/viewers/${editingViewerId.value}`, {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        })
+                        if (res.ok) {
+                            editingViewerId.value = null
+                            await loadViewers()
+                        } else {
+                            const data = await res.json()
+                            editViewerError.value = data.detail || 'Failed to update'
+                        }
+                    } catch (e) { editViewerError.value = 'Network error' }
+                    finally { savingEditViewer.value = false }
+                }
+
+                async function createToken() {
+                    tokenCreateError.value = ''
+                    if (!newTokenChatIds.value.length) { tokenCreateError.value = 'Select at least 1 chat'; return }
+                    creatingToken.value = true
+                    try {
+                        const body = { chat_ids: newTokenChatIds.value, label: newTokenLabel.value || undefined, no_download: newTokenNoDownload.value }
+                        if (newTokenExpiry.value) body.expires_hours = parseInt(newTokenExpiry.value)
+                        const res = await fetch('/api/admin/tokens', {
+                            method: 'POST', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        })
+                        const data = await res.json()
+                        if (res.ok) {
+                            createdTokenInfo.value = data
+                            newTokenLabel.value = ''
+                            newTokenExpiry.value = ''
+                            newTokenChatIds.value = []
+                            newTokenNoDownload.value = true
+                            showCreateToken.value = false
+                            await loadTokens()
+                        } else { tokenCreateError.value = data.detail || 'Failed' }
+                    } catch (e) { tokenCreateError.value = 'Network error' }
+                    finally { creatingToken.value = false }
+                }
+
+                async function revokeToken(token) {
+                    if (!confirm(`Revoke token "${token.label || '#' + token.id}"? Active sessions will be terminated.`)) return
+                    try {
+                        await fetch(`/api/admin/tokens/${token.id}`, { method: 'DELETE', credentials: 'include' })
+                        await loadTokens()
+                    } catch (e) { console.error('Revoke token failed', e) }
+                }
+
+                function startEditToken(token) {
+                    editingTokenId.value = token.id
+                    editTokenLabel.value = token.label || ''
+                    editTokenChatIds.value = [...(token.allowed_chat_ids || [])]
+                    editTokenChatSearch.value = ''
+                    editTokenNoDownload.value = token.no_download !== undefined ? !!token.no_download : true
+                    editTokenError.value = ''
+                }
+
+                async function saveEditToken() {
+                    editTokenError.value = ''
+                    if (!editTokenChatIds.value.length) { editTokenError.value = 'Select at least 1 chat'; return }
+                    savingEditToken.value = true
+                    try {
+                        const res = await fetch(`/api/admin/tokens/${editingTokenId.value}`, {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ label: editTokenLabel.value, allowed_chat_ids: editTokenChatIds.value, no_download: editTokenNoDownload.value })
+                        })
+                        if (res.ok) {
+                            editingTokenId.value = null
+                            await loadTokens()
+                        } else {
+                            const data = await res.json()
+                            editTokenError.value = data.detail || 'Failed to update'
+                        }
+                    } catch (e) { editTokenError.value = 'Network error' }
+                    finally { savingEditToken.value = false }
+                }
+
+                async function loadAuditLog(append = false) {
+                    auditLoading.value = true
+                    try {
+                        const params = new URLSearchParams({ limit: '50', offset: String(auditOffset.value) })
+                        if (auditFilter.value.action) params.set('action', auditFilter.value.action)
+                        if (auditFilter.value.username) params.set('username', auditFilter.value.username)
+                        const res = await fetch(`/api/admin/audit?${params}`, { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            if (append) auditEntries.value.push(...data.entries)
+                            else auditEntries.value = data.entries
+                            auditHasMore.value = data.entries.length === 50
+                        }
+                    } catch (e) { console.error('Failed to load audit log', e) }
+                    finally { auditLoading.value = false }
+                }
+
+                function filterAuditLog() {
+                    auditOffset.value = 0
+                    loadAuditLog()
+                }
+
+                function loadMoreAudit() {
+                    auditOffset.value += 50
+                    loadAuditLog(true)
+                }
+
+                async function changePassword() {
+                    passwordError.value = ''
+                    passwordSuccess.value = ''
+                    if (newPassword.value !== confirmPassword.value) { passwordError.value = 'Passwords do not match'; return }
+                    if (newPassword.value.length < 4) { passwordError.value = 'Min 4 characters'; return }
+                    changingPassword.value = true
+                    try {
+                        const res = await fetch('/api/auth/password', {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value })
+                        })
+                        if (res.ok) {
+                            passwordSuccess.value = 'Password changed'
+                            currentPassword.value = ''; newPassword.value = ''; confirmPassword.value = ''
+                        } else {
+                            const data = await res.json()
+                            passwordError.value = data.detail || 'Failed'
+                        }
+                    } catch (e) { passwordError.value = 'Network error' }
+                    finally { changingPassword.value = false }
+                }
+
+                function copyToClipboard(text) {
+                    navigator.clipboard.writeText(text).catch(() => {
+                        const ta = document.createElement('textarea')
+                        ta.value = text; document.body.appendChild(ta); ta.select()
+                        document.execCommand('copy'); document.body.removeChild(ta)
+                    })
+                }
+
+                // ── Context Menu ──
+                function showCtxMenu(event, type, target) {
+                    const menuW = 200, menuH = 280
+                    // Use touch coordinates on mobile if available
+                    const clientX = event.touches ? event.touches[0].clientX : event.clientX
+                    const clientY = event.touches ? event.touches[0].clientY : event.clientY
+                    const x = Math.min(clientX, window.innerWidth - menuW - 8)
+                    const y = Math.min(clientY, window.innerHeight - menuH - 8)
+                    ctxMenu.value = { visible: true, x: Math.max(4, x), y: Math.max(4, y), type, target }
+                }
+                function closeCtxMenu() { ctxMenu.value = { ...ctxMenu.value, visible: false } }
+                function extractUrl(text) {
+                    if (!text) return null
+                    const m = text.match(/https?:\/\/[^\s<>"']+/i)
+                    return m ? m[0] : null
+                }
+                // Actions
+                function ctxCopyText() {
+                    const t = ctxMenu.value.target
+                    copyToClipboard(t?.text || t?.raw_data?.message || '')
+                    closeCtxMenu()
+                }
+                function ctxCopyLink() {
+                    const url = extractUrl(ctxMenu.value.target?.text)
+                    if (url) copyToClipboard(url)
+                    closeCtxMenu()
+                }
+                function ctxSearchSender() {
+                    const msg = ctxMenu.value.target
+                    closeCtxMenu()
+                    if (msg?.sender_id && selectedChat.value) {
+                        // Set sender filter via URL param approach — use message search with sender name
+                        const name = getSenderName(msg)
+                        messageSearch.value = 'from:' + (msg.username || name)
+                        loadMessages()
+                    }
+                }
+                function ctxSearchInChat() {
+                    const msg = ctxMenu.value.target
+                    closeCtxMenu()
+                    if (msg?.text) {
+                        const snippet = msg.text.substring(0, 50).trim()
+                        messageSearch.value = snippet
+                        loadMessages()
+                    }
+                }
+                function ctxCopyMsgId() {
+                    copyToClipboard(String(ctxMenu.value.target?.id || ''))
+                    closeCtxMenu()
+                }
+                function ctxOpenInTelegram() {
+                    const chat = ctxMenu.value.target
+                    closeCtxMenu()
+                    if (chat?.username) window.open('https://t.me/' + chat.username, '_blank')
+                }
+                function ctxCopyChatLink() {
+                    const chat = ctxMenu.value.target
+                    if (chat?.username) copyToClipboard('https://t.me/' + chat.username)
+                    closeCtxMenu()
+                }
+                function ctxCopyChatId() {
+                    copyToClipboard(String(ctxMenu.value.target?.id || ''))
+                    closeCtxMenu()
+                }
+                function ctxSearchInThisChat() {
+                    const chat = ctxMenu.value.target
+                    closeCtxMenu()
+                    if (chat) selectChat(chat)
+                }
+
+                // Close context menu on Escape
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') { closeCtxMenu(); userInfoPanel.value.visible = false }
+                })
+
+                // ── User Info Panel ──
+                async function openUserInfo(senderId) {
+                    if (!senderId) return
+                    userInfoPanel.value = { visible: true, loading: true, user: null }
+                    try {
+                        const chatId = selectedChat.value?.id
+                        const url = `/api/users/${senderId}` + (chatId ? `?chat_id=${chatId}` : '')
+                        const res = await fetch(url, { credentials: 'include' })
+                        if (res.ok) {
+                            userInfoPanel.value.user = await res.json()
+                        } else {
+                            userInfoPanel.value.visible = false
+                        }
+                    } catch (e) {
+                        console.error('Failed to load user info', e)
+                        userInfoPanel.value.visible = false
+                    } finally {
+                        userInfoPanel.value.loading = false
+                    }
+                }
+
+                watch(showSettings, async (val) => {
+                    if (val) {
+                        loadBackupStatus()
+                        if (userRole.value === 'master') {
+                            await Promise.all([loadViewers(), loadTokens(), loadAdminChats()])
+                        }
+                    }
+                })
+
+                watch(settingsTab, (tab) => {
+                    if (tab === 'activity' && !auditEntries.value.length) {
+                        auditOffset.value = 0
+                        loadAuditLog()
+                    }
+                })
+
+                // Timezone & display preference watchers (Phase 4)
+                watch(selectedTimezone, (tz) => {
+                    localStorage.setItem('tg-timezone', tz)
+                    viewerTimezone.value = tz
+                    if (moment && moment.tz) moment.tz.setDefault(tz)
+                })
+                watch(timeFormat, (fmt) => { localStorage.setItem('tg-timeformat', fmt) })
+                watch(messageDensity, (d) => { localStorage.setItem('tg-density', d) })
+
+                function resetTimezone() {
+                    selectedTimezone.value = detectedTimezone
+                    localStorage.removeItem('tg-timezone')
+                }
+
                 return {
                     chats,
                     filteredChats,
@@ -3728,8 +5360,11 @@
                     authCheckFailed,
                     loadingAuth,
                     loginForm,
+                    loginMode,
+                    tokenInput,
                     loginError,
                     performLogin,
+                    performTokenLogin,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
@@ -3832,6 +5467,121 @@
                     copyMessageLink,
                     updateHash,
                     parseHash,
+                    // Media download restriction
+                    noDownload,
+                    newViewerNoDownload,
+                    newTokenNoDownload,
+                    editViewerNoDownload,
+                    editTokenNoDownload,
+                    // Audit log
+                    auditEntries,
+                    auditLoading,
+                    auditFilter,
+                    auditHasMore,
+                    loadAuditLog,
+                    filterAuditLog,
+                    loadMoreAudit,
+                    // Per-chat backgrounds
+                    showBgPicker,
+                    currentThemeBackgrounds,
+                    activeBgId,
+                    chatBackground,
+                    selectBackground,
+                    // v7.3.0: Admin Settings
+                    userRole,
+                    currentUsername,
+                    showSettings,
+                    settingsTab,
+                    settingsTabs,
+                    currentTheme,
+                    themes,
+                    setTheme,
+                    // Users management
+                    viewers,
+                    showCreateUser,
+                    newViewerUsername,
+                    newViewerPassword,
+                    newViewerChatIds,
+                    viewerCreateError,
+                    creatingViewer,
+                    createViewer,
+                    toggleViewerActive,
+                    deleteViewer,
+                    editingViewerId,
+                    editViewerChatIds,
+                    editViewerChatSearch,
+                    editViewerPassword,
+                    editViewerError,
+                    savingEditViewer,
+                    startEditViewer,
+                    saveEditViewer,
+                    // Tokens management
+                    tokens,
+                    showCreateToken,
+                    newTokenLabel,
+                    newTokenExpiry,
+                    newTokenChatIds,
+                    tokenCreateError,
+                    creatingToken,
+                    createdTokenInfo,
+                    createToken,
+                    revokeToken,
+                    editingTokenId,
+                    editTokenLabel,
+                    editTokenChatIds,
+                    editTokenChatSearch,
+                    editTokenError,
+                    savingEditToken,
+                    startEditToken,
+                    saveEditToken,
+                    // Account
+                    currentPassword,
+                    newPassword,
+                    confirmPassword,
+                    passwordError,
+                    passwordSuccess,
+                    changingPassword,
+                    changePassword,
+                    // Chat picker
+                    adminChats,
+                    userChatSearch,
+                    tokenChatSearch,
+                    copyToClipboard,
+                    // Context menu
+                    ctxMenu,
+                    showCtxMenu,
+                    closeCtxMenu,
+                    extractUrl,
+                    ctxCopyText,
+                    ctxCopyLink,
+                    ctxSearchSender,
+                    ctxSearchInChat,
+                    ctxCopyMsgId,
+                    ctxOpenInTelegram,
+                    ctxCopyChatLink,
+                    ctxCopyChatId,
+                    ctxSearchInThisChat,
+                    // Login character
+                    loginCharState,
+                    // User info panel
+                    userInfoPanel,
+                    openUserInfo,
+                    // Backup control (Phase 5)
+                    backupStatus,
+                    lastBackupCompleted,
+                    backupSchedulePreset,
+                    customCron,
+                    savingSchedule,
+                    scheduleSuccess,
+                    activeUserBoost,
+                    saveBackupSchedule,
+                    // General tab — timezone & display (Phase 4)
+                    detectedTimezone,
+                    selectedTimezone,
+                    timeFormat,
+                    messageDensity,
+                    commonTimezones,
+                    resetTimezone,
                 }
             }
         }).mount('#app')
