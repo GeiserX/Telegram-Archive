@@ -328,6 +328,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     role=row["role"],
                     allowed_chat_ids=allowed,
                     no_download=bool(row.get("no_download", 0)),
+                    source_token_id=row.get("source_token_id"),
                     created_at=row["created_at"],
                     last_accessed=row["last_accessed"],
                 )
@@ -458,6 +459,7 @@ class SessionData:
     role: str
     allowed_chat_ids: set[int] | None = None
     no_download: bool = False
+    source_token_id: int | None = None  # v7.2.0: tracks originating share token for revocation
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
 
@@ -488,7 +490,11 @@ def _record_login_attempt(ip: str) -> None:
 
 
 async def _create_session(
-    username: str, role: str, allowed_chat_ids: set[int] | None = None, no_download: bool = False
+    username: str,
+    role: str,
+    allowed_chat_ids: set[int] | None = None,
+    no_download: bool = False,
+    source_token_id: int | None = None,
 ) -> str:
     """Create a new session, evicting oldest if user exceeds max sessions."""
     user_sessions = [(k, v) for k, v in _sessions.items() if v.username == username]
@@ -509,6 +515,7 @@ async def _create_session(
         role=role,
         allowed_chat_ids=allowed_chat_ids,
         no_download=no_download,
+        source_token_id=source_token_id,
         created_at=now,
         last_accessed=now,
     )
@@ -524,6 +531,8 @@ async def _create_session(
                 allowed_chat_ids=chat_ids_json,
                 created_at=now,
                 last_accessed=now,
+                no_download=1 if no_download else 0,
+                source_token_id=source_token_id,
             )
         except Exception as e:
             logger.warning(f"Failed to persist session to database: {e}")
@@ -541,6 +550,18 @@ async def _invalidate_user_sessions(username: str) -> None:
             await db.delete_user_sessions(username)
         except Exception as e:
             logger.warning(f"Failed to delete DB sessions for {username}: {e}")
+
+
+async def _invalidate_token_sessions(token_id: int) -> None:
+    """Remove all sessions created from a specific share token (on revoke/delete/update)."""
+    to_remove = [k for k, v in _sessions.items() if v.source_token_id == token_id]
+    for k in to_remove:
+        _sessions.pop(k, None)
+    if db:
+        try:
+            await db.delete_sessions_by_source_token_id(token_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete token sessions for token_id={token_id}: {e}")
 
 
 def _get_secure_cookies(request: Request) -> bool:
@@ -583,6 +604,7 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
         role=row["role"],
         allowed_chat_ids=allowed,
         no_download=bool(row.get("no_download", 0)),
+        source_token_id=row.get("source_token_id"),
         created_at=row["created_at"],
         last_accessed=row["last_accessed"],
     )
@@ -697,13 +719,15 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
 
 
 @app.get("/media/{path:path}")
-async def serve_media(path: str, user: UserContext = Depends(require_auth)):
+async def serve_media(path: str, download: int = Query(0), user: UserContext = Depends(require_auth)):
     """Serve media files with authentication, path traversal protection, and no_download enforcement."""
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
-    # v7.2.0: Server-side download restriction (avatars and thumbnails are always allowed)
-    if user.no_download and not path.startswith("avatars/") and "/.thumbs/" not in path:
+    # v7.2.0: Server-side download restriction
+    # Inline rendering (images, video, audio in browser) is always allowed.
+    # Explicit downloads (download=1 query param) are blocked for restricted users.
+    if user.no_download and download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
     # Reject path traversal and absolute paths before any filesystem operations
@@ -971,6 +995,7 @@ async def auth_via_token(request: Request):
         role="token",
         allowed_chat_ids=allowed,
         no_download=token_no_download,
+        source_token_id=token_record["id"],
     )
 
     response = JSONResponse(
@@ -1486,6 +1511,8 @@ async def get_message_by_date(
 @app.get("/api/chats/{chat_id}/export")
 async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
     """Export chat history to JSON."""
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is not None and chat_id not in user_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1562,6 +1589,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
     allowed_chat_ids = data.get("allowed_chat_ids")
+    is_active = 1 if data.get("is_active", 1) else 0
+    viewer_no_download = 1 if data.get("no_download", 0) else 0
 
     if not username or len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
@@ -1590,6 +1619,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         salt=salt,
         allowed_chat_ids=chat_ids_json,
         created_by=user.username,
+        is_active=is_active,
+        no_download=viewer_no_download,
     )
 
     await db.create_audit_log(
@@ -1605,6 +1636,7 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         "username": account["username"],
         "allowed_chat_ids": json.loads(chat_ids_json) if chat_ids_json else None,
         "is_active": account["is_active"],
+        "no_download": account["no_download"],
     }
 
 
@@ -1843,6 +1875,11 @@ async def update_token(token_id: int, request: Request, user: UserContext = Depe
     if not updated:
         raise HTTPException(status_code=404, detail="Token not found")
 
+    # Invalidate all active sessions from this token when scope/access changes
+    scope_changed = any(k in updates for k in ("is_revoked", "allowed_chat_ids", "no_download"))
+    if scope_changed:
+        await _invalidate_token_sessions(token_id)
+
     await db.create_audit_log(
         username=user.username,
         role="master",
@@ -1863,7 +1900,8 @@ async def update_token(token_id: int, request: Request, user: UserContext = Depe
 
 @app.delete("/api/admin/tokens/{token_id}")
 async def delete_token(token_id: int, request: Request, user: UserContext = Depends(require_master)):
-    """Delete a share token permanently."""
+    """Delete a share token permanently and invalidate all its active sessions."""
+    await _invalidate_token_sessions(token_id)
     deleted = await db.delete_viewer_token(token_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Token not found")

@@ -1680,6 +1680,8 @@ class DatabaseAdapter:
         salt: str,
         allowed_chat_ids: str | None = None,
         created_by: str | None = None,
+        is_active: int = 1,
+        no_download: int = 0,
     ) -> dict[str, Any]:
         """Create a new viewer account. Returns the created account dict."""
         async with self.db_manager.async_session_factory() as session:
@@ -1689,6 +1691,8 @@ class DatabaseAdapter:
                 salt=salt,
                 allowed_chat_ids=allowed_chat_ids,
                 created_by=created_by,
+                is_active=is_active,
+                no_download=no_download,
             )
             session.add(account)
             await session.commit()
@@ -1786,7 +1790,7 @@ class DatabaseAdapter:
             if username:
                 stmt = stmt.where(ViewerAuditLog.username == username)
             if action:
-                stmt = stmt.where(ViewerAuditLog.action == action)
+                stmt = stmt.where(ViewerAuditLog.action.startswith(action))
             stmt = stmt.limit(limit).offset(offset)
             result = await session.execute(stmt)
             return [
@@ -1817,31 +1821,29 @@ class DatabaseAdapter:
         allowed_chat_ids: str | None,
         created_at: float,
         last_accessed: float,
+        no_download: int = 0,
+        source_token_id: int | None = None,
     ) -> None:
         """Save or update a session in the database."""
         async with self.db_manager.async_session_factory() as session:
+            values = {
+                "token": token,
+                "username": username,
+                "role": role,
+                "allowed_chat_ids": allowed_chat_ids,
+                "no_download": no_download,
+                "source_token_id": source_token_id,
+                "created_at": created_at,
+                "last_accessed": last_accessed,
+            }
             if self._is_sqlite:
-                stmt = sqlite_insert(ViewerSession).values(
-                    token=token,
-                    username=username,
-                    role=role,
-                    allowed_chat_ids=allowed_chat_ids,
-                    created_at=created_at,
-                    last_accessed=last_accessed,
-                )
+                stmt = sqlite_insert(ViewerSession).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["token"],
                     set_={"last_accessed": last_accessed},
                 )
             else:
-                stmt = pg_insert(ViewerSession).values(
-                    token=token,
-                    username=username,
-                    role=role,
-                    allowed_chat_ids=allowed_chat_ids,
-                    created_at=created_at,
-                    last_accessed=last_accessed,
-                )
+                stmt = pg_insert(ViewerSession).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["token"],
                     set_={"last_accessed": last_accessed},
@@ -1889,6 +1891,14 @@ class DatabaseAdapter:
             await session.commit()
             return result.rowcount
 
+    @retry_on_locked()
+    async def delete_sessions_by_source_token_id(self, token_id: int) -> int:
+        """Delete all sessions created from a specific share token."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(delete(ViewerSession).where(ViewerSession.source_token_id == token_id))
+            await session.commit()
+            return result.rowcount
+
     @staticmethod
     def _viewer_session_to_dict(row: ViewerSession) -> dict[str, Any]:
         return {
@@ -1896,6 +1906,8 @@ class DatabaseAdapter:
             "username": row.username,
             "role": row.role,
             "allowed_chat_ids": row.allowed_chat_ids,
+            "no_download": row.no_download,
+            "source_token_id": row.source_token_id,
             "created_at": row.created_at,
             "last_accessed": row.last_accessed,
         }

@@ -11,24 +11,35 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ### Added
 
 - **Share tokens** — Admins can create link-shareable tokens scoped to specific chats. Recipients authenticate via token without needing an account. Tokens support expiry dates, revocation, and use tracking
-- **Download restrictions** — `no_download` flag on both viewer accounts and share tokens. Server-side enforcement blocks media file downloads (avatars and thumbnails remain accessible)
+- **Download restrictions** — `no_download` flag on both viewer accounts and share tokens. Restricted users can still view media inline but cannot explicitly download files or export chat history. Download buttons hidden in the UI for restricted users
 - **On-demand thumbnails** — WebP thumbnail generation at whitelisted sizes (200px, 400px) with disk caching under `{media_root}/.thumbs/`. Includes Pillow decompression bomb protection and path traversal guards
 - **App settings** — Key-value `app_settings` table for cross-container configuration, with admin CRUD endpoints
-- **Audit log improvements** — Action-based filtering in admin panel, token auth events tracked (`token_auth_success`, `token_auth_failed`, `token_created`, etc.)
+- **Audit log improvements** — Action-based filtering in admin panel (prefix match for suffixed events like `viewer_updated:username`), token auth events tracked (`token_auth_success`, `token_auth_failed`, `token_created`, etc.)
 - **Admin chat picker metadata** — Chat picker now returns `username`, `first_name`, `last_name` for better display
 - **Token management UI** — New "Share Tokens" tab in admin panel with create, revoke, and delete controls. Plaintext token shown once at creation with copy button
 - **Token login UI** — Login page has a "Share Token" tab for token-based authentication
 
+### Security
+
+- **Token revocation enforced on active sessions** — Revoking, deleting, or changing scope/permissions of a share token immediately invalidates all sessions created from that token. Sessions track `source_token_id` for precise invalidation
+- **Session persistence includes restrictions** — `no_download` and `source_token_id` are now persisted in `viewer_sessions` table, surviving container restarts. Previously `no_download` was lost after restart, silently granting download access
+- **Export endpoint respects no_download** — The `GET /api/chats/{chat_id}/export` endpoint now returns 403 for restricted users
+
 ### Fixed
 
-- **Python 2 except syntax** — Fixed `except X, Y:` patterns (valid but semantically wrong in Python 3.14 — catches X and binds to Y instead of catching both) to `except (X, Y):` throughout `main.py`
+- **Create viewer passes all flags** — `is_active` and `no_download` from the admin form are now correctly passed through to `create_viewer_account()`. Previously both flags were silently ignored on creation
+- **Token expiry timezone handling** — Frontend now converts local datetime to UTC ISO before sending to the backend, fixing early/late expiry for non-UTC admins
+- **Audit filter matches suffixed actions** — Filter now uses prefix matching so "viewer_updated" catches "viewer_updated:username"
+- **Migration stamping checks all artifacts** — Entrypoint now checks `viewer_tokens`, `app_settings`, AND `viewer_accounts.no_download` before stamping migration 010 as complete
 
 ### Changed
 
-- **Migration 010** — Consolidated idempotent migration creates `viewer_tokens`, `app_settings` tables and adds `no_download` column to `viewer_accounts`
-- **Entrypoint stamping** — Updated both PostgreSQL and SQLite stamping blocks to detect migration 010 artifacts
+- **Migration 010** — Consolidated idempotent migration creates `viewer_tokens`, `app_settings` tables and adds `no_download` column to `viewer_accounts`. Also adds `no_download` and `source_token_id` columns to `viewer_sessions`
+- **Entrypoint stamping** — Updated both PostgreSQL and SQLite stamping blocks to detect all migration 010 artifacts
 - **Dockerfile.viewer** — Added Pillow system dependencies (libjpeg, libwebp) for thumbnail generation
-- **requirements-viewer.txt** — Added `Pillow>=10.0.0`
+- **Version declarations** — `pyproject.toml` and `src/__init__.py` both set to 7.2.0
+- **SECURITY.md** — Added 7.x.x as a supported version
+- **pyproject.toml** — Added `viewer` optional dependency group for Pillow
 
 ## [7.1.3] - 2026-03-05
 

@@ -1018,7 +1018,7 @@
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
-                                                <a :href="getMediaUrl(msg)" download
+                                                <a v-if="!noDownload" :href="getMediaUrl(msg) + '?download=1'" download
                                                     class="text-blue-400 hover:text-blue-300 whitespace-nowrap">
                                                     Download
                                                 </a>
@@ -1026,7 +1026,8 @@
                                         </div>
 
                                         <!-- Other documents / files -->
-                                        <a v-else :href="getMediaUrl(msg)" download
+                                        <a v-else :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
+                                            :class="{'pointer-events-none opacity-60': noDownload}"
                                             class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
                                             <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
                                                 viewBox="0 0 24 24">
@@ -1150,7 +1151,7 @@
             </button>
             
             <!-- Download Button -->
-            <a v-if="lightboxMedia" :href="getMediaUrl(lightboxMedia)" download
+            <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
                 class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
                 <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -1350,13 +1351,15 @@
                                 <option value="login_success">Login success</option>
                                 <option value="login_failed">Login failed</option>
                                 <option value="logout">Logout</option>
-                                <option value="token_auth_success">Token auth</option>
+                                <option value="token_auth_success">Token auth success</option>
                                 <option value="token_auth_failed">Token auth failed</option>
                                 <option value="viewer_created">Viewer created</option>
                                 <option value="viewer_updated">Viewer updated</option>
                                 <option value="viewer_deleted">Viewer deleted</option>
                                 <option value="token_created">Token created</option>
+                                <option value="token_updated">Token updated</option>
                                 <option value="token_deleted">Token deleted</option>
+                                <option value="setting_updated">Setting updated</option>
                             </select>
                         </div>
                         <div class="space-y-1">
@@ -3524,11 +3527,16 @@
                         adminTokenError.value = 'Select at least one chat'
                         return
                     }
+                    // Convert local datetime to UTC ISO for consistent expiry handling
+                    let expiresUtc = null
+                    if (adminTokenForm.value.expires_at) {
+                        expiresUtc = new Date(adminTokenForm.value.expires_at).toISOString()
+                    }
                     const body = {
                         label: adminTokenForm.value.label || null,
                         allowed_chat_ids: chatIds,
                         no_download: !!adminTokenForm.value.no_download,
-                        expires_at: adminTokenForm.value.expires_at || null,
+                        expires_at: expiresUtc,
                     }
                     try {
                         const res = await fetch('/api/admin/tokens', {

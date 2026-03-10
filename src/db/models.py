@@ -381,14 +381,17 @@ class ViewerSession(Base):
 
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master" or "viewer"
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master", "viewer", or "token"
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array or NULL = all chats
+    no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
+    source_token_id: Mapped[int | None] = mapped_column(Integer)  # v7.2.0: FK to viewer_tokens.id for revocation
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
     last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
 
     __table_args__ = (
         Index("idx_viewer_sessions_username", "username"),
         Index("idx_viewer_sessions_created_at", "created_at"),
+        Index("idx_viewer_sessions_source_token", "source_token_id"),
     )
 
 
