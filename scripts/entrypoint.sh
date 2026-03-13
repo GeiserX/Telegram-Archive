@@ -81,6 +81,30 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'viewer_tokens'
+        );
+    \"\"\")
+    has_010_tokens = cur.fetchone()[0]
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'app_settings'
+        );
+    \"\"\")
+    has_010_settings = cur.fetchone()[0]
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.columns
+            WHERE table_name = 'viewer_accounts' AND column_name = 'no_download'
+        );
+    \"\"\")
+    has_010_no_download = cur.fetchone()[0]
+    has_010_all = has_010_tokens and has_010_settings and has_010_no_download
+
     # Check if viewer_sessions table exists (added in migration 009)
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -145,7 +169,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_009_table:
+    if has_010_all:
+        stamp_version = '010'
+    elif has_009_table:
         stamp_version = '009'
     elif has_008_column:
         stamp_version = '008'
@@ -212,6 +238,16 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")
+    has_010_tokens = cur.fetchone() is not None
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'\")
+    has_010_settings = cur.fetchone() is not None
+    cur.execute(\"PRAGMA table_info(viewer_accounts)\")
+    va_columns = {row[1] for row in cur.fetchall()}
+    has_010_no_download = 'no_download' in va_columns
+    has_010_all = has_010_tokens and has_010_settings and has_010_no_download
+
     # Check if viewer_sessions table exists (added in migration 009)
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_sessions'\")
     has_009_table = cur.fetchone() is not None
@@ -243,7 +279,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_009_table:
+    if has_010_all:
+        stamp_version = '010'
+    elif has_009_table:
         stamp_version = '009'
     elif has_008_column:
         stamp_version = '008'
