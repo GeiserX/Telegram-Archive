@@ -292,18 +292,38 @@
                 </p>
 
                 <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
-                    <div>
-                        <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
-                        <input v-model="loginForm.username" type="text" autocomplete="username"
-                            placeholder="Enter your username"
-                            class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
+                    <!-- Login mode toggle -->
+                    <div class="flex rounded-xl overflow-hidden border border-white/30">
+                        <button type="button" @click="loginMode = 'password'" :class="loginMode === 'password' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">Password</button>
+                        <button type="button" @click="loginMode = 'token'" :class="loginMode === 'token' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">Share Token</button>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium mb-2 text-blue-100">Password</label>
-                        <input v-model="loginForm.password" type="password" autocomplete="current-password"
-                            placeholder="Enter your password"
-                            class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
-                    </div>
+
+                    <!-- Password login -->
+                    <template v-if="loginMode === 'password'">
+                        <div>
+                            <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
+                            <input v-model="loginForm.username" type="text" autocomplete="username"
+                                placeholder="Enter your username"
+                                class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2 text-blue-100">Password</label>
+                            <input v-model="loginForm.password" type="password" autocomplete="current-password"
+                                placeholder="Enter your password"
+                                class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
+                        </div>
+                    </template>
+
+                    <!-- Token login -->
+                    <template v-else>
+                        <div>
+                            <label class="block text-sm font-medium mb-2 text-blue-100">Share Token</label>
+                            <input v-model="tokenInput" type="text" autocomplete="off"
+                                placeholder="Paste your share token"
+                                class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition font-mono text-sm">
+                        </div>
+                    </template>
+
                     <p v-if="loginError" class="text-sm text-red-200 bg-red-500/20 rounded-lg p-2 text-center">{{
                         loginError }}</p>
                     <button type="submit" :disabled="loadingAuth"
@@ -998,7 +1018,7 @@
                                                 @click="openMedia(msg)" @error="handleImageError($event, msg)">
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
-                                                <a :href="getMediaUrl(msg)" download
+                                                <a v-if="!noDownload" :href="getMediaUrl(msg) + '?download=1'" download
                                                     class="text-blue-400 hover:text-blue-300 whitespace-nowrap">
                                                     Download
                                                 </a>
@@ -1006,7 +1026,8 @@
                                         </div>
 
                                         <!-- Other documents / files -->
-                                        <a v-else :href="getMediaUrl(msg)" download
+                                        <a v-else :href="noDownload ? '#' : getMediaUrl(msg) + '?download=1'" :download="!noDownload"
+                                            :class="{'pointer-events-none opacity-60': noDownload}"
                                             class="flex items-center gap-2 bg-black/20 p-2 rounded hover:bg-black/30 transition">
                                             <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor"
                                                 viewBox="0 0 24 24">
@@ -1130,7 +1151,7 @@
             </button>
             
             <!-- Download Button -->
-            <a v-if="lightboxMedia" :href="getMediaUrl(lightboxMedia)" download
+            <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
                 class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
                 <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -1192,6 +1213,9 @@
                     <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Viewer Accounts
                     </button>
+                    <button @click="adminActiveTab = 'tokens'; loadAdminTokens()" :class="adminActiveTab === 'tokens' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                        Share Tokens
+                    </button>
                     <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Audit Log
                     </button>
@@ -1222,6 +1246,9 @@
                                 <label class="flex items-center gap-2 text-sm text-gray-300">
                                     <input type="checkbox" v-model="adminViewerForm.is_active" class="rounded" /> Active
                                 </label>
+                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                    <input type="checkbox" v-model="adminViewerForm.no_download" class="rounded" /> No Downloads
+                                </label>
                                 <div class="flex-1"></div>
                                 <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
                                 <button @click="saveViewer" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
@@ -1241,6 +1268,7 @@
                                         </template>
                                         <template v-else>All chats</template>
                                         · {{ viewer.is_active ? 'Active' : 'Inactive' }}
+                                        <template v-if="viewer.no_download"> · <span class="text-amber-400">No DL</span></template>
                                     </div>
                                 </div>
                                 <button @click="editViewer(viewer)" class="text-gray-400 hover:text-blue-400 p-1"><i class="fas fa-edit"></i></button>
@@ -1250,12 +1278,94 @@
                         </div>
                     </div>
 
+                    <!-- Share Tokens Tab (v7.2.0) -->
+                    <div v-if="adminActiveTab === 'tokens'">
+                        <!-- Create Token Form -->
+                        <div class="bg-gray-900 rounded-lg p-4 mb-4">
+                            <h3 class="text-sm font-medium text-gray-300 mb-3">Create Share Token</h3>
+                            <div v-if="adminTokenError" class="text-red-400 text-sm mb-3">{{ adminTokenError }}</div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input v-model="adminTokenForm.label" placeholder="Label (optional)" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                                <input v-model="adminTokenForm.expires_at" type="datetime-local" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                            </div>
+                            <div class="mt-3">
+                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
+                                <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
+                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
+                                        <input type="checkbox" :value="chat.id" v-model="adminTokenForm.allowed_chat_ids" class="rounded" />
+                                        {{ chat.title || chat.id }}
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex items-center gap-4">
+                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                    <input type="checkbox" v-model="adminTokenForm.no_download" class="rounded" /> No Downloads
+                                </label>
+                                <div class="flex-1"></div>
+                                <button @click="createToken" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
+                                    Create Token
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Newly created token (shown once) -->
+                        <div v-if="adminNewToken" class="bg-green-900/50 border border-green-600 rounded-lg p-4 mb-4">
+                            <div class="text-sm text-green-300 mb-2">Token created! Copy it now — it won't be shown again.</div>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 bg-gray-900 text-green-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewToken }}</code>
+                                <button @click="navigator.clipboard.writeText(adminNewToken); adminNewToken = ''" class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded">Copy</button>
+                            </div>
+                        </div>
+
+                        <!-- Tokens List -->
+                        <div class="space-y-2">
+                            <div v-for="token in adminTokens" :key="token.id" class="bg-gray-900 rounded-lg p-3">
+                                <div class="flex items-center gap-3">
+                                    <div class="flex-1">
+                                        <div class="text-sm text-white font-medium">{{ token.label || `Token #${token.id}` }}</div>
+                                        <div class="text-xs text-gray-400">
+                                            <template v-if="token.allowed_chat_ids && token.allowed_chat_ids.length">
+                                                {{ token.allowed_chat_ids.map(id => { const c = adminChats.find(ch => ch.id === id); return c ? c.title : id }).join(', ') }}
+                                            </template>
+                                            · Used {{ token.use_count || 0 }}x
+                                            <template v-if="token.last_used_at"> · Last: {{ new Date(token.last_used_at).toLocaleDateString() }}</template>
+                                            <template v-if="token.expires_at"> · Exp: {{ new Date(token.expires_at).toLocaleDateString() }}</template>
+                                            <template v-if="token.no_download"> · <span class="text-amber-400">No DL</span></template>
+                                            <template v-if="token.is_revoked"> · <span class="text-red-400">Revoked</span></template>
+                                        </div>
+                                    </div>
+                                    <button v-if="!token.is_revoked" @click="revokeToken(token)" class="text-gray-400 hover:text-amber-400 p-1" title="Revoke"><i class="fas fa-ban"></i></button>
+                                    <button @click="deleteToken(token)" class="text-gray-400 hover:text-red-400 p-1" title="Delete"><i class="fas fa-trash"></i></button>
+                                </div>
+                            </div>
+                            <div v-if="adminTokens.length === 0" class="text-gray-500 text-sm text-center py-4">No share tokens yet</div>
+                        </div>
+                    </div>
+
                     <!-- Audit Log Tab -->
                     <div v-if="adminActiveTab === 'audit'">
+                        <!-- Action filter -->
+                        <div class="flex gap-2 mb-3">
+                            <select v-model="adminAuditAction" @change="loadAdminAudit()" class="bg-gray-700 text-white rounded px-3 py-1.5 text-sm">
+                                <option value="">All actions</option>
+                                <option value="login_success">Login success</option>
+                                <option value="login_failed">Login failed</option>
+                                <option value="logout">Logout</option>
+                                <option value="token_auth_success">Token auth success</option>
+                                <option value="token_auth_failed">Token auth failed</option>
+                                <option value="viewer_created">Viewer created</option>
+                                <option value="viewer_updated">Viewer updated</option>
+                                <option value="viewer_deleted">Viewer deleted</option>
+                                <option value="token_created">Token created</option>
+                                <option value="token_updated">Token updated</option>
+                                <option value="token_deleted">Token deleted</option>
+                                <option value="setting_updated">Setting updated</option>
+                            </select>
+                        </div>
                         <div class="space-y-1">
                             <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-gray-900 rounded px-3 py-2">
                                 <span class="text-gray-500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
-                                <span :class="log.role === 'master' ? 'text-yellow-400' : 'text-blue-400'" class="w-16 shrink-0">{{ log.role }}</span>
+                                <span :class="{'text-yellow-400': log.role === 'master', 'text-blue-400': log.role === 'viewer', 'text-purple-400': log.role === 'token'}" class="w-16 shrink-0">{{ log.role }}</span>
                                 <span class="text-gray-300 w-24 shrink-0 truncate">{{ log.username }}</span>
                                 <span class="text-gray-400 flex-1 truncate">{{ log.action }}</span>
                                 <span class="text-gray-600 truncate w-28">{{ log.ip_address }}</span>
@@ -1294,7 +1404,10 @@
                 const loginError = ref('')
                 const userRole = ref('')
                 const currentUsername = ref('')
+                const noDownload = ref(false)
                 const showAdminPanel = ref(false)
+                const loginMode = ref('password') // 'password' or 'token'
+                const tokenInput = ref('')
                 const chatsError = ref('')  // Error message when database is busy
                 const lastBackupTime = ref(null)  // Last backup time from stats
                 const lastBackupTimeSource = ref('metadata')  // Source of last backup time: 'metadata' (UTC) or 'sync_status' (server local)
@@ -1815,6 +1928,7 @@
                             isAuthenticated.value = !!data.authenticated
                             userRole.value = data.role || ''
                             currentUsername.value = data.username || ''
+                            noDownload.value = !!data.no_download
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             if (isAuthenticated.value) {
@@ -2252,16 +2366,32 @@
                     loginError.value = ''
                     loadingAuth.value = true
                     try {
-                        const res = await fetch('/api/login', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            credentials: 'include',
-                            body: JSON.stringify(loginForm.value),
-                        })
+                        let res
+                        if (loginMode.value === 'token') {
+                            // Token-based login
+                            res = await fetch('/auth/token', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({ token: tokenInput.value }),
+                            })
+                        } else {
+                            // Password-based login
+                            res = await fetch('/api/login', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify(loginForm.value),
+                            })
+                        }
 
                         if (!res.ok) {
                             if (res.status === 401) {
-                                loginError.value = 'Invalid username or password'
+                                loginError.value = loginMode.value === 'token' ? 'Invalid or expired token' : 'Invalid username or password'
+                                return
+                            }
+                            if (res.status === 429) {
+                                loginError.value = 'Too many attempts. Try again later.'
                                 return
                             }
                             throw new Error('Login failed')
@@ -2272,6 +2402,7 @@
                             isAuthenticated.value = true
                             userRole.value = data.role || 'master'
                             currentUsername.value = data.username || ''
+                            noDownload.value = !!data.no_download
                             await loadChats()
                             await loadStats()
                             await loadFolders()
@@ -3278,10 +3409,16 @@
                 const adminViewers = ref([])
                 const adminChats = ref([])
                 const adminAuditLogs = ref([])
-                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: [], is_active: true })
+                const adminAuditAction = ref('')
+                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false })
                 const adminEditingId = ref(null)
                 const adminError = ref('')
                 const adminActiveTab = ref('viewers')
+                // v7.2.0: Share tokens
+                const adminTokens = ref([])
+                const adminTokenForm = ref({ label: '', allowed_chat_ids: [], no_download: false, expires_at: '' })
+                const adminTokenError = ref('')
+                const adminNewToken = ref('')
 
                 const loadAdminViewers = async () => {
                     try {
@@ -3299,14 +3436,16 @@
 
                 const loadAdminAudit = async () => {
                     try {
-                        const res = await fetch('/api/admin/audit?limit=50', { credentials: 'include' })
+                        let url = '/api/admin/audit?limit=50'
+                        if (adminAuditAction.value) url += `&action=${encodeURIComponent(adminAuditAction.value)}`
+                        const res = await fetch(url, { credentials: 'include' })
                         if (res.ok) { const data = await res.json(); adminAuditLogs.value = data.logs }
                     } catch (e) { console.error('Failed to load audit logs:', e) }
                 }
 
                 const openAdminPanel = async () => {
                     showAdminPanel.value = true
-                    await Promise.all([loadAdminViewers(), loadAdminChats(), loadAdminAudit()])
+                    await Promise.all([loadAdminViewers(), loadAdminChats(), loadAdminAudit(), loadAdminTokens()])
                 }
 
                 const saveViewer = async () => {
@@ -3316,7 +3455,8 @@
                         username: adminViewerForm.value.username,
                         password: adminViewerForm.value.password,
                         allowed_chat_ids: (chatIds && chatIds.length > 0) ? chatIds : null,
-                        is_active: adminViewerForm.value.is_active ? 1 : 0
+                        is_active: adminViewerForm.value.is_active ? 1 : 0,
+                        no_download: adminViewerForm.value.no_download ? 1 : 0
                     }
                     try {
                         let res
@@ -3338,7 +3478,7 @@
                             adminError.value = err.detail || 'Failed to save'
                             return
                         }
-                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
+                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false }
                         adminEditingId.value = null
                         await loadAdminViewers()
                     } catch (e) { adminError.value = 'Network error' }
@@ -3350,7 +3490,8 @@
                         username: viewer.username,
                         password: '',
                         allowed_chat_ids: viewer.allowed_chat_ids ? [...viewer.allowed_chat_ids] : [],
-                        is_active: !!viewer.is_active
+                        is_active: !!viewer.is_active,
+                        no_download: !!viewer.no_download
                     }
                 }
 
@@ -3366,8 +3507,75 @@
 
                 const cancelEdit = () => {
                     adminEditingId.value = null
-                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true }
+                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false }
                     adminError.value = ''
+                }
+
+                // v7.2.0: Token management
+                const loadAdminTokens = async () => {
+                    try {
+                        const res = await fetch('/api/admin/tokens', { credentials: 'include' })
+                        if (res.ok) { const data = await res.json(); adminTokens.value = data.tokens }
+                    } catch (e) { console.error('Failed to load tokens:', e) }
+                }
+
+                const createToken = async () => {
+                    adminTokenError.value = ''
+                    adminNewToken.value = ''
+                    const chatIds = adminTokenForm.value.allowed_chat_ids
+                    if (!chatIds || chatIds.length === 0) {
+                        adminTokenError.value = 'Select at least one chat'
+                        return
+                    }
+                    // Convert local datetime to UTC ISO for consistent expiry handling
+                    let expiresUtc = null
+                    if (adminTokenForm.value.expires_at) {
+                        expiresUtc = new Date(adminTokenForm.value.expires_at).toISOString()
+                    }
+                    const body = {
+                        label: adminTokenForm.value.label || null,
+                        allowed_chat_ids: chatIds,
+                        no_download: !!adminTokenForm.value.no_download,
+                        expires_at: expiresUtc,
+                    }
+                    try {
+                        const res = await fetch('/api/admin/tokens', {
+                            method: 'POST', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        })
+                        if (!res.ok) {
+                            const err = await res.json()
+                            adminTokenError.value = err.detail || 'Failed to create token'
+                            return
+                        }
+                        const data = await res.json()
+                        adminNewToken.value = data.token
+                        adminTokenForm.value = { label: '', allowed_chat_ids: [], no_download: false, expires_at: '' }
+                        await loadAdminTokens()
+                    } catch (e) { adminTokenError.value = 'Network error' }
+                }
+
+                const revokeToken = async (token) => {
+                    if (!confirm(`Revoke token "${token.label || token.id}"?`)) return
+                    try {
+                        await fetch(`/api/admin/tokens/${token.id}`, {
+                            method: 'PUT', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ is_revoked: true })
+                        })
+                        await loadAdminTokens()
+                    } catch (e) { console.error('Failed to revoke token:', e) }
+                }
+
+                const deleteToken = async (token) => {
+                    if (!confirm(`Permanently delete token "${token.label || token.id}"?`)) return
+                    try {
+                        await fetch(`/api/admin/tokens/${token.id}`, {
+                            method: 'DELETE', credentials: 'include'
+                        })
+                        await loadAdminTokens()
+                    } catch (e) { console.error('Failed to delete token:', e) }
                 }
 
                 return {
@@ -3439,11 +3647,15 @@
                     // Admin (v7.0.0)
                     userRole,
                     currentUsername,
+                    noDownload,
                     showAdminPanel,
                     performLogout,
+                    loginMode,
+                    tokenInput,
                     adminViewers,
                     adminChats,
                     adminAuditLogs,
+                    adminAuditAction,
                     adminViewerForm,
                     adminEditingId,
                     adminError,
@@ -3454,6 +3666,15 @@
                     deleteViewer,
                     cancelEdit,
                     loadAdminAudit,
+                    // v7.2.0: Tokens
+                    adminTokens,
+                    adminTokenForm,
+                    adminTokenError,
+                    adminNewToken,
+                    loadAdminTokens,
+                    createToken,
+                    revokeToken,
+                    deleteToken,
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
