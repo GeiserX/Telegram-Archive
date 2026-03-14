@@ -692,6 +692,109 @@ class TelegramBackup:
                 if reactions_list:
                     await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
 
+    async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
+        """
+        Fetch and store messages for a single gap range.
+
+        Args:
+            entity: Telegram entity for the chat
+            chat_id: Chat identifier
+            gap_start: Last message ID before the gap
+            gap_end: First message ID after the gap
+
+        Returns:
+            Number of recovered messages
+        """
+        batch_data: list[dict] = []
+        batch_size = self.config.batch_size
+        recovered = 0
+
+        async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
+            msg_data = await self._process_message(message, chat_id)
+            batch_data.append(msg_data)
+
+            if len(batch_data) >= batch_size:
+                await self._commit_batch(batch_data, chat_id)
+                recovered += len(batch_data)
+                batch_data = []
+
+        # Flush remaining messages
+        if batch_data:
+            await self._commit_batch(batch_data, chat_id)
+            recovered += len(batch_data)
+
+        return recovered
+
+    async def _fill_gaps(self, chat_id: int | None = None) -> dict:
+        """
+        Detect and fill gaps in message ID sequences.
+
+        Scans chats for missing message ID ranges and fetches them from Telegram.
+
+        Args:
+            chat_id: If provided, scan only this chat. Otherwise scan all chats.
+
+        Returns:
+            Summary dict with gap-fill statistics.
+        """
+        threshold = self.config.gap_threshold
+        summary = {
+            "chats_scanned": 0,
+            "chats_with_gaps": 0,
+            "total_gaps": 0,
+            "total_recovered": 0,
+            "details": [],
+        }
+
+        if chat_id is not None:
+            chat_ids = [chat_id]
+        else:
+            chat_ids = await self.db.get_chats_with_messages()
+
+        logger.info(f"Gap-fill: scanning {len(chat_ids)} chat(s) with threshold={threshold}")
+
+        for cid in chat_ids:
+            summary["chats_scanned"] += 1
+
+            try:
+                entity = await self.client.get_entity(cid)
+            except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
+                logger.warning(f"Gap-fill: skipping chat {cid} (no access): {e.__class__.__name__}")
+                continue
+
+            chat_name = self._get_chat_name(entity)
+            gaps = await self.db.detect_message_gaps(cid, threshold)
+
+            if not gaps:
+                continue
+
+            summary["chats_with_gaps"] += 1
+            chat_recovered = 0
+
+            logger.info(f"Gap-fill: {chat_name} (ID: {cid}) has {len(gaps)} gap(s)")
+
+            for gap_start, gap_end, gap_size in gaps:
+                logger.info(f"  → Filling gap: {gap_start}..{gap_end} (size {gap_size})")
+                recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
+                chat_recovered += recovered
+                logger.info(f"    Recovered {recovered} messages")
+
+            summary["total_gaps"] += len(gaps)
+            summary["total_recovered"] += chat_recovered
+            summary["details"].append({
+                "chat_id": cid,
+                "chat_name": chat_name,
+                "gaps": len(gaps),
+                "recovered": chat_recovered,
+            })
+
+        logger.info(
+            f"Gap-fill complete: {summary['chats_scanned']} chats scanned, "
+            f"{summary['total_gaps']} gaps found, {summary['total_recovered']} messages recovered"
+        )
+
+        return summary
+
     async def _sync_deletions_and_edits(self, chat_id: int, entity):
         """
         Sync deletions and edits for existing messages in the database.
@@ -1635,6 +1738,29 @@ async def run_backup(config: Config, client: TelegramClient | None = None):
     try:
         await backup.connect()
         await backup.backup_all()
+    finally:
+        await backup.disconnect()
+        await backup.db.close()
+
+
+async def run_fill_gaps(config: Config, client: TelegramClient | None = None, chat_id: int | None = None) -> dict:
+    """
+    Run gap-fill to recover missing messages in backed-up chats.
+
+    Args:
+        config: Configuration object
+        client: Optional existing TelegramClient to use (for shared connection).
+               If provided, the operation will use this client instead of creating
+               its own, avoiding session file lock conflicts.
+        chat_id: If provided, scan only this chat. Otherwise scan all chats.
+
+    Returns:
+        Summary dict with gap-fill statistics.
+    """
+    backup = await TelegramBackup.create(config, client=client)
+    try:
+        await backup.connect()
+        return await backup._fill_gaps(chat_id=chat_id)
     finally:
         await backup.disconnect()
         await backup.db.close()

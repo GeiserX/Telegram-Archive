@@ -639,7 +639,8 @@
                                         <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
                                     </div>
                                     <p class="text-sm text-tg-muted truncate">
-                                        {{ chat.type }}
+                                        <span v-if="chat.username" class="text-blue-400 font-mono">@{{ chat.username }}</span>
+                                        <span v-if="chat.username"> • </span>{{ chat.type }}
                                         <span v-if="chat.is_forum" class="text-blue-400/70"> • Forum</span>
                                         <span v-if="chat.type !== 'private' && chat.participants_count">
                                             • {{ chat.participants_count }} participants
@@ -1311,9 +1312,15 @@
                         <!-- Newly created token (shown once) -->
                         <div v-if="adminNewToken" class="bg-green-900/50 border border-green-600 rounded-lg p-4 mb-4">
                             <div class="text-sm text-green-300 mb-2">Token created! Copy it now — it won't be shown again.</div>
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-xs text-gray-400 w-16 shrink-0">Token</span>
                                 <code class="flex-1 bg-gray-900 text-green-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewToken }}</code>
-                                <button @click="navigator.clipboard.writeText(adminNewToken); adminNewToken = ''" class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded">Copy</button>
+                                <button @click="navigator.clipboard.writeText(adminNewToken); adminNewToken = ''" class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded whitespace-nowrap">Copy</button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-gray-400 w-16 shrink-0">Link</span>
+                                <code class="flex-1 bg-gray-900 text-blue-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
+                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded whitespace-nowrap">Copy Link</button>
                             </div>
                         </div>
 
@@ -1930,6 +1937,34 @@
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
+
+                            // Auto-login via ?token= URL parameter
+                            if (!isAuthenticated.value && authRequired.value) {
+                                const urlParams = new URLSearchParams(window.location.search)
+                                const urlToken = urlParams.get('token')
+                                if (urlToken) {
+                                    try {
+                                        const tokenRes = await fetch('/auth/token', {
+                                            method: 'POST', credentials: 'include',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ token: urlToken }),
+                                        })
+                                        if (tokenRes.ok) {
+                                            const tokenData = await tokenRes.json()
+                                            if (tokenData.success) {
+                                                isAuthenticated.value = true
+                                                userRole.value = tokenData.role || 'token'
+                                                currentUsername.value = tokenData.username || ''
+                                                noDownload.value = !!tokenData.no_download
+                                            }
+                                        }
+                                    } catch (e) { console.error('Token auto-login failed:', e) }
+                                    // Remove token from URL to prevent leaking in browser history
+                                    const cleanUrl = new URL(window.location)
+                                    cleanUrl.searchParams.delete('token')
+                                    window.history.replaceState({}, '', cleanUrl)
+                                }
+                            }
 
                             if (isAuthenticated.value) {
                                 await loadChats()
@@ -3419,6 +3454,10 @@
                 const adminTokenForm = ref({ label: '', allowed_chat_ids: [], no_download: false, expires_at: '' })
                 const adminTokenError = ref('')
                 const adminNewToken = ref('')
+                const adminNewTokenUrl = computed(() => {
+                    if (!adminNewToken.value) return ''
+                    return `${window.location.origin}/?token=${adminNewToken.value}`
+                })
 
                 const loadAdminViewers = async () => {
                     try {
@@ -3671,6 +3710,7 @@
                     adminTokenForm,
                     adminTokenError,
                     adminNewToken,
+                    adminNewTokenUrl,
                     loadAdminTokens,
                     createToken,
                     revokeToken,
