@@ -11,7 +11,6 @@ import shutil
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -20,7 +19,6 @@ from src.config import Config
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager
 from src.telegram_backup import TelegramBackup
-
 
 # ---------------------------------------------------------------------------
 # Helpers — lightweight in-memory async SQLite setup
@@ -519,7 +517,7 @@ class TestFillGapRange:
 
         async def fake_iter_messages(entity, min_id=None, max_id=None, reverse=None):
             return
-            yield  # noqa: unreachable - makes this an async generator
+            yield  # noqa: F811 - unreachable yield makes this an async generator
 
         client.iter_messages = fake_iter_messages
         backup._process_message = AsyncMock()
@@ -545,7 +543,7 @@ class TestFillGapRange:
             call_kwargs["max_id"] = max_id
             call_kwargs["reverse"] = reverse
             return
-            yield  # noqa: unreachable
+            yield  # noqa: F811 - unreachable yield makes this an async generator
 
         client.iter_messages = fake_iter_messages
         backup._process_message = AsyncMock()
