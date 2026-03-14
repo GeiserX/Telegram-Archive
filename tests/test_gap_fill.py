@@ -24,6 +24,7 @@ from src.telegram_backup import TelegramBackup
 # Helpers — lightweight in-memory async SQLite setup
 # ---------------------------------------------------------------------------
 
+
 async def _create_in_memory_adapter():
     """Create a DatabaseAdapter backed by an in-memory SQLite database.
 
@@ -39,43 +40,47 @@ async def _create_in_memory_adapter():
 
     # Create the minimal schema needed for gap detection
     async with engine.begin() as conn:
-        await conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS chats ("
-            "  id INTEGER PRIMARY KEY,"
-            "  type TEXT NOT NULL DEFAULT 'channel',"
-            "  title TEXT,"
-            "  username TEXT,"
-            "  first_name TEXT,"
-            "  last_name TEXT,"
-            "  phone TEXT,"
-            "  description TEXT,"
-            "  participants_count INTEGER,"
-            "  is_forum INTEGER DEFAULT 0,"
-            "  is_archived INTEGER DEFAULT 0,"
-            "  last_synced_message_id INTEGER DEFAULT 0,"
-            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
-            "  updated_at TEXT DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        ))
-        await conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS messages ("
-            "  id INTEGER NOT NULL,"
-            "  chat_id INTEGER NOT NULL,"
-            "  sender_id INTEGER,"
-            "  date TEXT NOT NULL DEFAULT '2025-01-01 00:00:00',"
-            "  text TEXT,"
-            "  reply_to_msg_id INTEGER,"
-            "  reply_to_top_id INTEGER,"
-            "  reply_to_text TEXT,"
-            "  forward_from_id INTEGER,"
-            "  edit_date TEXT,"
-            "  raw_data TEXT,"
-            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
-            "  is_outgoing INTEGER DEFAULT 0,"
-            "  is_pinned INTEGER DEFAULT 0,"
-            "  PRIMARY KEY (id, chat_id)"
-            ")"
-        ))
+        await conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS chats ("
+                "  id INTEGER PRIMARY KEY,"
+                "  type TEXT NOT NULL DEFAULT 'channel',"
+                "  title TEXT,"
+                "  username TEXT,"
+                "  first_name TEXT,"
+                "  last_name TEXT,"
+                "  phone TEXT,"
+                "  description TEXT,"
+                "  participants_count INTEGER,"
+                "  is_forum INTEGER DEFAULT 0,"
+                "  is_archived INTEGER DEFAULT 0,"
+                "  last_synced_message_id INTEGER DEFAULT 0,"
+                "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+                "  updated_at TEXT DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "  id INTEGER NOT NULL,"
+                "  chat_id INTEGER NOT NULL,"
+                "  sender_id INTEGER,"
+                "  date TEXT NOT NULL DEFAULT '2025-01-01 00:00:00',"
+                "  text TEXT,"
+                "  reply_to_msg_id INTEGER,"
+                "  reply_to_top_id INTEGER,"
+                "  reply_to_text TEXT,"
+                "  forward_from_id INTEGER,"
+                "  edit_date TEXT,"
+                "  raw_data TEXT,"
+                "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+                "  is_outgoing INTEGER DEFAULT 0,"
+                "  is_pinned INTEGER DEFAULT 0,"
+                "  PRIMARY KEY (id, chat_id)"
+                ")"
+            )
+        )
 
     # Wire up a real DatabaseManager (skip its init() — we supply our own engine)
     db_manager = DatabaseManager.__new__(DatabaseManager)
@@ -83,7 +88,9 @@ async def _create_in_memory_adapter():
     db_manager.database_url = "sqlite+aiosqlite://"
     db_manager._is_sqlite = True
     db_manager.async_session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False,
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
     )
 
     adapter = DatabaseAdapter(db_manager)
@@ -94,24 +101,26 @@ async def _insert_messages(adapter: DatabaseAdapter, chat_id: int, msg_ids: list
     """Insert message rows with the given IDs into the test database."""
     async with adapter.db_manager.async_session_factory() as session:
         for mid in msg_ids:
-            await session.execute(text(
-                "INSERT INTO messages (id, chat_id, date) VALUES (:id, :cid, '2025-01-01 00:00:00')"
-            ), {"id": mid, "cid": chat_id})
+            await session.execute(
+                text("INSERT INTO messages (id, chat_id, date) VALUES (:id, :cid, '2025-01-01 00:00:00')"),
+                {"id": mid, "cid": chat_id},
+            )
         await session.commit()
 
 
 async def _insert_chat(adapter: DatabaseAdapter, chat_id: int, title: str = "Test Chat"):
     """Insert a chat row into the test database."""
     async with adapter.db_manager.async_session_factory() as session:
-        await session.execute(text(
-            "INSERT INTO chats (id, title, type) VALUES (:id, :title, 'channel')"
-        ), {"id": chat_id, "title": title})
+        await session.execute(
+            text("INSERT INTO chats (id, title, type) VALUES (:id, :title, 'channel')"), {"id": chat_id, "title": title}
+        )
         await session.commit()
 
 
 # ===========================================================================
 # 1. TestDetectMessageGaps — real SQL against in-memory SQLite
 # ===========================================================================
+
 
 class TestDetectMessageGaps:
     """Exercise detect_message_gaps with a real async SQLite database."""
@@ -230,6 +239,7 @@ class TestDetectMessageGaps:
 # 2. TestGetChatsWithMessages — real SQL
 # ===========================================================================
 
+
 class TestGetChatsWithMessages:
     """Exercise get_chats_with_messages with a real async SQLite database."""
 
@@ -259,6 +269,7 @@ class TestGetChatsWithMessages:
 # ===========================================================================
 # 3. TestFillGaps — mocked Telegram client, exercises _fill_gaps control flow
 # ===========================================================================
+
 
 def _make_backup_instance(db_mock=None, client_mock=None, config_mock=None):
     """Create a TelegramBackup instance with mocked dependencies."""
@@ -372,10 +383,12 @@ class TestFillGaps:
         """When gaps are found, _fill_gap_range should be called for each."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001])
-        db.detect_message_gaps = AsyncMock(return_value=[
-            (50, 100, 50),
-            (200, 300, 100),
-        ])
+        db.detect_message_gaps = AsyncMock(
+            return_value=[
+                (50, 100, 50),
+                (200, 300, 100),
+            ]
+        )
 
         client = AsyncMock()
         entity = MagicMock()
@@ -403,10 +416,12 @@ class TestFillGaps:
         """Chats with no gaps should not appear in the details list."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002])
-        db.detect_message_gaps = AsyncMock(side_effect=[
-            [],                        # chat -1001: no gaps
-            [(10, 100, 90)],           # chat -1002: one gap
-        ])
+        db.detect_message_gaps = AsyncMock(
+            side_effect=[
+                [],  # chat -1001: no gaps
+                [(10, 100, 90)],  # chat -1002: one gap
+            ]
+        )
 
         client = AsyncMock()
         entity1 = MagicMock()
@@ -560,6 +575,7 @@ class TestFillGapRange:
 # ===========================================================================
 # 4. TestConfig — env-var parsing for gap-fill settings
 # ===========================================================================
+
 
 class TestGapFillConfig:
     """Test FILL_GAPS and GAP_THRESHOLD configuration."""

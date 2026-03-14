@@ -155,11 +155,12 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
             "during previous backup runs."
         ),
     )
+    fill_gaps_parser.add_argument("-c", "--chat-id", type=int, help="Fill gaps only for this specific chat ID")
     fill_gaps_parser.add_argument(
-        "-c", "--chat-id", type=int, help="Fill gaps only for this specific chat ID"
-    )
-    fill_gaps_parser.add_argument(
-        "-t", "--threshold", type=int, default=None,
+        "-t",
+        "--threshold",
+        type=int,
+        default=None,
         help="Minimum gap size to investigate (overrides GAP_THRESHOLD env var)",
     )
 
