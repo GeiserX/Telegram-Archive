@@ -781,12 +781,14 @@ class TelegramBackup:
 
             summary["total_gaps"] += len(gaps)
             summary["total_recovered"] += chat_recovered
-            summary["details"].append({
-                "chat_id": cid,
-                "chat_name": chat_name,
-                "gaps": len(gaps),
-                "recovered": chat_recovered,
-            })
+            summary["details"].append(
+                {
+                    "chat_id": cid,
+                    "chat_name": chat_name,
+                    "gaps": len(gaps),
+                    "recovered": chat_recovered,
+                }
+            )
 
         logger.info(
             f"Gap-fill complete: {summary['chats_scanned']} chats scanned, "
