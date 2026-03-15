@@ -243,9 +243,7 @@ class BackupScheduler:
                     logger.info("Running initial gap-fill...")
                     result = await run_fill_gaps(self.config, client=self._connection.client)
                     if result.get("errors", 0) > 0:
-                        logger.warning(
-                            f"Initial gap-fill completed with {result['errors']} error(s)"
-                        )
+                        logger.warning(f"Initial gap-fill completed with {result['errors']} error(s)")
                 except Exception as e:
                     logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
 
