@@ -147,6 +147,12 @@ class Config:
         # Useful for recovering from interrupted backups or deleted media files
         self.verify_media = os.getenv("VERIFY_MEDIA", "false").lower() == "true"
 
+        # Gap-fill mode: detect and recover skipped messages
+        # When enabled, runs after each scheduled backup to find and fill gaps
+        # in message ID sequences caused by API errors or interruptions
+        self.fill_gaps = os.getenv("FILL_GAPS", "false").lower() == "true"
+        self.gap_threshold = int(os.getenv("GAP_THRESHOLD", "50"))
+
         # Real-time listener mode
         # When enabled, runs a background listener that catches message edits and deletions
         # in real-time instead of batch-checking on each backup run
