@@ -77,13 +77,21 @@ class BackupScheduler:
             await run_backup(self.config, client=client)
 
             # Run gap-fill if enabled
+            gap_fill_ok = True
             if self.config.fill_gaps:
                 try:
                     from .telegram_backup import run_fill_gaps
 
                     logger.info("Running post-backup gap-fill...")
-                    await run_fill_gaps(self.config, client=client)
+                    result = await run_fill_gaps(self.config, client=client)
+                    if result.get("errors", 0) > 0:
+                        gap_fill_ok = False
+                        logger.warning(
+                            f"Gap-fill completed with {result['errors']} error(s) "
+                            f"({result['total_recovered']} messages recovered)"
+                        )
                 except Exception as e:
+                    gap_fill_ok = False
                     logger.error(f"Gap-fill failed: {e}", exc_info=True)
 
             # Reload tracked chats in listener after backup
@@ -91,7 +99,10 @@ class BackupScheduler:
             if self._listener:
                 await self._listener._load_tracked_chats()
 
-            logger.info("Scheduled backup completed successfully")
+            if gap_fill_ok:
+                logger.info("Scheduled backup completed successfully")
+            else:
+                logger.warning("Scheduled backup completed, but gap-fill had errors")
 
         except Exception as e:
             logger.error(f"Scheduled backup failed: {e}", exc_info=True)
@@ -229,10 +240,14 @@ class BackupScheduler:
                 try:
                     from .telegram_backup import run_fill_gaps
 
-                    logger.info("Running post-backup gap-fill...")
-                    await run_fill_gaps(self.config, client=self._connection.client)
+                    logger.info("Running initial gap-fill...")
+                    result = await run_fill_gaps(self.config, client=self._connection.client)
+                    if result.get("errors", 0) > 0:
+                        logger.warning(
+                            f"Initial gap-fill completed with {result['errors']} error(s)"
+                        )
                 except Exception as e:
-                    logger.error(f"Gap-fill failed: {e}", exc_info=True)
+                    logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
 
             # Reload tracked chats in listener after initial backup
             if self._listener:
