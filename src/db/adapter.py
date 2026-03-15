@@ -890,6 +890,49 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    # ========== Gap Detection ==========
+
+    async def detect_message_gaps(self, chat_id: int, threshold: int = 50) -> list[tuple[int, int, int]]:
+        """Detect gaps in message ID sequences for a chat.
+
+        Uses a SQL LAG() window function to find gaps larger than threshold.
+
+        Returns:
+            List of (gap_start_id, gap_end_id, gap_size) tuples where
+            gap_start is the last message ID before the gap and
+            gap_end is the first message ID after the gap.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT gap_start, gap_end, gap_size FROM (
+                        SELECT
+                            LAG(id) OVER (ORDER BY id) AS gap_start,
+                            id AS gap_end,
+                            id - LAG(id) OVER (ORDER BY id) AS gap_size
+                        FROM messages
+                        WHERE chat_id = :chat_id
+                    ) gaps
+                    WHERE gap_size > :threshold
+                    ORDER BY gap_start
+                    """
+                ),
+                {"chat_id": chat_id, "threshold": threshold},
+            )
+            return [(row[0], row[1], row[2]) for row in result.fetchall()]
+
+    async def get_chats_with_messages(self) -> list[int]:
+        """Get all chat IDs that exist in the chats table.
+
+        Queries the chats table directly instead of scanning the messages table,
+        which would be extremely slow on large databases.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.id)
+            result = await session.execute(stmt)
+            return [row[0] for row in result.fetchall()]
+
     # ========== Statistics ==========
 
     async def get_statistics(self) -> dict[str, Any]:
