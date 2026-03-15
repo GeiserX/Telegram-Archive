@@ -1322,6 +1322,7 @@
                                 <code class="flex-1 bg-gray-900 text-blue-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
                                 <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded whitespace-nowrap">Copy Link</button>
                             </div>
+                            <div class="text-xs text-gray-500 mt-2">Note: token may appear in server access logs when the link is opened.</div>
                         </div>
 
                         <!-- Tokens List -->

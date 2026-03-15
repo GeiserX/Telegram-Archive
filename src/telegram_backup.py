@@ -743,13 +743,28 @@ class TelegramBackup:
             "chats_with_gaps": 0,
             "total_gaps": 0,
             "total_recovered": 0,
+            "errors": 0,
             "details": [],
         }
 
         if chat_id is not None:
             chat_ids = [chat_id]
         else:
-            chat_ids = await self.db.get_chats_with_messages()
+            # Only scan chats that current config would back up (respects
+            # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists)
+            all_chat_ids = await self.db.get_chats_with_messages()
+            chat_ids = []
+            for cid in all_chat_ids:
+                chat_info = await self.db.get_chat_by_id(cid)
+                if not chat_info:
+                    continue
+                ctype = chat_info.get("type", "")
+                is_user = ctype == "private"
+                is_group = ctype in ("group", "supergroup")
+                is_channel = ctype == "channel"
+                is_bot = ctype == "bot"
+                if self.config.should_backup_chat(cid, is_user, is_group, is_channel, is_bot):
+                    chat_ids.append(cid)
 
         logger.info(f"Gap-fill: scanning {len(chat_ids)} chat(s) with threshold={threshold}")
 
@@ -761,9 +776,19 @@ class TelegramBackup:
             except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
                 logger.warning(f"Gap-fill: skipping chat {cid} (no access): {e.__class__.__name__}")
                 continue
+            except Exception as e:
+                logger.error(f"Gap-fill: failed to get entity for chat {cid}: {e}")
+                summary["errors"] += 1
+                continue
 
             chat_name = self._get_chat_name(entity)
-            gaps = await self.db.detect_message_gaps(cid, threshold)
+
+            try:
+                gaps = await self.db.detect_message_gaps(cid, threshold)
+            except Exception as e:
+                logger.error(f"Gap-fill: failed to detect gaps for {chat_name} ({cid}): {e}")
+                summary["errors"] += 1
+                continue
 
             if not gaps:
                 continue
@@ -775,9 +800,13 @@ class TelegramBackup:
 
             for gap_start, gap_end, gap_size in gaps:
                 logger.info(f"  → Filling gap: {gap_start}..{gap_end} (size {gap_size})")
-                recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
-                chat_recovered += recovered
-                logger.info(f"    Recovered {recovered} messages")
+                try:
+                    recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
+                    chat_recovered += recovered
+                    logger.info(f"    Recovered {recovered} messages")
+                except Exception as e:
+                    logger.error(f"    Error filling gap {gap_start}..{gap_end}: {e}")
+                    summary["errors"] += 1
 
             summary["total_gaps"] += len(gaps)
             summary["total_recovered"] += chat_recovered
@@ -790,9 +819,11 @@ class TelegramBackup:
                 }
             )
 
+        status = "complete" if summary["errors"] == 0 else "complete with errors"
         logger.info(
-            f"Gap-fill complete: {summary['chats_scanned']} chats scanned, "
+            f"Gap-fill {status}: {summary['chats_scanned']} chats scanned, "
             f"{summary['total_gaps']} gaps found, {summary['total_recovered']} messages recovered"
+            + (f", {summary['errors']} error(s)" if summary["errors"] else "")
         )
 
         return summary
@@ -1762,7 +1793,18 @@ async def run_fill_gaps(config: Config, client: TelegramClient | None = None, ch
     backup = await TelegramBackup.create(config, client=client)
     try:
         await backup.connect()
-        return await backup._fill_gaps(chat_id=chat_id)
+        summary = await backup._fill_gaps(chat_id=chat_id)
+
+        # Refresh cached stats if messages were recovered so the viewer
+        # doesn't show stale totals until the next scheduled recalculation
+        if summary["total_recovered"] > 0:
+            try:
+                await backup.db.calculate_and_store_statistics()
+                logger.info("Stats recalculated after gap-fill recovery")
+            except Exception as e:
+                logger.warning(f"Failed to recalculate stats after gap-fill: {e}")
+
+        return summary
     finally:
         await backup.disconnect()
         await backup.db.close()
