@@ -170,99 +170,126 @@ class TelegramBackup:
             last_backup_time = datetime.utcnow().isoformat() + "Z"
             await self.db.set_metadata("last_backup_time", last_backup_time)
 
-            # Get all dialogs (chats)
-            logger.info("Fetching dialog list...")
-            dialogs = await self._get_dialogs()
-            logger.info(f"Found {len(dialogs)} total dialogs")
-
-            # v6.2.0: Fetch archived dialogs
-            logger.info("Fetching archived dialogs...")
-            archived_dialogs = await self._get_dialogs(archived=True)
-            logger.info(f"Found {len(archived_dialogs)} archived dialogs")
-
-            # Build set of archived chat IDs for fast lookup.
-            # Only trust this for chats NOT found in the regular dialog list,
-            # since Telegram's API may occasionally return a chat in both lists.
-            archived_chat_ids = set()
-            for dialog in archived_dialogs:
-                archived_chat_ids.add(self._get_marked_id(dialog.entity))
-            logger.info(
-                f"Archived chat IDs from Telegram: {archived_chat_ids & (self.config.global_include_ids | self.config.private_include_ids | self.config.groups_include_ids | self.config.channels_include_ids) if archived_chat_ids else 'none matching includes'}"
-            )
-
-            # Filter dialogs based on chat type and ID filters
-            # Also delete explicitly excluded chats from database
-            filtered_dialogs = []
-            explicitly_excluded_chat_ids = set()
-            seen_chat_ids = set()  # Track which IDs we've processed from dialogs
-
-            for dialog in dialogs:
-                entity = dialog.entity
-                # Use marked ID (with -100 prefix for channels/supergroups) to match user config
-                chat_id = self._get_marked_id(entity)
-                seen_chat_ids.add(chat_id)
-
-                is_bot = isinstance(entity, User) and entity.bot
-                is_user = isinstance(entity, User) and not entity.bot
-                is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
-                is_channel = isinstance(entity, Channel) and not entity.megagroup
-
-                # Check if chat is explicitly in an exclude list (not just filtered out)
-                is_explicitly_excluded = (
-                    chat_id in self.config.global_exclude_ids
-                    or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
-                    or (is_group and chat_id in self.config.groups_exclude_ids)
-                    or (is_channel and chat_id in self.config.channels_exclude_ids)
-                )
-
-                if is_explicitly_excluded:
-                    # Chat is explicitly excluded - mark for deletion
-                    explicitly_excluded_chat_ids.add(chat_id)
-                elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
-                    # Chat should be backed up
-                    filtered_dialogs.append(dialog)
-
-            # Fetch explicitly included chats that weren't in dialogs
-            # This handles cases where chats don't appear in the dialog list
-            # (newly created, archived, or not recently messaged)
-            all_include_ids = (
-                self.config.global_include_ids
-                | self.config.private_include_ids
-                | self.config.groups_include_ids
-                | self.config.channels_include_ids
-            )
-            missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
-
-            if missing_include_ids:
-                logger.info(
-                    f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs: {missing_include_ids}"
-                )
-                for include_id in missing_include_ids:
-                    is_in_archive = include_id in archived_chat_ids
+            # Whitelist mode: skip expensive get_dialogs() and fetch only the
+            # specified chats directly.  For accounts with many dialogs the full
+            # dialog fetch can hang indefinitely (see #95).
+            if self.config.whitelist_mode:
+                logger.info(f"Whitelist mode: fetching {len(self.config.chat_ids)} chat(s) directly")
+                filtered_dialogs = []
+                archived_chat_ids = set()
+                archived_dialogs = []
+                explicitly_excluded_chat_ids = set()
+                seen_chat_ids = set()
+                for cid in self.config.chat_ids:
                     try:
-                        entity = await self.client.get_entity(include_id)
+                        entity = await self.client.get_entity(cid)
 
-                        # Create a simple dialog-like wrapper
                         class SimpleDialog:
                             def __init__(self, entity):
                                 self.entity = entity
                                 self.date = datetime.now()
 
                         filtered_dialogs.append(SimpleDialog(entity))
-                        logger.info(
-                            f"  → Added: {self._get_chat_name(entity)} (ID: {include_id}){' [in archive]' if is_in_archive else ' [not in any dialog list]'}"
-                        )
+                        seen_chat_ids.add(cid)
+                        logger.info(f"  → Fetched: {self._get_chat_name(entity)} (ID: {cid})")
                     except Exception as e:
-                        logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
+                        logger.warning(f"  → Could not fetch chat {cid}: {e}")
 
-            # Delete only explicitly excluded chats from database
-            if explicitly_excluded_chat_ids:
-                logger.info(f"Deleting {len(explicitly_excluded_chat_ids)} explicitly excluded chats from database...")
-                for chat_id in explicitly_excluded_chat_ids:
-                    try:
-                        await self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
-                    except Exception as e:
-                        logger.error(f"Error deleting chat {chat_id}: {e}", exc_info=True)
+            else:
+                # Type-based mode: fetch full dialog list and filter
+                logger.info("Fetching dialog list...")
+                dialogs = await self._get_dialogs()
+                logger.info(f"Found {len(dialogs)} total dialogs")
+
+                # v6.2.0: Fetch archived dialogs
+                logger.info("Fetching archived dialogs...")
+                archived_dialogs = await self._get_dialogs(archived=True)
+                logger.info(f"Found {len(archived_dialogs)} archived dialogs")
+
+                # Build set of archived chat IDs for fast lookup.
+                # Only trust this for chats NOT found in the regular dialog list,
+                # since Telegram's API may occasionally return a chat in both lists.
+                archived_chat_ids = set()
+                for dialog in archived_dialogs:
+                    archived_chat_ids.add(self._get_marked_id(dialog.entity))
+                logger.info(
+                    f"Archived chat IDs from Telegram: {archived_chat_ids & (self.config.global_include_ids | self.config.private_include_ids | self.config.groups_include_ids | self.config.channels_include_ids) if archived_chat_ids else 'none matching includes'}"
+                )
+
+                # Filter dialogs based on chat type and ID filters
+                # Also delete explicitly excluded chats from database
+                filtered_dialogs = []
+                explicitly_excluded_chat_ids = set()
+                seen_chat_ids = set()  # Track which IDs we've processed from dialogs
+
+                for dialog in dialogs:
+                    entity = dialog.entity
+                    # Use marked ID (with -100 prefix for channels/supergroups) to match user config
+                    chat_id = self._get_marked_id(entity)
+                    seen_chat_ids.add(chat_id)
+
+                    is_bot = isinstance(entity, User) and entity.bot
+                    is_user = isinstance(entity, User) and not entity.bot
+                    is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
+                    is_channel = isinstance(entity, Channel) and not entity.megagroup
+
+                    # Check if chat is explicitly in an exclude list (not just filtered out)
+                    is_explicitly_excluded = (
+                        chat_id in self.config.global_exclude_ids
+                        or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
+                        or (is_group and chat_id in self.config.groups_exclude_ids)
+                        or (is_channel and chat_id in self.config.channels_exclude_ids)
+                    )
+
+                    if is_explicitly_excluded:
+                        # Chat is explicitly excluded - mark for deletion
+                        explicitly_excluded_chat_ids.add(chat_id)
+                    elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
+                        # Chat should be backed up
+                        filtered_dialogs.append(dialog)
+
+                # Fetch explicitly included chats that weren't in dialogs
+                # This handles cases where chats don't appear in the dialog list
+                # (newly created, archived, or not recently messaged)
+                all_include_ids = (
+                    self.config.global_include_ids
+                    | self.config.private_include_ids
+                    | self.config.groups_include_ids
+                    | self.config.channels_include_ids
+                )
+                missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
+
+                if missing_include_ids:
+                    logger.info(
+                        f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs: {missing_include_ids}"
+                    )
+                    for include_id in missing_include_ids:
+                        is_in_archive = include_id in archived_chat_ids
+                        try:
+                            entity = await self.client.get_entity(include_id)
+
+                            class SimpleDialog:
+                                def __init__(self, entity):
+                                    self.entity = entity
+                                    self.date = datetime.now()
+
+                            filtered_dialogs.append(SimpleDialog(entity))
+                            logger.info(
+                                f"  → Added: {self._get_chat_name(entity)} (ID: {include_id}){' [in archive]' if is_in_archive else ' [not in any dialog list]'}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
+
+                # Delete only explicitly excluded chats from database
+                if explicitly_excluded_chat_ids:
+                    logger.info(
+                        f"Deleting {len(explicitly_excluded_chat_ids)} explicitly excluded chats from database..."
+                    )
+                    for chat_id in explicitly_excluded_chat_ids:
+                        try:
+                            await self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
+                        except Exception as e:
+                            logger.error(f"Error deleting chat {chat_id}: {e}", exc_info=True)
 
             logger.info(f"Backing up {len(filtered_dialogs)} dialogs after filtering")
 
