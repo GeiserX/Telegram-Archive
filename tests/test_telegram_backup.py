@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
+from telethon.tl.types import Channel
+
 from src.telegram_backup import TelegramBackup
 
 
@@ -459,6 +461,89 @@ class TestBackupCheckpointing(unittest.TestCase):
         backup.db.insert_messages_batch.assert_awaited_once_with(batch)
         backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
         backup.db.insert_reactions.assert_awaited_once()
+
+
+class TestWhitelistModeBackup(unittest.TestCase):
+    """Test that whitelist mode skips get_dialogs and fetches entities directly (#95)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = MagicMock()
+        self.config.whitelist_mode = True
+        self.config.chat_ids = {-1002701160643}
+        self.config.priority_chat_ids = set()
+        self.config.media_path = os.path.join(self.temp_dir, "media")
+        self.config.verify_media = False
+        self.config.fill_gaps = False
+        self.config.skip_media_chat_ids = set()
+        self.config.skip_media_delete_existing = False
+        os.makedirs(self.config.media_path, exist_ok=True)
+
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.config = self.config
+        self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        self.backup._owns_client = False
+        self.backup._cleaned_media_chats = set()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_whitelist_mode_does_not_call_get_dialogs(self):
+        """In whitelist mode, get_dialogs should never be called."""
+        entity = Channel(
+            id=2701160643,
+            title="Test Channel",
+            access_hash=12345,
+            date=None,
+            photo=None,
+        )
+        self.backup.client.get_entity = AsyncMock(return_value=entity)
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", id=123))
+        self.backup.db.get_last_message_id = AsyncMock(return_value=0)
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.upsert_chat = AsyncMock()
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 1, "messages": 0, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup.client.iter_messages = MagicMock(return_value=AsyncMock(__aiter__=AsyncMock(return_value=iter([]))))
+        # Mock _backup_dialog to avoid complex internals
+        self.backup._backup_dialog = AsyncMock(return_value=0)
+        self.backup._backup_folders = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock()
+
+        self._run(self.backup.backup_all())
+
+        # get_dialogs should NOT have been called
+        self.backup.client.get_dialogs.assert_not_called()
+        # get_entity SHOULD have been called for the whitelisted chat
+        self.backup.client.get_entity.assert_awaited_once_with(-1002701160643)
+
+    def test_whitelist_mode_handles_entity_fetch_failure(self):
+        """If get_entity fails for a whitelisted chat, backup should continue without crashing."""
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("Entity not found"))
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", id=123))
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 0, "messages": 0, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup._backup_folders = AsyncMock()
+
+        # Should not raise — just log warning and report 0 dialogs
+        self._run(self.backup.backup_all())
+
+        self.backup.client.get_dialogs.assert_not_called()
 
 
 if __name__ == "__main__":
