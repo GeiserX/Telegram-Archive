@@ -1047,9 +1047,9 @@
                                         </a>
                                     </div>
 
-                                    <!-- Text with clickable links -->
+                                    <!-- Text with clickable links (for albums, use caption from whichever message has it) -->
                                     <div class="whitespace-pre-wrap break-words message-text"
-                                        v-html="linkifyText(msg.text)"></div>
+                                        v-html="linkifyText(getAlbumCaption(msg) || msg.text)"></div>
 
                                     <!-- Reactions -->
                                     <div v-if="msg.reactions && msg.reactions.length > 0" class="mt-2 flex flex-wrap gap-1.5">
@@ -2538,6 +2538,16 @@
                     }
                 }
 
+                // For album messages, find the caption from any message in the group
+                const getAlbumCaption = (msg) => {
+                    const groupedId = getGroupedId(msg)
+                    if (!groupedId) return null
+                    const album = getAlbumForMessage(msg)
+                    if (!album) return null
+                    const captionMsg = album.find(m => m.text && m.text.trim() !== '')
+                    return captionMsg ? captionMsg.text : null
+                }
+
                 const isGroup = computed(() => {
                     return selectedChat.value && (selectedChat.value.type === 'group' || selectedChat.value.type === 'channel')
                 })
@@ -3648,6 +3658,7 @@
                     isFirstInAlbum,
                     isHiddenAlbumMessage,
                     getAlbumGridClass,
+                    getAlbumCaption,
                     getChatName,
                     getInitials,
                     formatDate,
