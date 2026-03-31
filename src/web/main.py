@@ -1339,11 +1339,15 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         user_chat_ids = get_user_chat_ids(user)
         per_chat = stats.get("per_chat_message_counts", {})
         if user_chat_ids is not None and per_chat:
-            stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if k in user_chat_ids}
+            # JSON keys are strings after json.loads(), user_chat_ids are ints
+            stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if int(k) in user_chat_ids}
             # Recompute aggregates from visible chats only
             visible = stats["per_chat_message_counts"]
             stats["chats"] = len(visible)
             stats["messages"] = sum(visible.values())
+            # Remove global media/size stats — no per-chat breakdown available
+            stats.pop("media_files", None)
+            stats.pop("total_size_mb", None)
 
         stats["timezone"] = config.viewer_timezone
         stats["stats_calculation_hour"] = config.stats_calculation_hour
@@ -1510,14 +1514,26 @@ async def internal_push(request: Request):
 
     For PostgreSQL, use LISTEN/NOTIFY instead (auto-detected).
 
-    Access is restricted to private/loopback IPs and Docker internal networks.
+    Access is restricted to loopback and private (RFC1918/Docker) IPs.
+    Split-container SQLite setups use VIEWER_HOST/VIEWER_PORT to push
+    from the backup container to the viewer container over Docker networks.
     """
+    import ipaddress
+
     client_host = request.client.host if request.client else None
 
-    # Only accept from loopback — private LAN/Docker ranges are spoofable
-    # behind reverse proxies. SQLite push is always same-container (localhost).
-    if not client_host or client_host not in ("127.0.0.1", "::1"):
-        logger.warning(f"Rejected /internal/push from non-loopback IP: {client_host}")
+    # Accept from loopback + private IPs (Docker internal, RFC1918)
+    # Split-container SQLite needs this for cross-container push
+    is_allowed = False
+    if client_host:
+        try:
+            ip = ipaddress.ip_address(client_host)
+            is_allowed = ip.is_loopback or ip.is_private
+        except ValueError:
+            pass
+
+    if not is_allowed:
+        logger.warning(f"Rejected /internal/push from non-private IP: {client_host}")
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:

@@ -712,17 +712,31 @@ class TelegramListener:
                 for msg_id in event.deleted_ids:
                     self.stats["deletions_received"] += 1
 
-                    # If chat_id is unknown, use the any-chat deletion path
-                    # which handles the case where message IDs collide across chats
+                    # If chat_id is unknown, resolve it from DB first
+                    # Message IDs are only unique within a chat — skip ambiguous cases
                     effective_chat_id = chat_id
                     if effective_chat_id is None:
                         try:
-                            deleted = await self.db.delete_message_by_id_any_chat(msg_id)
-                            if deleted:
-                                self.stats["deletions_applied"] += 1
-                                logger.debug(f"🗑️ Deletion applied (unknown chat): msg={msg_id}")
-                            else:
-                                logger.debug(f"⚠️ Deletion skipped (not in DB): msg={msg_id}")
+                            resolved = await self.db.resolve_message_chat_id(msg_id)
+                            if resolved is None:
+                                logger.debug(f"⚠️ Deletion skipped (not found or ambiguous): msg={msg_id}")
+                                continue
+
+                            if not self._should_process_chat(resolved):
+                                continue
+
+                            # Apply rate limit like the normal path
+                            allowed, reason = self._protector.check_operation(resolved, "deletion")
+                            if not allowed:
+                                self.stats["operations_discarded"] += 1
+                                continue
+
+                            await self.db.delete_message(resolved, msg_id)
+                            self.stats["deletions_applied"] += 1
+                            logger.debug(f"🗑️ Deletion applied (resolved chat): chat={resolved} msg={msg_id}")
+
+                            # Notify viewer
+                            await self._notify_update("delete", {"chat_id": resolved, "message_id": msg_id})
                         except Exception as e:
                             logger.debug(f"Could not delete msg {msg_id}: {e}")
                         continue

@@ -3267,14 +3267,16 @@
                     const escaped = escapeHtml(text)
                     const urlRegex = /(https?:\/\/[^\s<]+)/g
                     return escaped.replace(urlRegex, (match) => {
-                        // Decode HTML entities back to raw URL, then percent-encode
-                        // characters that could break the href attribute context
+                        // Build a safe href: decode HTML entities back to raw URL,
+                        // then percent-encode characters that break href="..." context.
+                        // Note: escapeHtml (textContent/innerHTML) does NOT encode " or '
+                        // so we must handle raw quotes directly, not just entities.
                         const href = match
                             .replace(/&amp;/g, '&')
-                            .replace(/&quot;/g, '%22')
-                            .replace(/&#39;/g, '%27')
                             .replace(/&lt;/g, '%3C')
                             .replace(/&gt;/g, '%3E')
+                            .replace(/"/g, '%22')
+                            .replace(/'/g, '%27')
                         return `<a href="${href}" target="_blank" rel="noopener noreferrer">${match}</a>`
                     })
                 }
