@@ -68,13 +68,15 @@ class ConnectionManager:
         self._allowed_chats.pop(websocket, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
-    def subscribe(self, websocket: WebSocket, chat_id: int):
-        """Subscribe a connection to updates for a specific chat."""
+    def subscribe(self, websocket: WebSocket, chat_id: int) -> bool:
+        """Subscribe a connection to updates for a specific chat. Returns False if denied by ACL."""
         if websocket in self.active_connections:
             allowed = self._allowed_chats.get(websocket)
             if allowed is not None and chat_id not in allowed:
-                return
+                return False
             self.active_connections[websocket].add(chat_id)
+            return True
+        return False
 
     def unsubscribe(self, websocket: WebSocket, chat_id: int):
         """Unsubscribe a connection from a specific chat."""
@@ -2153,8 +2155,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if action == "subscribe":
                 chat_id = data.get("chat_id")
                 if chat_id:
-                    ws_manager.subscribe(websocket, chat_id)
-                    await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+                    if ws_manager.subscribe(websocket, chat_id):
+                        await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+                    else:
+                        await websocket.send_json({"type": "subscribe_denied", "chat_id": chat_id})
 
             elif action == "unsubscribe":
                 chat_id = data.get("chat_id")
