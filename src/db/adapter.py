@@ -783,22 +783,24 @@ class DatabaseAdapter:
                     await session.flush()  # Flush each to catch errors early
                 except Exception as e:
                     if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
-                        # Sequence out of sync - reset and retry
-                        logger.warning("Reactions sequence out of sync, resetting...")
+                        # Sequence out of sync — rollback undoes ALL flushed inserts
+                        logger.warning("Reactions sequence out of sync, resetting and retrying all...")
                         await session.rollback()
                         await self._reset_reactions_sequence()
-                        # Retry the insert
+                        # Retry ALL reactions in a fresh transaction
                         async with self.db_manager.async_session_factory() as retry_session:
-                            r = Reaction(
-                                message_id=message_id,
-                                chat_id=chat_id,
-                                emoji=reaction["emoji"],
-                                user_id=reaction.get("user_id"),
-                                count=reaction.get("count", 1),
-                            )
-                            retry_session.add(r)
+                            for r_data in reactions:
+                                retry_session.add(
+                                    Reaction(
+                                        message_id=message_id,
+                                        chat_id=chat_id,
+                                        emoji=r_data["emoji"],
+                                        user_id=r_data.get("user_id"),
+                                        count=r_data.get("count", 1),
+                                    )
+                                )
                             await retry_session.commit()
-                        return  # Exit after recovery
+                        return
                     raise
 
             await session.commit()
