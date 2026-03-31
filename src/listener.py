@@ -394,6 +394,7 @@ class TelegramListener:
                 "edit": NotificationType.EDIT,
                 "delete": NotificationType.DELETE,
                 "new_message": NotificationType.NEW_MESSAGE,
+                "pin": NotificationType.PIN,
             }
 
             nt = type_map.get(notification_type)
@@ -1201,9 +1202,9 @@ class TelegramListener:
             logger.info(f"      Saved:    {self.stats['new_messages_saved']}")
             logger.info("")
             logger.info("   🛡️ Protection:")
-            logger.info(f"      Bursts intercepted: {protector_stats['bursts_detected']}")
-            logger.info(f"      Operations discarded: {protector_stats['operations_discarded']}")
-            logger.info(f"      Chats protected: {protector_stats['chats_protected']}")
+            logger.info(f"      Rate limits triggered: {protector_stats['rate_limits_triggered']}")
+            logger.info(f"      Operations blocked: {protector_stats['operations_blocked']}")
+            logger.info(f"      Chats rate-limited: {protector_stats['chats_rate_limited']}")
 
             if self.stats["errors"]:
                 logger.warning(f"   ⚠️ Errors: {self.stats['errors']}")
