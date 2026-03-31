@@ -536,43 +536,23 @@ class DatabaseAdapter:
             await session.commit()
             logger.debug(f"Deleted message {message_id} from chat {chat_id}")
 
-    async def delete_message_by_id_any_chat(self, message_id: int) -> bool:
+    async def resolve_message_chat_id(self, message_id: int) -> int | None:
         """
-        Delete a message by ID when chat is unknown.
+        Find which chat a message belongs to.
 
-        This is used by the real-time listener when Telegram sends deletion
-        events without specifying the chat (can happen in some edge cases).
-
-        Args:
-            message_id: The message ID to delete
-
-        Returns:
-            True if a message was deleted, False otherwise
+        Returns the chat_id if found in exactly one chat.
+        Returns None if not found or ambiguous (same ID in multiple chats).
+        Telegram message IDs are only unique within a chat.
         """
         async with self.db_manager.async_session_factory() as session:
-            # First, find which chat(s) have this message
             result = await session.execute(select(Message.chat_id).where(Message.id == message_id))
             chat_ids = [row[0] for row in result.fetchall()]
 
-            if not chat_ids:
-                return False
-
-            # Delete from all matching chats (usually just one)
-            for chat_id in chat_ids:
-                # Delete associated media
-                await session.execute(
-                    delete(Media).where(and_(Media.chat_id == chat_id, Media.message_id == message_id))
-                )
-                # Delete reactions
-                await session.execute(
-                    delete(Reaction).where(and_(Reaction.chat_id == chat_id, Reaction.message_id == message_id))
-                )
-                # Delete the message
-                await session.execute(delete(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)))
-
-            await session.commit()
-            logger.debug(f"Deleted message {message_id} from {len(chat_ids)} chat(s)")
-            return True
+            if len(chat_ids) == 1:
+                return chat_ids[0]
+            if len(chat_ids) > 1:
+                logger.warning(f"Message {message_id} found in {len(chat_ids)} chats, skipping ambiguous deletion")
+            return None
 
     async def update_message_text(
         self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None
@@ -826,7 +806,7 @@ class DatabaseAdapter:
     async def _reset_reactions_sequence(self) -> None:
         """Reset the reactions table sequence to max(id) + 1."""
         async with self.db_manager.async_session_factory() as session:
-            if self.db_manager.db_type == "postgresql":
+            if not self.db_manager._is_sqlite:
                 await session.execute(
                     text("SELECT setval('reactions_id_seq', COALESCE((SELECT MAX(id) FROM reactions), 0) + 1, false)")
                 )
@@ -1665,14 +1645,17 @@ class DatabaseAdapter:
 
             await session.commit()
 
-    async def get_all_folders(self) -> list[dict[str, Any]]:
-        """Get all chat folders with their chat counts."""
+    async def get_all_folders(self, allowed_chat_ids: set[int] | None = None) -> list[dict[str, Any]]:
+        """Get all chat folders with their chat counts.
+
+        Args:
+            allowed_chat_ids: If set, only count chats the user can access.
+        """
         async with self.db_manager.async_session_factory() as session:
-            count_subq = (
-                select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
-                .group_by(ChatFolderMember.folder_id)
-                .subquery()
-            )
+            count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
+            if allowed_chat_ids is not None:
+                count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids))
+            count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()
 
             stmt = (
                 select(ChatFolder, count_subq.c.chat_count)
@@ -1684,13 +1667,17 @@ class DatabaseAdapter:
             folders = []
             for row in result:
                 folder = row.ChatFolder
+                count = row.chat_count or 0
+                # Skip folders with no visible chats for restricted users
+                if allowed_chat_ids is not None and count == 0:
+                    continue
                 folders.append(
                     {
                         "id": folder.id,
                         "title": folder.title,
                         "emoticon": folder.emoticon,
                         "sort_order": folder.sort_order,
-                        "chat_count": row.chat_count or 0,
+                        "chat_count": count,
                     }
                 )
             return folders

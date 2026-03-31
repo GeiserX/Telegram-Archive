@@ -44,7 +44,7 @@ class TestTelegramListener:
         db.get_all_chats = AsyncMock(return_value=[{"id": -1001234567890}, {"id": 123456789}, {"id": -987654321}])
         db.update_message_text = AsyncMock()
         db.delete_message = AsyncMock()
-        db.delete_message_by_id_any_chat = AsyncMock(return_value=True)
+        db.resolve_message_chat_id = AsyncMock(return_value=-1001234567890)
         db.close = AsyncMock()
         return db
 
