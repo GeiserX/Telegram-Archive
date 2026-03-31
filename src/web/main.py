@@ -221,6 +221,16 @@ async def handle_realtime_notification(payload: dict):
         )
     elif notification_type == "delete":
         await ws_manager.broadcast_to_chat(chat_id, {"type": "delete", "message_id": data.get("message_id")})
+    elif notification_type == "pin":
+        await ws_manager.broadcast_to_chat(
+            chat_id,
+            {
+                "type": "pin",
+                "chat_id": chat_id,
+                "message_ids": data.get("message_ids", []),
+                "pinned": data.get("pinned", True),
+            },
+        )
 
 
 async def session_cleanup_task():

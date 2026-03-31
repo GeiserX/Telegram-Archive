@@ -2127,6 +2127,9 @@
                         case 'subscribed':
                             console.log('[WS] Subscribed to chat:', data.chat_id)
                             break
+                        case 'subscribe_denied':
+                            console.warn('[WS] Subscription denied for chat:', data.chat_id)
+                            break
                     }
                 }
                 
