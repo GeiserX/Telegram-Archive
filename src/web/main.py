@@ -714,12 +714,23 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     # Chat-level access check
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is not None:
-        try:
-            media_chat_id = int(folder.split("/")[0])
-            if media_chat_id not in user_chat_ids:
+        folder_parts = folder.split("/")
+        if folder_parts[0] == "avatars":
+            # Avatar thumbnail: folder=avatars/{users|chats}, filename={chat_id}_{photo_id}.jpg
+            name = filename.rsplit(".", 1)[0] if "." in filename else filename
+            try:
+                avatar_chat_id = int(name.split("_")[0])
+                if avatar_chat_id not in user_chat_ids:
+                    raise HTTPException(status_code=403, detail="Access denied")
+            except ValueError:
                 raise HTTPException(status_code=403, detail="Access denied")
-        except ValueError:
-            pass
+        else:
+            try:
+                media_chat_id = int(folder_parts[0])
+                if media_chat_id not in user_chat_ids:
+                    raise HTTPException(status_code=403, detail="Access denied")
+            except ValueError:
+                pass
 
     from .thumbnails import ensure_thumbnail
 
@@ -758,13 +769,24 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is not None:
         parts = path.split("/")
-        if len(parts) >= 2 and parts[0] != "avatars":
-            try:
-                media_chat_id = int(parts[0])
-                if media_chat_id not in user_chat_ids:
+        if len(parts) >= 2:
+            if parts[0] == "avatars" and len(parts) >= 3:
+                # Avatar path: avatars/{users|chats}/{chat_id}_{photo_id}.jpg
+                # Extract chat_id from filename to enforce per-chat ACL
+                name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
+                try:
+                    avatar_chat_id = int(name.split("_")[0])
+                    if avatar_chat_id not in user_chat_ids:
+                        raise HTTPException(status_code=403, detail="Access denied")
+                except ValueError:
                     raise HTTPException(status_code=403, detail="Access denied")
-            except ValueError:
-                pass
+            elif parts[0] != "avatars":
+                try:
+                    media_chat_id = int(parts[0])
+                    if media_chat_id not in user_chat_ids:
+                        raise HTTPException(status_code=403, detail="Access denied")
+                except ValueError:
+                    pass
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -1490,7 +1512,7 @@ async def push_unsubscribe(request: Request, user: UserContext = Depends(require
         if not endpoint:
             raise HTTPException(status_code=400, detail="Missing endpoint")
 
-        success = await push_manager.unsubscribe(endpoint)
+        success = await push_manager.unsubscribe(endpoint, username=user.username)
         return {"status": "unsubscribed" if success else "not_found"}
 
     except json.JSONDecodeError:
@@ -1517,13 +1539,15 @@ async def internal_push(request: Request):
     Access is restricted to loopback and private (RFC1918/Docker) IPs.
     Split-container SQLite setups use VIEWER_HOST/VIEWER_PORT to push
     from the backup container to the viewer container over Docker networks.
+
+    If INTERNAL_PUSH_SECRET is set, it must be provided as a bearer token.
+    This prevents co-tenant containers from spoofing live events.
     """
     import ipaddress
 
     client_host = request.client.host if request.client else None
 
     # Accept from loopback + private IPs (Docker internal, RFC1918)
-    # Split-container SQLite needs this for cross-container push
     is_allowed = False
     if client_host:
         try:
@@ -1535,6 +1559,14 @@ async def internal_push(request: Request):
     if not is_allowed:
         logger.warning(f"Rejected /internal/push from non-private IP: {client_host}")
         raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Optional shared secret for multi-tenant Docker environments
+    push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+    if push_secret:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header != f"Bearer {push_secret}":
+            logger.warning(f"Rejected /internal/push: invalid or missing secret from {client_host}")
+            raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
         payload = await request.json()

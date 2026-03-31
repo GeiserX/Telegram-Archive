@@ -130,12 +130,19 @@ class RealtimeNotifier:
         if not self._http_endpoint:
             return
 
+        headers: dict[str, str] = {}
+        push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+        if push_secret:
+            headers["Authorization"] = f"Bearer {push_secret}"
+
         try:
             import aiohttp
 
             async with (
                 aiohttp.ClientSession() as session,
-                session.post(self._http_endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as response,
+                session.post(
+                    self._http_endpoint, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response,
             ):
                 if response.status != 200:
                     logger.warning(f"HTTP notification returned {response.status}")
@@ -145,7 +152,7 @@ class RealtimeNotifier:
                 import httpx
 
                 async with httpx.AsyncClient() as client:
-                    await client.post(self._http_endpoint, json=payload, timeout=5)
+                    await client.post(self._http_endpoint, json=payload, headers=headers, timeout=5)
             except ImportError:
                 logger.warning("Neither aiohttp nor httpx available for HTTP notifications")
         except Exception as e:

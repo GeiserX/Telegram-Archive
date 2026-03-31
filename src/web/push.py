@@ -173,17 +173,20 @@ class PushNotificationManager:
             logger.error(f"Failed to store push subscription: {e}")
             return False
 
-    async def unsubscribe(self, endpoint: str) -> bool:
-        """Remove a push subscription."""
+    async def unsubscribe(self, endpoint: str, username: str | None = None) -> bool:
+        """Remove a push subscription. Scoped to the requesting user to prevent cross-user unsubscribe."""
         try:
-            from sqlalchemy import delete
+            from sqlalchemy import and_, delete
 
             from src.db.models import PushSubscription
 
             async with self.db.db_manager.async_session_factory() as session:
-                await session.execute(delete(PushSubscription).where(PushSubscription.endpoint == endpoint))
+                conditions = [PushSubscription.endpoint == endpoint]
+                if username:
+                    conditions.append(PushSubscription.username == username)
+                await session.execute(delete(PushSubscription).where(and_(*conditions)))
                 await session.commit()
-                logger.info(f"Push subscription removed: {endpoint[:50]}...")
+                logger.info(f"Push subscription removed for {username or 'anonymous'}: {endpoint[:50]}...")
                 return True
 
         except Exception as e:
