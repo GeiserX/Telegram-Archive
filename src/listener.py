@@ -712,36 +712,52 @@ class TelegramListener:
                 for msg_id in event.deleted_ids:
                     self.stats["deletions_received"] += 1
 
-                    # If chat_id is unknown, try to look it up from the database
+                    # If chat_id is unknown, resolve it from DB first
+                    # Message IDs are only unique within a chat — skip ambiguous cases
                     effective_chat_id = chat_id
                     if effective_chat_id is None:
                         try:
-                            effective_chat_id = await self.db.get_chat_id_for_message(msg_id)
-                            if effective_chat_id:
-                                logger.debug(f"🔍 Resolved chat_id={effective_chat_id} for msg={msg_id} from database")
+                            resolved = await self.db.resolve_message_chat_id(msg_id)
+                            if resolved is None:
+                                logger.debug(f"⚠️ Deletion skipped (not found or ambiguous): msg={msg_id}")
+                                continue
+
+                            if not self._should_process_chat(resolved):
+                                continue
+
+                            # Apply rate limit like the normal path
+                            allowed, reason = self._protector.check_operation(resolved, "deletion")
+                            if not allowed:
+                                self.stats["operations_discarded"] += 1
+                                continue
+
+                            await self.db.delete_message(resolved, msg_id)
+                            self.stats["deletions_applied"] += 1
+                            logger.debug(f"🗑️ Deletion applied (resolved chat): chat={resolved} msg={msg_id}")
+
+                            # Notify viewer
+                            await self._notify_update("delete", {"chat_id": resolved, "message_id": msg_id})
                         except Exception as e:
-                            logger.debug(f"Could not look up chat for msg {msg_id}: {e}")
+                            logger.debug(f"Could not delete msg {msg_id}: {e}")
+                        continue
 
-                    if effective_chat_id is not None:
-                        if not self._should_process_chat(effective_chat_id):
-                            continue
+                    if not self._should_process_chat(effective_chat_id):
+                        continue
 
-                        # Check rate limit before applying
-                        allowed, reason = self._protector.check_operation(effective_chat_id, "deletion")
+                    # Check rate limit before applying
+                    allowed, reason = self._protector.check_operation(effective_chat_id, "deletion")
 
-                        if not allowed:
-                            self.stats["operations_discarded"] += 1
-                            continue
+                    if not allowed:
+                        self.stats["operations_discarded"] += 1
+                        continue
 
-                        # Apply the deletion immediately
-                        await self.db.delete_message(effective_chat_id, msg_id)
-                        self.stats["deletions_applied"] += 1
-                        logger.debug(f"🗑️ Deletion applied: chat={effective_chat_id} msg={msg_id}")
+                    # Apply the deletion immediately
+                    await self.db.delete_message(effective_chat_id, msg_id)
+                    self.stats["deletions_applied"] += 1
+                    logger.debug(f"🗑️ Deletion applied: chat={effective_chat_id} msg={msg_id}")
 
-                        # Notify viewer of the deletion
-                        await self._notify_update("delete", {"chat_id": effective_chat_id, "message_id": msg_id})
-                    else:
-                        logger.debug(f"⚠️ Deletion skipped (unknown chat): msg={msg_id}")
+                    # Notify viewer of the deletion
+                    await self._notify_update("delete", {"chat_id": effective_chat_id, "message_id": msg_id})
 
             except Exception as e:
                 self.stats["errors"] += 1

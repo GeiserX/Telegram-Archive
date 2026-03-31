@@ -3266,7 +3266,19 @@
                     if (!text) return ''
                     const escaped = escapeHtml(text)
                     const urlRegex = /(https?:\/\/[^\s<]+)/g
-                    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+                    return escaped.replace(urlRegex, (match) => {
+                        // Build a safe href: decode HTML entities back to raw URL,
+                        // then percent-encode characters that break href="..." context.
+                        // Note: escapeHtml (textContent/innerHTML) does NOT encode " or '
+                        // so we must handle raw quotes directly, not just entities.
+                        const href = match
+                            .replace(/&amp;/g, '&')
+                            .replace(/&lt;/g, '%3C')
+                            .replace(/&gt;/g, '%3E')
+                            .replace(/"/g, '%22')
+                            .replace(/'/g, '%27')
+                        return `<a href="${href}" target="_blank" rel="noopener noreferrer">${match}</a>`
+                    })
                 }
 
                 const scrollToMessage = (msgId) => {
