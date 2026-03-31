@@ -534,6 +534,16 @@ DETAIL: Key (id)=(XXXX) already exists
 - Edit history not tracked (only latest version stored; enable `ENABLE_LISTENER=true` to track edits in real-time)
 - Deleted messages before first backup cannot be recovered
 
+## More Telegram Tools
+
+| Project | Description |
+|---------|-------------|
+| [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) | Manage Paperless-NGX documents through Telegram |
+| [telegram-delay-channel-cloner](https://github.com/GeiserX/telegram-delay-channel-cloner) | Relay messages between channels with configurable delay |
+| [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram |
+| [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync Jellyfin access with Telegram channel membership |
+
+
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE) for details.
