@@ -35,6 +35,7 @@ class NotificationType(str, Enum):
     EDIT = "edit"
     DELETE = "delete"
     CHAT_UPDATE = "chat_update"
+    PIN = "pin"
 
 
 class RealtimeNotifier:
