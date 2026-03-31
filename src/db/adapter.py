@@ -826,7 +826,7 @@ class DatabaseAdapter:
     async def _reset_reactions_sequence(self) -> None:
         """Reset the reactions table sequence to max(id) + 1."""
         async with self.db_manager.async_session_factory() as session:
-            if self.db_manager.db_type == "postgresql":
+            if not self.db_manager._is_sqlite:
                 await session.execute(
                     text("SELECT setval('reactions_id_seq', COALESCE((SELECT MAX(id) FROM reactions), 0) + 1, false)")
                 )
@@ -1665,14 +1665,17 @@ class DatabaseAdapter:
 
             await session.commit()
 
-    async def get_all_folders(self) -> list[dict[str, Any]]:
-        """Get all chat folders with their chat counts."""
+    async def get_all_folders(self, allowed_chat_ids: set[int] | None = None) -> list[dict[str, Any]]:
+        """Get all chat folders with their chat counts.
+
+        Args:
+            allowed_chat_ids: If set, only count chats the user can access.
+        """
         async with self.db_manager.async_session_factory() as session:
-            count_subq = (
-                select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
-                .group_by(ChatFolderMember.folder_id)
-                .subquery()
-            )
+            count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
+            if allowed_chat_ids is not None:
+                count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids))
+            count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()
 
             stmt = (
                 select(ChatFolder, count_subq.c.chat_count)

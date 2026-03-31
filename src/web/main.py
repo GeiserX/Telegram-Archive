@@ -1277,7 +1277,8 @@ async def get_folders(user: UserContext = Depends(require_auth)):
     v6.2.0: Returns user-created Telegram folders (dialog filters).
     """
     try:
-        folders = await db.get_all_folders()
+        user_chat_ids = get_user_chat_ids(user)
+        folders = await db.get_all_folders(allowed_chat_ids=user_chat_ids)
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {e}", exc_info=True)
@@ -1333,6 +1334,17 @@ async def get_stats(user: UserContext = Depends(require_auth)):
     """Get cached backup statistics (fast, calculated daily)."""
     try:
         stats = await db.get_cached_statistics()
+
+        # Filter per-chat stats to only chats the user can access
+        user_chat_ids = get_user_chat_ids(user)
+        per_chat = stats.get("per_chat_message_counts", {})
+        if user_chat_ids is not None and per_chat:
+            stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if k in user_chat_ids}
+            # Recompute aggregates from visible chats only
+            visible = stats["per_chat_message_counts"]
+            stats["chats"] = len(visible)
+            stats["messages"] = sum(visible.values())
+
         stats["timezone"] = config.viewer_timezone
         stats["stats_calculation_hour"] = config.stats_calculation_hour
         stats["show_stats"] = config.show_stats  # Whether to show stats UI
@@ -1502,14 +1514,10 @@ async def internal_push(request: Request):
     """
     client_host = request.client.host if request.client else None
 
-    allowed = False
-    if client_host and (
-        client_host in ("127.0.0.1", "localhost", "::1") or client_host.startswith(("172.", "10.", "192.168."))
-    ):
-        allowed = True
-
-    if not allowed:
-        logger.warning(f"Rejected /internal/push from non-private IP: {client_host}")
+    # Only accept from loopback — private LAN/Docker ranges are spoofable
+    # behind reverse proxies. SQLite push is always same-container (localhost).
+    if not client_host or client_host not in ("127.0.0.1", "::1"):
+        logger.warning(f"Rejected /internal/push from non-loopback IP: {client_host}")
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
