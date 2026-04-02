@@ -534,15 +534,20 @@ DETAIL: Key (id)=(XXXX) already exists
 - Edit history not tracked (only latest version stored; enable `ENABLE_LISTENER=true` to track edits in real-time)
 - Deleted messages before first backup cannot be recovered
 
-## More Telegram Tools
+## Ecosystem
 
-| Project | Description |
-|---------|-------------|
-| [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) | Manage Paperless-NGX documents through Telegram |
-| [telegram-delay-channel-cloner](https://github.com/GeiserX/telegram-delay-channel-cloner) | Relay messages between channels with configurable delay |
-| [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram |
-| [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync Jellyfin access with Telegram channel membership |
+| Project | Type | Description |
+|---------|------|-------------|
+| [telegram-archive-mcp](https://github.com/GeiserX/telegram-archive-mcp) | MCP Server | Query archived messages from AI assistants |
+| [n8n-nodes-telegram-archive](https://github.com/GeiserX/n8n-nodes-telegram-archive) | n8n Node | Workflow automation for Telegram Archive |
 
+## Other Telegram Projects by GeiserX
+
+- [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) — Manage Paperless-NGX documents through Telegram
+- [AskePub](https://github.com/GeiserX/AskePub) — Telegram bot for ePub annotation with GPT-4
+- [telegram-delay-channel-cloner](https://github.com/GeiserX/telegram-delay-channel-cloner) — Relay messages between channels with configurable delay
+- [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) — Sync Jellyfin access with Telegram channel membership
+- [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) — Automated music discovery and download via Telegram
 
 ## License
 
