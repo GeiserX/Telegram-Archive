@@ -1,0 +1,64 @@
+language: "en-US"
+tone_instructions: "Be direct and concise. No fluff."
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  collapse_walkthrough: true
+  poem: false
+  sequence_diagrams: false
+  suggested_reviewers: false
+  auto_review:
+    enabled: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT REVIEW"
+  path_filters:
+    - "!dist/**"
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+    - "!alembic/versions/**"
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Check for proper async/await usage and connection cleanup.
+        Verify Telegram API calls handle rate limits and session expiry.
+        Ensure no PII or message content is logged.
+    - path: "src/database/**"
+      instructions: |
+        Verify SQL queries are parameterized (no string interpolation).
+        Check for proper connection pooling and transaction handling.
+    - path: "Dockerfile*"
+      instructions: |
+        Verify multi-stage builds are used. Check for non-root USER.
+        Ensure base image tags are pinned, not :latest.
+    - path: "docker-compose*.yml"
+      instructions: |
+        Check that sensitive values use environment variables, not hardcoded.
+        Verify volume mounts use bind mounts for Unraid compatibility.
+  tools:
+    gitleaks:
+      enabled: true
+    hadolint:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: "local"
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "CLAUDE.md"
