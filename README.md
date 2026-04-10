@@ -549,6 +549,11 @@ DETAIL: Key (id)=(XXXX) already exists
 - [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) — Sync Jellyfin access with Telegram channel membership
 - [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) — Automated music discovery and download via Telegram
 
+## Supporters
+
+> This project is made possible by generous supporters:
+> **Calvin**
+
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE) for details.
