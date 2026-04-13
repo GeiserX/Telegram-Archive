@@ -54,7 +54,9 @@ async def test_connection_passes_proxy_kwargs():
     config.session_path = "/tmp/test-session"
     config.api_id = 12345
     config.api_hash = "hash"
-    config.get_telegram_client_kwargs.return_value = {"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}
+    config.get_telegram_client_kwargs.return_value = {
+        "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
+    }
 
     client = AsyncMock()
     client.session = SimpleNamespace(_conn=None)
@@ -114,7 +116,9 @@ async def test_backup_connect_passes_proxy_kwargs():
     config.api_id = 12345
     config.api_hash = "hash"
     config.phone = "+123456789"
-    config.get_telegram_client_kwargs.return_value = {"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}
+    config.get_telegram_client_kwargs.return_value = {
+        "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
+    }
 
     _, _, TelegramBackup = _get_telegram_classes()
 
@@ -198,7 +202,9 @@ async def test_setup_authentication_passes_proxy_kwargs():
     config.api_id = 12345
     config.api_hash = "hash"
     config.phone = "+123456789"
-    config.get_telegram_client_kwargs.return_value = {"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}
+    config.get_telegram_client_kwargs.return_value = {
+        "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
+    }
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True
@@ -236,7 +242,10 @@ async def test_auth_noninteractive_passes_proxy_kwargs():
     with (
         patch.dict(os.environ, env, clear=True),
         patch.object(auth_noninteractive.sys, "argv", ["auth_noninteractive.py", "send"]),
-        patch("scripts.auth_noninteractive.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}),
+        patch(
+            "scripts.auth_noninteractive.build_telegram_client_kwargs",
+            return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}},
+        ),
         patch("scripts.auth_noninteractive.TelegramClient", return_value=client) as client_cls,
     ):
         await auth_noninteractive.main()
@@ -262,7 +271,10 @@ async def test_restore_chat_client_passes_proxy_kwargs():
 
     with (
         patch.dict(os.environ, env, clear=True),
-        patch("scripts.restore_chat.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}),
+        patch(
+            "scripts.restore_chat.build_telegram_client_kwargs",
+            return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}},
+        ),
         patch("scripts.restore_chat.TelegramClient", return_value=client) as client_cls,
     ):
         result = await restore_chat.get_telegram_client()
