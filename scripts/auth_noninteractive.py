@@ -22,6 +22,8 @@ import sys
 
 from telethon import TelegramClient
 
+from src.config import build_telegram_client_kwargs
+
 
 def _get_session_path() -> str:
     """Derive session path from environment (same logic as Config)."""
@@ -44,7 +46,7 @@ async def main():
     phone = os.environ["TELEGRAM_PHONE"]
     session_path = _get_session_path()
 
-    client = TelegramClient(session_path, api_id, api_hash)
+    client = TelegramClient(session_path, api_id, api_hash, **build_telegram_client_kwargs())
     await client.connect()
 
     if await client.is_user_authorized():

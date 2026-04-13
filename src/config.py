@@ -3,6 +3,7 @@ Configuration management for Telegram Backup Automation.
 Loads and validates settings from environment variables.
 """
 
+import importlib.util
 import logging
 import os
 
@@ -12,6 +13,84 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_bool(value: str | None, default: bool = False) -> bool:
+    """Parse a boolean-like environment variable value."""
+    if value is None or value == "":
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
+def build_telegram_proxy_from_env() -> dict | None:
+    """Build Telethon proxy configuration from environment variables."""
+    proxy_type = os.getenv("TELEGRAM_PROXY_TYPE", "").strip().lower()
+    proxy_addr = os.getenv("TELEGRAM_PROXY_ADDR", "").strip()
+    proxy_port = os.getenv("TELEGRAM_PROXY_PORT", "").strip()
+    proxy_username = os.getenv("TELEGRAM_PROXY_USERNAME", "").strip()
+    proxy_password = os.getenv("TELEGRAM_PROXY_PASSWORD", "").strip()
+    proxy_rdns = os.getenv("TELEGRAM_PROXY_RDNS")
+
+    has_proxy_config = any([proxy_type, proxy_addr, proxy_port, proxy_username, proxy_password, proxy_rdns])
+    if not has_proxy_config:
+        return None
+
+    missing_fields = []
+    if not proxy_type:
+        missing_fields.append("TELEGRAM_PROXY_TYPE")
+    if not proxy_addr:
+        missing_fields.append("TELEGRAM_PROXY_ADDR")
+    if not proxy_port:
+        missing_fields.append("TELEGRAM_PROXY_PORT")
+    if missing_fields:
+        missing = ", ".join(missing_fields)
+        raise ValueError(f"Telegram proxy configuration is incomplete. Missing required settings: {missing}")
+
+    if proxy_type != "socks5":
+        raise ValueError("TELEGRAM_PROXY_TYPE must be 'socks5'")
+
+    try:
+        parsed_port = int(proxy_port)
+    except ValueError as e:
+        raise ValueError(f"TELEGRAM_PROXY_PORT must be a valid integer: {e}") from e
+
+    try:
+        parsed_rdns = _parse_bool(proxy_rdns, default=True)
+    except ValueError as e:
+        raise ValueError(f"TELEGRAM_PROXY_RDNS must be a boolean value: {e}") from e
+
+    if importlib.util.find_spec("python_socks") is None:
+        raise ValueError(
+            "Telegram proxy support requires python-socks[asyncio]. Install it before using TELEGRAM_PROXY_* settings."
+        )
+
+    proxy = {
+        "proxy_type": proxy_type,
+        "addr": proxy_addr,
+        "port": parsed_port,
+        "rdns": parsed_rdns,
+    }
+    if proxy_username:
+        proxy["username"] = proxy_username
+    if proxy_password:
+        proxy["password"] = proxy_password
+
+    return proxy
+
+
+def build_telegram_client_kwargs() -> dict:
+    """Build common Telethon client keyword arguments from environment configuration."""
+    proxy = build_telegram_proxy_from_env()
+    if proxy is None:
+        return {}
+    return {"proxy": proxy}
 
 
 class Config:
@@ -105,6 +184,7 @@ class Config:
 
         # Session configuration
         self.session_name = os.getenv("SESSION_NAME", "telegram_backup")
+        self.telegram_proxy = build_telegram_proxy_from_env()
 
         # Logging
         log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -281,6 +361,13 @@ class Config:
         if self.skip_media_chat_ids:
             cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
             logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
+        if self.telegram_proxy:
+            logger.info(
+                "Telegram proxy enabled: socks5://%s:%s (rdns=%s)",
+                self.telegram_proxy["addr"],
+                self.telegram_proxy["port"],
+                self.telegram_proxy["rdns"],
+            )
 
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""
@@ -460,6 +547,12 @@ class Config:
                 "Missing required Telegram credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE). "
                 "Please set them in your .env file."
             )
+
+    def get_telegram_client_kwargs(self) -> dict:
+        """Get shared TelegramClient keyword arguments."""
+        if self.telegram_proxy is None:
+            return {}
+        return {"proxy": dict(self.telegram_proxy)}
 
 
 def setup_logging(config: Config):

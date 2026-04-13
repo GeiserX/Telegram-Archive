@@ -294,7 +294,7 @@ class TelegramListener:
         logger.info("=" * 70)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramListener:
+    async def create(cls, config: Config, client: TelegramClient | None = None) -> "TelegramListener":
         """
         Factory method to create TelegramListener with initialized database.
 
@@ -323,7 +323,12 @@ class TelegramListener:
             logger.info(f"Connected as {me.first_name} ({me.phone})")
         else:
             # Create new client
-            self.client = TelegramClient(self.config.session_path, self.config.api_id, self.config.api_hash)
+            self.client = TelegramClient(
+                self.config.session_path,
+                self.config.api_id,
+                self.config.api_hash,
+                **self.config.get_telegram_client_kwargs(),
+            )
             self._owns_client = True
 
             # Connect and authenticate
