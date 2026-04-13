@@ -132,7 +132,12 @@ class TelegramConnection:
         if self._session_has_auth(session_file):
             shutil.copy2(session_file, snapshot_file)
 
-        self._client = TelegramClient(self.config.session_path, self.config.api_id, self.config.api_hash)
+        self._client = TelegramClient(
+            self.config.session_path,
+            self.config.api_id,
+            self.config.api_hash,
+            **self.config.get_telegram_client_kwargs(),
+        )
 
         # Enable WAL mode for session DB to handle concurrent access
         self._enable_wal_mode()
@@ -232,7 +237,7 @@ class TelegramConnection:
 
         return self._client
 
-    async def __aenter__(self) -> TelegramConnection:
+    async def __aenter__(self) -> "TelegramConnection":
         """Async context manager entry."""
         await self.connect()
         return self

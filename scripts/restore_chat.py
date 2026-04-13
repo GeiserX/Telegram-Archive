@@ -57,6 +57,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SlowModeWaitError
 
+from src.config import build_telegram_client_kwargs
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,7 @@ async def get_telegram_client():
         session_dir = os.getenv("SESSION_DIR", "/data/session")
         session_path = os.path.join(session_dir, session_name)
 
-    client = TelegramClient(session_path, int(api_id), api_hash)
+    client = TelegramClient(session_path, int(api_id), api_hash, **build_telegram_client_kwargs())
     await client.connect()
 
     if not await client.is_user_authorized():
