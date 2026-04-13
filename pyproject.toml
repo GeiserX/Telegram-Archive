@@ -45,7 +45,7 @@ dependencies = [
 
 [project.optional-dependencies]
 viewer = [
-    "Pillow>=10.0.0",  # v7.2.0: thumbnail generation
+    "Pillow>=10.4.0",  # v7.2.0: thumbnail generation
 ]
 dev = [
     "pytest>=7.0",
