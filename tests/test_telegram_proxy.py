@@ -49,6 +49,29 @@ async def test_connection_passes_proxy_kwargs():
 
 
 @pytest.mark.asyncio
+async def test_connection_omits_proxy_when_not_configured():
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.get_telegram_client_kwargs.return_value = {}
+
+    client = AsyncMock()
+    client.session = SimpleNamespace(_conn=None)
+    client.is_user_authorized.return_value = True
+    client.get_me.return_value = SimpleNamespace(first_name="Test", phone="123")
+
+    with patch("src.connection.TelegramClient", return_value=client) as client_cls:
+        with patch.object(TelegramConnection, "_session_has_auth", return_value=False):
+            with patch("src.connection.shutil.copy2"):
+                connection = TelegramConnection(config)
+                await connection.connect()
+
+    client_cls.assert_called_once_with("/tmp/test-session", 12345, "hash")
+
+
+@pytest.mark.asyncio
 async def test_backup_connect_passes_proxy_kwargs():
     config = MagicMock()
     config.validate_credentials = MagicMock()
