@@ -122,6 +122,16 @@ TELEGRAM_API_HASH=abcdef123456    # Your API Hash
 TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
 ```
 
+**Optional: enable a SOCKS5 proxy for all Telegram connections**
+```bash
+TELEGRAM_PROXY_TYPE=socks5
+TELEGRAM_PROXY_ADDR=127.0.0.1
+TELEGRAM_PROXY_PORT=1080
+TELEGRAM_PROXY_USERNAME=
+TELEGRAM_PROXY_PASSWORD=
+TELEGRAM_PROXY_RDNS=false
+```
+
 ### 3. Authenticate with Telegram
 
 **Option A: Using the provided scripts (recommended for fresh installs)**
@@ -226,6 +236,12 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TELEGRAM_API_ID` | *required* | B | API ID from [my.telegram.org](https://my.telegram.org/apps) |
 | `TELEGRAM_API_HASH` | *required* | B | API Hash from [my.telegram.org](https://my.telegram.org/apps) |
 | `TELEGRAM_PHONE` | *required* | B | Phone number with country code (e.g., `+1234567890`) |
+| `TELEGRAM_PROXY_TYPE` | - | B | Optional proxy type for all Telegram clients. Currently supports `socks5` |
+| `TELEGRAM_PROXY_ADDR` | - | B | SOCKS5 proxy host or IP address |
+| `TELEGRAM_PROXY_PORT` | - | B | SOCKS5 proxy port |
+| `TELEGRAM_PROXY_USERNAME` | - | B | Optional SOCKS5 username |
+| `TELEGRAM_PROXY_PASSWORD` | - | B | Optional SOCKS5 password |
+| `TELEGRAM_PROXY_RDNS` | `false` | B | Use remote DNS resolution through the SOCKS5 proxy |
 | **Backup Schedule & Storage** | | | |
 | `SCHEDULE` | `0 */6 * * *` | B | Cron expression for backup frequency |
 | `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
