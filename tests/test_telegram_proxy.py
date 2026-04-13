@@ -1,3 +1,4 @@
+import importlib
 import os
 import sys
 import types
@@ -9,15 +10,41 @@ import pytest
 from scripts import auth_noninteractive, restore_chat
 from src.setup_auth import setup_authentication
 
-fake_db_module = types.ModuleType("src.db")
-fake_db_module.DatabaseAdapter = object
-fake_db_module.create_adapter = AsyncMock()
-fake_db_module.get_db_manager = AsyncMock()
-sys.modules.setdefault("src.db", fake_db_module)
 
-from src.connection import TelegramConnection
-from src.listener import TelegramListener
-from src.telegram_backup import TelegramBackup
+@pytest.fixture(autouse=True)
+def _fake_db(monkeypatch):
+    """Scope the fake src.db module to each test to avoid cross-test leakage."""
+    fake_db_module = types.ModuleType("src.db")
+    fake_db_module.DatabaseAdapter = object
+    fake_db_module.create_adapter = AsyncMock()
+    fake_db_module.get_db_manager = AsyncMock()
+    monkeypatch.setitem(sys.modules, "src.db", fake_db_module)
+
+    # Re-import so the modules pick up the faked dependency
+    import src.connection
+    import src.listener
+    import src.telegram_backup
+
+    importlib.reload(src.connection)
+    importlib.reload(src.listener)
+    importlib.reload(src.telegram_backup)
+
+    yield
+
+    # Reload again to restore real module state for other test files
+    if "src.db" in sys.modules:
+        importlib.reload(src.connection)
+        importlib.reload(src.listener)
+        importlib.reload(src.telegram_backup)
+
+
+def _get_telegram_classes():
+    """Import after fixture has set up the fake db module."""
+    from src.connection import TelegramConnection
+    from src.listener import TelegramListener
+    from src.telegram_backup import TelegramBackup
+
+    return TelegramConnection, TelegramListener, TelegramBackup
 
 
 @pytest.mark.asyncio
@@ -33,6 +60,8 @@ async def test_connection_passes_proxy_kwargs():
     client.session = SimpleNamespace(_conn=None)
     client.is_user_authorized.return_value = True
     client.get_me.return_value = SimpleNamespace(first_name="Test", phone="123")
+
+    TelegramConnection, _, _ = _get_telegram_classes()
 
     with patch("src.connection.TelegramClient", return_value=client) as client_cls:
         with patch.object(TelegramConnection, "_session_has_auth", return_value=False):
@@ -62,6 +91,8 @@ async def test_connection_omits_proxy_when_not_configured():
     client.is_user_authorized.return_value = True
     client.get_me.return_value = SimpleNamespace(first_name="Test", phone="123")
 
+    TelegramConnection, _, _ = _get_telegram_classes()
+
     with patch("src.connection.TelegramClient", return_value=client) as client_cls:
         with patch.object(TelegramConnection, "_session_has_auth", return_value=False):
             with patch("src.connection.shutil.copy2"):
@@ -80,6 +111,8 @@ async def test_backup_connect_passes_proxy_kwargs():
     config.api_hash = "hash"
     config.phone = "+123456789"
     config.get_telegram_client_kwargs.return_value = {"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}
+
+    _, _, TelegramBackup = _get_telegram_classes()
 
     db = AsyncMock()
     backup = TelegramBackup(config, db)
@@ -125,6 +158,8 @@ async def test_listener_connect_passes_proxy_kwargs():
     config.get_telegram_client_kwargs.return_value = {
         "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
     }
+
+    _, TelegramListener, _ = _get_telegram_classes()
 
     db = AsyncMock()
     db.get_all_chats.return_value = []

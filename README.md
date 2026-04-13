@@ -122,7 +122,7 @@ TELEGRAM_API_HASH=abcdef123456    # Your API Hash
 TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
 ```
 
-**Optional: enable a SOCKS5 proxy for all Telegram connections**
+**Optional: enable a SOCKS5 proxy for all Telegram connections** (useful in regions where Telegram is blocked or behind corporate firewalls)
 ```bash
 TELEGRAM_PROXY_TYPE=socks5
 TELEGRAM_PROXY_ADDR=127.0.0.1

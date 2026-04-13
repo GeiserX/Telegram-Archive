@@ -490,8 +490,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
 
         self.assertIn("TELEGRAM_PROXY_RDNS must be a boolean value", str(ctx.exception))
 
-    def test_proxy_rejects_partial_auth_credentials(self):
-        """Proxy auth requires username and password together."""
+    def test_proxy_rejects_password_without_username(self):
+        """Proxy auth requires username when password is set."""
         env_vars = {
             "CHAT_TYPES": "private",
             "BACKUP_PATH": self.temp_dir,
@@ -499,6 +499,22 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
             "TELEGRAM_PROXY_PORT": "1080",
             "TELEGRAM_PROXY_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+
+        self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
+
+    def test_proxy_rejects_username_without_password(self):
+        """Proxy auth requires password when username is set."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_USERNAME": "alice",
         }
         with patch.dict(os.environ, env_vars, clear=True):
             with self.assertRaises(ValueError) as ctx:

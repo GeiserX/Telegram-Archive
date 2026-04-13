@@ -92,7 +92,7 @@ def build_telegram_client_kwargs() -> dict:
     proxy = build_telegram_proxy_from_env()
     if proxy is None:
         return {}
-    return {"proxy": proxy}
+    return {"proxy": dict(proxy)}
 
 
 class Config:
