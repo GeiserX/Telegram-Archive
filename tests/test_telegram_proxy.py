@@ -63,11 +63,13 @@ async def test_connection_passes_proxy_kwargs():
 
     TelegramConnection, _, _ = _get_telegram_classes()
 
-    with patch("src.connection.TelegramClient", return_value=client) as client_cls:
-        with patch.object(TelegramConnection, "_session_has_auth", return_value=False):
-            with patch("src.connection.shutil.copy2"):
-                connection = TelegramConnection(config)
-                await connection.connect()
+    with (
+        patch("src.connection.TelegramClient", return_value=client) as client_cls,
+        patch.object(TelegramConnection, "_session_has_auth", return_value=False),
+        patch("src.connection.shutil.copy2"),
+    ):
+        connection = TelegramConnection(config)
+        await connection.connect()
 
     client_cls.assert_called_once_with(
         "/tmp/test-session",
@@ -93,11 +95,13 @@ async def test_connection_omits_proxy_when_not_configured():
 
     TelegramConnection, _, _ = _get_telegram_classes()
 
-    with patch("src.connection.TelegramClient", return_value=client) as client_cls:
-        with patch.object(TelegramConnection, "_session_has_auth", return_value=False):
-            with patch("src.connection.shutil.copy2"):
-                connection = TelegramConnection(config)
-                await connection.connect()
+    with (
+        patch("src.connection.TelegramClient", return_value=client) as client_cls,
+        patch.object(TelegramConnection, "_session_has_auth", return_value=False),
+        patch("src.connection.shutil.copy2"),
+    ):
+        connection = TelegramConnection(config)
+        await connection.connect()
 
     client_cls.assert_called_once_with("/tmp/test-session", 12345, "hash")
 
@@ -170,11 +174,13 @@ async def test_listener_connect_passes_proxy_kwargs():
     client.get_me.return_value = SimpleNamespace(first_name="Test", phone="123")
 
     notifier = AsyncMock()
-    with patch("src.listener.TelegramClient", return_value=client) as client_cls:
-        with patch("src.db.get_db_manager", AsyncMock(return_value=object())):
-            with patch("src.listener.RealtimeNotifier", return_value=notifier):
-                with patch.object(TelegramListener, "_register_handlers"):
-                    await listener.connect()
+    with (
+        patch("src.listener.TelegramClient", return_value=client) as client_cls,
+        patch("src.db.get_db_manager", AsyncMock(return_value=object())),
+        patch("src.listener.RealtimeNotifier", return_value=notifier),
+        patch.object(TelegramListener, "_register_handlers"),
+    ):
+        await listener.connect()
 
     client_cls.assert_called_once_with(
         "/tmp/test-session",
@@ -198,10 +204,12 @@ async def test_setup_authentication_passes_proxy_kwargs():
     client.is_user_authorized.return_value = True
     client.get_me.return_value = SimpleNamespace(first_name="Test", last_name=None, username="tester", phone="123")
 
-    with patch("src.config.Config", return_value=config):
-        with patch("src.config.setup_logging"):
-            with patch("src.setup_auth.TelegramClient", return_value=client) as client_cls:
-                result = await setup_authentication()
+    with (
+        patch("src.config.Config", return_value=config),
+        patch("src.config.setup_logging"),
+        patch("src.setup_auth.TelegramClient", return_value=client) as client_cls,
+    ):
+        result = await setup_authentication()
 
     assert result is True
     client_cls.assert_called_once_with(
@@ -225,11 +233,13 @@ async def test_auth_noninteractive_passes_proxy_kwargs():
         "BACKUP_PATH": "/tmp/backups",
     }
 
-    with patch.dict(os.environ, env, clear=True):
-        with patch.object(auth_noninteractive.sys, "argv", ["auth_noninteractive.py", "send"]):
-            with patch("scripts.auth_noninteractive.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}):
-                with patch("scripts.auth_noninteractive.TelegramClient", return_value=client) as client_cls:
-                    await auth_noninteractive.main()
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch.object(auth_noninteractive.sys, "argv", ["auth_noninteractive.py", "send"]),
+        patch("scripts.auth_noninteractive.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}),
+        patch("scripts.auth_noninteractive.TelegramClient", return_value=client) as client_cls,
+    ):
+        await auth_noninteractive.main()
 
     client_cls.assert_called_once_with(
         "/tmp/session/telegram_backup",
@@ -250,10 +260,12 @@ async def test_restore_chat_client_passes_proxy_kwargs():
         "SESSION_PATH": "/tmp/custom-session",
     }
 
-    with patch.dict(os.environ, env, clear=True):
-        with patch("scripts.restore_chat.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}):
-            with patch("scripts.restore_chat.TelegramClient", return_value=client) as client_cls:
-                result = await restore_chat.get_telegram_client()
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch("scripts.restore_chat.build_telegram_client_kwargs", return_value={"proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}}),
+        patch("scripts.restore_chat.TelegramClient", return_value=client) as client_cls,
+    ):
+        result = await restore_chat.get_telegram_client()
 
     assert result is client
     client_cls.assert_called_once_with(

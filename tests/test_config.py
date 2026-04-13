@@ -393,9 +393,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "BACKUP_PATH": self.temp_dir,
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                Config()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
 
         self.assertIn("Telegram proxy configuration is incomplete", str(ctx.exception))
 
@@ -408,9 +407,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
             "TELEGRAM_PROXY_PORT": "bad-port",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                build_telegram_proxy_from_env()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
 
         self.assertIn("TELEGRAM_PROXY_PORT must be a valid integer", str(ctx.exception))
 
@@ -423,9 +421,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
             "TELEGRAM_PROXY_PORT": "0",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                build_telegram_proxy_from_env()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
 
         self.assertIn("TELEGRAM_PROXY_PORT must be between 1 and 65535", str(ctx.exception))
 
@@ -438,9 +435,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
             "TELEGRAM_PROXY_PORT": "65536",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                build_telegram_proxy_from_env()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
 
         self.assertIn("TELEGRAM_PROXY_PORT must be between 1 and 65535", str(ctx.exception))
 
@@ -468,9 +464,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_ADDR": "127.0.0.1",
             "TELEGRAM_PROXY_PORT": "1080",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                build_telegram_proxy_from_env()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
 
         self.assertIn("TELEGRAM_PROXY_TYPE must be 'socks5'", str(ctx.exception))
 
@@ -484,9 +479,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_PORT": "1080",
             "TELEGRAM_PROXY_RDNS": "maybe",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                build_telegram_proxy_from_env()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            build_telegram_proxy_from_env()
 
         self.assertIn("TELEGRAM_PROXY_RDNS must be a boolean value", str(ctx.exception))
 
@@ -500,9 +494,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_PORT": "1080",
             "TELEGRAM_PROXY_PASSWORD": "secret",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                Config()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
 
         self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
 
@@ -516,9 +509,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
             "TELEGRAM_PROXY_PORT": "1080",
             "TELEGRAM_PROXY_USERNAME": "alice",
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                Config()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
 
         self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
 
