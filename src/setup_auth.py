@@ -51,7 +51,12 @@ async def setup_authentication():
         logger.info("=" * 60)
 
         # Create Telegram client
-        client = TelegramClient(config.session_path, config.api_id, config.api_hash)
+        client = TelegramClient(
+            config.session_path,
+            config.api_id,
+            config.api_hash,
+            **config.get_telegram_client_kwargs(),
+        )
 
         # Connect and authenticate
         logger.info("Connecting to Telegram...")

@@ -71,7 +71,7 @@ class TelegramBackup:
         return get_peer_id(entity)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramBackup:
+    async def create(cls, config: Config, client: TelegramClient | None = None) -> "TelegramBackup":
         """
         Factory method to create TelegramBackup with initialized database.
 
@@ -100,7 +100,12 @@ class TelegramBackup:
             return
 
         # Create new client
-        self.client = TelegramClient(self.config.session_path, self.config.api_id, self.config.api_hash)
+        self.client = TelegramClient(
+            self.config.session_path,
+            self.config.api_id,
+            self.config.api_hash,
+            **self.config.get_telegram_client_kwargs(),
+        )
         self._owns_client = True
 
         # Fix for database locked errors: Enable WAL mode for session DB

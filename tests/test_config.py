@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.config import Config
+from src.config import Config, build_telegram_client_kwargs, build_telegram_proxy_from_env
 
 
 class TestConfig(unittest.TestCase):
@@ -338,6 +338,173 @@ class TestCheckpointInterval(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertEqual(config.checkpoint_interval, 1)
+
+
+class TestTelegramProxyConfig(unittest.TestCase):
+    """Test TELEGRAM_PROXY_* configuration parsing."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_proxy_defaults_to_none(self):
+        """Proxy is disabled when TELEGRAM_PROXY_* vars are absent."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertIsNone(config.telegram_proxy)
+            self.assertEqual(config.get_telegram_client_kwargs(), {})
+            self.assertEqual(build_telegram_client_kwargs(), {})
+
+    def test_proxy_parses_complete_socks5_config(self):
+        """Complete SOCKS5 env vars produce a Telethon proxy dict."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_USERNAME": "alice",
+            "TELEGRAM_PROXY_PASSWORD": "secret",
+            "TELEGRAM_PROXY_RDNS": "false",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+
+        self.assertEqual(
+            config.telegram_proxy,
+            {
+                "proxy_type": "socks5",
+                "addr": "127.0.0.1",
+                "port": 1080,
+                "username": "alice",
+                "password": "secret",
+                "rdns": False,
+            },
+        )
+        self.assertEqual(config.get_telegram_client_kwargs(), {"proxy": config.telegram_proxy})
+
+    def test_proxy_requires_required_fields(self):
+        """Partial proxy configuration should fail fast."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+
+        self.assertIn("Telegram proxy configuration is incomplete", str(ctx.exception))
+
+    def test_proxy_rejects_invalid_port(self):
+        """Proxy port must be numeric."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "bad-port",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                build_telegram_proxy_from_env()
+
+        self.assertIn("TELEGRAM_PROXY_PORT must be a valid integer", str(ctx.exception))
+
+    def test_proxy_rejects_port_zero(self):
+        """Proxy port 0 is outside the valid TCP range."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "0",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                build_telegram_proxy_from_env()
+
+        self.assertIn("TELEGRAM_PROXY_PORT must be between 1 and 65535", str(ctx.exception))
+
+    def test_proxy_rejects_port_above_range(self):
+        """Proxy port above 65535 should fail fast."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "65536",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                build_telegram_proxy_from_env()
+
+        self.assertIn("TELEGRAM_PROXY_PORT must be between 1 and 65535", str(ctx.exception))
+
+    def test_proxy_type_is_case_insensitive(self):
+        """SOCKS5 should work regardless of input case."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "SOCKS5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            proxy = build_telegram_proxy_from_env()
+
+        self.assertEqual(proxy["proxy_type"], "socks5")
+        self.assertFalse(proxy["rdns"])
+
+    def test_proxy_rejects_non_socks5_type(self):
+        """Only SOCKS5 is supported by this config surface."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "http",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                build_telegram_proxy_from_env()
+
+        self.assertIn("TELEGRAM_PROXY_TYPE must be 'socks5'", str(ctx.exception))
+
+    def test_proxy_rejects_invalid_rdns(self):
+        """Proxy RDNS must be a boolean-like value."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_RDNS": "maybe",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                build_telegram_proxy_from_env()
+
+        self.assertIn("TELEGRAM_PROXY_RDNS must be a boolean value", str(ctx.exception))
+
+    def test_proxy_rejects_partial_auth_credentials(self):
+        """Proxy auth requires username and password together."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_TYPE": "socks5",
+            "TELEGRAM_PROXY_ADDR": "127.0.0.1",
+            "TELEGRAM_PROXY_PORT": "1080",
+            "TELEGRAM_PROXY_PASSWORD": "secret",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+
+        self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
 
 
 if __name__ == "__main__":
