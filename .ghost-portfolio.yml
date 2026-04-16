@@ -1,0 +1,12 @@
+description: "Own your Telegram history. Automated, incremental backups with a local web viewer that feels just like the real app. Docker-ready and supports public chat sharing."
+personalNote: "It has become the de-facto standard to backup Telegram on your own server."
+dockerImage: "drumsergio/telegram-backup-automation"
+keyFeatures:
+  - "Incremental backups — only downloads new messages"
+  - "Configurable cron schedule"
+  - "Docker-ready deployment"
+  - "Web viewer with Telegram-like UI (mobile-friendly)"
+  - "Restricted viewer for sharing specific chats"
+  - "Voice/audio player built-in"
+  - "Export chat history to JSON"
+techStack: "Python, Docker, Telethon"
