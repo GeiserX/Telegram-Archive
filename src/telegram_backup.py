@@ -661,12 +661,13 @@ class TelegramBackup:
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
             # Skip messages belonging to excluded forum topics
+            topic_id = None
             if message.reply_to and getattr(message.reply_to, "forum_topic", False):
                 topic_id = getattr(message.reply_to, "reply_to_top_id", None)
                 if topic_id is None:
                     topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
-                if topic_id and self.config.should_skip_topic(chat_id, topic_id):
-                    continue
+            if self.config.should_skip_topic(chat_id, topic_id):
+                continue
 
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
@@ -751,12 +752,13 @@ class TelegramBackup:
 
         async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
             # Skip messages belonging to excluded forum topics
+            topic_id = None
             if message.reply_to and getattr(message.reply_to, "forum_topic", False):
                 topic_id = getattr(message.reply_to, "reply_to_top_id", None)
                 if topic_id is None:
                     topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
-                if topic_id and self.config.should_skip_topic(chat_id, topic_id):
-                    continue
+            if self.config.should_skip_topic(chat_id, topic_id):
+                continue
 
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)

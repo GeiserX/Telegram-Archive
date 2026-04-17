@@ -342,6 +342,15 @@ CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 
 Find a chat's ID by forwarding a message to [@userinfobot](https://t.me/userinfobot).
 
+**Topic filtering** — For forum-enabled supergroups, you can exclude specific topics without excluding the entire chat using `SKIP_TOPIC_IDS`:
+
+```bash
+# Skip topics 42 and 1337 in one chat, and topic 7 in another
+SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337,-1009876543210:7
+```
+
+> Note: The topic-creating service message (1 per topic) may still be backed up since it lacks `reply_to` metadata. This does not affect user-generated content.
+
 ### Real-time Listener
 
 The scheduled backup only captures new messages. To also track edits and deletions between backups, enable the real-time listener:

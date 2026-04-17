@@ -315,6 +315,7 @@ class TestBackupCheckpointing(unittest.TestCase):
         self.config.skip_media_chat_ids = set()
         self.config.skip_media_delete_existing = False
         self.config.sync_deletions_edits = False
+        self.config.should_skip_topic = MagicMock(return_value=False)
         self.config.media_path = os.path.join(self.temp_dir, "media")
 
         self.db = AsyncMock()
@@ -344,9 +345,13 @@ class TestBackupCheckpointing(unittest.TestCase):
         dialog.entity = MagicMock()
         return dialog
 
-    def _make_message(self, msg_id):
+    def _make_message(self, msg_id, reply_to=None):
         msg = MagicMock()
         msg.id = msg_id
+        # Explicitly set reply_to to None (non-forum message) so the
+        # topic-skip guard in _backup_dialog doesn't accidentally filter
+        # every message via MagicMock truthiness.
+        msg.reply_to = reply_to
         return msg
 
     def test_checkpoint_after_every_batch(self):
@@ -461,6 +466,151 @@ class TestBackupCheckpointing(unittest.TestCase):
         backup.db.insert_messages_batch.assert_awaited_once_with(batch)
         backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
         backup.db.insert_reactions.assert_awaited_once()
+
+
+class TestTopicFilteringInBackupDialog(unittest.TestCase):
+    """Test that _backup_dialog respects SKIP_TOPIC_IDS filtering."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+        self.config = MagicMock()
+        self.config.batch_size = 100
+        self.config.checkpoint_interval = 1
+        self.config.skip_media_chat_ids = set()
+        self.config.skip_media_delete_existing = False
+        self.config.sync_deletions_edits = False
+        self.config.media_path = os.path.join(self.temp_dir, "media")
+
+        self.db = AsyncMock()
+        self.db.get_last_message_id.return_value = 0
+
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.config = self.config
+        self.backup.db = self.db
+        self.backup.client = MagicMock()
+        self.backup._cleaned_media_chats = set()
+        self.backup._get_marked_id = MagicMock(return_value=-1001234567890)
+        self.backup._extract_chat_data = MagicMock(return_value={"id": -1001234567890})
+        self.backup._ensure_profile_photo = AsyncMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _make_dialog(self):
+        dialog = MagicMock()
+        dialog.entity = MagicMock()
+        return dialog
+
+    def _make_forum_message(self, msg_id, topic_id):
+        """Create a mock message belonging to a forum topic."""
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = topic_id
+        msg.reply_to.reply_to_msg_id = topic_id
+        return msg
+
+    def _make_normal_message(self, msg_id):
+        """Create a mock message that is not in any forum topic."""
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.reply_to = None
+        return msg
+
+    def test_backup_dialog_skips_messages_in_excluded_topics(self):
+        """Messages in excluded forum topics should not be backed up."""
+        # Configure: skip topic 42 in chat -1001234567890
+        self.config.should_skip_topic = MagicMock(
+            side_effect=lambda chat_id, topic_id: topic_id == 42
+        )
+
+        messages = [
+            self._make_normal_message(1),       # kept (no topic)
+            self._make_forum_message(2, 42),     # skipped (excluded topic)
+            self._make_forum_message(3, 99),     # kept (different topic)
+            self._make_forum_message(4, 42),     # skipped (excluded topic)
+            self._make_normal_message(5),        # kept (no topic)
+        ]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(
+            side_effect=lambda m, c: {"id": m.id, "chat_id": c}
+        )
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog()))
+
+        # 3 messages kept (IDs 1, 3, 5), 2 skipped (IDs 2, 4)
+        self.assertEqual(result, 3)
+        # _process_message should only be called for kept messages
+        self.assertEqual(self.backup._process_message.await_count, 3)
+
+    def test_backup_dialog_keeps_all_messages_when_no_topics_excluded(self):
+        """When no topics are excluded, all messages pass through."""
+        self.config.should_skip_topic = MagicMock(return_value=False)
+
+        messages = [
+            self._make_forum_message(1, 42),
+            self._make_forum_message(2, 99),
+            self._make_normal_message(3),
+        ]
+
+        async def fake_iter(*args, **kwargs):
+            for m in messages:
+                yield m
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(
+            side_effect=lambda m, c: {"id": m.id, "chat_id": c}
+        )
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog()))
+
+        self.assertEqual(result, 3)
+
+    def test_backup_dialog_uses_reply_to_msg_id_as_fallback(self):
+        """When reply_to_top_id is None, falls back to reply_to_msg_id for topic ID."""
+        self.config.should_skip_topic = MagicMock(
+            side_effect=lambda chat_id, topic_id: topic_id == 42
+        )
+
+        msg = MagicMock()
+        msg.id = 1
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = None  # no top_id
+        msg.reply_to.reply_to_msg_id = 42     # fallback to this
+
+        async def fake_iter(*args, **kwargs):
+            yield msg
+
+        self.backup.client.iter_messages = fake_iter
+        self.backup._process_message = AsyncMock(
+            side_effect=lambda m, c: {"id": m.id, "chat_id": c}
+        )
+        self.backup._commit_batch = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+
+        result = self._run(self.backup._backup_dialog(self._make_dialog()))
+
+        # Message should be skipped via fallback topic ID
+        self.assertEqual(result, 0)
 
 
 class TestWhitelistModeBackup(unittest.TestCase):

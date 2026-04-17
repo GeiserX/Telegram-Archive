@@ -801,14 +801,28 @@ class TelegramListener:
                 if not self._should_process_chat(chat_id):
                     return
 
-                self.stats["new_messages_received"] += 1
-
-                # If LISTEN_NEW_MESSAGES is disabled, we're done
+                # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
                 if not self.config.listen_new_messages:
+                    self.stats["new_messages_received"] += 1
                     return
 
                 # Save the message to database
                 message = event.message
+
+                # Extract topic ID early for filtering
+                # v6.2.0: reply_to_top_id added for forum topic threading
+                reply_to_top_id = None
+                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
+                    reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
+                    if reply_to_top_id is None:
+                        reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
+
+                # Skip messages in excluded forum topics
+                if self.config.should_skip_topic(chat_id, reply_to_top_id):
+                    logger.debug(f"⏭️ Skipping message in excluded topic {reply_to_top_id}: chat={chat_id}")
+                    return
+
+                self.stats["new_messages_received"] += 1
 
                 # Ensure chat exists in database (prevents FK violation for new chats)
                 chat_entity = await event.get_chat()
@@ -834,20 +848,6 @@ class TelegramListener:
                         "is_bot": message.sender.bot,
                     }
                     await self.db.upsert_user(user_data)
-
-                # Extract message data
-                # v6.0.0: media_type, media_id, media_path removed - stored in media table
-                # v6.2.0: reply_to_top_id added for forum topic threading
-                reply_to_top_id = None
-                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                    reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
-                    if reply_to_top_id is None:
-                        reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
-
-                # Skip messages in excluded forum topics
-                if self.config.should_skip_topic(chat_id, reply_to_top_id):
-                    logger.debug(f"⏭️ Skipping message in excluded topic {reply_to_top_id}: chat={chat_id}")
-                    return
 
                 message_data = {
                     "id": message.id,

@@ -649,6 +649,105 @@ class TestSkipTopicIds(unittest.TestCase):
             config = Config()
             self.assertFalse(config.should_skip_topic(-1009876543210, 42))
 
+    # --- Edge cases for _parse_topic_skip_list ---
+
+    def test_skip_topic_ids_duplicate_entries_are_deduplicated(self):
+        """Duplicate chat_id:topic_id pairs should be silently deduplicated."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-100123:42,-100123:42,-100123:42",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-100123: {42}})
+
+    def test_skip_topic_ids_extra_colons_raises_value_error(self):
+        """Entry with multiple colons like chat_id:topic_id:extra raises ValueError."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-100123:42:extra",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+            self.assertIn("must be integers", str(ctx.exception))
+
+    def test_skip_topic_ids_very_large_ids(self):
+        """Very large chat IDs and topic IDs should parse correctly."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1002701160643:999999",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-1002701160643: {999999}})
+            self.assertTrue(config.should_skip_topic(-1002701160643, 999999))
+
+    def test_skip_topic_ids_trailing_leading_commas(self):
+        """Trailing, leading, and consecutive commas should be handled gracefully."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": ",-100123:42,,-100456:7,",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-100123: {42}, -100456: {7}})
+
+    def test_should_skip_topic_zero_topic_id(self):
+        """should_skip_topic handles topic_id=0 as a valid integer match."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-100123:0",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # topic_id=0 is falsy in Python, so should_skip_topic guard
+            # "if topic_id is None" lets it through, but "topic_id in skip_set"
+            # should match 0.
+            self.assertTrue(config.should_skip_topic(-100123, 0))
+
+    def test_skip_topic_ids_no_colon_error_message_includes_entry(self):
+        """ValueError for missing colon should include the offending entry text."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+            self.assertIn("expected format chat_id:topic_id", str(ctx.exception))
+            self.assertIn("-1001234567890", str(ctx.exception))
+
+    def test_skip_topic_ids_non_integer_error_message_content(self):
+        """ValueError for non-integer values should mention 'must be integers'."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "abc:def",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                Config()
+            self.assertIn("must be integers", str(ctx.exception))
+            self.assertIn("abc:def", str(ctx.exception))
+
+    def test_skip_topic_ids_only_whitespace(self):
+        """Whitespace-only SKIP_TOPIC_IDS should return empty dict."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "   ",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {})
+
 
 if __name__ == "__main__":
     unittest.main()

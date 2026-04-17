@@ -6,6 +6,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [Unreleased]
 
+### Added
+
+- **Topic filtering for forum supergroups** — New `SKIP_TOPIC_IDS` environment variable to exclude specific topics from backup while keeping the rest of the chat. Format: `chat_id:topic_id,...`. Works in both scheduled backup and real-time listener flows (#117)
+
 ## [7.2.0] - 2026-03-10
 
 ### Added
