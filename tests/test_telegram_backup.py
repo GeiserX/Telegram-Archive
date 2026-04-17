@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from telethon.tl.types import Channel
 
+from src.message_utils import extract_topic_id
 from src.telegram_backup import TelegramBackup
 
 
@@ -694,6 +695,44 @@ class TestWhitelistModeBackup(unittest.TestCase):
         self._run(self.backup.backup_all())
 
         self.backup.client.get_dialogs.assert_not_called()
+
+
+class TestExtractTopicId(unittest.TestCase):
+    """Test the shared extract_topic_id utility."""
+
+    def test_returns_none_when_no_reply_to(self):
+        msg = MagicMock()
+        msg.reply_to = None
+        self.assertIsNone(extract_topic_id(msg))
+
+    def test_returns_none_when_not_forum_topic(self):
+        msg = MagicMock()
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = False
+        self.assertIsNone(extract_topic_id(msg))
+
+    def test_returns_reply_to_top_id(self):
+        msg = MagicMock()
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = 42
+        self.assertEqual(extract_topic_id(msg), 42)
+
+    def test_falls_back_to_reply_to_msg_id(self):
+        msg = MagicMock()
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = None
+        msg.reply_to.reply_to_msg_id = 99
+        self.assertEqual(extract_topic_id(msg), 99)
+
+    def test_returns_none_when_both_ids_none(self):
+        msg = MagicMock()
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = None
+        msg.reply_to.reply_to_msg_id = None
+        self.assertIsNone(extract_topic_id(msg))
 
 
 if __name__ == "__main__":

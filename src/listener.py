@@ -36,6 +36,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .message_utils import extract_topic_id
 from .realtime import NotificationType, RealtimeNotifier
 
 logger = logging.getLogger(__name__)
@@ -660,12 +661,7 @@ class TelegramListener:
 
                 # Skip edits in excluded forum topics
                 message = event.message
-                edit_topic_id = None
-                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                    edit_topic_id = getattr(message.reply_to, "reply_to_top_id", None)
-                    if edit_topic_id is None:
-                        edit_topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
-                if self.config.should_skip_topic(chat_id, edit_topic_id):
+                if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                     return
 
                 self.stats["edits_received"] += 1
@@ -809,13 +805,9 @@ class TelegramListener:
                 # Save the message to database
                 message = event.message
 
-                # Extract topic ID early for filtering
+                # Extract topic ID early for filtering and message_data
                 # v6.2.0: reply_to_top_id added for forum topic threading
-                reply_to_top_id = None
-                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                    reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
-                    if reply_to_top_id is None:
-                        reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
+                reply_to_top_id = extract_topic_id(message)
 
                 # Skip messages in excluded forum topics
                 if self.config.should_skip_topic(chat_id, reply_to_top_id):

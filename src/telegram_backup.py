@@ -31,6 +31,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .message_utils import extract_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -661,12 +662,7 @@ class TelegramBackup:
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
             # Skip messages belonging to excluded forum topics
-            topic_id = None
-            if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                topic_id = getattr(message.reply_to, "reply_to_top_id", None)
-                if topic_id is None:
-                    topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
-            if self.config.should_skip_topic(chat_id, topic_id):
+            if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                 continue
 
             msg_data = await self._process_message(message, chat_id)
@@ -752,12 +748,7 @@ class TelegramBackup:
 
         async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
             # Skip messages belonging to excluded forum topics
-            topic_id = None
-            if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                topic_id = getattr(message.reply_to, "reply_to_top_id", None)
-                if topic_id is None:
-                    topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
-            if self.config.should_skip_topic(chat_id, topic_id):
+            if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                 continue
 
             msg_data = await self._process_message(message, chat_id)
@@ -1037,12 +1028,7 @@ class TelegramBackup:
         # Extract message data
         # v6.0.0: media_type, media_id, media_path removed - media stored in separate table
         # v6.2.0: reply_to_top_id added for forum topic threading
-        reply_to_top_id = None
-        if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-            reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
-            # If reply_to_top_id is not set but it's a forum topic, use reply_to_msg_id
-            if reply_to_top_id is None:
-                reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
+        reply_to_top_id = extract_topic_id(message)
 
         message_data = {
             "id": message.id,
