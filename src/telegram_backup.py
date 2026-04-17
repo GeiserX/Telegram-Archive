@@ -528,6 +528,30 @@ class TelegramBackup:
         os.unlink(link_path)
         os.symlink(rel_target, link_path)
 
+    @staticmethod
+    def _is_missing_or_dangling_path(path: str) -> bool:
+        """Return True when path is absent or points to a missing target."""
+        return not os.path.lexists(path) or not os.path.exists(path)
+
+    def _resolve_canonical_media_path(self, file_path: str, shared_path: str | None = None) -> str:
+        """Resolve canonical on-disk media path for DB persistence."""
+        if os.path.lexists(file_path) and os.path.islink(file_path):
+            try:
+                link_target = os.readlink(file_path)
+                link_target_abs = os.path.normpath(os.path.join(os.path.dirname(file_path), link_target))
+                if os.path.exists(link_target_abs):
+                    return link_target_abs
+            except OSError:
+                pass
+
+        if os.path.exists(file_path):
+            return os.path.normpath(file_path)
+
+        if shared_path and os.path.exists(shared_path):
+            return os.path.normpath(shared_path)
+
+        return os.path.normpath(file_path)
+
     async def _verify_and_redownload_media(self) -> None:
         """
         Verify all media files on disk and re-download missing/corrupted ones.
@@ -561,8 +585,8 @@ class TelegramBackup:
             if not file_path:
                 continue
 
-            # Check if file exists
-            if not os.path.exists(file_path):
+            # Check if file is missing or a dangling symlink
+            if self._is_missing_or_dangling_path(file_path):
                 missing_files.append(record)
                 continue
 
@@ -1300,25 +1324,51 @@ class TelegramBackup:
             deleted_records = 0
             freed_bytes = 0
 
+            shared_media_dir = os.path.abspath(os.path.join(self.config.media_path, "_shared"))
+            chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
+
             for record in media_records:
                 file_path = record.get("file_path")
-                if file_path and os.path.exists(file_path):
+                if not file_path or not os.path.exists(file_path):
+                    continue
+
+                file_path_abs = os.path.abspath(file_path)
+                if file_path_abs.startswith(f"{shared_media_dir}{os.sep}"):
+                    # Canonical dedup target; never delete shared files during per-chat cleanup.
+                    continue
+
+                try:
+                    if os.path.islink(file_path):
+                        os.unlink(file_path)
+                        deleted_symlinks += 1
+                    else:
+                        freed_bytes += os.path.getsize(file_path)
+                        os.remove(file_path)
+                        deleted_files += 1
+                except Exception as e:
+                    logger.warning(f"Failed to delete media file {file_path}: {e}")
+
+            # Remove any remaining files/symlinks in this chat directory.
+            if os.path.isdir(chat_media_dir):
+                for entry in os.listdir(chat_media_dir):
+                    entry_path = os.path.join(chat_media_dir, entry)
+                    if not os.path.lexists(entry_path):
+                        continue
                     try:
-                        if os.path.islink(file_path):
-                            os.unlink(file_path)
+                        if os.path.islink(entry_path):
+                            os.unlink(entry_path)
                             deleted_symlinks += 1
-                        else:
-                            freed_bytes += os.path.getsize(file_path)
-                            os.remove(file_path)
+                        elif os.path.isfile(entry_path):
+                            freed_bytes += os.path.getsize(entry_path)
+                            os.remove(entry_path)
                             deleted_files += 1
                     except Exception as e:
-                        logger.warning(f"Failed to delete media file {file_path}: {e}")
+                        logger.warning(f"Failed to delete media file {entry_path}: {e}")
 
             # Delete all media records from database for this chat
             deleted_records = await self.db.delete_media_for_chat(chat_id)
 
             # Clean up empty chat media directory
-            chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
             if os.path.isdir(chat_media_dir):
                 try:
                     remaining = os.listdir(chat_media_dir)
@@ -1394,6 +1444,7 @@ class TelegramBackup:
             # Generate filename using file_id for automatic deduplication
             file_name = self._get_media_filename(message, media_type, telegram_file_id)
             file_path = os.path.join(chat_media_dir, file_name)
+            resolved_shared_path: str | None = None
 
             # Check if deduplication is enabled
             if getattr(self.config, "deduplicate_media", True):
@@ -1404,7 +1455,7 @@ class TelegramBackup:
                 resolved_shared_path = self._resolve_shared_media_path(shared_dir, file_name)
 
                 # Check if file already exists (either directly or in shared)
-                if not os.path.exists(file_path):
+                if self._is_missing_or_dangling_path(file_path):
                     if resolved_shared_path:
                         # File exists in shared - create/repair symlink
                         try:
@@ -1446,23 +1497,19 @@ class TelegramBackup:
                                     file_path = direct_path
                                     file_name = os.path.basename(direct_path)
 
-                # Update file_size with actual size from disk (follow symlinks)
-                actual_path = (
-                    resolved_shared_path
-                    if resolved_shared_path and os.path.exists(resolved_shared_path)
-                    else file_path
-                )
-                if os.path.exists(actual_path):
-                    file_size = os.path.getsize(actual_path)
             else:
                 # No deduplication - download directly to chat directory
-                if not os.path.exists(file_path):
+                if self._is_missing_or_dangling_path(file_path):
                     await self.client.download_media(message, file_path)
                     logger.debug(f"Downloaded media: {file_name}")
 
-                # Update file_size with actual size from disk
-                if os.path.exists(file_path):
-                    file_size = os.path.getsize(file_path)
+            # Persist canonical final path/name for strict DB metadata consistency
+            file_path = self._resolve_canonical_media_path(file_path, resolved_shared_path)
+            file_name = os.path.basename(file_path)
+
+            # Update file_size with actual size from canonical path
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
 
             # Extract media metadata
             media_data = {
