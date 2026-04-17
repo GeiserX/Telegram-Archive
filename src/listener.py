@@ -288,6 +288,9 @@ class TelegramListener:
                 logger.info("  LISTEN_NEW_MESSAGES_MEDIA: false (media on scheduled backup)")
         else:
             logger.info("  LISTEN_NEW_MESSAGES: false (saved on scheduled backup)")
+        if config.skip_topic_ids:
+            total = sum(len(t) for t in config.skip_topic_ids.values())
+            logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
         logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
         logger.info(f"  Protection window: {config.mass_operation_window_seconds}s")
         logger.info(f"  Buffer delay: {config.mass_operation_buffer_delay}s (operations held before applying)")
@@ -655,9 +658,17 @@ class TelegramListener:
                 if not self._should_process_chat(chat_id):
                     return
 
-                self.stats["edits_received"] += 1
-
+                # Skip edits in excluded forum topics
                 message = event.message
+                edit_topic_id = None
+                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
+                    edit_topic_id = getattr(message.reply_to, "reply_to_top_id", None)
+                    if edit_topic_id is None:
+                        edit_topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
+                if self.config.should_skip_topic(chat_id, edit_topic_id):
+                    return
+
+                self.stats["edits_received"] += 1
                 new_text = message.text or ""
                 edit_date = message.edit_date
 
@@ -832,6 +843,11 @@ class TelegramListener:
                     reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
                     if reply_to_top_id is None:
                         reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
+
+                # Skip messages in excluded forum topics
+                if self.config.should_skip_topic(chat_id, reply_to_top_id):
+                    logger.debug(f"⏭️ Skipping message in excluded topic {reply_to_top_id}: chat={chat_id}")
+                    return
 
                 message_data = {
                     "id": message.id,

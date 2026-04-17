@@ -515,5 +515,140 @@ class TestTelegramProxyConfig(unittest.TestCase):
         self.assertIn("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD", str(ctx.exception))
 
 
+class TestSkipTopicIds(unittest.TestCase):
+    """Test SKIP_TOPIC_IDS configuration for forum topic filtering."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_skip_topic_ids_empty(self):
+        """Skip topic IDs defaults to empty dict when not configured."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {})
+
+    def test_skip_topic_ids_single(self):
+        """Can configure single chat_id:topic_id pair."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-1001234567890: {42}})
+
+    def test_skip_topic_ids_multiple_same_chat(self):
+        """Multiple topics in same chat are grouped into one set."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42,-1001234567890:1337",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-1001234567890: {42, 1337}})
+
+    def test_skip_topic_ids_multiple_chats(self):
+        """Topics across different chats are separated by chat ID."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42,-1009876543210:7",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-1001234567890: {42}, -1009876543210: {7}})
+
+    def test_skip_topic_ids_whitespace_handling(self):
+        """Should handle whitespace in topic skip list correctly."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": " -100123:42 , -100456:7 ",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.skip_topic_ids, {-100123: {42}, -100456: {7}})
+
+    def test_skip_topic_ids_invalid_format_no_colon(self):
+        """Raises ValueError for entries without colon separator."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError):
+                Config()
+
+    def test_skip_topic_ids_invalid_format_non_integer(self):
+        """Raises ValueError for non-integer chat_id or topic_id."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "abc:def",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            with self.assertRaises(ValueError):
+                Config()
+
+    def test_should_skip_topic_matches(self):
+        """should_skip_topic returns True for configured pairs."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42,-1001234567890:1337",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.should_skip_topic(-1001234567890, 42))
+            self.assertTrue(config.should_skip_topic(-1001234567890, 1337))
+
+    def test_should_skip_topic_no_match(self):
+        """should_skip_topic returns False for non-configured pairs."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.should_skip_topic(-1001234567890, 999))
+
+    def test_should_skip_topic_none_topic(self):
+        """should_skip_topic returns False when topic_id is None."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.should_skip_topic(-1001234567890, None))
+
+    def test_should_skip_topic_empty_config(self):
+        """should_skip_topic returns False when SKIP_TOPIC_IDS is not set."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.should_skip_topic(-1001234567890, 42))
+
+    def test_should_skip_topic_wrong_chat(self):
+        """should_skip_topic returns False when chat_id doesn't match."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:42",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.should_skip_topic(-1009876543210, 42))
+
+
 if __name__ == "__main__":
     unittest.main()

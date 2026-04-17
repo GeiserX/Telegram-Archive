@@ -660,6 +660,14 @@ class TelegramBackup:
         running_max_id = last_message_id
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
+            # Skip messages belonging to excluded forum topics
+            if message.reply_to and getattr(message.reply_to, "forum_topic", False):
+                topic_id = getattr(message.reply_to, "reply_to_top_id", None)
+                if topic_id is None:
+                    topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
+                if topic_id and self.config.should_skip_topic(chat_id, topic_id):
+                    continue
+
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
             running_max_id = max(running_max_id, message.id)
@@ -742,6 +750,14 @@ class TelegramBackup:
         recovered = 0
 
         async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
+            # Skip messages belonging to excluded forum topics
+            if message.reply_to and getattr(message.reply_to, "forum_topic", False):
+                topic_id = getattr(message.reply_to, "reply_to_top_id", None)
+                if topic_id is None:
+                    topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
+                if topic_id and self.config.should_skip_topic(chat_id, topic_id):
+                    continue
+
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
 
@@ -1658,6 +1674,9 @@ class TelegramBackup:
                         "is_hidden": 1 if getattr(topic, "hidden", False) else 0,
                         "date": getattr(topic, "date", None),
                     }
+                    if self.config.should_skip_topic(chat_id, topic.id):
+                        logger.debug(f"  → Skipping excluded topic {topic.id}: {topic.title}")
+                        continue
                     await self.db.upsert_forum_topic(topic_data)
                     topics_count += 1
 
@@ -1691,6 +1710,9 @@ class TelegramBackup:
 
             topics_count = 0
             for topic_id in topic_ids:
+                if self.config.should_skip_topic(chat_id, topic_id):
+                    logger.debug(f"  → Skipping excluded topic {topic_id}")
+                    continue
                 # Try to get the topic's first message for metadata
                 try:
                     msgs = await self.client.get_messages(entity, ids=[topic_id])
