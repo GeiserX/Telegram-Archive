@@ -464,6 +464,70 @@ class TelegramBackup:
             dialogs = await self.client.get_dialogs(folder=0)
         return dialogs
 
+    def _resolve_shared_media_path(self, shared_dir: str, file_name: str) -> str | None:
+        """Resolve actual shared media path, handling extension/suffix variants.
+
+        Telethon may append an extension or collision suffix (e.g. `` (1)``)
+        to the requested filename. This helper finds the best on-disk match
+        for a logical dedup filename.
+        """
+        expected_path = os.path.join(shared_dir, file_name)
+        if os.path.exists(expected_path):
+            return expected_path
+
+        try:
+            entries = os.listdir(shared_dir)
+        except OSError:
+            return None
+
+        prefix_with_ext = f"{file_name}."
+        prefix_with_suffix = f"{file_name} ("
+
+        candidates: list[str] = []
+        for entry in entries:
+            if not (entry.startswith(prefix_with_ext) or entry.startswith(prefix_with_suffix)):
+                continue
+            candidate_path = os.path.join(shared_dir, entry)
+            if os.path.isfile(candidate_path):
+                candidates.append(candidate_path)
+
+        if not candidates:
+            return None
+
+        # Prefer files without collision suffix, then latest modified.
+        without_collision_suffix = [p for p in candidates if " (" not in os.path.basename(p)]
+        preferred = without_collision_suffix if without_collision_suffix else candidates
+        return max(preferred, key=os.path.getmtime)
+
+    def _ensure_symlink(self, target_path: str, link_path: str) -> None:
+        """Create/update symlink, safely handling existing dangling links."""
+        rel_target = os.path.relpath(target_path, os.path.dirname(link_path))
+
+        try:
+            os.symlink(rel_target, link_path)
+            return
+        except FileExistsError:
+            pass
+
+        # Existing path may be dangling symlink, stale symlink, or regular file.
+        if not os.path.lexists(link_path):
+            os.symlink(rel_target, link_path)
+            return
+
+        if not os.path.islink(link_path):
+            raise FileExistsError(f"Path exists and is not a symlink: {link_path}")
+
+        current_target = os.readlink(link_path)
+        current_abs = os.path.normpath(os.path.join(os.path.dirname(link_path), current_target))
+        desired_abs = os.path.normpath(target_path)
+
+        if current_abs == desired_abs and os.path.exists(current_abs):
+            # Correct and healthy symlink already in place.
+            return
+
+        os.unlink(link_path)
+        os.symlink(rel_target, link_path)
+
     async def _verify_and_redownload_media(self) -> None:
         """
         Verify all media files on disk and re-download missing/corrupted ones.
@@ -579,9 +643,9 @@ class TelegramBackup:
                         continue
 
                     try:
-                        # Delete corrupted file if exists
+                        # Delete existing path if present (including dangling symlink)
                         file_path = record.get("file_path")
-                        if file_path and os.path.exists(file_path):
+                        if file_path and os.path.lexists(file_path):
                             os.remove(file_path)
 
                         # Re-download using existing method
@@ -1337,38 +1401,57 @@ class TelegramBackup:
                 shared_dir = os.path.join(self.config.media_path, "_shared")
                 os.makedirs(shared_dir, exist_ok=True)
                 shared_file_path = os.path.join(shared_dir, file_name)
+                resolved_shared_path = self._resolve_shared_media_path(shared_dir, file_name)
 
                 # Check if file already exists (either directly or in shared)
                 if not os.path.exists(file_path):
-                    if os.path.exists(shared_file_path):
-                        # File exists in shared - create symlink
+                    if resolved_shared_path:
+                        # File exists in shared - create/repair symlink
                         try:
-                            # Use relative symlink for portability
-                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-                            os.symlink(rel_path, file_path)
+                            self._ensure_symlink(resolved_shared_path, file_path)
                             logger.debug(f"Created symlink for deduplicated media: {file_name}")
                         except OSError as e:
-                            # Symlink failed (e.g., Windows), copy reference instead
+                            # Symlink failed (e.g., Windows), download direct copy
                             logger.warning(f"Symlink failed, downloading copy: {e}")
-                            await self.client.download_media(message, file_path)
+                            direct_path = await self.client.download_media(message, file_path)
+                            if isinstance(direct_path, str) and direct_path:
+                                file_path = direct_path
+                                file_name = os.path.basename(direct_path)
                     else:
                         # First time seeing this file - download to shared and create symlink
-                        await self.client.download_media(message, shared_file_path)
-                        logger.debug(f"Downloaded media to shared: {file_name}")
+                        downloaded_shared_path = await self.client.download_media(message, shared_file_path)
+                        if isinstance(downloaded_shared_path, str) and downloaded_shared_path:
+                            resolved_shared_path = downloaded_shared_path
+                        else:
+                            resolved_shared_path = self._resolve_shared_media_path(shared_dir, file_name) or shared_file_path
+
+                        logger.debug(f"Downloaded media to shared: {os.path.basename(resolved_shared_path)}")
 
                         # Create symlink in chat directory
                         try:
-                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-                            os.symlink(rel_path, file_path)
+                            self._ensure_symlink(resolved_shared_path, file_path)
                         except OSError as e:
-                            # Symlink failed - move file to chat dir instead
+                            # Symlink failed - move/copy file to chat dir instead
                             logger.warning(f"Symlink failed, using direct path: {e}")
                             import shutil
 
-                            shutil.move(shared_file_path, file_path)
+                            source_path = resolved_shared_path
+                            if source_path and os.path.exists(source_path):
+                                if os.path.lexists(file_path):
+                                    os.remove(file_path)
+                                shutil.move(source_path, file_path)
+                            else:
+                                direct_path = await self.client.download_media(message, file_path)
+                                if isinstance(direct_path, str) and direct_path:
+                                    file_path = direct_path
+                                    file_name = os.path.basename(direct_path)
 
                 # Update file_size with actual size from disk (follow symlinks)
-                actual_path = shared_file_path if os.path.exists(shared_file_path) else file_path
+                actual_path = (
+                    resolved_shared_path
+                    if resolved_shared_path and os.path.exists(resolved_shared_path)
+                    else file_path
+                )
                 if os.path.exists(actual_path):
                     file_size = os.path.getsize(actual_path)
             else:
