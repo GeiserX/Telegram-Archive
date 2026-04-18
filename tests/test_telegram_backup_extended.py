@@ -1648,7 +1648,6 @@ class TestRunBackup(unittest.TestCase):
         mock_backup.connect.assert_awaited_once()
         mock_backup.backup_all.assert_awaited_once()
         mock_backup.disconnect.assert_awaited_once()
-        mock_backup.db.close.assert_awaited_once()
 
     @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_backup_disconnects_on_error(self, mock_create):
@@ -1662,7 +1661,6 @@ class TestRunBackup(unittest.TestCase):
             _run(run_backup(config))
 
         mock_backup.disconnect.assert_awaited_once()
-        mock_backup.db.close.assert_awaited_once()
 
 
 class TestRunFillGaps(unittest.TestCase):

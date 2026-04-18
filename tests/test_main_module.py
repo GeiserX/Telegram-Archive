@@ -239,32 +239,42 @@ class TestMainFunction(unittest.TestCase):
 
     def test_main_data_dir_sets_environment_variables(self):
         """main() sets BACKUP_PATH and SESSION_DIR from --data-dir."""
+        import tempfile
+
         from src.__main__ import main
 
-        with (
-            patch.object(sys, "argv", ["telegram-archive", "--data-dir", "/tmp/test-data", "auth"]),
-            patch("src.__main__.run_auth", return_value=0),
-            patch("pathlib.Path.mkdir"),
-        ):
-            result = main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = os.path.join(tmpdir, "test-data")
+            with (
+                patch.object(sys, "argv", ["telegram-archive", "--data-dir", data_dir, "auth"]),
+                patch("src.__main__.run_auth", return_value=0),
+                patch("pathlib.Path.mkdir"),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                result = main()
 
-            self.assertEqual(result, 0)
-            self.assertIn("backups", os.environ.get("BACKUP_PATH", ""))
-            self.assertIn("session", os.environ.get("SESSION_DIR", ""))
+                self.assertEqual(result, 0)
+                self.assertIn("backups", os.environ.get("BACKUP_PATH", ""))
+                self.assertIn("session", os.environ.get("SESSION_DIR", ""))
 
     def test_main_data_dir_creates_directories(self):
         """main() creates backup and session directories when --data-dir is used."""
+        import tempfile
+
         from src.__main__ import main
 
-        with (
-            patch.object(sys, "argv", ["telegram-archive", "--data-dir", "/tmp/test-dir-create", "auth"]),
-            patch("src.__main__.run_auth", return_value=0),
-            patch("pathlib.Path.mkdir") as mock_mkdir,
-        ):
-            main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = os.path.join(tmpdir, "test-dir-create")
+            with (
+                patch.object(sys, "argv", ["telegram-archive", "--data-dir", data_dir, "auth"]),
+                patch("src.__main__.run_auth", return_value=0),
+                patch("pathlib.Path.mkdir") as mock_mkdir,
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                main()
 
-            # Should be called for both backup_path and session_path
-            assert mock_mkdir.call_count >= 2
+                # Should be called for both backup_path and session_path
+                assert mock_mkdir.call_count >= 2
 
 
 class TestRunAuth(unittest.TestCase):

@@ -8,6 +8,7 @@ are fully exercised with distinct scenarios.
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -34,7 +35,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            ["python3", "-m", "src.config"],
+            [sys.executable, "-m", "src.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -56,7 +57,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            ["python3", "-m", "src.config"],
+            [sys.executable, "-m", "src.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -75,7 +76,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            ["python3", "-m", "src.config"],
+            [sys.executable, "-m", "src.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -84,7 +85,7 @@ class TestMainBlockEdgeCases(unittest.TestCase):
         )
         # Either succeeds (dir created) or fails -- we just verify it ran
         # The __main__ block was exercised either way
-        self.assertIn("src.config", result.stderr + result.stdout + "src.config")
+        self.assertTrue(result.returncode == 0 or "error" in (result.stderr + result.stdout).lower())
 
 
 if __name__ == "__main__":
