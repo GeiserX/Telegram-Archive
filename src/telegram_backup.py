@@ -1352,14 +1352,16 @@ class TelegramBackup:
                         try:
                             # Use relative symlink for portability
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            if os.path.lexists(file_path):
+                                os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                             logger.debug(f"Created symlink for deduplicated media: {file_name}")
                         except OSError as e:
-                            # Symlink failed (e.g., Windows), copy reference instead
-                            logger.warning(f"Symlink failed, downloading copy: {e}")
-                            actual_path = await self.client.download_media(message, file_path)
-                            if actual_path and isinstance(actual_path, str):
-                                file_path = actual_path
+                            # Symlink not supported (e.g., Windows), copy shared file instead
+                            logger.warning(f"Symlink not supported, using direct path: {e}")
+                            import shutil
+
+                            shutil.copy2(shared_file_path, file_path)
                     else:
                         # First time seeing this file - download to shared and create symlink
                         actual_path = await self.client.download_media(message, shared_file_path)
