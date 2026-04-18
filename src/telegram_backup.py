@@ -580,9 +580,9 @@ class TelegramBackup:
                         continue
 
                     try:
-                        # Delete corrupted file if exists
+                        # Delete corrupted file if exists (lexists catches dangling symlinks)
                         file_path = record.get("file_path")
-                        if file_path and os.path.exists(file_path):
+                        if file_path and os.path.lexists(file_path):
                             os.remove(file_path)
 
                         # Re-download using existing method
@@ -1352,24 +1352,32 @@ class TelegramBackup:
                         try:
                             # Use relative symlink for portability
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            if os.path.lexists(file_path):
+                                os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                             logger.debug(f"Created symlink for deduplicated media: {file_name}")
                         except OSError as e:
-                            # Symlink failed (e.g., Windows), copy reference instead
-                            logger.warning(f"Symlink failed, downloading copy: {e}")
-                            await self.client.download_media(message, file_path)
+                            # Symlink not supported (e.g., Windows), copy shared file instead
+                            logger.warning(f"Symlink not supported, using direct path: {e}")
+                            import shutil
+
+                            shutil.copy2(shared_file_path, file_path)
                     else:
                         # First time seeing this file - download to shared and create symlink
-                        await self.client.download_media(message, shared_file_path)
+                        actual_path = await self.client.download_media(message, shared_file_path)
+                        if actual_path and isinstance(actual_path, str):
+                            shared_file_path = actual_path
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
                         # Create symlink in chat directory
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
+                            if os.path.lexists(file_path):
+                                os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                         except OSError as e:
-                            # Symlink failed - move file to chat dir instead
-                            logger.warning(f"Symlink failed, using direct path: {e}")
+                            # Symlink not supported (e.g., Windows) - move file to chat dir instead
+                            logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
 
                             shutil.move(shared_file_path, file_path)
@@ -1381,7 +1389,9 @@ class TelegramBackup:
             else:
                 # No deduplication - download directly to chat directory
                 if not os.path.exists(file_path):
-                    await self.client.download_media(message, file_path)
+                    actual_path = await self.client.download_media(message, file_path)
+                    if actual_path and isinstance(actual_path, str):
+                        file_path = actual_path
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size with actual size from disk

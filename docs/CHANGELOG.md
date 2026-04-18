@@ -10,6 +10,10 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 - **Topic filtering for forum supergroups** — New `SKIP_TOPIC_IDS` environment variable to exclude specific topics from backup while keeping the rest of the chat. Format: `chat_id:topic_id,...`. Works in both scheduled backup and real-time listener flows (#117)
 
+### Fixed
+
+- **Dangling dedup symlinks no longer cause infinite redownload loops** — When `DEDUPLICATE_MEDIA` is enabled and `VERIFY_MEDIA` runs, dangling symlinks (where the target was renamed by Telethon) are now detected via `os.path.lexists()` instead of `os.path.exists()`, which follows symlinks. The download return value is now captured to use the actual on-disk filename for symlink targets. Stale symlinks are removed before recreation to prevent `Errno 17` (file exists) errors. Applies to both scheduled backup and real-time listener (#115)
+
 ## [7.2.0] - 2026-03-10
 
 ### Added
