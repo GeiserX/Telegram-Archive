@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
-## [Unreleased]
+## [7.6.0] - 2026-04-18
 
 ### Added
 
