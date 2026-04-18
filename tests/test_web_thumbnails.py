@@ -122,7 +122,7 @@ class TestGenerateSync(unittest.TestCase):
         """_generate_sync returns False when source exceeds size limit."""
         with tempfile.NamedTemporaryFile(suffix=".jpg") as src:
             source = Path(src.name)
-            dest = Path(tempfile.mktemp(suffix=".webp"))
+            dest = Path(tempfile.mkdtemp()) / "out.webp"
 
             with patch.object(Path, "stat") as mock_stat:
                 mock_stat.return_value = MagicMock(st_size=_MAX_SOURCE_BYTES + 1)
