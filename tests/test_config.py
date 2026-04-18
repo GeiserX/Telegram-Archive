@@ -1284,7 +1284,7 @@ class TestMainBlock(unittest.TestCase):
             capture_output=True,
             text=True,
             env=env,
-            cwd="/Users/sergio/repos/personal/Telegram-Archive",
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             timeout=10,
         )
         self.assertEqual(result.returncode, 0)
@@ -1303,7 +1303,7 @@ class TestMainBlock(unittest.TestCase):
             capture_output=True,
             text=True,
             env=env,
-            cwd="/Users/sergio/repos/personal/Telegram-Archive",
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             timeout=10,
         )
         self.assertIn("Configuration error", result.stdout)
