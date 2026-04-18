@@ -2,6 +2,7 @@
 
 import os
 import sys
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -436,3 +437,165 @@ class TestGlobalFunctions:
 
         # Cleanup
         base_mod._db_manager = None
+
+
+# ============================================================
+# init() PostgreSQL path (line 118)
+# ============================================================
+
+
+class TestInitPostgresql:
+    """Test init() with PostgreSQL URL (line 118)."""
+
+    @pytest.mark.asyncio
+    async def test_init_postgresql_creates_pooled_engine(self):
+        """init() creates a pooled engine for PostgreSQL URLs."""
+        manager = DatabaseManager(database_url="postgresql+asyncpg://u:p@localhost/db")
+
+        with (
+            patch("src.db.base.create_async_engine") as mock_create,
+            patch("src.db.base.async_sessionmaker"),
+        ):
+            mock_engine = AsyncMock()
+            mock_create.return_value = mock_engine
+
+            await manager.init()
+
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["pool_size"] == 5
+        assert call_kwargs["pool_pre_ping"] is True
+
+
+# ============================================================
+# init() SQLite create_all exception (lines 141-144)
+# ============================================================
+
+
+class TestInitSqliteCreateAllException:
+    """Test init() SQLite create_all failure (lines 141-144)."""
+
+    @pytest.mark.asyncio
+    async def test_create_all_exception_caught_for_readonly_db(self):
+        """Exception in create_all is caught for read-only databases."""
+        with patch.dict(os.environ, {}, clear=True), patch("os.makedirs"):
+            manager = DatabaseManager()
+
+        mock_engine = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_begin():
+            mock_conn = AsyncMock()
+            mock_conn.run_sync = AsyncMock(side_effect=Exception("read-only filesystem"))
+            yield mock_conn
+
+        mock_engine.begin = fake_begin
+        mock_engine.sync_engine = MagicMock()
+
+        with (
+            patch("src.db.base.create_async_engine", return_value=mock_engine),
+            patch("src.db.base.async_sessionmaker"),
+            patch("src.db.base.event"),
+        ):
+            await manager.init()
+
+
+# ============================================================
+# _setup_sqlite_pragmas exception paths (lines 165-166, 175-176)
+# ============================================================
+
+
+class TestSetupSqlitePragmasExceptions:
+    """Test _setup_sqlite_pragmas WAL failure and read-only PRAGMAs (lines 165-166, 175-176)."""
+
+    @pytest.mark.asyncio
+    async def test_wal_pragma_failure_caught(self):
+        """WAL mode PRAGMA failure is caught for read-only databases."""
+        with patch.dict(os.environ, {}, clear=True), patch("os.makedirs"):
+            manager = DatabaseManager()
+
+        mock_engine = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_begin():
+            mock_conn = AsyncMock()
+            mock_conn.run_sync = AsyncMock()
+            yield mock_conn
+
+        mock_engine.begin = fake_begin
+        mock_engine.sync_engine = MagicMock()
+
+        registered_listener = [None]
+
+        def capture_listener(engine, event_name):
+            def decorator(fn):
+                registered_listener[0] = fn
+                return fn
+
+            return decorator
+
+        with (
+            patch("src.db.base.create_async_engine", return_value=mock_engine),
+            patch("src.db.base.async_sessionmaker"),
+            patch("src.db.base.event.listens_for", side_effect=capture_listener),
+        ):
+            await manager.init()
+
+        # Now call the registered listener with a mock connection
+        if registered_listener[0]:
+            mock_dbapi = MagicMock()
+            mock_cursor = MagicMock()
+            mock_dbapi.cursor.return_value = mock_cursor
+            # First two calls (WAL+synchronous) raise, busy_timeout + cache_size raise too
+            mock_cursor.execute.side_effect = Exception("read-only")
+            registered_listener[0](mock_dbapi, None)
+            mock_cursor.close.assert_called_once()
+
+
+# ============================================================
+# _safe_url SQLite with DATABASE_DIR (line 199)
+# ============================================================
+
+
+class TestSafeUrlDatabaseDir:
+    """Test _safe_url when DATABASE_DIR is set (line 199)."""
+
+    def test_safe_url_uses_database_dir(self):
+        """_safe_url uses DATABASE_DIR when DATABASE_PATH is not set."""
+        with patch.dict(os.environ, {"DATABASE_DIR": "/my/custom/dir"}, clear=True), patch("os.makedirs"):
+            manager = DatabaseManager()
+            safe = manager._safe_url()
+            assert "/my/custom/dir/telegram_backup.db" in safe
+
+
+# ============================================================
+# get_session rollback on exception (lines 223-229)
+# ============================================================
+
+
+class TestGetSessionRollback:
+    """Test get_session() rollback on exception (lines 223-229)."""
+
+    @pytest.mark.asyncio
+    async def test_get_session_rolls_back_on_exception(self):
+        """get_session() rolls back and re-raises when body raises."""
+        with patch.dict(os.environ, {}, clear=True), patch("os.makedirs"):
+            manager = DatabaseManager()
+
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        mock_session.rollback = AsyncMock()
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_factory = MagicMock(return_value=mock_ctx)
+        manager.async_session_factory = mock_factory
+
+        with pytest.raises(ValueError, match="test error"):
+            async with manager.get_session() as session:
+                raise ValueError("test error")
+
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()

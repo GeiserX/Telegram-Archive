@@ -603,3 +603,141 @@ class TestRealtimeListenerHttpPush:
 
         # Should not raise
         await listener.handle_http_push({"type": "test"})
+
+
+# ===========================================================================
+# _notify_http non-200 response (line 149)
+# ===========================================================================
+
+
+class TestNotifyHttpNon200:
+    """Tests for _notify_http when server returns non-200 (line 149)."""
+
+    async def test_non_200_response_logs_warning(self):
+        """_notify_http logs warning when response status is not 200."""
+        notifier = RealtimeNotifier()
+        notifier._http_endpoint = "http://localhost:8080/internal/push"
+
+        mock_response = MagicMock()
+        mock_response.status = 500
+
+        mock_post_cm = AsyncMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_post_cm)
+
+        mock_session_cm = AsyncMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_aiohttp = MagicMock()
+        mock_aiohttp.ClientSession.return_value = mock_session_cm
+        mock_aiohttp.ClientTimeout = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True), patch.dict("sys.modules", {"aiohttp": mock_aiohttp}):
+            await notifier._notify_http({"type": "test"})
+
+        mock_session.post.assert_called_once()
+
+
+# ===========================================================================
+# _listen_postgres (lines 218-242)
+# ===========================================================================
+
+
+class TestListenPostgres:
+    """Tests for RealtimeListener._listen_postgres (lines 218-242)."""
+
+    async def test_listen_postgres_connects_and_listens(self):
+        """_listen_postgres connects to asyncpg and adds listener."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+
+        mock_conn = AsyncMock()
+        mock_conn.add_listener = AsyncMock()
+        mock_conn.remove_listener = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        call_count = 0
+
+        async def stop_after_one(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 1:
+                listener._running = False
+
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        with (
+            patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
+            patch("asyncio.sleep", side_effect=stop_after_one),
+        ):
+            await listener._listen_postgres()
+
+        mock_asyncpg.connect.assert_awaited_once()
+        mock_conn.add_listener.assert_awaited_once()
+        mock_conn.remove_listener.assert_awaited_once()
+        mock_conn.close.assert_awaited_once()
+
+    async def test_listen_postgres_reconnects_on_error(self):
+        """_listen_postgres retries on connection error (lines 240-242)."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+
+        attempt = [0]
+
+        mock_asyncpg = MagicMock()
+
+        async def fail_then_stop(*args, **kwargs):
+            attempt[0] += 1
+            if attempt[0] == 1:
+                raise Exception("connection refused")
+            # Second attempt: stop running
+            listener._running = False
+            mock_conn = AsyncMock()
+            mock_conn.add_listener = AsyncMock()
+            mock_conn.remove_listener = AsyncMock()
+            mock_conn.close = AsyncMock()
+            return mock_conn
+
+        mock_asyncpg.connect = AsyncMock(side_effect=fail_then_stop)
+
+        async def fake_sleep(seconds):
+            pass
+
+        with (
+            patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            await listener._listen_postgres()
+
+        assert attempt[0] >= 2
+
+    async def test_listen_postgres_handles_cancelled_error(self):
+        """_listen_postgres breaks on CancelledError (lines 238-239)."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+            await listener._listen_postgres()

@@ -393,3 +393,206 @@ class TestVerifyMigrationFlow:
 
         mock_source.close.assert_awaited_once()
         mock_target.close.assert_awaited_once()
+
+
+# ============================================================
+# migrate_sqlite_to_postgres: PostgreSQL URL from env (lines 69-74)
+# ============================================================
+
+
+class TestMigratePostgresUrlFromEnv:
+    """Test PostgreSQL URL built from env vars when not provided (lines 69-74)."""
+
+    @pytest.mark.asyncio
+    async def test_builds_url_from_env_with_special_chars(self):
+        """PostgreSQL password with special chars is URL-encoded (line 72)."""
+        env = {
+            "POSTGRES_HOST": "dbhost",
+            "POSTGRES_PORT": "5433",
+            "POSTGRES_USER": "admin",
+            "POSTGRES_PASSWORD": "p@ss/word",
+            "POSTGRES_DB": "mydb",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises(FileNotFoundError),
+        ):
+            await migrate_sqlite_to_postgres(sqlite_path="/nonexistent.db")
+
+
+# ============================================================
+# _migrate_table: empty batch breaks loop (line 144)
+# ============================================================
+
+
+class TestMigrateTableEmptyBatch:
+    """Test _migrate_table breaks when batch is empty (line 144)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_batch_breaks_loop(self):
+        """When a batch query returns no records, migration loop breaks."""
+        from src.db.models import Metadata
+
+        mock_src_session = AsyncMock()
+
+        # First call: count returns 5
+        mock_count_result = MagicMock()
+        mock_count_result.scalar.return_value = 5
+
+        # Second call: batch returns empty
+        mock_batch_result = MagicMock()
+        mock_batch_result.scalars.return_value.all.return_value = []
+
+        mock_src_session.execute.side_effect = [mock_count_result, mock_batch_result]
+
+        mock_source, _ = _make_mock_manager(session_mock=mock_src_session)
+        mock_target, _ = _make_mock_manager()
+
+        result = await _migrate_table(mock_source, mock_target, Metadata, batch_size=100)
+        assert result == 0
+
+
+# ============================================================
+# _migrate_table: progress logging at 10000 intervals (line 158)
+# ============================================================
+
+
+class TestMigrateTableProgressLogging:
+    """Test _migrate_table logs progress at 10000 intervals (line 158)."""
+
+    @pytest.mark.asyncio
+    async def test_logs_progress_at_10000_records(self):
+        """Progress is logged when total reaches 10000 records."""
+        from src.db.models import Metadata
+
+        mock_src_session = AsyncMock()
+
+        # Count: 10000 records
+        mock_count_result = MagicMock()
+        mock_count_result.scalar.return_value = 10000
+
+        # Return 10000 records in one batch, then empty
+        records = [MagicMock() for _ in range(10000)]
+        mock_batch_result = MagicMock()
+        mock_batch_result.scalars.return_value.all.return_value = records
+
+        mock_empty_result = MagicMock()
+        mock_empty_result.scalars.return_value.all.return_value = []
+
+        mock_src_session.execute.side_effect = [mock_count_result, mock_batch_result, mock_empty_result]
+
+        mock_source, _ = _make_mock_manager(session_mock=mock_src_session)
+
+        mock_tgt_session = AsyncMock()
+        mock_target, _ = _make_mock_manager(session_mock=mock_tgt_session)
+
+        result = await _migrate_table(mock_source, mock_target, Metadata, batch_size=20000)
+        assert result == 10000
+
+
+# ============================================================
+# verify_migration: path resolution variants (lines 175-177, 179, 181-182, 185-190)
+# ============================================================
+
+
+class TestVerifyMigrationPathVariants:
+    """Test verify_migration path resolution from various env vars."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_database_dir_env(self):
+        """DATABASE_DIR env is used when DATABASE_PATH is not set (lines 175-177)."""
+        env = {"DATABASE_DIR": "/verify/dir"}
+
+        mock_source, mock_src_session = _make_mock_manager()
+        mock_target, mock_tgt_session = _make_mock_manager()
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_src_session.execute.return_value = mock_result
+        mock_tgt_session.execute.return_value = mock_result
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("src.db.migrate.DatabaseManager") as MockDM,
+        ):
+            MockDM.side_effect = [mock_source, mock_target]
+            await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
+
+            first_call_url = MockDM.call_args_list[0][0][0]
+            assert "/verify/dir/telegram_backup.db" in first_call_url
+
+    @pytest.mark.asyncio
+    async def test_resolves_db_path_env(self):
+        """DB_PATH env is used as fallback (line 179)."""
+        env = {"DB_PATH": "/verify/v3.db"}
+
+        mock_source, mock_src_session = _make_mock_manager()
+        mock_target, mock_tgt_session = _make_mock_manager()
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_src_session.execute.return_value = mock_result
+        mock_tgt_session.execute.return_value = mock_result
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("src.db.migrate.DatabaseManager") as MockDM,
+        ):
+            MockDM.side_effect = [mock_source, mock_target]
+            await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
+
+            first_call_url = MockDM.call_args_list[0][0][0]
+            assert "/verify/v3.db" in first_call_url
+
+    @pytest.mark.asyncio
+    async def test_resolves_backup_path_fallback(self):
+        """BACKUP_PATH is used as last resort (lines 181-182)."""
+        env = {"BACKUP_PATH": "/verify/backups"}
+
+        mock_source, mock_src_session = _make_mock_manager()
+        mock_target, mock_tgt_session = _make_mock_manager()
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_src_session.execute.return_value = mock_result
+        mock_tgt_session.execute.return_value = mock_result
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("src.db.migrate.DatabaseManager") as MockDM,
+        ):
+            MockDM.side_effect = [mock_source, mock_target]
+            await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
+
+            first_call_url = MockDM.call_args_list[0][0][0]
+            assert "/verify/backups/telegram_backup.db" in first_call_url
+
+    @pytest.mark.asyncio
+    async def test_builds_postgres_url_from_env(self):
+        """PostgreSQL URL built from env when not provided (lines 185-190)."""
+        env = {
+            "POSTGRES_HOST": "pghost",
+            "POSTGRES_PORT": "5433",
+            "POSTGRES_USER": "pguser",
+            "POSTGRES_PASSWORD": "pgpass",
+            "POSTGRES_DB": "pgdb",
+        }
+
+        mock_source, mock_src_session = _make_mock_manager()
+        mock_target, mock_tgt_session = _make_mock_manager()
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_src_session.execute.return_value = mock_result
+        mock_tgt_session.execute.return_value = mock_result
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("src.db.migrate.DatabaseManager") as MockDM,
+        ):
+            MockDM.side_effect = [mock_source, mock_target]
+            await verify_migration(sqlite_path="/fake/path.db")
+
+            second_call_url = MockDM.call_args_list[1][0][0]
+            assert "pghost:5433" in second_call_url
+            assert "pguser" in second_call_url

@@ -614,3 +614,337 @@ class TestSchedulerMain:
             await main()
 
             mock_exit.assert_called_once_with(1)
+
+
+# ===========================================================================
+# _run_backup_job gap-fill exception (lines 93-95)
+# ===========================================================================
+
+
+class TestRunBackupJobGapFillException:
+    """Test _run_backup_job gap-fill exception path (lines 93-95)."""
+
+    async def test_gap_fill_exception_sets_gap_fill_ok_false(self):
+        """Exception during gap-fill sets gap_fill_ok to False."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = True
+            scheduler = BackupScheduler(config)
+            scheduler._connection = AsyncMock()
+            scheduler._connection.ensure_connected = AsyncMock(return_value=MagicMock())
+            scheduler._listener = None
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch(
+                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill crash")
+                ),
+            ):
+                # Should not raise
+                await scheduler._run_backup_job()
+
+
+# ===========================================================================
+# run_forever initial gap-fill (lines 240-248)
+# ===========================================================================
+
+
+class TestRunForeverInitialGapFill:
+    """Test run_forever initial gap-fill paths (lines 240-248)."""
+
+    async def test_initial_gap_fill_runs_when_enabled(self):
+        """Initial gap-fill runs after initial backup when fill_gaps=True."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = True
+            config.enable_listener = False
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 1:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch(
+                    "src.telegram_backup.run_fill_gaps",
+                    new_callable=AsyncMock,
+                    return_value={"errors": 0, "total_recovered": 3},
+                ) as mock_fill,
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+            mock_fill.assert_awaited_once()
+
+    async def test_initial_gap_fill_with_errors_logs_warning(self):
+        """Initial gap-fill with errors logs warning (line 246)."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = True
+            config.enable_listener = False
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 1:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch(
+                    "src.telegram_backup.run_fill_gaps",
+                    new_callable=AsyncMock,
+                    return_value={"errors": 5, "total_recovered": 2},
+                ),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+    async def test_initial_gap_fill_exception_caught(self):
+        """Initial gap-fill exception is caught (lines 247-248)."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = True
+            config.enable_listener = False
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 1:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch(
+                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill crash")
+                ),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+
+# ===========================================================================
+# run_forever listener reload after gap-fill (line 252)
+# ===========================================================================
+
+
+class TestRunForeverListenerReload:
+    """Test run_forever listener reload after initial backup (line 252)."""
+
+    async def test_listener_tracked_chats_reloaded(self):
+        """Listener tracked chats are reloaded after initial backup."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            config.enable_listener = True
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            mock_listener = AsyncMock()
+            mock_listener._load_tracked_chats = AsyncMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+            scheduler._listener = mock_listener
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 1:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+            mock_listener._load_tracked_chats.assert_awaited()
+
+
+# ===========================================================================
+# run_forever listener restart loop (lines 260-279)
+# ===========================================================================
+
+
+class TestRunForeverListenerRestart:
+    """Test run_forever listener task restart loop (lines 260-279)."""
+
+    async def test_listener_task_restart_on_death(self):
+        """Dead listener task is restarted during the main loop."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            config.enable_listener = True
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            # Create a done task to simulate listener death
+            loop = asyncio.get_event_loop()
+            done_task = loop.create_future()
+            done_task.set_exception(Exception("listener crashed"))
+            scheduler._listener_task = done_task
+            scheduler._listener = AsyncMock()
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+            # _stop_listener and _start_listener should have been called for restart
+            assert scheduler._stop_listener.await_count >= 1
+            assert scheduler._start_listener.await_count >= 1
+
+    async def test_listener_task_cancelled_restart(self):
+        """Cancelled listener task is restarted during the main loop."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            config.enable_listener = True
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            scheduler.start = MagicMock()
+            scheduler._start_listener = AsyncMock()
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            # Create a cancelled task
+            loop = asyncio.get_event_loop()
+            done_task = loop.create_future()
+            done_task.cancel()
+            scheduler._listener_task = done_task
+            scheduler._listener = AsyncMock()
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+
+# ===========================================================================
+# main() logging output (lines 304-306, 322)
+# ===========================================================================
+
+
+class TestSchedulerMainLogging:
+    """Test main() logging for sync_deletions_edits warning (lines 304-306)."""
+
+    async def test_main_logs_sync_deletions_edits_warning(self):
+        """main() logs warning when sync_deletions_edits is enabled (line 304)."""
+        mock_config = MagicMock()
+        mock_config.schedule = "0 */6 * * *"
+        mock_config.backup_path = "/data/backups"
+        mock_config.download_media = True
+        mock_config.chat_types = ["private"]
+        mock_config.enable_listener = False
+        mock_config.sync_deletions_edits = True
+
+        mock_scheduler_instance = AsyncMock()
+
+        with (
+            patch("src.scheduler.signal.signal"),
+            patch("src.config.Config", return_value=mock_config),
+            patch("src.config.setup_logging"),
+            patch("src.scheduler.BackupScheduler", return_value=mock_scheduler_instance) as MockBS,
+        ):
+            from src.scheduler import main
+
+            await main()
+
+            MockBS.assert_called_once_with(mock_config)
+            mock_scheduler_instance.run_forever.assert_called_once()

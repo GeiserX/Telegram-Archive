@@ -22,6 +22,7 @@ import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telethon import events
 from telethon.tl.types import (
     UpdatePinnedChannelMessages,
@@ -2015,3 +2016,461 @@ class TestGetMarkedIdFallback:
         entity.id = 99999
         result = listener._get_marked_id(entity)
         assert result == 99999
+
+
+# ===========================================================================
+# create() factory method (lines 312-313)
+# ===========================================================================
+
+
+class TestListenerCreateFactory:
+    """Tests for TelegramListener.create() factory method."""
+
+    async def test_create_initializes_db_and_returns_instance(self):
+        """create() calls create_adapter and returns a TelegramListener."""
+        config = _make_config()
+        mock_db = _make_db()
+
+        with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+            listener = await TelegramListener.create(config)
+
+        assert isinstance(listener, TelegramListener)
+        assert listener.db is mock_db
+
+    async def test_create_with_client_passes_through(self):
+        """create() forwards the client parameter."""
+        config = _make_config()
+        mock_db = _make_db()
+        mock_client = MagicMock()
+
+        with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+            listener = await TelegramListener.create(config, client=mock_client)
+
+        assert listener.client is mock_client
+        assert listener._owns_client is False
+
+
+# ===========================================================================
+# connect() shared client not connected (lines 324-327)
+# ===========================================================================
+
+
+class TestListenerConnectSharedClient:
+    """Tests for connect() shared client validation (lines 324-327)."""
+
+    async def test_shared_client_not_connected_raises(self):
+        """Shared client that is NOT connected raises RuntimeError."""
+        config = _make_config()
+        db = _make_db()
+        mock_client = MagicMock()
+        mock_client.is_connected = MagicMock(return_value=False)
+        listener = TelegramListener(config, db, client=mock_client)
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Shared client is not connected"):
+            await listener.connect()
+
+    async def test_shared_client_connected_succeeds(self):
+        """Shared client that is connected returns normally."""
+        config = _make_config()
+        db = _make_db()
+        mock_client = AsyncMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
+        mock_client.on = lambda event_type: lambda fn: fn
+        listener = TelegramListener(config, db, client=mock_client)
+
+        mock_db_manager = MagicMock()
+        mock_db_manager._is_sqlite = True
+
+        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
+            await listener.connect()
+
+
+# ===========================================================================
+# connect() not authorized (lines 342-344)
+# ===========================================================================
+
+
+class TestListenerConnectNotAuthorized:
+    """Tests for connect() session not authorized (lines 342-344)."""
+
+    async def test_not_authorized_raises_runtime_error(self):
+        """connect() raises when session is not authorized."""
+        config = _make_config()
+        config.get_telegram_client_kwargs = MagicMock(return_value={})
+        db = _make_db()
+        listener = TelegramListener(config, db)
+
+        mock_client = AsyncMock()
+        mock_client.connect = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(return_value=False)
+
+        with (
+            patch("src.listener.TelegramClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="Session not authorized"),
+        ):
+            await listener.connect()
+
+
+# ===========================================================================
+# _get_marked_id fallback returns raw value (line 385)
+# ===========================================================================
+
+
+class TestGetMarkedIdRawFallback:
+    """Tests for _get_marked_id fallback to raw value (line 385)."""
+
+    def test_raw_integer_returns_itself(self):
+        """When input is a raw integer and has no .id, returns the integer."""
+        listener = TelegramListener(_make_config(), _make_db())
+        result = listener._get_marked_id(12345)
+        assert result == 12345
+
+
+# ===========================================================================
+# _download_media symlink OSError fallback (lines 631-635)
+# ===========================================================================
+
+
+class TestDownloadMediaSymlinkFallback:
+    """Tests for _download_media symlink failure fallback (lines 631-635)."""
+
+    @patch("os.path.exists", return_value=False)
+    @patch("os.makedirs")
+    @patch("os.path.lexists", return_value=False)
+    @patch("os.symlink", side_effect=OSError("symlinks not supported"))
+    @patch("os.path.relpath", return_value="../_shared/file.jpg")
+    @patch("shutil.move")
+    async def test_symlink_failure_falls_back_to_move(
+        self, mock_move, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
+    ):
+        """When symlink fails, falls back to shutil.move."""
+        from telethon.tl.types import MessageMediaPhoto
+
+        config = _make_config(deduplicate_media=True)
+        db = _make_db()
+        listener = TelegramListener(config, db)
+        listener.client = AsyncMock()
+        listener.client.download_media = AsyncMock(return_value="/tmp/test_media/_shared/123.jpg")
+
+        msg = MagicMock()
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 123
+        media.photo.sizes = []
+        msg.media = media
+        msg.id = 1
+
+        result = await listener._download_media(msg, -100)
+        assert result is not None
+        mock_move.assert_called_once()
+
+
+# ===========================================================================
+# on_message_deleted _should_process_chat inner check (line 768)
+# ===========================================================================
+
+
+class TestOnMessageDeletedInnerProcessCheck:
+    """Tests for deletion handler inner _should_process_chat (line 768)."""
+
+    async def test_resolved_chat_not_tracked_skips_deletion(self):
+        """When resolved effective_chat_id fails _should_process_chat, skip deletion."""
+        listener, handlers, db, config = _make_listener_with_handlers()
+        handler = handlers[events.MessageDeleted]
+
+        db.resolve_message_chat_id = AsyncMock(return_value=-9999)
+        listener._tracked_chat_ids = {-1001234567890}
+
+        event = MagicMock()
+        event.chat_id = None
+        event.deleted_ids = [100]
+
+        await handler(event)
+
+        db.delete_message.assert_not_called()
+
+
+# ===========================================================================
+# on_chat_action actor resolution with last_name (lines 981-982)
+# ===========================================================================
+
+
+class TestOnChatActionActorLastName:
+    """Tests for on_chat_action actor last_name appended (lines 981-982)."""
+
+    async def test_actor_with_last_name_appended(self):
+        """When actor has last_name, it is appended to actor_name."""
+        listener, handlers, db, config = _make_listener_with_handlers()
+        handler = handlers[events.ChatAction]
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.new_photo = False
+        event.photo = MagicMock()
+        event.new_title = None
+        event.user_joined = True
+        event.user_left = False
+        event.user_added = False
+        event.user_kicked = False
+        event.user_id = 111
+
+        actor = MagicMock()
+        actor.first_name = "John"
+        actor.last_name = "Smith"
+        listener.client.get_entity = AsyncMock(return_value=actor)
+
+        await handler(event)
+
+        db.insert_message.assert_called_once()
+        text = db.insert_message.call_args[0][0]["text"]
+        assert "John Smith" in text
+
+
+# ===========================================================================
+# on_chat_action insert_message exception (lines 1036-1037)
+# ===========================================================================
+
+
+class TestOnChatActionInsertMessageException:
+    """Tests for on_chat_action insert_message exception (lines 1036-1037)."""
+
+    async def test_insert_message_exception_caught(self):
+        """Exception during insert_message is caught and logged."""
+        listener, handlers, db, config = _make_listener_with_handlers()
+        handler = handlers[events.ChatAction]
+
+        db.insert_message = AsyncMock(side_effect=Exception("DB error"))
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.new_photo = False
+        event.photo = MagicMock()
+        event.new_title = None
+        event.user_joined = True
+        event.user_left = False
+        event.user_added = False
+        event.user_kicked = False
+        event.user_id = None
+
+        await handler(event)
+
+        assert listener.stats.get("chat_actions", 0) == 1
+
+
+# ===========================================================================
+# on_chat_action metadata update exception (lines 1058-1059)
+# ===========================================================================
+
+
+class TestOnChatActionMetadataUpdateException:
+    """Tests for on_chat_action metadata update exception (lines 1058-1059)."""
+
+    async def test_metadata_update_exception_caught(self):
+        """Exception during chat metadata update is caught."""
+        listener, handlers, db, config = _make_listener_with_handlers()
+        handler = handlers[events.ChatAction]
+
+        # Make upsert_chat raise
+        db.upsert_chat = AsyncMock(side_effect=Exception("chat update failed"))
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.new_photo = True
+        event.new_title = None
+        event.user_joined = False
+        event.user_left = False
+        event.user_added = False
+        event.user_kicked = False
+        event.user_id = 111
+        event.photo = MagicMock()
+
+        actor = MagicMock()
+        actor.first_name = "Admin"
+        actor.last_name = None
+        listener.client.get_entity = AsyncMock(return_value=actor)
+        listener.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        await handler(event)
+
+        # Should not crash
+        assert listener.stats.get("chat_actions", 0) == 1
+
+
+# ===========================================================================
+# on_pinned_messages peer has no recognized attribute (line 1094)
+# ===========================================================================
+
+
+class TestOnPinnedMessagesNoPeerAttr:
+    """Tests for on_pinned_messages when peer has no recognized attribute (line 1094)."""
+
+    def _get_raw_handler(self, handlers):
+        for key, handler in handlers.items():
+            if key not in (events.MessageEdited, events.MessageDeleted, events.NewMessage, events.ChatAction):
+                return handler
+        return None
+
+    async def test_peer_without_recognized_attrs_returns(self):
+        """UpdatePinnedMessages with peer lacking user_id/chat_id/channel_id returns."""
+        listener, handlers, db, config = _make_listener_with_handlers()
+        pin_handler = self._get_raw_handler(handlers)
+        assert pin_handler is not None
+
+        event = MagicMock(spec=UpdatePinnedMessages)
+        peer = MagicMock(spec=[])  # No user_id, chat_id, or channel_id
+        event.peer = peer
+        event.messages = [1]
+        event.pinned = True
+
+        await pin_handler(event)
+
+        db.update_message_pinned.assert_not_called()
+
+
+# ===========================================================================
+# run() metadata write exception (lines 1141-1142)
+# ===========================================================================
+
+
+class TestRunMetadataWriteException:
+    """Tests for run() metadata write exception (lines 1141-1142)."""
+
+    async def test_metadata_write_exception_caught(self):
+        """Exception writing listener_active_since to DB is caught."""
+        config = _make_config()
+        db = _make_db()
+        db.set_metadata = AsyncMock(side_effect=Exception("DB write failed"))
+        listener = TelegramListener(config, db)
+
+        mock_client = AsyncMock()
+        mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
+        listener.client = mock_client
+
+        await listener.run()
+
+        assert listener._running is False
+
+
+# ===========================================================================
+# run() finally clears metadata (lines 1160-1161)
+# ===========================================================================
+
+
+class TestRunFinallyMetadataClear:
+    """Tests for run() finally block clearing listener_active_since (lines 1160-1161)."""
+
+    async def test_finally_clears_metadata_even_on_exception(self):
+        """Finally block clears listener_active_since even when exception occurs."""
+        config = _make_config()
+        db = _make_db()
+        call_count = [0]
+        original_set_metadata = db.set_metadata
+
+        async def track_set_metadata(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return  # First call (setting active) succeeds
+            raise Exception("clear failed")  # Second call (clearing) fails
+
+        db.set_metadata = AsyncMock(side_effect=track_set_metadata)
+        listener = TelegramListener(config, db)
+
+        mock_client = AsyncMock()
+        mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
+        listener.client = mock_client
+
+        await listener.run()
+
+        assert listener._running is False
+
+
+# ===========================================================================
+# run_listener standalone function (lines 1258-1266)
+# ===========================================================================
+
+
+class TestRunListenerStandalone:
+    """Tests for run_listener standalone function (lines 1258-1266)."""
+
+    async def test_run_listener_connects_runs_and_closes(self):
+        """run_listener creates listener, connects, runs, and closes."""
+        from src.listener import run_listener
+
+        mock_listener = AsyncMock()
+        mock_listener.connect = AsyncMock()
+        mock_listener.run = AsyncMock()
+        mock_listener.close = AsyncMock()
+
+        config = _make_config()
+
+        with patch("src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener):
+            await run_listener(config)
+
+        mock_listener.connect.assert_awaited_once()
+        mock_listener.run.assert_awaited_once()
+        mock_listener.close.assert_awaited_once()
+
+    async def test_run_listener_closes_on_keyboard_interrupt(self):
+        """run_listener calls close() even on KeyboardInterrupt."""
+        from src.listener import run_listener
+
+        mock_listener = AsyncMock()
+        mock_listener.connect = AsyncMock()
+        mock_listener.run = AsyncMock(side_effect=KeyboardInterrupt)
+        mock_listener.close = AsyncMock()
+
+        config = _make_config()
+
+        with patch("src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener):
+            await run_listener(config)
+
+        mock_listener.close.assert_awaited_once()
+
+
+# ===========================================================================
+# main() entry point (lines 1271-1291, 1295)
+# ===========================================================================
+
+
+class TestListenerMainEntryPoint:
+    """Tests for listener main() entry point (lines 1271-1291)."""
+
+    async def test_main_creates_config_and_runs(self):
+        """main() creates Config, sets up logging, and calls run_listener."""
+        from src.listener import main
+
+        mock_config = MagicMock()
+
+        with (
+            patch("src.config.Config", return_value=mock_config),
+            patch("src.config.setup_logging"),
+            patch("src.listener.run_listener", new_callable=AsyncMock) as mock_run,
+        ):
+            await main()
+
+        mock_run.assert_awaited_once_with(mock_config)
+
+    async def test_main_value_error_raises(self):
+        """main() re-raises ValueError from config."""
+        from src.listener import main
+
+        with (
+            patch("src.config.Config", side_effect=ValueError("bad config")),
+            patch("src.config.setup_logging"),
+            pytest.raises(ValueError, match="bad config"),
+        ):
+            await main()
+
+    async def test_main_generic_exception_raises(self):
+        """main() re-raises generic exceptions."""
+        from src.listener import main
+
+        with (
+            patch("src.config.Config", side_effect=RuntimeError("fatal")),
+            patch("src.config.setup_logging"),
+            pytest.raises(RuntimeError, match="fatal"),
+        ):
+            await main()

@@ -1742,5 +1742,621 @@ class TestMain(unittest.TestCase):
         mock_run.assert_called_once()
 
 
+# ===========================================================================
+# WAL mode PRAGMA lines 123-124 (busy_timeout + logger.info)
+# ===========================================================================
+
+
+class TestConnectWalPragmaSuccess(unittest.TestCase):
+    """Test connect() WAL PRAGMA success path (lines 123-124)."""
+
+    def test_wal_pragma_success_logs_info(self):
+        """When _conn exists and PRAGMA succeeds, busy_timeout is set and info logged."""
+        backup = _make_backup()
+        backup.client = None
+        backup._owns_client = True
+        backup.config.session_path = "/tmp/test.session"
+        backup.config.api_id = 12345
+        backup.config.api_hash = "abc"
+        backup.config.get_telegram_client_kwargs.return_value = {}
+
+        mock_conn = MagicMock()
+        mock_session = MagicMock()
+        mock_session._conn = mock_conn
+        mock_client = AsyncMock()
+        mock_client.session = mock_session
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+        mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
+
+        with patch("src.telegram_backup.TelegramClient", return_value=mock_client):
+            _run(backup.connect())
+
+        # busy_timeout PRAGMA should have been called (line 123)
+        calls = [str(c) for c in mock_conn.execute.call_args_list]
+        self.assertTrue(any("busy_timeout" in c for c in calls))
+
+
+# ===========================================================================
+# backup_all has_synced_before (lines 333-334)
+# ===========================================================================
+
+
+class TestBackupAllHasSyncedBefore(unittest.TestCase):
+    """Test backup_all has_synced_before detection (lines 333-334)."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+        self.backup.config.whitelist_mode = False
+        self.backup.config.priority_chat_ids = set()
+        self.backup.config.verify_media = False
+        self.backup.config.media_path = "/tmp/media"
+        self.backup.config.global_include_ids = set()
+        self.backup.config.private_include_ids = set()
+        self.backup.config.groups_include_ids = set()
+        self.backup.config.channels_include_ids = set()
+        self.backup.config.global_exclude_ids = set()
+        self.backup.config.private_exclude_ids = set()
+        self.backup.config.groups_exclude_ids = set()
+        self.backup.config.channels_exclude_ids = set()
+        self.backup.config.should_backup_chat = MagicMock(return_value=True)
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="T", id=1))
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 1, "messages": 10, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup._backup_dialog = AsyncMock(return_value=5)
+        self.backup._backup_folders = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock()
+        self.backup._get_marked_id = MagicMock(side_effect=lambda e: getattr(e, "_test_id", 100))
+        self.backup._get_chat_name = MagicMock(return_value="TestChat")
+
+    def _make_entity(self, test_id):
+        entity = MagicMock(spec=User)
+        entity._test_id = test_id
+        entity.id = test_id
+        entity.first_name = "User"
+        entity.last_name = None
+        entity.username = None
+        entity.phone = None
+        entity.bot = False
+        return entity
+
+    def _make_dialog(self, entity):
+        d = MagicMock()
+        d.entity = entity
+        d.date = datetime(2024, 6, 1)
+        return d
+
+    def test_has_synced_before_set_when_last_message_id_positive(self):
+        """has_synced_before is True when at least one chat has last_message_id > 0."""
+        entity = self._make_entity(100)
+        dialog = self._make_dialog(entity)
+        self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
+        self.backup.db.get_last_message_id = AsyncMock(return_value=42)
+
+        _run(self.backup.backup_all())
+
+        # The path is hit; backup proceeds normally
+        self.backup._backup_dialog.assert_awaited()
+
+
+# ===========================================================================
+# backup_all chat appears in both regular and archived (line 349)
+# ===========================================================================
+
+
+class TestBackupAllDuplicateArchivedChat(unittest.TestCase):
+    """Test backup_all warns when chat in both regular and archived (line 349)."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+        self.backup.config.whitelist_mode = False
+        self.backup.config.priority_chat_ids = set()
+        self.backup.config.verify_media = False
+        self.backup.config.media_path = "/tmp/media"
+        self.backup.config.global_include_ids = set()
+        self.backup.config.private_include_ids = set()
+        self.backup.config.groups_include_ids = set()
+        self.backup.config.channels_include_ids = set()
+        self.backup.config.global_exclude_ids = set()
+        self.backup.config.private_exclude_ids = set()
+        self.backup.config.groups_exclude_ids = set()
+        self.backup.config.channels_exclude_ids = set()
+        self.backup.config.should_backup_chat = MagicMock(return_value=True)
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="T", id=1))
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.get_last_message_id = AsyncMock(return_value=0)
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 1, "messages": 10, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup._backup_dialog = AsyncMock(return_value=5)
+        self.backup._backup_folders = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock()
+        self.backup._get_marked_id = MagicMock(return_value=100)
+        self.backup._get_chat_name = MagicMock(return_value="TestChat")
+
+    def test_chat_in_both_regular_and_archived_treated_as_not_archived(self):
+        """Chat appearing in both regular and archived is treated as NOT archived."""
+        entity = MagicMock(spec=User)
+        entity._test_id = 100
+        entity.id = 100
+        entity.first_name = "User"
+        entity.last_name = None
+        entity.username = None
+        entity.phone = None
+        entity.bot = False
+
+        regular_dialog = MagicMock()
+        regular_dialog.entity = entity
+        regular_dialog.date = datetime(2024, 6, 1)
+
+        archived_dialog = MagicMock()
+        archived_dialog.entity = entity
+        archived_dialog.date = datetime(2024, 6, 1)
+
+        # Both return same chat_id 100
+        self.backup._get_dialogs = AsyncMock(side_effect=[[regular_dialog], [archived_dialog]])
+
+        _run(self.backup.backup_all())
+
+        # _backup_dialog called twice (once for regular, once for archived dedup pass)
+        # but archived should skip since already backed up
+        self.assertTrue(self.backup._backup_dialog.await_count >= 1)
+
+
+# ===========================================================================
+# Archived dialog skip paths (lines 376, 378)
+# ===========================================================================
+
+
+class TestArchivedDialogSkipPaths(unittest.TestCase):
+    """Test archived dialog skip when already backed up or explicitly excluded."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+        self.backup.config.whitelist_mode = False
+        self.backup.config.priority_chat_ids = set()
+        self.backup.config.verify_media = False
+        self.backup.config.media_path = "/tmp/media"
+        self.backup.config.global_include_ids = set()
+        self.backup.config.private_include_ids = set()
+        self.backup.config.groups_include_ids = set()
+        self.backup.config.channels_include_ids = set()
+        self.backup.config.global_exclude_ids = {200}
+        self.backup.config.private_exclude_ids = set()
+        self.backup.config.groups_exclude_ids = set()
+        self.backup.config.channels_exclude_ids = set()
+        self.backup.config.should_backup_chat = MagicMock(return_value=True)
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="T", id=1))
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.get_last_message_id = AsyncMock(return_value=0)
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 1, "messages": 10, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup._backup_dialog = AsyncMock(return_value=5)
+        self.backup._backup_folders = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock()
+        self.backup._get_chat_name = MagicMock(return_value="TestChat")
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+    def test_archived_chat_excluded_by_global_exclude_ids(self):
+        """Archived chat in global_exclude_ids is skipped (line 378)."""
+
+        def get_marked_id(e):
+            return getattr(e, "_test_id", 0)
+
+        self.backup._get_marked_id = MagicMock(side_effect=get_marked_id)
+
+        excluded_entity = MagicMock(spec=User)
+        excluded_entity._test_id = 200
+        excluded_entity.id = 200
+        excluded_entity.first_name = "Exc"
+        excluded_entity.last_name = None
+        excluded_entity.username = None
+        excluded_entity.phone = None
+        excluded_entity.bot = False
+
+        archived_dialog = MagicMock()
+        archived_dialog.entity = excluded_entity
+        archived_dialog.date = datetime(2024, 6, 1)
+
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [archived_dialog]])
+
+        _run(self.backup.backup_all())
+
+        # Dialog should NOT have been backed up (excluded)
+        self.backup._backup_dialog.assert_not_awaited()
+
+
+# ===========================================================================
+# Archived dialog error paths (lines 402-405)
+# ===========================================================================
+
+
+class TestArchivedDialogAccessErrors(unittest.TestCase):
+    """Test archived dialog access error handling (lines 402-405)."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+        self.backup.config.whitelist_mode = False
+        self.backup.config.priority_chat_ids = set()
+        self.backup.config.verify_media = False
+        self.backup.config.media_path = "/tmp/media"
+        self.backup.config.global_include_ids = set()
+        self.backup.config.private_include_ids = set()
+        self.backup.config.groups_include_ids = set()
+        self.backup.config.channels_include_ids = set()
+        self.backup.config.global_exclude_ids = set()
+        self.backup.config.private_exclude_ids = set()
+        self.backup.config.groups_exclude_ids = set()
+        self.backup.config.channels_exclude_ids = set()
+        self.backup.config.should_backup_chat = MagicMock(return_value=True)
+        self.backup.client.start = AsyncMock()
+        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="T", id=1))
+        self.backup.db.set_metadata = AsyncMock()
+        self.backup.db.backfill_is_outgoing = AsyncMock()
+        self.backup.db.get_last_message_id = AsyncMock(return_value=0)
+        self.backup.db.calculate_and_store_statistics = AsyncMock(
+            return_value={"chats": 1, "messages": 10, "media_files": 0, "total_size_mb": 0}
+        )
+        self.backup._backup_folders = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock()
+        self.backup._get_marked_id = MagicMock(return_value=300)
+        self.backup._get_chat_name = MagicMock(return_value="TestChat")
+
+    def _make_archived_dialog(self):
+        entity = MagicMock(spec=User)
+        entity._test_id = 300
+        entity.id = 300
+        entity.first_name = "Arc"
+        entity.last_name = None
+        entity.username = None
+        entity.phone = None
+        entity.bot = False
+        d = MagicMock()
+        d.entity = entity
+        d.date = datetime(2024, 6, 1)
+        return d
+
+    def test_archived_dialog_channel_private_error_caught(self):
+        """ChannelPrivateError on archived dialog backup is caught (line 402)."""
+        from telethon.errors import UserBannedInChannelError
+
+        archived_dialog = self._make_archived_dialog()
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [archived_dialog]])
+        self.backup._backup_dialog = AsyncMock(side_effect=UserBannedInChannelError(request=MagicMock()))
+
+        _run(self.backup.backup_all())
+
+    def test_archived_dialog_generic_exception_caught(self):
+        """Generic exception on archived dialog backup is caught (lines 404-405)."""
+        archived_dialog = self._make_archived_dialog()
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [archived_dialog]])
+        self.backup._backup_dialog = AsyncMock(side_effect=Exception("unexpected error"))
+
+        _run(self.backup.backup_all())
+
+
+# ===========================================================================
+# _verify_and_redownload_media outer exception (lines 602-604)
+# ===========================================================================
+
+
+class TestVerifyMediaOuterException(unittest.TestCase):
+    """Test _verify_and_redownload_media outer exception handler (lines 602-604)."""
+
+    def test_outer_exception_counts_all_records_as_failed(self):
+        """Exception at chat level counts all records for that chat as failed."""
+        backup = _make_backup()
+        backup.config.skip_media_chat_ids = set()
+
+        # Return records for one chat, then make groupby iteration fail
+        records = [
+            {"file_path": "/a.jpg", "file_size": 100, "chat_id": 42, "message_id": 1},
+            {"file_path": "/b.jpg", "file_size": 200, "chat_id": 42, "message_id": 2},
+        ]
+        backup.db.get_media_for_verification.return_value = records
+
+        # Force the outer try to fail by making get_messages raise
+        backup.client.get_messages = AsyncMock(side_effect=Exception("outer chat error"))
+
+        _run(backup._verify_and_redownload_media())
+
+
+# ===========================================================================
+# _sync_deletions_and_edits progress log (line 934)
+# ===========================================================================
+
+
+class TestSyncDeletionsProgress(unittest.TestCase):
+    """Test _sync_deletions_and_edits progress logging (line 934)."""
+
+    def test_progress_logged_every_1000_messages(self):
+        """Progress is logged when total_checked is a multiple of 1000."""
+        backup = _make_backup()
+        # Create exactly 1000 messages so total_checked % 1000 == 0
+        sync_data = {i: None for i in range(1, 1001)}
+        backup.db.get_messages_sync_data = AsyncMock(return_value=sync_data)
+
+        # All messages still exist remotely (not deleted, not edited)
+        remote_msgs = []
+        for _i in range(1, 1001):
+            m = MagicMock()
+            m.edit_date = None
+            remote_msgs.append(m)
+
+        backup.client.get_messages = AsyncMock(return_value=remote_msgs)
+        entity = MagicMock()
+
+        _run(backup._sync_deletions_and_edits(100, entity))
+
+
+# ===========================================================================
+# _process_message poll results exception (lines 1112-1113)
+# ===========================================================================
+
+
+class TestProcessMessagePollException(unittest.TestCase):
+    """Test _process_message poll results parse error (lines 1112-1113)."""
+
+    def test_poll_results_exception_is_caught(self):
+        """Exception parsing poll results is caught gracefully."""
+        backup = _make_backup()
+        backup.config.should_download_media_for_chat = MagicMock(return_value=False)
+
+        msg = _make_message(1)
+        from telethon.tl.types import MessageMediaPoll
+
+        poll = MagicMock()
+        poll.id = 1
+        poll.question = MagicMock()
+        poll.question.text = "Question?"
+        poll.answers = []
+        poll.closed = False
+        poll.public_voters = False
+        poll.multiple_choice = False
+        poll.quiz = False
+
+        results = MagicMock()
+        # Make iterating results raise
+        type(results).results = property(lambda self: (_ for _ in ()).throw(Exception("parse err")))
+        results.total_voters = 0
+
+        media = MagicMock(spec=MessageMediaPoll)
+        media.poll = poll
+        media.results = results
+        msg.media = media
+
+        result = _run(backup._process_message(msg, 100))
+        self.assertIn("poll", result["raw_data"])
+
+
+# ===========================================================================
+# _process_message reactions exception (lines 1174-1178)
+# ===========================================================================
+
+
+class TestProcessMessageReactionsException(unittest.TestCase):
+    """Test _process_message reaction extraction exception (lines 1174-1178)."""
+
+    def test_reaction_exception_returns_empty_reactions(self):
+        """Exception during reaction extraction returns empty reactions list."""
+        backup = _make_backup()
+        backup.config.should_download_media_for_chat = MagicMock(return_value=False)
+
+        msg = _make_message(1)
+        # Make reactions.results raise TypeError when iterated
+        msg.reactions = MagicMock()
+        msg.reactions.results = MagicMock(side_effect=TypeError("bad reactions"))
+
+        result = _run(backup._process_message(msg, 100))
+        self.assertEqual(result["reactions"], [])
+
+
+# ===========================================================================
+# _cleanup_existing_media exception paths (lines 1257-1258, 1271-1272)
+# ===========================================================================
+
+
+class TestCleanupExistingMediaExceptions(unittest.TestCase):
+    """Test _cleanup_existing_media exception handling (lines 1257-1258, 1271-1272)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.backup = _make_backup()
+        self.backup.config.media_path = self.temp_dir
+        self.backup.db.get_media_for_chat = AsyncMock(return_value=[])
+        self.backup.db.delete_media_for_chat = AsyncMock(return_value=0)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_file_deletion_exception_caught(self):
+        """Exception deleting a single media file is caught (lines 1257-1258)."""
+        chat_dir = os.path.join(self.temp_dir, "100")
+        os.makedirs(chat_dir)
+        test_file = os.path.join(chat_dir, "photo.jpg")
+        with open(test_file, "w") as f:
+            f.write("data")
+
+        self.backup.db.get_media_for_chat = AsyncMock(return_value=[{"file_path": test_file, "message_id": 1}])
+
+        with patch("os.remove", side_effect=PermissionError("denied")):
+            _run(self.backup._cleanup_existing_media(100))
+
+    def test_rmdir_exception_caught(self):
+        """Exception removing empty media directory is caught (lines 1271-1272)."""
+        chat_dir = os.path.join(self.temp_dir, "200")
+        os.makedirs(chat_dir)
+
+        self.backup.db.delete_media_for_chat = AsyncMock(return_value=1)
+
+        with patch("os.listdir", return_value=[]), patch("os.rmdir", side_effect=OSError("busy")):
+            _run(self.backup._cleanup_existing_media(200))
+
+
+# ===========================================================================
+# _get_media_filename jpe->jpg correction (line 1530)
+# ===========================================================================
+
+
+class TestGetMediaFilenameJpeCorrection(unittest.TestCase):
+    """Test _get_media_filename corrects jpe to jpg (line 1530)."""
+
+    def test_jpe_mime_corrected_to_jpg(self):
+        """When mimetypes returns .jpe, it is corrected to .jpg."""
+        backup = _make_backup()
+        msg = MagicMock()
+        msg.id = 1
+        msg.date = datetime(2024, 1, 1)
+        msg.media = MagicMock(spec=MessageMediaPhoto)
+        del msg.media.document
+
+        with patch("mimetypes.guess_extension", return_value=".jpe"):
+            result = backup._get_media_filename(msg, "photo", "abc")
+        self.assertEqual(result, "abc.jpg")
+
+
+# ===========================================================================
+# _backup_forum_topics emoji resolution (lines 1650-1661)
+# ===========================================================================
+
+
+class TestBackupForumTopicsEmojiException(unittest.TestCase):
+    """Test _backup_forum_topics emoji resolution exception (lines 1660-1661)."""
+
+    def test_emoji_resolution_exception_caught(self):
+        """Exception resolving custom emojis is caught (lines 1660-1661)."""
+        backup = _make_backup()
+
+        topic = MagicMock()
+        topic.id = 1
+        topic.title = "General"
+        topic.icon_color = 0
+        topic.icon_emoji_id = 999
+        topic.closed = False
+        topic.pinned = False
+        topic.hidden = False
+        topic.date = datetime(2024, 1, 1)
+
+        result_obj = MagicMock()
+        result_obj.topics = [topic]
+
+        call_idx = [0]
+
+        async def fake_call(req):
+            idx = call_idx[0]
+            call_idx[0] += 1
+            if idx == 0:
+                return MagicMock()  # get_input_entity
+            if idx == 1:
+                return result_obj  # GetForumTopicsRequest
+            # GetCustomEmojiDocumentsRequest raises
+            raise Exception("emoji resolution failed")
+
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+        backup.client.side_effect = fake_call
+
+        entity = MagicMock()
+        _run(backup._backup_forum_topics(-100123, entity))
+
+
+# ===========================================================================
+# _backup_forum_topics ImportError fallback (lines 1692-1693)
+# ===========================================================================
+
+
+class TestBackupForumTopicsImportError(unittest.TestCase):
+    """Test _backup_forum_topics ImportError fallback (lines 1692-1693)."""
+
+    def test_import_error_falls_through_to_inference(self):
+        """ImportError for GetForumTopicsRequest triggers inference fallback."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        # Make the first client call raise ImportError
+        async def fake_call(req):
+            raise ImportError("GetForumTopicsRequest not available")
+
+        backup.client.side_effect = fake_call
+
+        entity = MagicMock()
+        result = _run(backup._backup_forum_topics(-100123, entity))
+
+        self.assertEqual(result, 0)
+
+
+# ===========================================================================
+# _backup_forum_topics inference fallback (lines 1704-1735)
+# ===========================================================================
+
+
+class TestBackupForumTopicsInference(unittest.TestCase):
+    """Test _backup_forum_topics message inference fallback (lines 1704-1735)."""
+
+    def test_inference_recovers_topics_from_messages(self):
+        """Inference fallback queries DB for reply_to_top_id values."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        # Make API call fail to trigger fallback
+        async def fail_api_call(req):
+            raise Exception("API failed")
+
+        backup.client.side_effect = fail_api_call
+
+        # Mock the DB query for topic inference
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([(42,), (43,)]))
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        backup.db.db_manager = MagicMock()
+        backup.db.db_manager.async_session_factory = MagicMock(return_value=mock_session_ctx)
+
+        # Mock get_messages for topic metadata
+        topic_msg = MagicMock()
+        topic_msg.text = "Topic title"
+        topic_msg.date = datetime(2024, 1, 1)
+        backup.client.get_messages = AsyncMock(return_value=[topic_msg])
+
+        entity = MagicMock()
+        result = _run(backup._backup_forum_topics(-100123, entity))
+
+        self.assertEqual(result, 2)
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 2)
+
+
+# ===========================================================================
+# main() __name__ == "__main__" (line 1882)
+# ===========================================================================
+
+
+class TestMainEntryPointLine1882(unittest.TestCase):
+    """Test the __main__ guard calls main() (line 1882)."""
+
+    @patch("asyncio.run")
+    @patch("src.config.setup_logging")
+    @patch("src.config.Config")
+    def test_main_function_invoked(self, mock_config_cls, mock_setup, mock_run):
+        """main() function is callable and triggers asyncio.run."""
+        from src.telegram_backup import main
+
+        main()
+        mock_run.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

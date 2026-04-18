@@ -1433,7 +1433,7 @@ class TestBackfillAndGapDetection:
 
     @pytest.mark.asyncio
     async def test_get_chats_with_messages_returns_list(self):
-        """get_chats_with_messages returns list of chat IDs."""
+        """get_all_chats_with_messages returns list of chat IDs."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
@@ -1639,3 +1639,1541 @@ class TestChatIdConsistency:
 
         user_id = 123456789
         assert user_id > 0
+
+
+# ============================================================
+# get_chats (pagination/filtering) — lines 251-313
+# ============================================================
+
+
+class TestGetChats:
+    """Test get_chats with pagination, search, archived, and folder filters."""
+
+    def _make_chat_row(self, chat_id=1, title="Chat", last_message_date=None):
+        """Build a fake result row with .Chat and .last_message_date."""
+        chat = MagicMock()
+        chat.id = chat_id
+        chat.type = "group"
+        chat.title = title
+        chat.username = None
+        chat.first_name = None
+        chat.last_name = None
+        chat.phone = None
+        chat.description = None
+        chat.participants_count = 5
+        chat.is_forum = 0
+        chat.is_archived = 0
+        chat.last_synced_message_id = None
+        chat.created_at = None
+        chat.updated_at = None
+        row = MagicMock()
+        row.Chat = chat
+        row.last_message_date = last_message_date
+        return row
+
+    @pytest.mark.asyncio
+    async def test_get_chats_returns_list_of_dicts(self):
+        """get_all_chats returns a list of chat dictionaries."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_chat_row(chat_id=100, title="My Group")
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats()
+        assert len(result) == 1
+        assert result[0]["id"] == 100
+        assert result[0]["title"] == "My Group"
+        assert "last_message_date" in result[0]
+
+    @pytest.mark.asyncio
+    async def test_get_chats_with_pagination(self):
+        """get_all_chats respects limit and offset parameters."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats(limit=10, offset=5)
+        assert result == []
+        mock_session.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_chats_with_search_filter(self):
+        """get_all_chats applies search filter to query."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats(search="test")
+        assert result == []
+        mock_session.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_chats_archived_true(self):
+        """get_all_chats with archived=True filters for archived chats only."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats(archived=True)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_chats_archived_false(self):
+        """get_all_chats with archived=False filters for non-archived chats."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats(archived=False)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_chats_with_folder_id(self):
+        """get_all_chats with folder_id filters by folder membership."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats(folder_id=5)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_chats_returns_multiple_chats(self):
+        """get_all_chats returns multiple chat dicts with correct fields."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row1 = self._make_chat_row(chat_id=1, title="First")
+        row2 = self._make_chat_row(chat_id=2, title="Second")
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row1, row2]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_chats()
+        assert len(result) == 2
+        assert result[0]["id"] == 1
+        assert result[1]["id"] == 2
+
+
+# ============================================================
+# get_chat_count with filters — lines 329, 334, 336, 339-340
+# ============================================================
+
+
+class TestGetChatCountFiltered:
+    """Test get_chat_count with search, archived, and folder_id filters."""
+
+    @pytest.mark.asyncio
+    async def test_get_chat_count_with_search(self):
+        """get_chat_count applies search filter."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 3
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_chat_count(search="hello")
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_get_chat_count_with_archived_true(self):
+        """get_chat_count with archived=True counts only archived."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 2
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_chat_count(archived=True)
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_get_chat_count_with_archived_false(self):
+        """get_chat_count with archived=False counts only non-archived."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 10
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_chat_count(archived=False)
+        assert result == 10
+
+    @pytest.mark.asyncio
+    async def test_get_chat_count_with_folder_id(self):
+        """get_chat_count with folder_id counts only chats in that folder."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 4
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_chat_count(folder_id=7)
+        assert result == 4
+
+
+# ============================================================
+# get_chat_stats — lines 612-635
+# ============================================================
+
+
+class TestGetChatStats:
+    """Test get_chat_stats returns aggregated chat statistics."""
+
+    @pytest.mark.asyncio
+    async def test_get_chat_stats_returns_all_fields(self):
+        """get_chat_stats returns messages, media_files, total_size, and date range."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        # Three sequential execute calls: msg count, media count+size, date range
+        msg_result = MagicMock()
+        msg_result.scalar.return_value = 150
+
+        media_result = MagicMock()
+        media_row = (25, 1048576)  # 25 files, 1MB total
+        media_result.one.return_value = media_row
+
+        date_result = MagicMock()
+        date_row = (datetime(2024, 1, 1), datetime(2025, 6, 1))
+        date_result.one.return_value = date_row
+
+        mock_session.execute.side_effect = [msg_result, media_result, date_result]
+
+        result = await adapter.get_chat_stats(100)
+        assert result["chat_id"] == 100
+        assert result["messages"] == 150
+        assert result["media_files"] == 25
+        assert result["total_size_bytes"] == 1048576
+        assert result["total_size_mb"] == 1.0
+        assert result["first_message_date"] is not None
+        assert result["last_message_date"] is not None
+
+    @pytest.mark.asyncio
+    async def test_get_chat_stats_empty_chat(self):
+        """get_chat_stats returns zeros for chat with no messages."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        msg_result = MagicMock()
+        msg_result.scalar.return_value = 0
+
+        media_result = MagicMock()
+        media_result.one.return_value = (0, 0)
+
+        date_result = MagicMock()
+        date_result.one.return_value = (None, None)
+
+        mock_session.execute.side_effect = [msg_result, media_result, date_result]
+
+        result = await adapter.get_chat_stats(999)
+        assert result["messages"] == 0
+        assert result["media_files"] == 0
+        assert result["total_size_bytes"] == 0
+        assert result["total_size_mb"] == 0
+        assert result["first_message_date"] is None
+        assert result["last_message_date"] is None
+
+
+# ============================================================
+# get_messages_by_date_range — lines 472-489
+# ============================================================
+
+
+class TestGetMessagesByDateRange:
+    """Test get_messages_by_date_range with various filter combinations."""
+
+    @pytest.mark.asyncio
+    async def test_returns_messages_in_range(self):
+        """get_messages_by_date_range returns message dicts filtered by date."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_msg = MagicMock()
+        mock_msg.id = 1
+        mock_msg.chat_id = 100
+        mock_msg.sender_id = 1
+        mock_msg.date = datetime(2025, 3, 15)
+        mock_msg.text = "In range"
+        mock_msg.reply_to_msg_id = None
+        mock_msg.reply_to_top_id = None
+        mock_msg.reply_to_text = None
+        mock_msg.forward_from_id = None
+        mock_msg.edit_date = None
+        mock_msg.raw_data = None
+        mock_msg.created_at = None
+        mock_msg.is_outgoing = 0
+        mock_msg.is_pinned = 0
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = [mock_msg]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_messages_by_date_range(
+            chat_id=100,
+            start_date=datetime(2025, 1, 1),
+            end_date=datetime(2025, 12, 31),
+        )
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_messages(self):
+        """get_messages_by_date_range returns empty list when no matches."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_messages_by_date_range(chat_id=100)
+        assert result == []
+
+
+# ============================================================
+# get_messages_paginated (search_messages) — lines 1078-1182
+# ============================================================
+
+
+class TestGetMessagesPaginated:
+    """Test get_messages_paginated with cursor-based and offset-based pagination."""
+
+    def _make_message_row(self, msg_id=1, text="Hello", media_type=None, raw_data=None):
+        """Build a fake joined result row for messages paginated query."""
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.chat_id = 100
+        msg.sender_id = 1
+        msg.date = datetime(2025, 6, 1)
+        msg.text = text
+        msg.reply_to_msg_id = None
+        msg.reply_to_top_id = None
+        msg.reply_to_text = None
+        msg.forward_from_id = None
+        msg.edit_date = None
+        msg.raw_data = raw_data
+        msg.created_at = None
+        msg.is_outgoing = 0
+        msg.is_pinned = 0
+
+        row = MagicMock()
+        row.Message = msg
+        row.first_name = "Alice"
+        row.last_name = "Smith"
+        row.username = "alice"
+        row.media_id = "file_1" if media_type else None
+        row.media_type = media_type
+        row.media_file_path = "/path/photo.jpg" if media_type else None
+        row.media_file_name = "photo.jpg" if media_type else None
+        row.media_file_size = 1024 if media_type else None
+        row.media_mime_type = "image/jpeg" if media_type else None
+        row.media_width = 800 if media_type else None
+        row.media_height = 600 if media_type else None
+        row.media_duration = None
+        return row
+
+    @pytest.mark.asyncio
+    async def test_returns_messages_with_user_info(self):
+        """get_messages_paginated returns messages enriched with user fields."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=10, text="Test msg")
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        # Mock get_reactions to return empty
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100, limit=50)
+        assert len(result) == 1
+        assert result[0]["id"] == 10
+        assert result[0]["first_name"] == "Alice"
+        assert result[0]["username"] == "alice"
+        assert result[0]["media"] is None
+
+    @pytest.mark.asyncio
+    async def test_returns_messages_with_media(self):
+        """get_messages_paginated includes nested media object when present."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=20, media_type="photo")
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100)
+        assert result[0]["media"] is not None
+        assert result[0]["media"]["type"] == "photo"
+        assert result[0]["media"]["file_path"] == "/path/photo.jpg"
+
+    @pytest.mark.asyncio
+    async def test_cursor_based_pagination_with_before_date(self):
+        """get_messages_paginated uses cursor-based pagination when before_date is set."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100, before_date=datetime(2025, 6, 1), before_id=50)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_with_search_filter(self):
+        """get_messages_paginated applies text search filter."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100, search="keyword")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_with_topic_id_filter(self):
+        """get_messages_paginated applies topic_id filter for forums."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100, topic_id=5)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_parses_raw_data_json(self):
+        """get_messages_paginated parses raw_data JSON string into dict."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=30, raw_data='{"key": "value"}')
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100)
+        assert result[0]["raw_data"] == {"key": "value"}
+
+    @pytest.mark.asyncio
+    async def test_handles_invalid_raw_data_json(self):
+        """get_messages_paginated returns empty dict for invalid raw_data JSON."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=31, raw_data="not json{{{")
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100)
+        assert result[0]["raw_data"] == {}
+
+    @pytest.mark.asyncio
+    async def test_fetches_reply_text_for_replies(self):
+        """get_messages_paginated looks up reply_to_text when reply_to_msg_id set."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=40)
+        row.Message.reply_to_msg_id = 39
+        row.Message.reply_to_text = None
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+
+        # Second execute call returns the reply text
+        reply_result = MagicMock()
+        reply_result.scalar_one_or_none.return_value = "Original message text"
+
+        mock_session.execute.side_effect = [mock_result, reply_result]
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100)
+        assert result[0]["reply_to_text"] == "Original message text"[:100]
+
+    @pytest.mark.asyncio
+    async def test_aggregates_reactions_by_emoji(self):
+        """get_messages_paginated groups reactions by emoji with counts."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_message_row(msg_id=50)
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        adapter.get_reactions = AsyncMock(
+            return_value=[
+                {"emoji": "thumbsup", "count": 2, "user_id": 1},
+                {"emoji": "thumbsup", "count": 1, "user_id": 2},
+                {"emoji": "heart", "count": 1, "user_id": 3},
+            ]
+        )
+
+        result = await adapter.get_messages_paginated(chat_id=100)
+        reactions = result[0]["reactions"]
+        emojis = {r["emoji"] for r in reactions}
+        assert "thumbsup" in emojis
+        assert "heart" in emojis
+        thumbsup = next(r for r in reactions if r["emoji"] == "thumbsup")
+        assert thumbsup["count"] == 3
+        assert len(thumbsup["user_ids"]) == 2
+
+
+# ============================================================
+# get_forum_topics — lines 1554-1598
+# ============================================================
+
+
+class TestGetForumTopics:
+    """Test get_forum_topics returns topics with message counts."""
+
+    @pytest.mark.asyncio
+    async def test_returns_topics_with_message_counts(self):
+        """get_forum_topics returns list of topic dicts with message_count."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        topic = MagicMock()
+        topic.id = 1
+        topic.chat_id = -1001234
+        topic.title = "General"
+        topic.icon_color = None
+        topic.icon_emoji_id = None
+        topic.icon_emoji = None
+        topic.is_closed = 0
+        topic.is_pinned = 1
+        topic.is_hidden = 0
+        topic.date = datetime(2025, 1, 1)
+
+        row = MagicMock()
+        row.ForumTopic = topic
+        row.message_count = 42
+        row.last_message_date = datetime(2025, 6, 1)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_forum_topics(-1001234)
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+        assert result[0]["title"] == "General"
+        assert result[0]["message_count"] == 42
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_message_count_for_empty_topic(self):
+        """get_forum_topics returns 0 message_count when no messages in topic."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        topic = MagicMock()
+        topic.id = 2
+        topic.chat_id = -1001234
+        topic.title = "Empty"
+        topic.icon_color = None
+        topic.icon_emoji_id = None
+        topic.icon_emoji = None
+        topic.is_closed = 0
+        topic.is_pinned = 0
+        topic.is_hidden = 0
+        topic.date = None
+
+        row = MagicMock()
+        row.ForumTopic = topic
+        row.message_count = None
+        row.last_message_date = None
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_forum_topics(-1001234)
+        assert result[0]["message_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_topics(self):
+        """get_forum_topics returns empty list for chat with no topics."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_forum_topics(-1001234)
+        assert result == []
+
+
+# ============================================================
+# upsert_forum_topic — lines 1515-1550
+# ============================================================
+
+
+class TestUpsertForumTopic:
+    """Test upsert_forum_topic for SQLite and PostgreSQL."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_forum_topic_sqlite_executes_and_commits(self):
+        """upsert_forum_topic on SQLite executes an upsert and commits."""
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=True)
+        adapter = DatabaseAdapter(db_manager)
+
+        topic_data = {"id": 1, "chat_id": -1001234, "title": "General"}
+        await adapter.upsert_forum_topic(topic_data)
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_upsert_forum_topic_postgres_executes_and_commits(self):
+        """upsert_forum_topic on PostgreSQL executes an upsert and commits."""
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+
+        topic_data = {"id": 2, "chat_id": -1001234, "title": "Dev"}
+        await adapter.upsert_forum_topic(topic_data)
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+
+# ============================================================
+# get_pinned_messages — lines 1316-1375
+# ============================================================
+
+
+class TestGetPinnedMessages:
+    """Test get_pinned_messages returns pinned messages with joins."""
+
+    @pytest.mark.asyncio
+    async def test_returns_pinned_messages_with_media(self):
+        """get_pinned_messages returns pinned message dicts with media info."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        msg = MagicMock()
+        msg.id = 10
+        msg.chat_id = 100
+        msg.sender_id = 1
+        msg.date = datetime(2025, 1, 1)
+        msg.text = "Pinned!"
+        msg.reply_to_msg_id = None
+        msg.reply_to_top_id = None
+        msg.reply_to_text = None
+        msg.forward_from_id = None
+        msg.edit_date = None
+        msg.raw_data = None
+        msg.created_at = None
+        msg.is_outgoing = 0
+        msg.is_pinned = 1
+
+        row = MagicMock()
+        row.Message = msg
+        row.first_name = "Bob"
+        row.last_name = None
+        row.username = "bob"
+        row.media_type = "photo"
+        row.media_id = "f1"
+        row.media_file_path = "/p.jpg"
+        row.media_file_name = "p.jpg"
+        row.media_file_size = 512
+        row.media_mime_type = "image/jpeg"
+        row.media_width = 100
+        row.media_height = 100
+        row.media_duration = None
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [row]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_pinned_messages(100)
+        assert len(result) == 1
+        assert result[0]["id"] == 10
+        assert result[0]["media"]["type"] == "photo"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_pinned(self):
+        """get_pinned_messages returns empty list when no messages are pinned."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_pinned_messages(100)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_pinned_message_without_media(self):
+        """get_pinned_messages returns None media when message has no media."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        msg = MagicMock()
+        msg.id = 11
+        msg.chat_id = 100
+        msg.sender_id = 1
+        msg.date = datetime(2025, 2, 1)
+        msg.text = "Text only pin"
+        msg.reply_to_msg_id = None
+        msg.reply_to_top_id = None
+        msg.reply_to_text = None
+        msg.forward_from_id = None
+        msg.edit_date = None
+        msg.raw_data = None
+        msg.created_at = None
+        msg.is_outgoing = 0
+        msg.is_pinned = 1
+
+        row = MagicMock()
+        row.Message = msg
+        row.first_name = "Alice"
+        row.last_name = None
+        row.username = "alice"
+        row.media_type = None
+        row.media_id = None
+        row.media_file_path = None
+        row.media_file_name = None
+        row.media_file_size = None
+        row.media_mime_type = None
+        row.media_width = None
+        row.media_height = None
+        row.media_duration = None
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [row]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_pinned_messages(100)
+        assert result[0]["media"] is None
+
+
+# ============================================================
+# sync_folder_members — lines 1634-1648
+# ============================================================
+
+
+class TestSyncFolderMembers:
+    """Test sync_folder_members replaces folder membership."""
+
+    @pytest.mark.asyncio
+    async def test_sync_folder_members_deletes_then_adds(self):
+        """sync_folder_members deletes old members and adds new ones."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        # The second execute returns existing chat IDs
+        existing_result = MagicMock()
+        existing_result.__iter__ = MagicMock(return_value=iter([(100,), (200,)]))
+
+        mock_session.execute.side_effect = [
+            None,  # delete existing members
+            existing_result,  # select existing chat IDs
+        ]
+
+        await adapter.sync_folder_members(folder_id=1, chat_ids=[100, 200, 300])
+
+        # delete + select existing = 2 execute calls
+        assert mock_session.execute.await_count == 2
+        # session.add called for each valid chat
+        assert mock_session.add.call_count == 2
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_folder_members_empty_chat_ids(self):
+        """sync_folder_members with empty list only deletes existing members."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        await adapter.sync_folder_members(folder_id=1, chat_ids=[])
+
+        mock_session.execute.assert_awaited_once()  # just the delete
+        mock_session.commit.assert_awaited_once()
+
+
+# ============================================================
+# get_all_folders — lines 1656-1685
+# ============================================================
+
+
+class TestGetAllFolders:
+    """Test get_all_folders returns folders with chat counts."""
+
+    @pytest.mark.asyncio
+    async def test_returns_folders_with_counts(self):
+        """get_all_folders returns list of folder dicts with chat_count."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        folder = MagicMock()
+        folder.id = 1
+        folder.title = "Work"
+        folder.emoticon = None
+        folder.sort_order = 0
+
+        row = MagicMock()
+        row.ChatFolder = folder
+        row.chat_count = 5
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_folders()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+        assert result[0]["title"] == "Work"
+        assert result[0]["chat_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_filters_empty_folders_for_restricted_users(self):
+        """get_all_folders skips folders with 0 visible chats when allowed_chat_ids set."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        folder = MagicMock()
+        folder.id = 1
+        folder.title = "Hidden"
+        folder.emoticon = None
+        folder.sort_order = 0
+
+        row = MagicMock()
+        row.ChatFolder = folder
+        row.chat_count = 0
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([row]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_folders(allowed_chat_ids={100})
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_folders(self):
+        """get_all_folders returns empty list when no folders exist."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_folders()
+        assert result == []
+
+
+# ============================================================
+# Viewer account: get, get_by_username, get_all, update — lines 1735-1765
+# ============================================================
+
+
+class TestViewerAccountExtended:
+    """Test viewer account read and update operations."""
+
+    def _mock_account(self, account_id=1, username="viewer1"):
+        account = MagicMock()
+        account.id = account_id
+        account.username = username
+        account.password_hash = "hash"
+        account.salt = "salt"
+        account.allowed_chat_ids = None
+        account.is_active = 1
+        account.no_download = 0
+        account.created_by = "admin"
+        account.created_at = datetime(2025, 1, 1)
+        account.updated_at = datetime(2025, 1, 1)
+        return account
+
+    @pytest.mark.asyncio
+    async def test_get_viewer_account_returns_dict_when_found(self):
+        """get_viewer_account returns a dict when account exists."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = self._mock_account()
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_viewer_account(1)
+        assert result is not None
+        assert result["id"] == 1
+        assert result["username"] == "viewer1"
+
+    @pytest.mark.asyncio
+    async def test_get_viewer_account_returns_none_when_missing(self):
+        """get_viewer_account returns None when account does not exist."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_viewer_account(999)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_viewer_by_username_returns_dict(self):
+        """get_viewer_by_username returns a dict when username exists."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = self._mock_account(username="alice")
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_viewer_by_username("alice")
+        assert result is not None
+        assert result["username"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_get_viewer_by_username_returns_none_when_missing(self):
+        """get_viewer_by_username returns None when username not found."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_viewer_by_username("nobody")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_all_viewer_accounts_returns_list(self):
+        """get_all_viewer_accounts returns list of all account dicts."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [
+            self._mock_account(1, "alice"),
+            self._mock_account(2, "bob"),
+        ]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_viewer_accounts()
+        assert len(result) == 2
+        assert result[0]["username"] == "alice"
+        assert result[1]["username"] == "bob"
+
+    @pytest.mark.asyncio
+    async def test_update_viewer_account_returns_updated_dict(self):
+        """update_viewer_account updates fields and returns dict."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        account = self._mock_account()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = account
+        mock_session.execute.return_value = mock_result
+        mock_session.refresh = AsyncMock()
+
+        result = await adapter.update_viewer_account(1, is_active=0)
+        assert result is not None
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_viewer_account_returns_none_when_missing(self):
+        """update_viewer_account returns None when account not found."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.update_viewer_account(999, is_active=0)
+        assert result is None
+
+
+# ============================================================
+# Audit log: create, get — lines 1804-1828
+# ============================================================
+
+
+class TestAuditLogOperations:
+    """Test create_audit_log and get_audit_logs."""
+
+    @pytest.mark.asyncio
+    async def test_create_audit_log_adds_and_commits(self):
+        """create_audit_log adds a log entry and commits."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        await adapter.create_audit_log(
+            username="admin",
+            role="master",
+            action="login",
+            endpoint="/api/login",
+            ip_address="127.0.0.1",
+        )
+
+        mock_session.add.assert_called_once()
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_audit_logs_returns_list(self):
+        """get_audit_logs returns list of log entry dicts."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        log_entry = MagicMock()
+        log_entry.id = 1
+        log_entry.username = "admin"
+        log_entry.role = "master"
+        log_entry.action = "login"
+        log_entry.endpoint = "/api/login"
+        log_entry.chat_id = None
+        log_entry.ip_address = "127.0.0.1"
+        log_entry.user_agent = "Mozilla"
+        log_entry.created_at = datetime(2025, 6, 1)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [log_entry]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_audit_logs()
+        assert len(result) == 1
+        assert result[0]["username"] == "admin"
+        assert result[0]["action"] == "login"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_logs_with_username_filter(self):
+        """get_audit_logs applies username filter."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_audit_logs(username="admin")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_audit_logs_with_action_filter(self):
+        """get_audit_logs applies action prefix filter."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_audit_logs(action="login")
+        assert result == []
+
+
+# ============================================================
+# Viewer sessions: load_all, cleanup_expired — lines 1895-1924
+# ============================================================
+
+
+class TestViewerSessionExtended:
+    """Test load_all_sessions and cleanup_expired_sessions."""
+
+    @pytest.mark.asyncio
+    async def test_load_all_sessions_returns_list(self):
+        """load_all_sessions returns list of all session dicts."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        session_row = MagicMock()
+        session_row.token = "tok1"
+        session_row.username = "admin"
+        session_row.role = "master"
+        session_row.allowed_chat_ids = None
+        session_row.no_download = 0
+        session_row.source_token_id = None
+        session_row.created_at = 1700000000.0
+        session_row.last_accessed = 1700001000.0
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [session_row]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.load_all_sessions()
+        assert len(result) == 1
+        assert result[0]["token"] == "tok1"
+
+    @pytest.mark.asyncio
+    async def test_load_all_sessions_empty(self):
+        """load_all_sessions returns empty list when no sessions exist."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.load_all_sessions()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_sessions_returns_count(self):
+        """cleanup_expired_sessions deletes old sessions and returns count."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 5
+        mock_session.execute.return_value = mock_result
+
+        count = await adapter.cleanup_expired_sessions(max_age_seconds=3600)
+        assert count == 5
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_save_session_postgres_executes_upsert(self):
+        """save_session on PostgreSQL executes an upsert and commits."""
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+
+        await adapter.save_session("token_pg", "admin", "master", None, 1700000000.0, 1700001000.0)
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+
+# ============================================================
+# Viewer tokens: create, get_all, verify, update — lines 1963-2015
+# ============================================================
+
+
+class TestViewerTokenExtended:
+    """Test create_viewer_token, get_all_viewer_tokens, verify_viewer_token, update_viewer_token."""
+
+    def _mock_token(self, token_id=1):
+        token = MagicMock()
+        token.id = token_id
+        token.label = "share-link"
+        token.token_hash = "abc123"
+        token.token_salt = "def456"
+        token.created_by = "admin"
+        token.allowed_chat_ids = "[100]"
+        token.is_revoked = 0
+        token.no_download = 0
+        token.expires_at = None
+        token.last_used_at = None
+        token.use_count = 0
+        token.created_at = datetime(2025, 6, 1)
+        return token
+
+    @pytest.mark.asyncio
+    async def test_create_viewer_token_adds_and_commits(self):
+        """create_viewer_token adds a token record and commits."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_session.refresh = AsyncMock()
+        # After refresh, the token object's attributes will be read via _viewer_token_to_dict
+        # We need to ensure the added object has the right attributes
+
+        result = await adapter.create_viewer_token(
+            label="test",
+            token_hash="hash",
+            token_salt="salt",
+            created_by="admin",
+            allowed_chat_ids="[100]",
+        )
+
+        mock_session.add.assert_called_once()
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_all_viewer_tokens_returns_list(self):
+        """get_all_viewer_tokens returns list of token dicts."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [self._mock_token(1), self._mock_token(2)]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_viewer_tokens()
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_verify_viewer_token_returns_none_when_no_match(self):
+        """verify_viewer_token returns None when no token matches."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.verify_viewer_token("invalid_token")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_verify_viewer_token_skips_expired_tokens(self):
+        """verify_viewer_token skips tokens that have expired."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        expired_token = self._mock_token()
+        expired_token.expires_at = datetime(2020, 1, 1)  # Expired in the past
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [expired_token]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.verify_viewer_token("some_token")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_update_viewer_token_returns_updated_dict(self):
+        """update_viewer_token updates allowed fields and returns dict."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        token = self._mock_token()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = token
+        mock_session.execute.return_value = mock_result
+        mock_session.refresh = AsyncMock()
+
+        result = await adapter.update_viewer_token(1, label="new-label")
+        assert result is not None
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_viewer_token_returns_none_when_missing(self):
+        """update_viewer_token returns None when token not found."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.update_viewer_token(999, label="x")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_update_viewer_token_ignores_disallowed_fields(self):
+        """update_viewer_token only sets allowed fields, ignoring others."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        token = self._mock_token()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = token
+        mock_session.execute.return_value = mock_result
+        mock_session.refresh = AsyncMock()
+
+        # token_hash is NOT in the allowed_fields set
+        await adapter.update_viewer_token(1, token_hash="evil", label="ok")
+        # token_hash should not have been set
+        assert token.token_hash == "abc123"  # unchanged
+
+
+# ============================================================
+# App settings: get_all, postgres set — lines 2056-2075
+# ============================================================
+
+
+class TestAppSettingsExtended:
+    """Test get_all_settings and set_setting on PostgreSQL."""
+
+    @pytest.mark.asyncio
+    async def test_get_all_settings_returns_dict(self):
+        """get_all_settings returns a dict of all key-value pairs."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        setting1 = MagicMock()
+        setting1.key = "theme"
+        setting1.value = "dark"
+        setting2 = MagicMock()
+        setting2.key = "lang"
+        setting2.value = "en"
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [setting1, setting2]
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_settings()
+        assert result == {"theme": "dark", "lang": "en"}
+
+    @pytest.mark.asyncio
+    async def test_get_all_settings_returns_empty_dict(self):
+        """get_all_settings returns empty dict when no settings exist."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_settings()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_set_setting_postgres_executes_and_commits(self):
+        """set_setting on PostgreSQL executes an upsert and commits."""
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+
+        await adapter.set_setting("theme", "dark")
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+
+# ============================================================
+# calculate_and_store_statistics — lines 955-998
+# ============================================================
+
+
+class TestCalculateAndStoreStatistics:
+    """Test calculate_and_store_statistics computes and stores stats."""
+
+    @pytest.mark.asyncio
+    async def test_calculates_and_stores_stats(self):
+        """calculate_and_store_statistics queries counts and stores via set_metadata."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        # 5 execute calls: chat count, msg count, media count, total size, per-chat stats
+        chat_result = MagicMock()
+        chat_result.scalar.return_value = 10
+
+        msg_result = MagicMock()
+        msg_result.scalar.return_value = 500
+
+        media_result = MagicMock()
+        media_result.scalar.return_value = 50
+
+        size_result = MagicMock()
+        size_result.scalar.return_value = 10485760  # 10 MB
+
+        chat_stats_row = MagicMock()
+        chat_stats_row.chat_id = 100
+        chat_stats_row.message_count = 500
+        per_chat_result = MagicMock()
+        per_chat_result.__iter__ = MagicMock(return_value=iter([chat_stats_row]))
+
+        mock_session.execute.side_effect = [
+            chat_result,
+            msg_result,
+            media_result,
+            size_result,
+            per_chat_result,
+        ]
+
+        # Mock set_metadata
+        adapter.set_metadata = AsyncMock()
+
+        result = await adapter.calculate_and_store_statistics()
+        assert result["chats"] == 10
+        assert result["messages"] == 500
+        assert result["media_files"] == 50
+        assert result["total_size_mb"] == 10.0
+        assert 100 in result["per_chat_message_counts"]
+
+        # Verify it stored stats
+        assert adapter.set_metadata.await_count == 2
+
+
+# ============================================================
+# find_message_by_date_with_joins — lines 1197-1288
+# ============================================================
+
+
+class TestFindMessageByDateWithJoins:
+    """Test find_message_by_date_with_joins fallback logic."""
+
+    def _make_joined_row(self, msg_id=1, media_type=None, reply_to=None):
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.chat_id = 100
+        msg.sender_id = 1
+        msg.date = datetime(2025, 6, 1)
+        msg.text = "Found"
+        msg.reply_to_msg_id = reply_to
+        msg.reply_to_top_id = None
+        msg.reply_to_text = None
+        msg.forward_from_id = None
+        msg.edit_date = None
+        msg.raw_data = None
+        msg.created_at = None
+        msg.is_outgoing = 0
+        msg.is_pinned = 0
+
+        row = MagicMock()
+        row.Message = msg
+        row.first_name = "Alice"
+        row.last_name = None
+        row.username = "alice"
+        row.media_type = media_type
+        row.media_id = "f1" if media_type else None
+        row.media_file_path = "/p.jpg" if media_type else None
+        row.media_file_name = "p.jpg" if media_type else None
+        row.media_file_size = 1024 if media_type else None
+        row.media_mime_type = "image/jpeg" if media_type else None
+        row.media_width = 800 if media_type else None
+        row.media_height = 600 if media_type else None
+        row.media_duration = None
+        return row
+
+    @pytest.mark.asyncio
+    async def test_finds_message_on_or_after_target_date(self):
+        """find_message_by_date_with_joins returns message on/after target date."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_joined_row(msg_id=10)
+        result1 = MagicMock()
+        result1.first.return_value = row
+        mock_session.execute.return_value = result1
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.find_message_by_date_with_joins(100, datetime(2025, 5, 1))
+        assert result is not None
+        assert result["id"] == 10
+        assert result["first_name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_before_target_date(self):
+        """find_message_by_date_with_joins tries before target if no on/after found."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_joined_row(msg_id=5)
+
+        # First execute: no result on/after
+        result1 = MagicMock()
+        result1.first.return_value = None
+        # Second execute: found before target
+        result2 = MagicMock()
+        result2.first.return_value = row
+
+        mock_session.execute.side_effect = [result1, result2]
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.find_message_by_date_with_joins(100, datetime(2025, 12, 1))
+        assert result is not None
+        assert result["id"] == 5
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_first_message(self):
+        """find_message_by_date_with_joins tries first message if no before found."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_joined_row(msg_id=1)
+
+        result1 = MagicMock()
+        result1.first.return_value = None
+        result2 = MagicMock()
+        result2.first.return_value = None
+        result3 = MagicMock()
+        result3.first.return_value = row
+
+        mock_session.execute.side_effect = [result1, result2, result3]
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.find_message_by_date_with_joins(100, datetime(2020, 1, 1))
+        assert result is not None
+        assert result["id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_chat_has_no_messages(self):
+        """find_message_by_date_with_joins returns None for empty chat."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        empty = MagicMock()
+        empty.first.return_value = None
+
+        mock_session.execute.return_value = empty
+
+        result = await adapter.find_message_by_date_with_joins(999, datetime(2025, 1, 1))
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_includes_media_when_present(self):
+        """find_message_by_date_with_joins includes nested media object."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        row = self._make_joined_row(msg_id=20, media_type="video")
+        result1 = MagicMock()
+        result1.first.return_value = row
+        mock_session.execute.return_value = result1
+
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.find_message_by_date_with_joins(100, datetime(2025, 1, 1))
+        assert result["media"] is not None
+        assert result["media"]["type"] == "video"
+
+
+# ============================================================
+# upsert_chat_folder postgres — lines 1625-1626
+# ============================================================
+
+
+class TestUpsertChatFolderPostgres:
+    """Test upsert_chat_folder on PostgreSQL path."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_chat_folder_postgres_executes_and_commits(self):
+        """upsert_chat_folder on PostgreSQL executes an upsert and commits."""
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+
+        folder_data = {"id": 1, "title": "Work", "emoticon": None, "sort_order": 0}
+        await adapter.upsert_chat_folder(folder_data)
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
