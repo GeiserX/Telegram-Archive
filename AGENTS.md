@@ -178,7 +178,23 @@ config.should_skip_topic = MagicMock(return_value=False)
 
 Use: pytest, pytest-asyncio, pytest-cov
 
-### Coverage Target: 80%
+### Coverage Target: 96%+ (non-web), 30-75% (web modules on CI)
+
+- Web tests use `pytest.importorskip("fastapi")` — they skip locally when pydantic versions mismatch but run on CI (Python 3.14, Ubuntu)
+- `asyncio_mode = "auto"` in pyproject.toml means `@pytest.mark.asyncio` decorators are NOT needed
+- GitGuardian scans PRs — avoid realistic-looking passwords/secrets even in test data (use obvious fakes like `test@value/here`)
+- Test files use `unittest.TestCase` classes with `setUp`/helper methods for mock wiring
+
+### Version Files
+
+Both `pyproject.toml` AND `src/__init__.py` must be updated together when bumping versions.
+
+### Release Workflow
+
+CI auto-creates GitHub releases from `v*.*.*` tags via `.github/workflows/release.yml`. Do NOT manually create releases — just tag and push:
+```bash
+git tag v7.6.0 && git push origin v7.6.0
+```
 
 ## Alembic Migrations — Critical Reminders
 
