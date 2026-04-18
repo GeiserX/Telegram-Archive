@@ -490,5 +490,339 @@ class TestShutilMoveFallback(unittest.TestCase):
         self.assertTrue(os.path.islink(chat_file))
 
 
+class TestListenerDownloadMediaDedup(unittest.TestCase):
+    """Tests for listener.py _download_media symlink/dedup changes."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.media_path = os.path.join(self.temp_dir, "media")
+        os.makedirs(self.media_path)
+
+        from src.listener import TelegramListener
+
+        self.listener = TelegramListener.__new__(TelegramListener)
+        self.listener.config = MagicMock()
+        self.listener.config.media_path = self.media_path
+        self.listener.config.deduplicate_media = True
+        self.listener.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
+        self.listener.client = AsyncMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _make_message(self, file_id="listener_abc"):
+        msg = MagicMock()
+        msg.id = 1
+        msg.media = MagicMock()
+        msg.media.photo = MagicMock()
+        msg.media.photo.id = file_id
+        msg.media.photo.sizes = [MagicMock(size=1024)]
+        msg.media.document = None
+        return msg
+
+    def test_listener_dedup_pre_unlink_dangling_shared_exists(self):
+        """Listener removes dangling symlink before creating new one when shared file exists."""
+        chat_id = 100
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+
+        file_name = "photo_abc.jpg"
+        shared_file = os.path.join(shared_dir, file_name)
+        chat_file = os.path.join(chat_dir, file_name)
+
+        # Create shared file
+        with open(shared_file, "wb") as f:
+            f.write(b"shared data")
+
+        # Create dangling symlink in chat dir
+        old_target = os.path.join(shared_dir, "old_gone.jpg")
+        with open(old_target, "w") as f:
+            f.write("old")
+        os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        os.remove(old_target)
+
+        # Dangling: lexists=True, exists=False
+        self.assertTrue(os.path.lexists(chat_file))
+        self.assertFalse(os.path.exists(chat_file))
+
+        msg = self._make_message()
+        self.listener._get_media_type = MagicMock(return_value="photo")
+        self.listener._get_media_filename = MagicMock(return_value=file_name)
+
+        result = self._run(self.listener._download_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        # After fix: symlink should now point to the correct shared file
+        self.assertTrue(os.path.exists(chat_file))
+        self.assertTrue(os.path.islink(chat_file))
+
+    def test_listener_dedup_copy2_fallback_when_symlink_fails(self):
+        """Listener uses shutil.copy2 when symlink fails on shared-exists path."""
+        chat_id = 200
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+
+        file_name = "photo_copy.jpg"
+        shared_file = os.path.join(shared_dir, file_name)
+        chat_file = os.path.join(chat_dir, file_name)
+
+        with open(shared_file, "wb") as f:
+            f.write(b"data to copy")
+
+        msg = self._make_message()
+        self.listener._get_media_type = MagicMock(return_value="photo")
+        self.listener._get_media_filename = MagicMock(return_value=file_name)
+
+        symlink_error = OSError(errno.EPERM, "Operation not permitted")
+        with patch("os.symlink", side_effect=symlink_error), patch("shutil.copy2") as mock_copy:
+            result = self._run(self.listener._download_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        mock_copy.assert_called_once_with(shared_file, chat_file)
+
+    def test_listener_dedup_first_download_captures_return_value(self):
+        """Listener captures download_media return value for first-time download."""
+        chat_id = 300
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+
+        file_name = "video_xyz"
+        returned_path = os.path.join(shared_dir, "video_xyz.mp4")
+
+        def fake_download(message, path):
+            with open(returned_path, "wb") as f:
+                f.write(b"video content")
+            return returned_path
+
+        self.listener.client.download_media = AsyncMock(side_effect=fake_download)
+        self.listener._get_media_type = MagicMock(return_value="video")
+        self.listener._get_media_filename = MagicMock(return_value=file_name)
+
+        msg = self._make_message(file_id="xyz")
+
+        result = self._run(self.listener._download_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        # Symlink should point to the .mp4 path returned by Telethon
+        chat_file = os.path.join(chat_dir, file_name)
+        if os.path.lexists(chat_file):
+            resolved = os.path.realpath(chat_file)
+            self.assertEqual(resolved, os.path.realpath(returned_path))
+
+    def test_listener_dedup_first_download_pre_unlink_dangling(self):
+        """Listener removes dangling symlink before new symlink on first-download path."""
+        chat_id = 400
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+
+        file_name = "doc_abc.pdf"
+        chat_file = os.path.join(chat_dir, file_name)
+
+        # Create dangling symlink
+        old_target = os.path.join(shared_dir, "old.pdf")
+        with open(old_target, "w") as f:
+            f.write("old")
+        os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        os.remove(old_target)
+
+        self.assertTrue(os.path.lexists(chat_file))
+        self.assertFalse(os.path.exists(chat_file))
+
+        new_shared = os.path.join(shared_dir, file_name)
+
+        def fake_download(message, path):
+            with open(path, "wb") as f:
+                f.write(b"new pdf content")
+            return path
+
+        self.listener.client.download_media = AsyncMock(side_effect=fake_download)
+        self.listener._get_media_type = MagicMock(return_value="document")
+        self.listener._get_media_filename = MagicMock(return_value=file_name)
+
+        msg = self._make_message(file_id="abc")
+
+        result = self._run(self.listener._download_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        self.assertTrue(os.path.exists(chat_file))
+        self.assertTrue(os.path.islink(chat_file))
+
+    def test_listener_no_dedup_captures_return_value(self):
+        """Listener captures download_media return value in non-dedup path."""
+        chat_id = 500
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(chat_dir)
+
+        self.listener.config.deduplicate_media = False
+        file_name = "photo_no_dedup.jpg"
+        returned_path = os.path.join(chat_dir, "photo_no_dedup.mp4")
+
+        def fake_download(message, path):
+            with open(returned_path, "wb") as f:
+                f.write(b"photo data")
+            return returned_path
+
+        self.listener.client.download_media = AsyncMock(side_effect=fake_download)
+        self.listener._get_media_type = MagicMock(return_value="photo")
+        self.listener._get_media_filename = MagicMock(return_value=file_name)
+
+        msg = self._make_message(file_id="nodedup")
+
+        result = self._run(self.listener._download_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+
+
+class TestBackupNonDedupCapturesReturnValue(unittest.TestCase):
+    """Test telegram_backup.py non-dedup path captures download_media return value."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.media_path = os.path.join(self.temp_dir, "media")
+        os.makedirs(self.media_path)
+
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.config = MagicMock()
+        self.backup.config.media_path = self.media_path
+        self.backup.config.deduplicate_media = False
+        self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
+        self.backup.client = AsyncMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _make_message(self, msg_id=1, file_id="nodedup123"):
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.date = MagicMock()
+        msg.date.strftime = MagicMock(return_value="20240101_120000")
+        msg.media = MagicMock()
+        msg.media.photo = MagicMock()
+        msg.media.photo.id = file_id
+        msg.media.document = None
+        return msg
+
+    def test_non_dedup_captures_telethon_return_path(self):
+        """Non-dedup download captures actual path from download_media (e.g., with .mp4 appended)."""
+        chat_id = 600
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(chat_dir)
+
+        file_name = "photo_plain"
+        returned_path = os.path.join(chat_dir, "photo_plain.jpg")
+
+        def fake_download(message, path):
+            with open(returned_path, "wb") as f:
+                f.write(b"jpeg data")
+            return returned_path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+        self.backup._get_media_type = MagicMock(return_value="photo")
+        self.backup._get_media_filename = MagicMock(return_value=file_name)
+        self.backup._get_media_size = MagicMock(return_value=512)
+
+        msg = self._make_message()
+
+        result = self._run(self.backup._process_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["downloaded"])
+
+
+class TestBackupDedupSymlinkFailFallback(unittest.TestCase):
+    """Test telegram_backup.py dedup symlink-failed path captures download return value."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.media_path = os.path.join(self.temp_dir, "media")
+        os.makedirs(self.media_path)
+
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.config = MagicMock()
+        self.backup.config.media_path = self.media_path
+        self.backup.config.deduplicate_media = True
+        self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
+        self.backup.client = AsyncMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _make_message(self, msg_id=1, file_id="fallback_dedup"):
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.date = MagicMock()
+        msg.date.strftime = MagicMock(return_value="20240101_120000")
+        msg.media = MagicMock()
+        msg.media.photo = MagicMock()
+        msg.media.photo.id = file_id
+        msg.media.document = None
+        return msg
+
+    def test_dedup_symlink_fail_captures_return_value(self):
+        """When shared file exists but symlink fails, fallback download captures return value."""
+        chat_id = 700
+        shared_dir = os.path.join(self.media_path, "_shared")
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(shared_dir)
+        os.makedirs(chat_dir)
+
+        file_name = "photo_shared.jpg"
+        shared_file = os.path.join(shared_dir, file_name)
+        chat_file = os.path.join(chat_dir, file_name)
+        returned_path = os.path.join(chat_dir, "photo_shared.jpeg")
+
+        with open(shared_file, "wb") as f:
+            f.write(b"shared image")
+
+        def fake_download(message, path):
+            with open(returned_path, "wb") as f:
+                f.write(b"downloaded copy")
+            return returned_path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+        self.backup._get_media_type = MagicMock(return_value="photo")
+        self.backup._get_media_filename = MagicMock(return_value=file_name)
+        self.backup._get_media_size = MagicMock(return_value=512)
+
+        msg = self._make_message()
+
+        symlink_error = OSError(errno.EPERM, "Operation not permitted")
+        with patch("os.symlink", side_effect=symlink_error):
+            result = self._run(self.backup._process_media(msg, chat_id))
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["downloaded"])
+        self.backup.client.download_media.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()
