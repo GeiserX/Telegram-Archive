@@ -31,6 +31,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .message_utils import extract_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -660,9 +661,14 @@ class TelegramBackup:
         running_max_id = last_message_id
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
+            running_max_id = max(running_max_id, message.id)
+
+            # Skip messages belonging to excluded forum topics
+            if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
+                continue
+
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
-            running_max_id = max(running_max_id, message.id)
 
             if len(batch_data) >= batch_size:
                 await self._commit_batch(batch_data, chat_id)
@@ -686,8 +692,10 @@ class TelegramBackup:
             grand_total += count
             uncheckpointed_count += count
 
-        # Final checkpoint for any un-checkpointed messages
-        if uncheckpointed_count > 0:
+        # Final checkpoint: persist when there are un-checkpointed messages OR
+        # when the cursor advanced purely from skipped (topic-filtered) messages
+        # that were never counted in uncheckpointed_count.
+        if uncheckpointed_count > 0 or (grand_total == 0 and running_max_id > last_message_id):
             await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
 
         # Sync deletions and edits if enabled (expensive!)
@@ -742,6 +750,10 @@ class TelegramBackup:
         recovered = 0
 
         async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
+            # Skip messages belonging to excluded forum topics
+            if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
+                continue
+
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
 
@@ -1019,12 +1031,7 @@ class TelegramBackup:
         # Extract message data
         # v6.0.0: media_type, media_id, media_path removed - media stored in separate table
         # v6.2.0: reply_to_top_id added for forum topic threading
-        reply_to_top_id = None
-        if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-            reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
-            # If reply_to_top_id is not set but it's a forum topic, use reply_to_msg_id
-            if reply_to_top_id is None:
-                reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
+        reply_to_top_id = extract_topic_id(message)
 
         message_data = {
             "id": message.id,
@@ -1658,6 +1665,9 @@ class TelegramBackup:
                         "is_hidden": 1 if getattr(topic, "hidden", False) else 0,
                         "date": getattr(topic, "date", None),
                     }
+                    if self.config.should_skip_topic(chat_id, topic.id):
+                        logger.debug(f"  → Skipping excluded topic {topic.id}")
+                        continue
                     await self.db.upsert_forum_topic(topic_data)
                     topics_count += 1
 
@@ -1691,6 +1701,9 @@ class TelegramBackup:
 
             topics_count = 0
             for topic_id in topic_ids:
+                if self.config.should_skip_topic(chat_id, topic_id):
+                    logger.debug(f"  → Skipping excluded topic {topic_id}")
+                    continue
                 # Try to get the topic's first message for metadata
                 try:
                     msgs = await self.client.get_messages(entity, ids=[topic_id])

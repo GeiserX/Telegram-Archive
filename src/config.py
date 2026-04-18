@@ -184,6 +184,11 @@ class Config:
         # Delete existing media files and records for chats in skip list (reclaim storage)
         self.skip_media_delete_existing = os.getenv("SKIP_MEDIA_DELETE_EXISTING", "true").lower() == "true"
 
+        # Skip specific topics inside forum supergroups
+        # Format: SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337
+        # Each entry is chat_id:topic_id — skips that topic but keeps the rest of the chat
+        self.skip_topic_ids = self._parse_topic_skip_list(os.getenv("SKIP_TOPIC_IDS", ""))
+
         # Session configuration
         self.session_name = os.getenv("SESSION_NAME", "telegram_backup")
         self.telegram_proxy = build_telegram_proxy_from_env()
@@ -363,6 +368,9 @@ class Config:
         if self.skip_media_chat_ids:
             cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
             logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
+        if self.skip_topic_ids:
+            total_topics = sum(len(t) for t in self.skip_topic_ids.values())
+            logger.info(f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)")
         if self.telegram_proxy:
             logger.info("Telegram proxy enabled (type=socks5, rdns=%s)", self.telegram_proxy["rdns"])
             logger.debug(
@@ -376,6 +384,49 @@ class Config:
         if not id_str or not id_str.strip():
             return set()
         return {int(id.strip()) for id in id_str.split(",") if id.strip()}
+
+    def _parse_topic_skip_list(self, skip_str: str) -> dict[int, set[int]]:
+        """Parse SKIP_TOPIC_IDS into {chat_id: {topic_id, ...}}.
+
+        Format: chat_id:topic_id,chat_id:topic_id,...
+        Example: -1001234567890:42,-1001234567890:1337,-1009876543210:7
+        """
+        result: dict[int, set[int]] = {}
+        if not skip_str or not skip_str.strip():
+            return result
+        for entry in skip_str.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                raise ValueError(f"Invalid SKIP_TOPIC_IDS entry '{entry}': expected format chat_id:topic_id")
+            chat_part, topic_part = entry.split(":", 1)
+            try:
+                chat_id = int(chat_part.strip())
+                topic_id = int(topic_part.strip())
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid SKIP_TOPIC_IDS entry '{entry}': chat_id and topic_id must be integers"
+                ) from e
+            result.setdefault(chat_id, set()).add(topic_id)
+        return result
+
+    def should_skip_topic(self, chat_id: int, topic_id: int | None) -> bool:
+        """Check if a specific topic in a chat should be skipped.
+
+        Args:
+            chat_id: Telegram chat ID (marked format)
+            topic_id: Forum topic ID (reply_to_top_id), or None for non-topic messages
+
+        Returns:
+            True if this topic should be skipped, False otherwise
+        """
+        if topic_id is None or not self.skip_topic_ids:
+            return False
+        skip_set = self.skip_topic_ids.get(chat_id)
+        if skip_set is None:
+            return False
+        return topic_id in skip_set
 
     def _get_required_env(self, key: str, value_type: type):
         """

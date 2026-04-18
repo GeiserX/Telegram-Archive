@@ -36,6 +36,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .message_utils import extract_topic_id
 from .realtime import NotificationType, RealtimeNotifier
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,9 @@ class TelegramListener:
                 logger.info("  LISTEN_NEW_MESSAGES_MEDIA: false (media on scheduled backup)")
         else:
             logger.info("  LISTEN_NEW_MESSAGES: false (saved on scheduled backup)")
+        if config.skip_topic_ids:
+            total = sum(len(t) for t in config.skip_topic_ids.values())
+            logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
         logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
         logger.info(f"  Protection window: {config.mass_operation_window_seconds}s")
         logger.info(f"  Buffer delay: {config.mass_operation_buffer_delay}s (operations held before applying)")
@@ -655,9 +659,12 @@ class TelegramListener:
                 if not self._should_process_chat(chat_id):
                     return
 
-                self.stats["edits_received"] += 1
-
+                # Skip edits in excluded forum topics
                 message = event.message
+                if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
+                    return
+
+                self.stats["edits_received"] += 1
                 new_text = message.text or ""
                 edit_date = message.edit_date
 
@@ -790,14 +797,23 @@ class TelegramListener:
                 if not self._should_process_chat(chat_id):
                     return
 
-                self.stats["new_messages_received"] += 1
-
-                # If LISTEN_NEW_MESSAGES is disabled, we're done
-                if not self.config.listen_new_messages:
-                    return
-
                 # Save the message to database
                 message = event.message
+
+                # Extract topic ID early for filtering and message_data
+                # v6.2.0: reply_to_top_id added for forum topic threading
+                reply_to_top_id = extract_topic_id(message)
+
+                # Skip messages in excluded forum topics
+                if self.config.should_skip_topic(chat_id, reply_to_top_id):
+                    logger.debug(f"⏭️ Skipping message in excluded topic {reply_to_top_id}: chat={chat_id}")
+                    return
+
+                self.stats["new_messages_received"] += 1
+
+                # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
+                if not self.config.listen_new_messages:
+                    return
 
                 # Ensure chat exists in database (prevents FK violation for new chats)
                 chat_entity = await event.get_chat()
@@ -823,15 +839,6 @@ class TelegramListener:
                         "is_bot": message.sender.bot,
                     }
                     await self.db.upsert_user(user_data)
-
-                # Extract message data
-                # v6.0.0: media_type, media_id, media_path removed - stored in media table
-                # v6.2.0: reply_to_top_id added for forum topic threading
-                reply_to_top_id = None
-                if message.reply_to and getattr(message.reply_to, "forum_topic", False):
-                    reply_to_top_id = getattr(message.reply_to, "reply_to_top_id", None)
-                    if reply_to_top_id is None:
-                        reply_to_top_id = getattr(message.reply_to, "reply_to_msg_id", None)
 
                 message_data = {
                     "id": message.id,

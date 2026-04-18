@@ -258,6 +258,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
 | `SKIP_MEDIA_DELETE_EXISTING` | `true` | B | Delete existing media files and DB records for chats in skip list to reclaim storage |
+| `SKIP_TOPIC_IDS` | - | B | Skip specific topics in forum supergroups (format: `chat_id:topic_id,...`) |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | **Chat Filtering** | | | See [Chat Filtering](#chat-filtering) below |
 | `CHAT_IDS` | - | B | **Whitelist mode**: backup ONLY these chats (ignores all other filters) |
@@ -340,6 +341,15 @@ CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 - **Supergroups/Channels**: negative with `-100` prefix (`-1001234567890`)
 
 Find a chat's ID by forwarding a message to [@userinfobot](https://t.me/userinfobot).
+
+**Topic filtering** — For forum-enabled supergroups, you can exclude specific topics without excluding the entire chat using `SKIP_TOPIC_IDS`:
+
+```bash
+# Skip topics 42 and 1337 in one chat, and topic 7 in another
+SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337,-1009876543210:7
+```
+
+> Note: The topic-creating service message (1 per topic) may still be backed up since it lacks `reply_to` metadata. This does not affect user-generated content.
 
 ### Real-time Listener
 
