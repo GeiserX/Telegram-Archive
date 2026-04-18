@@ -14,6 +14,99 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 - **Dangling dedup symlinks no longer cause infinite redownload loops** — When `DEDUPLICATE_MEDIA` is enabled and `VERIFY_MEDIA` runs, dangling symlinks (where the target was renamed by Telethon) are now detected via `os.path.lexists()` instead of `os.path.exists()`, which follows symlinks. The download return value is now captured to use the actual on-disk filename for symlink targets. Stale symlinks are removed before recreation to prevent `Errno 17` (file exists) errors. Applies to both scheduled backup and real-time listener (#115)
 
+## [7.5.0] - 2026-04-13
+
+### Added
+
+- **SOCKS5 proxy support** — Route all Telegram connections through a SOCKS5 proxy, useful in regions where Telegram is blocked or behind corporate firewalls. New env vars: `TELEGRAM_PROXY_TYPE`, `TELEGRAM_PROXY_ADDR`, `TELEGRAM_PROXY_PORT`, `TELEGRAM_PROXY_USERNAME`, `TELEGRAM_PROXY_PASSWORD`, `TELEGRAM_PROXY_RDNS` (#104)
+- **Validation hardening** — Port range (1-65535), username/password pairing, boolean RDNS parsing, and case-insensitive proxy type
+- **Dependency** — Added `python-socks[asyncio]>=2.7.1` (required by Telethon for SOCKS5 transport)
+
+### Security
+
+- **Proxy endpoint details** — Proxy configuration logged at DEBUG (not INFO) to avoid exposing infrastructure topology
+
+### Contributors
+
+- Thanks to [@samnyan](https://github.com/samnyan) for the proxy feature contribution!
+
+## [7.4.2] - 2026-03-31
+
+### Fixed
+
+- **Listener shutdown KeyError** — `_log_stats()` referenced non-existent keys from `MassOperationProtector.get_stats()`. A clean shutdown would raise `KeyError`. Fixed to use actual keys (`rate_limits_triggered`, `operations_blocked`, `chats_rate_limited`)
+- **Pin/unpin realtime** — Full pipeline now works end-to-end: listener emits `PIN` -> notifier delivers -> `handle_realtime_notification()` forwards to WebSocket -> browser reloads pinned messages. Previously the relay in `main.py` was missing
+- **pyproject.toml version sync** — Was stuck at `7.2.0` since v7.2.0. Now synced with `__init__.py` at `7.4.2`
+- **WebSocket subscribe ACL** — Server now sends `subscribe_denied` (instead of `subscribed`) when a restricted user attempts to subscribe to a chat outside their allowed list
+
+## [7.4.1] - 2026-03-31
+
+### Security
+
+- **Avatar ACL bypass** — Restricted users can no longer access avatars outside their allowed chats. `serve_media()` and `serve_thumbnail()` now extract `chat_id` from avatar filenames and enforce per-chat scoping
+- **Push endpoint spoofing** — `/internal/push` now supports an optional `INTERNAL_PUSH_SECRET` env var as a bearer token. Prevents co-tenant containers from spoofing live events
+- **Reaction recovery data loss** — `insert_reactions()` now retries ALL reactions after a sequence reset, not just the row that triggered the duplicate-key error
+- **Push unsubscribe ownership** — `POST /api/push/unsubscribe` is now scoped to the requesting user's `username`, preventing cross-user endpoint removal
+
+### Added
+
+- **`INTERNAL_PUSH_SECRET` env var** — Optional shared secret for `/internal/push` endpoint in multi-tenant Docker environments
+
+## [7.4.0] - 2026-03-31
+
+### Security
+
+- **XSS fix** — `linkifyText()` now percent-encodes raw `"` and `'` in URLs before inserting into `href` attributes
+
+### Fixed
+
+- **Stats filter** — Fixed JSON string-key vs `int` type mismatch that caused per-chat filtering to silently fail. Also removes `media_files`/`total_size_mb` for restricted users
+- **Deletion path** — Unknown-chat deletions now resolve the chat ID from DB first, apply rate limiting, skip ambiguous message IDs, and send viewer notifications
+- **Folders** — Restricted users no longer see empty folder names/emoticons for folders with 0 accessible chats
+- **Push endpoint** — `/internal/push` accepts loopback + RFC1918/Docker private IPs to support split-container SQLite mode
+
+### Changed
+
+- **`delete_message_by_id_any_chat()` replaced** — Replaced by `resolve_message_chat_id()` in the database adapter. The old method deleted from ALL chats with a matching message ID; the new approach resolves to a single chat first and skips ambiguous cases
+
+## [7.3.2] - 2026-03-26
+
+### Fixed
+
+- **Album caption display** — Captions now display correctly for album posts with grouped messages in the viewer
+
+### Contributors
+
+- Thanks to [@vadimvolk](https://github.com/vadimvolk) for the contribution!
+
+## [7.3.1] - 2026-03-25
+
+### Fixed
+
+- **Skip `get_dialogs()` in whitelist mode** — Prevents backup from hanging when `CHAT_IDS` whitelist is configured, by skipping the full dialog enumeration that is unnecessary in whitelist mode (#96)
+
+## [7.3.0] - 2026-03-15
+
+### Added
+
+- **Gap-fill recovery** — Detects gaps in message ID sequences using SQL `LAG()` window function and recovers skipped messages from Telegram API automatically. Available as CLI subcommand (`fill-gaps --chat-id --threshold`) and scheduler option (`FILL_GAPS=true`). Respects all backup config rules
+- **Token URL auto-login** — Shareable links with `?token=XXX` parameter for direct viewer access. Token is stripped from URL after login via `history.replaceState`
+- **@username display** — Usernames now shown in chat list and message headers
+- **Shareable link generation UI** — New controls in admin panel for generating share links
+
+## [7.2.1] - 2026-03-13
+
+### Fixed
+
+- **Login with unreachable database** — Login endpoint now falls through to master env var credentials instead of returning a generic "Unexpected error". Viewer-only users see a clear "Database temporarily unavailable" message (HTTP 503)
+- **All data endpoints** — Connection errors now return HTTP 503 "Database temporarily unavailable" instead of generic HTTP 500
+- **Audit log resilience** — Audit log writes in the login flow are wrapped in try/except so they never crash the response
+
+### Added
+
+- **Health endpoint** — `GET /api/health` returns `{"status": "ok", "database": "connected"}` (200) or `{"status": "degraded", "database": "unreachable"}` (503). Useful for Docker healthchecks and monitoring
+- **Global exception handler** — Catches unhandled DB connection errors across all endpoints and returns 503
+
 ## [7.2.0] - 2026-03-10
 
 ### Added
@@ -48,6 +141,32 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 - **Version declarations** — `pyproject.toml` and `src/__init__.py` both set to 7.2.0
 - **SECURITY.md** — Added 7.x.x as a supported version
 - **pyproject.toml** — Added `viewer` optional dependency group for Pillow
+
+## [7.1.7] - 2026-03-08
+
+### Fixed
+
+- **Missing `beautifulsoup4` in Docker image** — `beautifulsoup4` was declared in `pyproject.toml` but missing from `requirements.txt` (used by Docker builds), causing `No module named 'bs4'` when running HTML imports
+
+## [7.1.6] - 2026-03-08
+
+### Fixed
+
+- **Idempotent migrations 007-009** — When `create_all()` runs before Alembic (fresh SQLite databases), tables and columns may already exist. Migrations now inspect the schema before altering, preventing "duplicate column name: username" crashes on upgrade. Fixes #81
+
+## [7.1.5] - 2026-03-08
+
+### Fixed
+
+- **Duplicate messages in real-time viewer** — Race condition in 3-second polling (`checkForNewMessages`) allowed concurrent async calls to both add the same message. Added concurrency guard and deduplication
+- **Missing `chat_id` in WebSocket broadcast** — The `new_message` payload was missing `chat_id`, making client-side real-time message insertion a silent no-op. Messages only appeared via polling
+- **WebSocket new message handler deduplication** — Added `messages.some()` check to prevent duplicates when both WebSocket and polling deliver the same message
+
+## [7.1.4] - 2026-03-05
+
+### Security
+
+- **Media path injection hardening** — Early rejection of `..` traversal and absolute paths before filesystem operations. Uses `resolve(strict=True)` to prevent TOCTOU race conditions with symlinks. Existing `is_relative_to` check retained as defense-in-depth (CodeQL alerts #12, #13, #14)
 
 ## [7.1.3] - 2026-03-05
 
@@ -110,6 +229,12 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 ### Fixed
 
 - **Stale template cache** — Index HTML now served with `Cache-Control: no-cache, must-revalidate` to prevent browsers from serving outdated templates after upgrades
+
+## [7.0.1] - 2026-02-27
+
+### Fixed
+
+- **Stale template cache** — Added `Cache-Control: no-cache, must-revalidate` header to index.html to prevent browsers from serving stale templates after version upgrades
 
 ## [7.0.0] - 2026-02-27
 
@@ -355,6 +480,38 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 - **GitHub Actions bumped** — `docker/build-push-action` v5→v6, `codecov/codecov-action` v4→v5.
 - **Removed `.cursor/rules/project.mdc`** — Redundant with `AGENTS.md` which is the single source of truth for AI assistant configuration.
 
+## [6.2.2] - 2026-02-07
+
+### Fixed
+
+- **Migration 006 stamping for `create_all()` databases** — SQLite databases created by `create_all()` already include all v6.2.0 schema (forum_topics, is_forum, etc.) but had no `alembic_version`. The stamping logic only detected up to 005, so on restart it tried to re-run migration 006 and failed with `duplicate column name: is_forum`. Now detects the `forum_topics` table as a marker for migration 006
+
+## [6.2.1] - 2026-02-07
+
+### Fixed
+
+- **SQLite migration error on upgrade** — Existing SQLite databases created before Alembic was introduced had no `alembic_version` table. On upgrade to v6.2.0, the entrypoint ran all migrations from scratch, causing `table chats already exists` error. Now detects pre-Alembic SQLite databases and stamps the correct migration version before upgrading (#61)
+- **PostgreSQL stamping improvement** — Added migration 005 detection to the PostgreSQL stamping logic (previously only detected up to 004)
+
+## [6.2.0] - 2026-02-06
+
+### Added
+
+- **Forum topics** — Detect forum-enabled channels and extract topic threading (`reply_to_top_id`). Fetch topic metadata via `GetForumTopicsRequest` with fallback inference. Resolve custom emoji document IDs to real unicode emojis. Viewer shows topic list with emoji icons, color indicators, and per-topic message drill-down
+- **Chat folders** — Sync user-created Telegram folders via `GetDialogFiltersRequest`. Folder tab bar in viewer sidebar with dynamic filtering
+- **Archived chats** — Fetch archived dialogs via `get_dialogs(folder=1)` with clean separation from regular dialogs. Apply same INCLUDE/EXCLUDE/CHAT_TYPES filters. Archived section in viewer with count badge
+- **Viewer navigation** — Navigation stack for smart back-button across all views, Telegram-like back navigation preserving main panel content
+- **API additions** — `GET /api/folders`, `GET /api/chats/{id}/topics`, `GET /api/archived/count`, plus `archived`, `folder_id`, `topic_id` query params on existing endpoints
+
+### Fixed
+
+- **iOS/mobile scroll** — Fix scroll not working until a programmatic scroll activated it
+
+### Changed
+
+- **Database stability** — PostgreSQL advisory lock to prevent migration deadlocks with concurrent containers. Skip `create_all()` for PostgreSQL (Alembic manages schema exclusively)
+- **Migration 006** — Adds `is_forum`, `is_archived` columns to `chats`; `reply_to_top_id` column to `messages`; new tables: `forum_topics`, `chat_folders`, `chat_folder_members`
+
 ## [6.1.1] - 2026-02-06
 
 ### Fixed
@@ -568,6 +725,54 @@ alembic downgrade 004
 - PostgreSQL: Uses direct ALTER TABLE operations
 - Migration is reversible - downgrade restores columns from backup table
 
+## [5.4.9] - 2026-01-28
+
+### Added
+
+- **Notification deep links** — Clicking a push notification now opens the viewer directly at the relevant chat
+
+## [5.4.8] - 2026-01-27
+
+### Fixed
+
+- **Migration retry logic** — Added retry logic for PostgreSQL connection during migrations, handling transient connection failures on startup
+
+## [5.4.7] - 2026-01-26
+
+### Fixed
+
+- **Push notifications respect `DISPLAY_CHAT_IDS`** — Push notifications now filter by the viewer's `DISPLAY_CHAT_IDS` configuration, preventing notifications for chats not shown in the viewer
+
+## [5.4.6] - 2026-01-26
+
+### Fixed
+
+- **Auto-stamp pre-Alembic databases** — Existing databases created before Alembic was introduced are now automatically detected and stamped with the correct migration version on startup
+
+## [5.4.5] - 2026-01-26
+
+### Fixed
+
+- **PWA icon backgrounds** — Added dark background to PWA icons for better visibility on light home screens
+
+## [5.4.4] - 2026-01-26
+
+### Added
+
+- **PWA manifest and dark logo** — Proper PWA manifest with dark logo for installable web app experience
+
+## [5.4.3] - 2026-01-26
+
+### Fixed
+
+- **VAPID push headers** — Use `py_vapid sign()` for VAPID headers, fixing push notification delivery failures
+
+## [5.4.2] - 2026-01-26
+
+### Fixed
+
+- **Service worker scope** — Serve service worker from root with correct scope, fixing push notification registration failures
+
 ## [5.4.1] - 2026-01-25
 
 ### Fixed
@@ -628,6 +833,24 @@ Legacy avatar files (`{chat_id}.jpg`) are still supported via fallback. To clean
 docker exec telegram-backup python scripts/cleanup_legacy_avatars.py --dry-run  # Preview
 docker exec telegram-backup python scripts/cleanup_legacy_avatars.py            # Apply
 ```
+
+## [5.3.6] - 2026-01-21
+
+### Fixed
+
+- **Avatar download type check** — Avatar download now uses photo type check instead of `photo_id`, fixing cases where avatars failed to download
+
+## [5.3.5] - 2026-01-21
+
+### Fixed
+
+- **Avatar download on `photo_changed` event** — Avatars are now downloaded when a `photo_changed` chat action event is detected by the listener
+
+## [5.3.4] - 2026-01-21
+
+### Fixed
+
+- **Push notification session factory** — Corrected session factory access in push notifications, fixing notification delivery failures
 
 ## [5.3.3] - 2026-01-20
 
@@ -922,6 +1145,25 @@ See [Upgrading to v4.0.6](#upgrading-to-v406-from-v405) below.
 ### Fixed
 - Environment variable parsing for empty CHAT_TYPES
 
+## [4.0.2] - 2026-01-05
+
+### Changed
+
+- **Viewer title** — Renamed viewer browser title to "Telegram Archive"
+- **PostgreSQL version** — Updated docker-compose example to PostgreSQL 18
+
+## [4.0.1] - 2026-01-05
+
+### Fixed
+
+- **Timezone stripping for PostgreSQL** — Strip timezone from datetimes for PostgreSQL compatibility
+- **Async merge fix** — Fixed async database merge operations
+
+### Added
+
+- **Migration script** — Added migration script for v3.x to v4.0 database upgrade
+- **Upgrade guide** — Added v3.x to v4.0 upgrade documentation and updated docker-compose.yml with new image names
+
 ## [4.0.0] - 2026-01-10
 
 ### ⚠️ Breaking Change
@@ -938,7 +1180,43 @@ See [Upgrading from v3.x to v4.0](#upgrading-from-v3x-to-v40) below.
 - Split into two Docker images (backup + viewer)
 - Viewer image is smaller (~150MB vs ~300MB)
 
-## [3.0.0] - 2025-12-XX
+## [3.0.5] - 2025-12-31
+
+### Fixed
+
+- **Empty `CHAT_TYPES` for whitelist-only mode** — Allow empty `CHAT_TYPES` for users who only want to back up explicitly listed chats
+
+### Added
+
+- **GitHub issue templates** — Bug report, feature request, and question templates
+- **FUNDING.yml** — GitHub Sponsors configuration
+- **Roadmap** — Added roadmap section with planned features including multi-tenancy, OAuth, and magic links
+
+## [3.0.4] - 2025-12-19
+
+### Changed
+
+- **Documentation update** — Updated README and `.env.example` with v2 backward compatibility information
+
+## [3.0.3] - 2025-12-19
+
+### Fixed
+
+- **v2 backward compatibility** — Added backward compatibility for v2 `DATABASE_PATH` and `DATABASE_DIR` environment variables, so upgrades from v2 work without changing configuration
+
+## [3.0.2] - 2025-12-19
+
+### Fixed
+
+- **`create_all` idempotency** — Use `checkfirst=True` in `create_all()` to skip existing tables, preventing errors when restarting with an existing database
+
+## [3.0.1] - 2025-12-19
+
+### Fixed
+
+- **Reaction model foreign key** — Added `ForeignKeyConstraint` to Reaction model for composite key, fixing database integrity issues with reaction storage
+
+## [3.0.0] - 2025-12-19
 
 ### Added
 - PostgreSQL support
