@@ -91,13 +91,13 @@ class TestBuildDatabaseUrl:
         """PostgreSQL password with special characters is URL-encoded."""
         env = {
             "DB_TYPE": "postgresql",
-            "POSTGRES_PASSWORD": "test@value/here",
+            "POSTGRES_PASSWORD": "x@y/z",
         }
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             # @ should be encoded as %40
             assert "%40" in manager.database_url
-            assert "test@value" not in manager.database_url
+            assert "x@y" not in manager.database_url
 
 
 # ============================================================

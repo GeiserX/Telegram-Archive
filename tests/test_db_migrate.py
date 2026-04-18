@@ -410,7 +410,7 @@ class TestMigratePostgresUrlFromEnv:
             "POSTGRES_HOST": "dbhost",
             "POSTGRES_PORT": "5433",
             "POSTGRES_USER": "admin",
-            "POSTGRES_PASSWORD": "p@ss/word",
+            "POSTGRES_PASSWORD": "x@y/z",
             "POSTGRES_DB": "mydb",
         }
         with (
