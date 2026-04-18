@@ -279,6 +279,7 @@ def _make_backup_instance(db_mock=None, client_mock=None, config_mock=None):
     backup.config = config_mock or MagicMock()
     backup.config.gap_threshold = 50
     backup.config.batch_size = 100
+    backup.config.should_skip_topic = MagicMock(return_value=False)
     return backup
 
 
@@ -478,6 +479,7 @@ class TestFillGapRange:
         for i in range(51, 56):
             msg = MagicMock()
             msg.id = i
+            msg.reply_to = None
             messages.append(msg)
 
         async def fake_iter_messages(entity, min_id=None, max_id=None, reverse=None):
@@ -506,6 +508,7 @@ class TestFillGapRange:
         for i in range(51, 59):  # 8 messages
             msg = MagicMock()
             msg.id = i
+            msg.reply_to = None
             messages.append(msg)
 
         async def fake_iter_messages(entity, min_id=None, max_id=None, reverse=None):

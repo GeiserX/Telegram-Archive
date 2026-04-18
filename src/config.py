@@ -370,9 +370,7 @@ class Config:
             logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
         if self.skip_topic_ids:
             total_topics = sum(len(t) for t in self.skip_topic_ids.values())
-            logger.info(
-                f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)"
-            )
+            logger.info(f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)")
         if self.telegram_proxy:
             logger.info("Telegram proxy enabled (type=socks5, rdns=%s)", self.telegram_proxy["rdns"])
             logger.debug(
@@ -401,9 +399,7 @@ class Config:
             if not entry:
                 continue
             if ":" not in entry:
-                raise ValueError(
-                    f"Invalid SKIP_TOPIC_IDS entry '{entry}': expected format chat_id:topic_id"
-                )
+                raise ValueError(f"Invalid SKIP_TOPIC_IDS entry '{entry}': expected format chat_id:topic_id")
             chat_part, topic_part = entry.split(":", 1)
             try:
                 chat_id = int(chat_part.strip())
