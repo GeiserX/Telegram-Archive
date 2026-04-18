@@ -661,13 +661,14 @@ class TelegramBackup:
         running_max_id = last_message_id
 
         async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
+            running_max_id = max(running_max_id, message.id)
+
             # Skip messages belonging to excluded forum topics
             if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                 continue
 
             msg_data = await self._process_message(message, chat_id)
             batch_data.append(msg_data)
-            running_max_id = max(running_max_id, message.id)
 
             if len(batch_data) >= batch_size:
                 await self._commit_batch(batch_data, chat_id)
@@ -691,8 +692,10 @@ class TelegramBackup:
             grand_total += count
             uncheckpointed_count += count
 
-        # Final checkpoint for any un-checkpointed messages
-        if uncheckpointed_count > 0:
+        # Final checkpoint: persist when there are un-checkpointed messages OR
+        # when the cursor advanced purely from skipped (topic-filtered) messages
+        # that were never counted in uncheckpointed_count.
+        if uncheckpointed_count > 0 or (grand_total == 0 and running_max_id > last_message_id):
             await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
 
         # Sync deletions and edits if enabled (expensive!)
@@ -1663,7 +1666,7 @@ class TelegramBackup:
                         "date": getattr(topic, "date", None),
                     }
                     if self.config.should_skip_topic(chat_id, topic.id):
-                        logger.debug(f"  → Skipping excluded topic {topic.id}: {topic.title}")
+                        logger.debug(f"  → Skipping excluded topic {topic.id}")
                         continue
                     await self.db.upsert_forum_topic(topic_data)
                     topics_count += 1

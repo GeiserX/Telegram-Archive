@@ -1,7 +1,7 @@
 """Shared message processing utilities used by backup and listener modules."""
 
 
-def extract_topic_id(message) -> int | None:
+def extract_topic_id(message: object) -> int | None:
     """Extract forum topic ID from a Telegram message's reply_to metadata.
 
     Forum messages carry the topic ID in reply_to.reply_to_top_id.

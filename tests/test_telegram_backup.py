@@ -417,8 +417,9 @@ class TestBackupCheckpointing(unittest.TestCase):
         """When there are no new messages, no checkpoint should happen."""
 
         async def fake_iter(*args, **kwargs):
+            if False:
+                yield  # pragma: no cover - makes this an async generator
             return
-            yield  # noqa: unreachable - makes this an async generator
 
         self.backup.client.iter_messages = fake_iter
         self.backup._process_message = AsyncMock()

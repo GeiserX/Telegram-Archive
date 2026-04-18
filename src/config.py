@@ -373,8 +373,6 @@ class Config:
             logger.info(
                 f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)"
             )
-            for cid, topics in self.skip_topic_ids.items():
-                logger.debug(f"  Chat {cid}: skipping topics {topics}")
         if self.telegram_proxy:
             logger.info("Telegram proxy enabled (type=socks5, rdns=%s)", self.telegram_proxy["rdns"])
             logger.debug(

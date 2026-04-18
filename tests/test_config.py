@@ -582,9 +582,8 @@ class TestSkipTopicIds(unittest.TestCase):
             "SKIP_TOPIC_IDS": "-1001234567890",
             "BACKUP_PATH": self.temp_dir,
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError):
-                Config()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError):
+            Config()
 
     def test_skip_topic_ids_invalid_format_non_integer(self):
         """Raises ValueError for non-integer chat_id or topic_id."""
@@ -593,9 +592,8 @@ class TestSkipTopicIds(unittest.TestCase):
             "SKIP_TOPIC_IDS": "abc:def",
             "BACKUP_PATH": self.temp_dir,
         }
-        with patch.dict(os.environ, env_vars, clear=True):
-            with self.assertRaises(ValueError):
-                Config()
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError):
+            Config()
 
     def test_should_skip_topic_matches(self):
         """should_skip_topic returns True for configured pairs."""

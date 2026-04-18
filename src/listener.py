@@ -797,11 +797,6 @@ class TelegramListener:
                 if not self._should_process_chat(chat_id):
                     return
 
-                # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
-                if not self.config.listen_new_messages:
-                    self.stats["new_messages_received"] += 1
-                    return
-
                 # Save the message to database
                 message = event.message
 
@@ -815,6 +810,10 @@ class TelegramListener:
                     return
 
                 self.stats["new_messages_received"] += 1
+
+                # If LISTEN_NEW_MESSAGES is disabled, just track for edits/deletions
+                if not self.config.listen_new_messages:
+                    return
 
                 # Ensure chat exists in database (prevents FK violation for new chats)
                 chat_entity = await event.get_chat()
