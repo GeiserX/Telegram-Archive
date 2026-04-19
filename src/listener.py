@@ -516,7 +516,8 @@ class TelegramListener:
                         return "sticker"
                 if is_animated:
                     return "animation"
-            return "document"
+                return "document"
+            return None  # document reference unavailable (e.g., forwarded from private channel)
         elif isinstance(media, MessageMediaContact):
             return "contact"
         elif isinstance(media, MessageMediaGeo):
@@ -571,6 +572,10 @@ class TelegramListener:
                 telegram_file_id = str(getattr(media.photo, "id", None))
             elif hasattr(media, "document"):
                 telegram_file_id = str(getattr(media.document, "id", None))
+
+            # Guard against inaccessible media producing "None" string IDs
+            if telegram_file_id == "None":
+                telegram_file_id = None
 
             # Check file size
             file_size = 0
