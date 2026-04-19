@@ -917,11 +917,11 @@ class TestGetMediaType(unittest.TestCase):
         media = MagicMock()
         self.assertIsNone(self.backup._get_media_type(media))
 
-    def test_document_without_document_attr_returns_document(self):
-        """MessageMediaDocument with no .document returns document."""
+    def test_document_without_document_attr_returns_none(self):
+        """MessageMediaDocument with no .document returns None (inaccessible)."""
         media = MagicMock(spec=MessageMediaDocument)
         media.document = None
-        self.assertEqual(self.backup._get_media_type(media), "document")
+        self.assertIsNone(self.backup._get_media_type(media))
 
 
 class TestGetMediaExtension(unittest.TestCase):

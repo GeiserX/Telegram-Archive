@@ -433,13 +433,13 @@ class TestGetMediaType:
         assert listener._get_media_type(media) == "sticker"
 
     def test_document_media_no_document_body(self):
-        """MessageMediaDocument with document=None returns 'document'."""
+        """MessageMediaDocument with document=None returns None (inaccessible)."""
         from telethon.tl.types import MessageMediaDocument
 
         listener = self._listener()
         media = MagicMock(spec=MessageMediaDocument)
         media.document = None
-        assert listener._get_media_type(media) == "document"
+        assert listener._get_media_type(media) is None
 
     def test_contact_media(self):
         """MessageMediaContact returns 'contact'."""
