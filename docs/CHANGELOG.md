@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.6.1] - 2026-04-19
+
+### Fixed
+
+- **Forwarded media from private channels no longer creates broken placeholders** — When a message forwarded from a private channel contains a document with an inaccessible file reference (`media.document=None`), `_get_media_type()` now correctly returns `None` instead of `"document"`. Previously this caused a broken `telegram_file_id` of `"None"`, a failed download attempt, and a misleading "Will download on next backup" placeholder that would never resolve. Applies to both scheduled backup and real-time listener (#125)
+
 ## [7.6.0] - 2026-04-18
 
 ### Added
