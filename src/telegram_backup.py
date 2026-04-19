@@ -1313,6 +1313,10 @@ class TelegramBackup:
         elif hasattr(media, "document"):
             telegram_file_id = str(getattr(media.document, "id", None))
 
+        # Guard against inaccessible media producing "None" string IDs
+        if telegram_file_id == "None":
+            telegram_file_id = None
+
         # Check file size (estimated)
         file_size = self._get_media_size(media)
         max_size = self.config.get_max_media_size_bytes()
@@ -1483,7 +1487,8 @@ class TelegramBackup:
                 # If animated but no video attribute, still an animation
                 if is_animated:
                     return "animation"
-            return "document"
+                return "document"
+            return None  # document reference unavailable (e.g., forwarded from private channel)
         elif isinstance(media, MessageMediaContact):
             return "contact"
         elif isinstance(media, MessageMediaGeo):
