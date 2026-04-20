@@ -4,8 +4,10 @@ name: Shellcheck
 on:
   push:
     branches: [master]
+    paths: ['**/*.sh', '.github/workflows/shellcheck.yml']
   pull_request:
     branches: [master]
+    paths: ['**/*.sh', '.github/workflows/shellcheck.yml']
 
 permissions:
   contents: read
