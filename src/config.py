@@ -89,10 +89,11 @@ def build_telegram_proxy_from_env() -> dict | None:
 
 def build_telegram_client_kwargs() -> dict:
     """Build common Telethon client keyword arguments from environment configuration."""
+    kwargs: dict = {"flood_sleep_threshold": 0}
     proxy = build_telegram_proxy_from_env()
-    if proxy is None:
-        return {}
-    return {"proxy": dict(proxy)}
+    if proxy is not None:
+        kwargs["proxy"] = dict(proxy)
+    return kwargs
 
 
 class Config:
@@ -602,10 +603,16 @@ class Config:
             )
 
     def get_telegram_client_kwargs(self) -> dict:
-        """Get shared TelegramClient keyword arguments."""
-        if self.telegram_proxy is None:
-            return {}
-        return {"proxy": dict(self.telegram_proxy)}
+        """Get shared TelegramClient keyword arguments.
+
+        ``flood_sleep_threshold=0`` forces Telethon to raise FloodWaitError
+        instead of silently sleeping, so long waits become visible in the log
+        via ``iter_messages_with_flood_retry``.
+        """
+        kwargs: dict = {"flood_sleep_threshold": 0}
+        if self.telegram_proxy is not None:
+            kwargs["proxy"] = dict(self.telegram_proxy)
+        return kwargs
 
 
 def setup_logging(config: Config):
