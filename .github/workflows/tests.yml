@@ -4,8 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    paths: ['src/**', '*.py', 'tests/**', 'requirements*.txt', '.github/workflows/tests.yml']
   pull_request:
     branches: [main, master]
+    paths: ['src/**', '*.py', 'tests/**', 'requirements*.txt', '.github/workflows/tests.yml']
 
 jobs:
   test:
