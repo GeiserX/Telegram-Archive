@@ -3,8 +3,10 @@ name: Lint
 on:
   push:
     branches: [main, master]
+    paths: ['src/**', '*.py', 'requirements*.txt', '.github/workflows/lint.yml']
   pull_request:
     branches: [main, master]
+    paths: ['src/**', '*.py', 'requirements*.txt', '.github/workflows/lint.yml']
 
 jobs:
   ruff:
