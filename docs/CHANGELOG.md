@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.6.4] - 2026-04-25
+
+### Fixed
+
+- **Improved General topic test suite** — Renamed unprofessional test data, removed redundant `@pytest.mark.asyncio` decorators (project uses `asyncio_mode = "auto"`), converted setup to a proper pytest fixture, and added edge case tests for nonexistent topics, `topic_id=0`, and topic+search filter interaction. Contributed by @tondeaf in #122 (follow-up).
+
 ## [7.6.3] - 2026-04-25
 
 ### Fixed
