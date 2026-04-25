@@ -131,9 +131,7 @@ async def test_iter_with_flood_retry_logs_and_resumes_after_partial_progress(cap
         caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
-        async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             collected.append(msg.id)
 
     assert collected == [1, 2, 3]
@@ -169,9 +167,7 @@ async def test_iter_with_flood_retry_handles_flood_before_any_yield(caplog, fake
         caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
-        async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=100, reverse=True
-        ):
+        async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=100, reverse=True):
             collected.append(msg.id)
 
     assert collected == [101, 102]
@@ -203,9 +199,7 @@ async def test_iter_with_flood_retry_survives_consecutive_floods(caplog, fake_db
         caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
-        async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             collected.append(msg.id)
 
     assert collected == [1, 2]
@@ -240,9 +234,7 @@ async def test_iter_with_flood_retry_resets_counter_on_progress(caplog, fake_db)
         caplog.at_level(logging.WARNING, logger="src.telegram_backup"),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
-        async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             collected.append(msg.id)
 
     assert collected == [1, 2, 3, 4, 5, 6, 7, 99]
@@ -270,9 +262,7 @@ async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db)
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
         pytest.raises(FloodWaitError),
     ):
-        async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
 
     assert calls["n"] == telegram_backup.MAX_FLOOD_RETRIES + 1
@@ -300,9 +290,7 @@ async def test_iter_with_flood_retry_caps_sleep_seconds(fake_db):
         sleeps.append(seconds)
 
     with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
-        async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
 
     assert sleeps == [telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1]
@@ -366,9 +354,7 @@ async def test_iter_with_flood_retry_suppresses_short_wait_logs(caplog, fake_db)
         patch.dict(os.environ, {"FLOOD_WAIT_LOG_THRESHOLD": "10"}),
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
-        async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
 
     flood_logs = [r for r in caplog.records if "FloodWait" in r.getMessage()]
@@ -381,9 +367,7 @@ async def test_iter_with_flood_retry_rejects_non_reverse(fake_db):
     from src import telegram_backup
 
     with pytest.raises(ValueError, match="reverse=True"):
-        async for _ in telegram_backup.iter_messages_with_flood_retry(
-            None, "chat", min_id=0
-        ):
+        async for _ in telegram_backup.iter_messages_with_flood_retry(None, "chat", min_id=0):
             pass
 
 
@@ -408,9 +392,7 @@ async def test_iter_with_flood_retry_clamps_negative_sleep(fake_db):
         sleeps.append(seconds)
 
     with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
-        async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
 
     assert sleeps == [1], f"Expected sleep(0+1=1) for negative e.seconds, got {sleeps}"
@@ -440,9 +422,7 @@ async def test_iter_with_flood_retry_tolerates_bad_log_threshold_env(fake_db):
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         collected = []
-        async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0, reverse=True
-        ):
+        async for msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             collected.append(msg.id)
 
     assert collected == [1]

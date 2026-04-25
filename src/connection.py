@@ -37,10 +37,18 @@ async def _call_with_flood_retry(coro_fn, *args, **kwargs):
         except FloodWaitError as e:
             retries += 1
             if retries > MAX_FLOOD_RETRIES:
-                logger.error("FloodWait: exceeded %d retries on %s", MAX_FLOOD_RETRIES, getattr(coro_fn, "__name__", coro_fn))
+                logger.error(
+                    "FloodWait: exceeded %d retries on %s", MAX_FLOOD_RETRIES, getattr(coro_fn, "__name__", coro_fn)
+                )
                 raise
             wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
-            logger.warning("FloodWait: sleeping %ss before retrying %s (retry=%d/%d)", wait_seconds, getattr(coro_fn, "__name__", coro_fn), retries, MAX_FLOOD_RETRIES)
+            logger.warning(
+                "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
+                wait_seconds,
+                getattr(coro_fn, "__name__", coro_fn),
+                retries,
+                MAX_FLOOD_RETRIES,
+            )
             await asyncio.sleep(wait_seconds + 1)
 
 

@@ -100,7 +100,7 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
         raise ValueError("iter_messages_with_flood_retry only supports reverse=True (ascending) iteration")
     try:
         log_threshold_seconds = int(os.getenv("FLOOD_WAIT_LOG_THRESHOLD", "10"))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         log_threshold_seconds = 10
     resume_from = min_id
     retries = 0
@@ -757,9 +757,7 @@ class TelegramBackup:
         batches_since_checkpoint = 0
         running_max_id = last_message_id
 
-        async for message in iter_messages_with_flood_retry(
-            self.client, entity, min_id=last_message_id, reverse=True
-        ):
+        async for message in iter_messages_with_flood_retry(self.client, entity, min_id=last_message_id, reverse=True):
             running_max_id = max(running_max_id, message.id)
 
             # Skip messages belonging to excluded forum topics
