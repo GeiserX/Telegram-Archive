@@ -42,6 +42,37 @@ MAX_FLOOD_RETRIES = 5
 MAX_FLOOD_WAIT_SECONDS = 600
 
 
+async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
+    """Retry a single async call on FloodWaitError with bounded sleep.
+
+    Use this for one-shot Telegram API calls (``get_dialogs``, ``get_me``, etc.)
+    that are not async iterators.  For ``iter_messages`` use
+    ``iter_messages_with_flood_retry`` instead.
+    """
+    retries = 0
+    while True:
+        try:
+            return await coro_fn(*args, **kwargs)
+        except FloodWaitError as e:
+            retries += 1
+            if retries > max_retries:
+                logger.error(
+                    "FloodWait: exceeded %d retries on %s, giving up",
+                    max_retries,
+                    getattr(coro_fn, "__name__", coro_fn),
+                )
+                raise
+            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
+            logger.warning(
+                "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
+                wait_seconds,
+                getattr(coro_fn, "__name__", coro_fn),
+                retries,
+                max_retries,
+            )
+            await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
+
+
 async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     """Wrap ``client.iter_messages`` so FloodWaitError is logged and retried.
 
@@ -61,8 +92,16 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     The ``FLOOD_WAIT_LOG_THRESHOLD`` env var (default 10) suppresses log
     output for short waits — those are routine and noisy in healthy backfills.
     Set to 0 to log every wait.
+
+    Note: resume tracking uses ``max(resume_from, msg.id)`` which is only
+    correct for ascending iteration (``reverse=True``).
     """
-    log_threshold_seconds = int(os.getenv("FLOOD_WAIT_LOG_THRESHOLD", "10"))
+    if not kwargs.get("reverse", False):
+        raise ValueError("iter_messages_with_flood_retry only supports reverse=True (ascending) iteration")
+    try:
+        log_threshold_seconds = int(os.getenv("FLOOD_WAIT_LOG_THRESHOLD", "10"))
+    except ValueError, TypeError:
+        log_threshold_seconds = 10
     resume_from = min_id
     retries = 0
     while True:
@@ -82,7 +121,7 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     resume_from,
                 )
                 raise
-            wait_seconds = min(e.seconds, MAX_FLOOD_WAIT_SECONDS)
+            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
             if e.seconds >= log_threshold_seconds:
                 logger.warning(
                     "FloodWait: sleeping %ss before resuming (last_msg_id=%s, retry=%d/%d)",
@@ -91,7 +130,7 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     retries,
                     MAX_FLOOD_RETRIES,
                 )
-            await asyncio.sleep(wait_seconds + 1)
+            await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
 
 
 class TelegramBackup:
@@ -518,9 +557,9 @@ class TelegramBackup:
         archived ones, which causes overlap with the folder=1 results.
         """
         if archived:
-            dialogs = await self.client.get_dialogs(folder=1)
+            dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=1)
         else:
-            dialogs = await self.client.get_dialogs(folder=0)
+            dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=0)
         return dialogs
 
     async def _verify_and_redownload_media(self) -> None:
@@ -718,9 +757,7 @@ class TelegramBackup:
         batches_since_checkpoint = 0
         running_max_id = last_message_id
 
-        async for message in iter_messages_with_flood_retry(
-            self.client, entity, min_id=last_message_id, reverse=True
-        ):
+        async for message in iter_messages_with_flood_retry(self.client, entity, min_id=last_message_id, reverse=True):
             running_max_id = max(running_max_id, message.id)
 
             # Skip messages belonging to excluded forum topics

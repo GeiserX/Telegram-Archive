@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.6.2] - 2026-04-25
+
+### Fixed
+
+- **FloodWaitError no longer crashes `get_dialogs()` or `get_me()`** — PR #124 set `flood_sleep_threshold=0` globally but only wrapped 2 of ~20 API call sites. The unwrapped `get_dialogs()` and `get_me()` calls could crash the entire backup or prevent startup. Both are now wrapped with bounded flood-wait retry logic.
+- **Negative `e.seconds` from Telegram no longer causes zero-delay retry storms** — Sleep duration is now clamped to `max(0, ...)` on both the iterator wrapper and the new one-shot retry helper.
+- **Invalid `FLOOD_WAIT_LOG_THRESHOLD` env var no longer crashes mid-backup** — Bare `int()` parsing replaced with defensive `try/except` that falls back to the default of 10 seconds.
+- **`iter_messages_with_flood_retry` now rejects `reverse=False`** — The resume tracking (`max(resume_from, msg.id)`) is only correct for ascending iteration. A `ValueError` is now raised if `reverse=True` is not passed, preventing silent data corruption from future misuse.
+- **Documented `FLOOD_WAIT_LOG_THRESHOLD`** — Added to `.env.example` alongside the other logging variables.
+
 ## [7.6.1] - 2026-04-19
 
 ### Fixed

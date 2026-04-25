@@ -30,9 +30,7 @@ except Exception:
 
 
 def _skip_unless_web(cls_or_fn):
-    return unittest.skipUnless(
-        _WEB_AVAILABLE and _HTTPX_AVAILABLE, "web_main or httpx import failed"
-    )(cls_or_fn)
+    return unittest.skipUnless(_WEB_AVAILABLE and _HTTPX_AVAILABLE, "web_main or httpx import failed")(cls_or_fn)
 
 
 def _mock_db():
@@ -55,10 +53,14 @@ def _mock_db():
     db.get_viewer_by_username = AsyncMock(return_value=None)
     db.get_viewer_account = AsyncMock(return_value=None)
     db.create_viewer_account = AsyncMock(return_value={"id": 1, "username": "test", "is_active": 1, "no_download": 0})
-    db.update_viewer_account = AsyncMock(return_value={"id": 1, "username": "test", "allowed_chat_ids": None, "is_active": 1})
+    db.update_viewer_account = AsyncMock(
+        return_value={"id": 1, "username": "test", "allowed_chat_ids": None, "is_active": 1}
+    )
     db.delete_viewer_account = AsyncMock()
     db.get_all_viewer_tokens = AsyncMock(return_value=[])
-    db.create_viewer_token = AsyncMock(return_value={"id": 1, "label": "test", "no_download": 0, "expires_at": None, "created_at": "2025-01-01"})
+    db.create_viewer_token = AsyncMock(
+        return_value={"id": 1, "label": "test", "no_download": 0, "expires_at": None, "created_at": "2025-01-01"}
+    )
     db.update_viewer_token = AsyncMock(return_value=None)
     db.delete_viewer_token = AsyncMock(return_value=True)
     db.verify_viewer_token = AsyncMock(return_value=None)
@@ -175,9 +177,7 @@ class TestAuthCheckEndpoint(_WebTestBase):
         """auth check returns authenticated=True with valid session cookie."""
         web_main.AUTH_ENABLED = True
         token = "test-session-token-abc"
-        web_main._sessions[token] = web_main.SessionData(
-            username="admin", role="master", created_at=time.time()
-        )
+        web_main._sessions[token] = web_main.SessionData(username="admin", role="master", created_at=time.time())
         async with self._client() as client:
             resp = await client.get("/api/auth/check", cookies={"viewer_auth": token})
         data = resp.json()
@@ -190,7 +190,8 @@ class TestAuthCheckEndpoint(_WebTestBase):
         web_main.AUTH_ENABLED = True
         token = "expired-token"
         web_main._sessions[token] = web_main.SessionData(
-            username="old", role="viewer",
+            username="old",
+            role="viewer",
             created_at=time.time() - web_main.AUTH_SESSION_SECONDS - 100,
         )
         async with self._client() as client:
@@ -237,9 +238,7 @@ class TestChatsEndpoint(_WebTestBase):
         """get_chats filters chats when user has allowed_chat_ids."""
         web_main.AUTH_ENABLED = True
         token = "viewer-token"
-        web_main._sessions[token] = web_main.SessionData(
-            username="viewer1", role="viewer", allowed_chat_ids={1, 3}
-        )
+        web_main._sessions[token] = web_main.SessionData(username="viewer1", role="viewer", allowed_chat_ids={1, 3})
         all_chats = [
             {"id": 1, "title": "Allowed", "type": "private"},
             {"id": 2, "title": "Denied", "type": "group"},
@@ -301,9 +300,7 @@ class TestMessagesEndpoint(_WebTestBase):
         """get_messages returns 403 when user cannot access the chat."""
         web_main.AUTH_ENABLED = True
         token = "restricted-viewer"
-        web_main._sessions[token] = web_main.SessionData(
-            username="v1", role="viewer", allowed_chat_ids={100}
-        )
+        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
         async with self._client() as client:
             resp = await client.get("/api/chats/999/messages", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 403)
@@ -312,9 +309,7 @@ class TestMessagesEndpoint(_WebTestBase):
         """get_messages forwards before_date and before_id to db."""
         self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
         async with self._client() as client:
-            resp = await client.get(
-                "/api/chats/1/messages?before_date=2025-06-15T12:00:00Z&before_id=500"
-            )
+            resp = await client.get("/api/chats/1/messages?before_date=2025-06-15T12:00:00Z&before_id=500")
         self.assertEqual(resp.status_code, 200)
         call_kwargs = self.mock_db.get_messages_paginated.call_args.kwargs
         self.assertIsNotNone(call_kwargs["before_date"])
@@ -421,12 +416,8 @@ class TestArchivedCountEndpoint(_WebTestBase):
         """get_archived_count filters by user allowed chats."""
         web_main.AUTH_ENABLED = True
         token = "av"
-        web_main._sessions[token] = web_main.SessionData(
-            username="v1", role="viewer", allowed_chat_ids={1, 2, 3}
-        )
-        self.mock_db.get_all_chats = AsyncMock(return_value=[
-            {"id": 1}, {"id": 2}, {"id": 99}
-        ])
+        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={1, 2, 3})
+        self.mock_db.get_all_chats = AsyncMock(return_value=[{"id": 1}, {"id": 2}, {"id": 99}])
         async with self._client() as client:
             resp = await client.get("/api/archived/count", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 200)
@@ -458,16 +449,16 @@ class TestStatsEndpoint(_WebTestBase):
         """get_stats filters per_chat_message_counts by user allowed chats."""
         web_main.AUTH_ENABLED = True
         token = "sv"
-        web_main._sessions[token] = web_main.SessionData(
-            username="v1", role="viewer", allowed_chat_ids={1}
+        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={1})
+        self.mock_db.get_cached_statistics = AsyncMock(
+            return_value={
+                "per_chat_message_counts": {"1": 100, "2": 200},
+                "chats": 2,
+                "messages": 300,
+                "media_files": 50,
+                "total_size_mb": 1000,
+            }
         )
-        self.mock_db.get_cached_statistics = AsyncMock(return_value={
-            "per_chat_message_counts": {"1": 100, "2": 200},
-            "chats": 2,
-            "messages": 300,
-            "media_files": 50,
-            "total_size_mb": 1000,
-        })
         self.mock_db.get_metadata = AsyncMock(return_value=None)
         async with self._client() as client:
             resp = await client.get("/api/stats", cookies={"viewer_auth": token})
@@ -499,9 +490,7 @@ class TestStatsRefreshEndpoint(_WebTestBase):
         """refresh_stats returns 403 for non-master users."""
         web_main.AUTH_ENABLED = True
         token = "viewer-tok"
-        web_main._sessions[token] = web_main.SessionData(
-            username="v1", role="viewer"
-        )
+        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer")
         async with self._client() as client:
             resp = await client.post("/api/stats/refresh", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 403)
@@ -544,9 +533,7 @@ class TestMessageByDateEndpoint(_WebTestBase):
 
     async def test_returns_message_for_valid_date(self):
         """get_message_by_date returns message when found."""
-        self.mock_db.find_message_by_date_with_joins = AsyncMock(
-            return_value={"id": 100, "text": "found"}
-        )
+        self.mock_db.find_message_by_date_with_joins = AsyncMock(return_value={"id": 100, "text": "found"})
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages/by-date?date=2025-06-15")
         self.assertEqual(resp.status_code, 200)
@@ -569,9 +556,7 @@ class TestMessageByDateEndpoint(_WebTestBase):
         """get_message_by_date uses timezone parameter for date interpretation."""
         self.mock_db.find_message_by_date_with_joins = AsyncMock(return_value={"id": 1})
         async with self._client() as client:
-            resp = await client.get(
-                "/api/chats/1/messages/by-date?date=2025-06-15&timezone=Europe/Madrid"
-            )
+            resp = await client.get("/api/chats/1/messages/by-date?date=2025-06-15&timezone=Europe/Madrid")
         self.assertEqual(resp.status_code, 200)
 
 
@@ -620,10 +605,13 @@ class TestPushSubscribeEndpoint(_WebTestBase):
     async def test_subscribe_returns_400_when_push_disabled(self):
         """push_subscribe returns 400 when push is not enabled."""
         async with self._client() as client:
-            resp = await client.post("/api/push/subscribe", json={
-                "endpoint": "https://push.example.com/sub",
-                "keys": {"p256dh": "k", "auth": "a"},
-            })
+            resp = await client.post(
+                "/api/push/subscribe",
+                json={
+                    "endpoint": "https://push.example.com/sub",
+                    "keys": {"p256dh": "k", "auth": "a"},
+                },
+            )
         self.assertEqual(resp.status_code, 400)
 
     async def test_subscribe_stores_subscription(self):
@@ -633,10 +621,13 @@ class TestPushSubscribeEndpoint(_WebTestBase):
         mock_pm.subscribe = AsyncMock(return_value=True)
         web_main.push_manager = mock_pm
         async with self._client() as client:
-            resp = await client.post("/api/push/subscribe", json={
-                "endpoint": "https://push.example.com/sub",
-                "keys": {"p256dh": "key1", "auth": "auth1"},
-            })
+            resp = await client.post(
+                "/api/push/subscribe",
+                json={
+                    "endpoint": "https://push.example.com/sub",
+                    "keys": {"p256dh": "key1", "auth": "auth1"},
+                },
+            )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "subscribed")
 
@@ -747,14 +738,16 @@ class TestLoginEndpoint(_WebTestBase):
 
         salt = "testsalt123"
         pw_hash = web_main._hash_password("viewerpass", salt)
-        self.mock_db.get_viewer_by_username = AsyncMock(return_value={
-            "username": "viewer1",
-            "password_hash": pw_hash,
-            "salt": salt,
-            "is_active": 1,
-            "allowed_chat_ids": json.dumps([1, 2, 3]),
-            "no_download": 0,
-        })
+        self.mock_db.get_viewer_by_username = AsyncMock(
+            return_value={
+                "username": "viewer1",
+                "password_hash": pw_hash,
+                "salt": salt,
+                "is_active": 1,
+                "allowed_chat_ids": json.dumps([1, 2, 3]),
+                "no_download": 0,
+            }
+        )
         try:
             async with self._client() as client:
                 resp = await client.post("/api/login", json={"username": "viewer1", "password": "viewerpass"})
@@ -818,12 +811,14 @@ class TestTokenAuthEndpoint(_WebTestBase):
 
     async def test_token_auth_valid_token_creates_session(self):
         """auth_via_token creates session for valid token."""
-        self.mock_db.verify_viewer_token = AsyncMock(return_value={
-            "id": 1,
-            "label": "share-link",
-            "allowed_chat_ids": json.dumps([10, 20]),
-            "no_download": 0,
-        })
+        self.mock_db.verify_viewer_token = AsyncMock(
+            return_value={
+                "id": 1,
+                "label": "share-link",
+                "allowed_chat_ids": json.dumps([10, 20]),
+                "no_download": 0,
+            }
+        )
         async with self._client() as client:
             resp = await client.post("/auth/token", json={"token": "valid-token-hex"})
         self.assertEqual(resp.status_code, 200)
@@ -856,11 +851,20 @@ class TestAdminViewersEndpoint(_WebTestBase):
 
     async def test_list_viewers_returns_accounts(self):
         """list_viewers returns viewer account data."""
-        self.mock_db.get_all_viewer_accounts = AsyncMock(return_value=[{
-            "id": 1, "username": "v1", "allowed_chat_ids": json.dumps([1, 2]),
-            "is_active": 1, "no_download": 0, "created_by": "admin",
-            "created_at": "2025-01-01", "updated_at": "2025-01-01",
-        }])
+        self.mock_db.get_all_viewer_accounts = AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "username": "v1",
+                    "allowed_chat_ids": json.dumps([1, 2]),
+                    "is_active": 1,
+                    "no_download": 0,
+                    "created_by": "admin",
+                    "created_at": "2025-01-01",
+                    "updated_at": "2025-01-01",
+                }
+            ]
+        )
         async with self._client() as client:
             resp = await client.get("/api/admin/viewers")
         data = resp.json()
@@ -882,9 +886,9 @@ class TestAdminViewersEndpoint(_WebTestBase):
     async def test_create_viewer_success(self):
         """create_viewer creates account and returns data."""
         async with self._client() as client:
-            resp = await client.post("/api/admin/viewers", json={
-                "username": "newviewer", "password": "longpassword123"
-            })
+            resp = await client.post(
+                "/api/admin/viewers", json={"username": "newviewer", "password": "longpassword123"}
+            )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["username"], "test")
@@ -893,9 +897,7 @@ class TestAdminViewersEndpoint(_WebTestBase):
         """create_viewer returns 409 for existing username."""
         self.mock_db.get_viewer_by_username = AsyncMock(return_value={"username": "existing"})
         async with self._client() as client:
-            resp = await client.post("/api/admin/viewers", json={
-                "username": "existing", "password": "longpassword123"
-            })
+            resp = await client.post("/api/admin/viewers", json={"username": "existing", "password": "longpassword123"})
         self.assertEqual(resp.status_code, 409)
 
     async def test_update_viewer_not_found(self):
@@ -950,12 +952,22 @@ class TestAdminTokensEndpoint(_WebTestBase):
 
     async def test_list_tokens_returns_data(self):
         """list_tokens returns token data."""
-        self.mock_db.get_all_viewer_tokens = AsyncMock(return_value=[{
-            "id": 1, "label": "test", "created_by": "admin",
-            "allowed_chat_ids": json.dumps([1]), "is_revoked": 0,
-            "no_download": 0, "expires_at": None, "last_used_at": None,
-            "use_count": 0, "created_at": "2025-01-01",
-        }])
+        self.mock_db.get_all_viewer_tokens = AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "label": "test",
+                    "created_by": "admin",
+                    "allowed_chat_ids": json.dumps([1]),
+                    "is_revoked": 0,
+                    "no_download": 0,
+                    "expires_at": None,
+                    "last_used_at": None,
+                    "use_count": 0,
+                    "created_at": "2025-01-01",
+                }
+            ]
+        )
         async with self._client() as client:
             resp = await client.get("/api/admin/tokens")
         data = resp.json()
@@ -970,9 +982,7 @@ class TestAdminTokensEndpoint(_WebTestBase):
     async def test_create_token_success(self):
         """create_token returns token with plaintext."""
         async with self._client() as client:
-            resp = await client.post("/api/admin/tokens", json={
-                "allowed_chat_ids": [1, 2, 3], "label": "my-token"
-            })
+            resp = await client.post("/api/admin/tokens", json={"allowed_chat_ids": [1, 2, 3], "label": "my-token"})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("token", data)
@@ -1085,10 +1095,26 @@ class TestAdminChatsEndpoint(_WebTestBase):
 
     async def test_returns_all_chats(self):
         """admin_list_chats returns all chats with display metadata."""
-        self.mock_db.get_all_chats = AsyncMock(return_value=[
-            {"id": 1, "title": "Group Chat", "type": "group", "username": None, "first_name": None, "last_name": None},
-            {"id": 2, "title": None, "type": "private", "username": "john", "first_name": "John", "last_name": "Doe"},
-        ])
+        self.mock_db.get_all_chats = AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "title": "Group Chat",
+                    "type": "group",
+                    "username": None,
+                    "first_name": None,
+                    "last_name": None,
+                },
+                {
+                    "id": 2,
+                    "title": None,
+                    "type": "private",
+                    "username": "john",
+                    "first_name": "John",
+                    "last_name": "Doe",
+                },
+            ]
+        )
         async with self._client() as client:
             resp = await client.get("/api/admin/chats")
         self.assertEqual(resp.status_code, 200)
@@ -1292,30 +1318,34 @@ class TestResolveSession(_WebTestBase):
 
     async def test_returns_none_for_expired_db_session(self):
         """_resolve_session returns None for expired session from db."""
-        self.mock_db.get_session = AsyncMock(return_value={
-            "username": "old",
-            "role": "viewer",
-            "allowed_chat_ids": None,
-            "no_download": 0,
-            "source_token_id": None,
-            "created_at": time.time() - web_main.AUTH_SESSION_SECONDS - 100,
-            "last_accessed": time.time() - web_main.AUTH_SESSION_SECONDS - 100,
-        })
+        self.mock_db.get_session = AsyncMock(
+            return_value={
+                "username": "old",
+                "role": "viewer",
+                "allowed_chat_ids": None,
+                "no_download": 0,
+                "source_token_id": None,
+                "created_at": time.time() - web_main.AUTH_SESSION_SECONDS - 100,
+                "last_accessed": time.time() - web_main.AUTH_SESSION_SECONDS - 100,
+            }
+        )
         result = await web_main._resolve_session("expired-db-tok")
         self.assertIsNone(result)
 
     async def test_loads_valid_session_from_db(self):
         """_resolve_session loads valid session from db and caches it."""
         now = time.time()
-        self.mock_db.get_session = AsyncMock(return_value={
-            "username": "dbuser",
-            "role": "viewer",
-            "allowed_chat_ids": json.dumps([1, 2]),
-            "no_download": 1,
-            "source_token_id": 5,
-            "created_at": now,
-            "last_accessed": now,
-        })
+        self.mock_db.get_session = AsyncMock(
+            return_value={
+                "username": "dbuser",
+                "role": "viewer",
+                "allowed_chat_ids": json.dumps([1, 2]),
+                "no_download": 1,
+                "source_token_id": 5,
+                "created_at": now,
+                "last_accessed": now,
+            }
+        )
         result = await web_main._resolve_session("db-tok")
         self.assertIsNotNone(result)
         self.assertEqual(result.username, "dbuser")
@@ -1344,6 +1374,7 @@ class TestRequireAuth(_WebTestBase):
         """require_auth raises 401 when auth enabled and no cookie."""
         web_main.AUTH_ENABLED = True
         from fastapi import HTTPException
+
         with self.assertRaises(HTTPException) as ctx:
             await web_main.require_auth(auth_cookie=None)
         self.assertEqual(ctx.exception.status_code, 401)
@@ -1352,6 +1383,7 @@ class TestRequireAuth(_WebTestBase):
         """require_auth raises 401 when session not found."""
         web_main.AUTH_ENABLED = True
         from fastapi import HTTPException
+
         with self.assertRaises(HTTPException) as ctx:
             await web_main.require_auth(auth_cookie="bad-token")
         self.assertEqual(ctx.exception.status_code, 401)
@@ -1375,6 +1407,7 @@ class TestRequireMaster(unittest.TestCase):
         req = MagicMock()
         req.headers = {}
         from fastapi import HTTPException
+
         with self.assertRaises(HTTPException) as ctx:
             web_main.require_master(req, user)
         self.assertEqual(ctx.exception.status_code, 403)
@@ -1385,6 +1418,7 @@ class TestRequireMaster(unittest.TestCase):
         req = MagicMock()
         req.headers = {"x-viewer-only": "true"}
         from fastapi import HTTPException
+
         with self.assertRaises(HTTPException) as ctx:
             web_main.require_master(req, user)
         self.assertEqual(ctx.exception.status_code, 403)
@@ -1409,11 +1443,13 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         self.mock_db.get_user_by_id = AsyncMock(return_value={"first_name": "Alice", "username": "alice"})
 
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
-            await web_main.handle_realtime_notification({
-                "type": "new_message",
-                "chat_id": 42,
-                "data": {"message": {"id": 1, "text": "hello", "sender_id": 100}},
-            })
+            await web_main.handle_realtime_notification(
+                {
+                    "type": "new_message",
+                    "chat_id": 42,
+                    "data": {"message": {"id": 1, "text": "hello", "sender_id": 100}},
+                }
+            )
 
         mock_pm.notify_new_message.assert_awaited_once()
         call_kwargs = mock_pm.notify_new_message.call_args.kwargs

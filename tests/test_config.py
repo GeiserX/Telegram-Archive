@@ -806,6 +806,8 @@ class TestBuildTelegramClientKwargsWithProxy(unittest.TestCase):
             self.assertIn("proxy", result)
             self.assertEqual(result["proxy"]["addr"], "10.0.0.1")
             self.assertEqual(result["proxy"]["port"], 9050)
+            self.assertIn("flood_sleep_threshold", result)
+            self.assertEqual(result["flood_sleep_threshold"], 0)
 
 
 class TestLogLevelWarnAlias(unittest.TestCase):

@@ -18,10 +18,38 @@ import shutil
 import sqlite3
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
 from .config import Config
 
 logger = logging.getLogger(__name__)
+
+MAX_FLOOD_RETRIES = 5
+MAX_FLOOD_WAIT_SECONDS = 600
+
+
+async def _call_with_flood_retry(coro_fn, *args, **kwargs):
+    """Retry a single async call on FloodWaitError with bounded sleep."""
+    retries = 0
+    while True:
+        try:
+            return await coro_fn(*args, **kwargs)
+        except FloodWaitError as e:
+            retries += 1
+            if retries > MAX_FLOOD_RETRIES:
+                logger.error(
+                    "FloodWait: exceeded %d retries on %s", MAX_FLOOD_RETRIES, getattr(coro_fn, "__name__", coro_fn)
+                )
+                raise
+            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
+            logger.warning(
+                "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
+                wait_seconds,
+                getattr(coro_fn, "__name__", coro_fn),
+                retries,
+                MAX_FLOOD_RETRIES,
+            )
+            await asyncio.sleep(wait_seconds + 1)
 
 
 class TelegramConnection:
@@ -166,7 +194,7 @@ class TelegramConnection:
             logger.error("  Non-interactive: python scripts/auth_noninteractive.py send")
             raise RuntimeError("Session not authorized. Please run authentication setup.")
 
-        self._me = await self._client.get_me()
+        self._me = await _call_with_flood_retry(self._client.get_me)
         self._connected = True
 
         # Auth succeeded — update the golden backup (known-good state).
@@ -229,7 +257,7 @@ class TelegramConnection:
             if not self._client.is_connected():
                 logger.warning("Connection lost, reconnecting...")
                 await self._client.connect()
-                self._me = await self._client.get_me()
+                self._me = await _call_with_flood_retry(self._client.get_me)
                 logger.info(f"Reconnected as {self._me.first_name}")
         except Exception as e:
             logger.warning(f"Connection check failed: {e}, reconnecting...")
