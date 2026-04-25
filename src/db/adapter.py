@@ -1098,9 +1098,10 @@ class DatabaseAdapter:
                 .where(Message.chat_id == chat_id)
             )
 
-            # v6.2.0: Filter by forum topic
+            # v6.2.0: Filter by forum topic. NULL reply_to_top_id == General (id=1),
+            # matching the coalesce in get_forum_topics counts.
             if topic_id is not None:
-                stmt = stmt.where(Message.reply_to_top_id == topic_id)
+                stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
             if search:
                 escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
