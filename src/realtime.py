@@ -114,16 +114,25 @@ class RealtimeNotifier:
             logger.warning(f"Failed to send realtime notification: {e}")
 
     async def _notify_postgres(self, payload: dict):
-        """Send notification via PostgreSQL NOTIFY."""
+        """Send notification via PostgreSQL NOTIFY.
+
+        Uses ``pg_notify(channel, payload)`` with bound parameters so the
+        payload never becomes part of the SQL text. The previous
+        ``NOTIFY telegram_updates, '<json>'`` form broke whenever the JSON
+        contained tokens like ``$1`` or ``$D`` — asyncpg parses those as
+        positional placeholders in the raw SQL string.
+        """
         if not self._db_manager:
             return
 
         async with self._db_manager.async_session_factory() as session:
             from sqlalchemy import text
 
-            # Escape the JSON payload (handle datetime objects)
-            payload_json = json.dumps(payload, default=_json_serializer).replace("'", "''")
-            await session.execute(text(f"NOTIFY telegram_updates, '{payload_json}'"))
+            payload_json = json.dumps(payload, default=_json_serializer)
+            await session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": "telegram_updates", "payload": payload_json},
+            )
             await session.commit()
 
     async def _notify_http(self, payload: dict):

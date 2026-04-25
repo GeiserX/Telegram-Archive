@@ -280,26 +280,100 @@ class TestRealtimeNotifierPostgres:
         # Should not raise
         await notifier._notify_postgres({"type": "test"})
 
-    async def test_notify_postgres_executes_notify_command(self):
-        """_notify_postgres sends NOTIFY via SQL."""
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
+    @staticmethod
+    def _make_notifier_with_fake_session():
+        """Build a RealtimeNotifier wired to an AsyncMock session.
 
-        mock_db = MagicMock()
-        mock_db._is_sqlite = False
-        mock_db.async_session_factory.return_value = mock_session
+        Returns ``(notifier, session)`` so tests can drive .notify() and
+        then inspect what was sent through the session. The ``__aenter__``
+        return_value is set so ``async with session as s:`` binds ``s`` back
+        to the same mock — without this, AsyncMock returns a fresh child mock
+        and the assertions miss the real call.
+        """
+        session = AsyncMock()
+        session.__aenter__.return_value = session
 
-        notifier = RealtimeNotifier(db_manager=mock_db)
+        db_manager = MagicMock()
+        db_manager.async_session_factory = MagicMock(return_value=session)
+        db_manager._is_sqlite = False
+
+        notifier = RealtimeNotifier(db_manager=db_manager)
         notifier._is_postgresql = True
         notifier._initialized = True
+        return notifier, session
 
-        payload = {"type": "new_message", "chat_id": 123}
+    async def test_notify_postgres_uses_pg_notify_with_bound_params(self):
+        """_notify_postgres must call SELECT pg_notify(:channel, :payload) with bound params."""
+        notifier, session = self._make_notifier_with_fake_session()
 
-        await notifier._notify_postgres(payload)
+        await notifier._notify_postgres({"type": "new_message", "chat_id": 123})
 
-        mock_session.execute.assert_called_once()
-        mock_session.commit.assert_called_once()
+        assert session.execute.await_count == 1
+        assert session.commit.await_count == 1
+
+        stmt = session.execute.await_args.args[0]
+        sql = str(stmt).lower()
+        assert "pg_notify" in sql
+
+        params = session.execute.await_args.args[1]
+        assert params["channel"] == "telegram_updates"
+        assert "new_message" in params["payload"]
+
+    async def test_notify_does_not_interpolate_payload_into_sql(self):
+        """Regression for upstream PR #123: payload must be a bound parameter,
+        never embedded in the SQL string. The original implementation f-string-
+        interpolated the JSON, which made asyncpg blow up whenever a message
+        contained tokens like ``$1`` or ``$D`` (parsed as positional placeholders)."""
+        notifier, session = self._make_notifier_with_fake_session()
+
+        await notifier.notify(
+            NotificationType.NEW_MESSAGE,
+            chat_id=1011405549,
+            data={"message": {"id": 1, "text": "this will $1 break $D asyncpg"}},
+        )
+
+        assert session.execute.await_count == 1
+        assert session.commit.await_count == 1
+
+        stmt = session.execute.await_args.args[0]
+        sql = str(stmt)
+        assert "$1 break" not in sql
+        assert "$D" not in sql
+        assert "pg_notify" in sql.lower()
+
+        params = session.execute.await_args.args[1]
+        assert params["channel"] == "telegram_updates"
+        assert "$1 break $D asyncpg" in params["payload"]
+
+    async def test_notify_handles_single_quotes_in_payload(self):
+        """Single quotes inside the payload must round-trip cleanly through bound
+        parameters — replacing the old manual ``.replace(\"'\", \"''\")`` escaping."""
+        notifier, session = self._make_notifier_with_fake_session()
+
+        await notifier.notify(
+            NotificationType.NEW_MESSAGE,
+            chat_id=42,
+            data={"message": {"id": 1, "text": "Ryan's note: it's working"}},
+        )
+
+        assert session.execute.await_count == 1
+        params = session.execute.await_args.args[1]
+        assert "Ryan's note: it's working" in params["payload"]
+
+    async def test_notify_survives_dollar_tokens_without_warning(self, caplog):
+        """End-to-end: .notify() with dollar-tokens must not emit the old
+        ``Failed to send realtime notification`` warning."""
+        notifier, _session = self._make_notifier_with_fake_session()
+
+        with caplog.at_level("WARNING", logger="src.realtime"):
+            await notifier.notify(
+                NotificationType.EDIT,
+                chat_id=42,
+                data={"chat_id": 42, "message_id": 1, "new_text": "sshhhh $1 will take LONGER! $O"},
+            )
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any("Failed to send realtime notification" in m for m in messages), messages
 
 
 class TestRealtimeNotifierHttp:
