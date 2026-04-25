@@ -356,8 +356,8 @@ class TestTelegramProxyConfig(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             self.assertIsNone(config.telegram_proxy)
-            self.assertEqual(config.get_telegram_client_kwargs(), {})
-            self.assertEqual(build_telegram_client_kwargs(), {})
+            self.assertEqual(config.get_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
+            self.assertEqual(build_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
 
     def test_proxy_parses_complete_socks5_config(self):
         """Complete SOCKS5 env vars produce a Telethon proxy dict."""
@@ -385,7 +385,10 @@ class TestTelegramProxyConfig(unittest.TestCase):
                 "rdns": False,
             },
         )
-        self.assertEqual(config.get_telegram_client_kwargs(), {"proxy": config.telegram_proxy})
+        self.assertEqual(
+            config.get_telegram_client_kwargs(),
+            {"flood_sleep_threshold": 0, "proxy": config.telegram_proxy},
+        )
 
     def test_proxy_requires_required_fields(self):
         """Partial proxy configuration should fail fast."""
