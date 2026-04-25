@@ -15,7 +15,7 @@ import os
 import sys
 from datetime import datetime
 
-import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -26,8 +26,9 @@ from src.db.base import DatabaseManager
 from src.db.models import Base, Chat, Message
 
 
-async def _make_adapter_with_messages():
-    """Spin up an in-memory SQLite DB seeded with a forum chat + mixed-topic messages."""
+@pytest_asyncio.fixture
+async def forum_adapter():
+    """In-memory SQLite DB seeded with a forum chat + mixed-topic messages."""
     engine = create_async_engine(
         "sqlite+aiosqlite://",
         poolclass=StaticPool,
@@ -50,9 +51,9 @@ async def _make_adapter_with_messages():
             # (id, date, text, reply_to_top_id)
             (1, datetime(2024, 1, 1, 10), "pre-forum general #1", None),
             (2, datetime(2024, 1, 2, 10), "pre-forum general #2", None),
-            (3, datetime(2024, 3, 1, 10), "sexy topic msg", 47),
-            (4, datetime(2024, 3, 2, 10), "another sexy msg", 47),
-            (5, datetime(2024, 4, 1, 10), "photos topic", 144),
+            (3, datetime(2024, 3, 1, 10), "topic-47 msg #1", 47),
+            (4, datetime(2024, 3, 2, 10), "topic-47 msg #2", 47),
+            (5, datetime(2024, 4, 1, 10), "topic-144 photos", 144),
             # Post-forum-enable: Telegram sets reply_to_top_id=1 explicitly on
             # new General messages. Must appear alongside NULL rows under topic_id=1.
             (6, datetime(2024, 5, 1, 10), "post-forum general (explicit 1)", 1),
@@ -61,42 +62,59 @@ async def _make_adapter_with_messages():
             session.add(Message(id=mid, chat_id=chat_id, date=dt, text=body, reply_to_top_id=top))
         await session.commit()
 
-    return DatabaseAdapter(db_manager), engine, chat_id
+    yield DatabaseAdapter(db_manager), chat_id
+
+    await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_general_topic_includes_null_and_explicit_one():
+async def test_general_topic_includes_null_and_explicit_one(forum_adapter):
     """topic_id=1 (General) must match both NULL reply_to_top_id (pre-forum) and
     explicit reply_to_top_id=1 (post-forum-enable) messages."""
-    adapter, engine, chat_id = await _make_adapter_with_messages()
-    try:
-        messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1)
-        ids = sorted(m["id"] for m in messages)
-        assert ids == [1, 2, 6], f"General (topic_id=1) must return NULL and explicit-1 messages, got {ids}"
-    finally:
-        await engine.dispose()
+    adapter, chat_id = forum_adapter
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1)
+    ids = sorted(m["id"] for m in messages)
+    assert ids == [1, 2, 6], f"General (topic_id=1) must return NULL and explicit-1 messages, got {ids}"
 
 
-@pytest.mark.asyncio
-async def test_non_general_topic_filters_strictly():
+async def test_non_general_topic_filters_strictly(forum_adapter):
     """Non-General topic IDs must still filter by strict equality on reply_to_top_id."""
-    adapter, engine, chat_id = await _make_adapter_with_messages()
-    try:
-        sexy = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=47)
-        assert sorted(m["id"] for m in sexy) == [3, 4]
+    adapter, chat_id = forum_adapter
+    topic_47 = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=47)
+    assert sorted(m["id"] for m in topic_47) == [3, 4]
 
-        photos = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=144)
-        assert sorted(m["id"] for m in photos) == [5]
-    finally:
-        await engine.dispose()
+    photos = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=144)
+    assert sorted(m["id"] for m in photos) == [5]
 
 
-@pytest.mark.asyncio
-async def test_no_topic_filter_returns_all():
+async def test_no_topic_filter_returns_all(forum_adapter):
     """Without topic_id, all messages in the chat must be returned regardless of reply_to_top_id."""
-    adapter, engine, chat_id = await _make_adapter_with_messages()
-    try:
-        all_msgs = await adapter.get_messages_paginated(chat_id=chat_id)
-        assert sorted(m["id"] for m in all_msgs) == [1, 2, 3, 4, 5, 6]
-    finally:
-        await engine.dispose()
+    adapter, chat_id = forum_adapter
+    all_msgs = await adapter.get_messages_paginated(chat_id=chat_id)
+    assert sorted(m["id"] for m in all_msgs) == [1, 2, 3, 4, 5, 6]
+
+
+async def test_nonexistent_topic_returns_empty(forum_adapter):
+    """A topic_id with no matching messages must return an empty list."""
+    adapter, chat_id = forum_adapter
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=999)
+    assert messages == []
+
+
+async def test_topic_zero_returns_empty(forum_adapter):
+    """topic_id=0 is not a valid Telegram topic — must not match NULL rows via coalesce."""
+    adapter, chat_id = forum_adapter
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=0)
+    assert messages == []
+
+
+async def test_topic_filter_combined_with_search(forum_adapter):
+    """topic_id and search filters must both apply — only matching messages returned."""
+    adapter, chat_id = forum_adapter
+    # Search within General topic (id=1) — only "pre-forum general #1" matches
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="general #1")
+    ids = sorted(m["id"] for m in messages)
+    assert ids == [1]
+
+    # Search term exists in topic-47 but not in General
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="topic-47")
+    assert messages == []
