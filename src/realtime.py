@@ -38,6 +38,32 @@ class NotificationType(str, Enum):
     PIN = "pin"
 
 
+def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:
+    """Truncate large string fields in notification data to stay under PostgreSQL's 8KB NOTIFY limit.
+
+    Handles both ``data["message"]["text"]`` (new_message) and ``data["new_text"]`` (edit)
+    paths. Returns a shallow-copied dict so the caller's original is not mutated.
+    """
+    truncated = False
+
+    # new_message path: data["message"]["text"]
+    if "message" in data and isinstance(data["message"], dict):
+        msg = data["message"]
+        if "text" in msg and msg.get("text") and len(msg["text"]) > max_text:
+            data = data.copy()
+            data["message"] = msg.copy()
+            data["message"]["text"] = msg["text"][:max_text] + "…"
+            truncated = True
+
+    # edit path: data["new_text"]
+    if "new_text" in data and data.get("new_text") and len(data["new_text"]) > max_text:
+        if not truncated:
+            data = data.copy()
+        data["new_text"] = data["new_text"][:max_text] + "…"
+
+    return data
+
+
 class RealtimeNotifier:
     """
     Unified real-time notification sender.
@@ -93,14 +119,10 @@ class RealtimeNotifier:
         if not self._initialized:
             await self.init()
 
-        # Truncate message text to avoid PostgreSQL NOTIFY 8KB limit
-        # The viewer fetches full content via API, so truncation is fine
-        if "message" in data and isinstance(data["message"], dict):
-            msg = data["message"]
-            if "text" in msg and msg.get("text") and len(msg["text"]) > 500:
-                data = data.copy()
-                data["message"] = msg.copy()
-                data["message"]["text"] = msg["text"][:500] + "…"
+        # Truncate large string fields to stay under PostgreSQL's 8KB NOTIFY limit.
+        # The viewer fetches full content via API, so truncation is fine.
+        _MAX_NOTIFY_TEXT = 500
+        data = _truncate_notify_data(data, _MAX_NOTIFY_TEXT)
 
         payload = {"type": notification_type.value, "chat_id": chat_id, "data": data}
 

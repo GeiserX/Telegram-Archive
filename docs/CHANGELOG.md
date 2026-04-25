@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.6.3] - 2026-04-25
+
+### Fixed
+
+- **Edit notifications no longer silently dropped on long messages** — The 500-char truncation guard only protected `data["message"]["text"]` (new_message path), leaving `data["new_text"]` (edit path) unprotected. A 4096-char emoji edit could produce a 16KB payload exceeding PostgreSQL's 8KB NOTIFY limit, causing a silent `pg_notify` error. Both paths are now truncated via a shared `_truncate_notify_data()` helper. (#123 follow-up)
+- **Use `pg_notify()` with bound parameters for PostgreSQL NOTIFY** — Replaces f-string SQL interpolation that was vulnerable to asyncpg `$N` placeholder parsing and fragile manual single-quote escaping. Contributed by @tondeaf in #123.
+- **Push secret comparison is now timing-safe** — `/internal/push` endpoint used `!=` for bearer token comparison; switched to `secrets.compare_digest()` consistent with the rest of the auth layer.
+- **Test assertions use stable `TextClause.text` attribute** — Replaced `str(stmt)` with `stmt.text` for SQLAlchemy SQL assertions, avoiding reliance on undocumented `__str__` behavior.
+
 ## [7.6.2] - 2026-04-25
 
 ### Fixed

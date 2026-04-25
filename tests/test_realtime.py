@@ -267,6 +267,52 @@ class TestRealtimeNotifierNotify:
 
         assert len(original_data["message"]["text"]) == 1000  # Original unchanged
 
+    async def test_notify_truncates_long_edit_new_text(self):
+        """notify() truncates data["new_text"] for edit notifications (8KB guard)."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+
+        long_text = "x" * 1000
+        data = {"chat_id": 42, "message_id": 1, "new_text": long_text}
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            await notifier.notify(NotificationType.EDIT, 42, data)
+
+            call_payload = mock_pg.call_args[0][0]
+            assert len(call_payload["data"]["new_text"]) == 501  # 500 + ellipsis char
+
+    async def test_notify_does_not_truncate_short_edit_new_text(self):
+        """notify() preserves short data["new_text"] for edit notifications."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+
+        data = {"chat_id": 42, "message_id": 1, "new_text": "short edit"}
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            await notifier.notify(NotificationType.EDIT, 42, data)
+
+            call_payload = mock_pg.call_args[0][0]
+            assert call_payload["data"]["new_text"] == "short edit"
+
+    async def test_notify_does_not_mutate_original_edit_data(self):
+        """notify() creates a copy when truncating edit data, not mutating original."""
+        notifier = RealtimeNotifier()
+
+        with patch.dict(os.environ, {"DB_TYPE": "sqlite"}, clear=True):
+            await notifier.init()
+
+        long_text = "x" * 1000
+        original_data = {"chat_id": 42, "message_id": 1, "new_text": long_text}
+
+        with patch.object(notifier, "_notify_http", new_callable=AsyncMock):
+            await notifier.notify(NotificationType.EDIT, 42, original_data)
+
+        assert len(original_data["new_text"]) == 1000  # Original unchanged
+
 
 class TestRealtimeNotifierPostgres:
     """Tests for RealtimeNotifier._notify_postgres."""
@@ -312,8 +358,7 @@ class TestRealtimeNotifierPostgres:
         assert session.commit.await_count == 1
 
         stmt = session.execute.await_args.args[0]
-        sql = str(stmt).lower()
-        assert "pg_notify" in sql
+        assert "pg_notify" in stmt.text.lower()
 
         params = session.execute.await_args.args[1]
         assert params["channel"] == "telegram_updates"
@@ -336,10 +381,9 @@ class TestRealtimeNotifierPostgres:
         assert session.commit.await_count == 1
 
         stmt = session.execute.await_args.args[0]
-        sql = str(stmt)
-        assert "$1 break" not in sql
-        assert "$D" not in sql
-        assert "pg_notify" in sql.lower()
+        assert "$1 break" not in stmt.text
+        assert "$D" not in stmt.text
+        assert "pg_notify" in stmt.text.lower()
 
         params = session.execute.await_args.args[1]
         assert params["channel"] == "telegram_updates"
