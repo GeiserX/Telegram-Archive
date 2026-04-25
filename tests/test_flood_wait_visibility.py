@@ -170,7 +170,7 @@ async def test_iter_with_flood_retry_handles_flood_before_any_yield(caplog, fake
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=100
+            fake_client, "chat", min_id=100, reverse=True
         ):
             collected.append(msg.id)
 
@@ -204,7 +204,7 @@ async def test_iter_with_flood_retry_survives_consecutive_floods(caplog, fake_db
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0
+            fake_client, "chat", min_id=0, reverse=True
         ):
             collected.append(msg.id)
 
@@ -241,7 +241,7 @@ async def test_iter_with_flood_retry_resets_counter_on_progress(caplog, fake_db)
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0
+            fake_client, "chat", min_id=0, reverse=True
         ):
             collected.append(msg.id)
 
@@ -271,7 +271,7 @@ async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db)
         pytest.raises(FloodWaitError),
     ):
         async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0
+            fake_client, "chat", min_id=0, reverse=True
         ):
             pass
 
@@ -301,7 +301,7 @@ async def test_iter_with_flood_retry_caps_sleep_seconds(fake_db):
 
     with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
         async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0
+            fake_client, "chat", min_id=0, reverse=True
         ):
             pass
 
@@ -367,9 +367,147 @@ async def test_iter_with_flood_retry_suppresses_short_wait_logs(caplog, fake_db)
         patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
     ):
         async for _msg in telegram_backup.iter_messages_with_flood_retry(
-            fake_client, "chat", min_id=0
+            fake_client, "chat", min_id=0, reverse=True
         ):
             pass
 
     flood_logs = [r for r in caplog.records if "FloodWait" in r.getMessage()]
     assert flood_logs == [], f"Short wait should be silent, got {[r.getMessage() for r in flood_logs]}"
+
+
+@pytest.mark.asyncio
+async def test_iter_with_flood_retry_rejects_non_reverse(fake_db):
+    """Wrapper must reject calls without reverse=True to prevent silent data corruption."""
+    from src import telegram_backup
+
+    with pytest.raises(ValueError, match="reverse=True"):
+        async for _ in telegram_backup.iter_messages_with_flood_retry(
+            None, "chat", min_id=0
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_iter_with_flood_retry_clamps_negative_sleep(fake_db):
+    """Negative e.seconds must be clamped to 0 — never pass a negative to asyncio.sleep."""
+    from src import telegram_backup
+
+    calls = {"n": 0}
+
+    async def negative_flood(entity, min_id=0, **_):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FloodWaitError(request=None, capture=-5)
+            yield
+        yield SimpleNamespace(id=1)
+
+    fake_client = SimpleNamespace(iter_messages=negative_flood)
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
+        async for _msg in telegram_backup.iter_messages_with_flood_retry(
+            fake_client, "chat", min_id=0, reverse=True
+        ):
+            pass
+
+    assert sleeps == [1], f"Expected sleep(0+1=1) for negative e.seconds, got {sleeps}"
+
+
+@pytest.mark.asyncio
+async def test_iter_with_flood_retry_tolerates_bad_log_threshold_env(fake_db):
+    """Invalid FLOOD_WAIT_LOG_THRESHOLD must fall back to default 10, not crash."""
+    from src import telegram_backup
+
+    calls = {"n": 0}
+
+    async def one_flood(entity, min_id=0, **_):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FloodWaitError(request=None, capture=15)
+            yield
+        yield SimpleNamespace(id=1)
+
+    fake_client = SimpleNamespace(iter_messages=one_flood)
+
+    async def fast_sleep(_):
+        return None
+
+    with (
+        patch.dict(os.environ, {"FLOOD_WAIT_LOG_THRESHOLD": "not_a_number"}),
+        patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
+    ):
+        collected = []
+        async for msg in telegram_backup.iter_messages_with_flood_retry(
+            fake_client, "chat", min_id=0, reverse=True
+        ):
+            collected.append(msg.id)
+
+    assert collected == [1]
+
+
+@pytest.mark.asyncio
+async def test_call_with_flood_retry_retries_and_succeeds(fake_db):
+    """call_with_flood_retry must retry on FloodWaitError then return the result."""
+    from src import telegram_backup
+
+    calls = {"n": 0}
+
+    async def flaky_get_me():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise FloodWaitError(request=None, capture=5)
+        return SimpleNamespace(first_name="Test", phone="123")
+
+    async def fast_sleep(_):
+        return None
+
+    with patch.object(telegram_backup.asyncio, "sleep", fast_sleep):
+        result = await telegram_backup.call_with_flood_retry(flaky_get_me)
+
+    assert result.first_name == "Test"
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_call_with_flood_retry_gives_up(fake_db):
+    """call_with_flood_retry must raise after exceeding max retries."""
+    from src import telegram_backup
+
+    async def always_floods():
+        raise FloodWaitError(request=None, capture=5)
+
+    async def fast_sleep(_):
+        return None
+
+    with (
+        patch.object(telegram_backup.asyncio, "sleep", fast_sleep),
+        pytest.raises(FloodWaitError),
+    ):
+        await telegram_backup.call_with_flood_retry(always_floods)
+
+
+@pytest.mark.asyncio
+async def test_call_with_flood_retry_clamps_negative_sleep(fake_db):
+    """Negative e.seconds in call_with_flood_retry must be clamped to 0."""
+    from src import telegram_backup
+
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    async def negative_then_ok():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FloodWaitError(request=None, capture=-10)
+        return "ok"
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
+        result = await telegram_backup.call_with_flood_retry(negative_then_ok)
+
+    assert result == "ok"
+    assert sleeps == [1], f"Expected sleep(0+1=1) for negative e.seconds, got {sleeps}"
