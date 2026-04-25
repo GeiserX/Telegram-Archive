@@ -1576,7 +1576,7 @@ async def internal_push(request: Request):
     push_secret = os.getenv("INTERNAL_PUSH_SECRET")
     if push_secret:
         auth_header = request.headers.get("Authorization", "")
-        if auth_header != f"Bearer {push_secret}":
+        if not secrets.compare_digest(auth_header, f"Bearer {push_secret}"):
             logger.warning(f"Rejected /internal/push: invalid or missing secret from {client_host}")
             raise HTTPException(status_code=403, detail="Forbidden")
 
