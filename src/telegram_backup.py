@@ -3,6 +3,7 @@ Main Telegram backup module.
 Handles Telegram client connection, message fetching, and incremental backup logic.
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -12,6 +13,7 @@ from telethon import TelegramClient
 from telethon.errors import (
     ChannelPrivateError,
     ChatForbiddenError,
+    FloodWaitError,
     UserBannedInChannelError,
 )
 from telethon.tl.types import (
@@ -34,6 +36,62 @@ from .db import DatabaseAdapter, create_adapter
 from .message_utils import extract_topic_id
 
 logger = logging.getLogger(__name__)
+
+
+MAX_FLOOD_RETRIES = 5
+MAX_FLOOD_WAIT_SECONDS = 600
+
+
+async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
+    """Wrap ``client.iter_messages`` so FloodWaitError is logged and retried.
+
+    With ``flood_sleep_threshold=0`` on the client, every flood-wait bubbles up
+    as an exception. We log the wait and resume iteration from the last yielded
+    message id so progress isn't lost.
+
+    Bounded retries: the inner ``while`` is capped at ``MAX_FLOOD_RETRIES``
+    *consecutive* flood-waits without progress, and the counter resets every
+    time iteration yields a message. Without the cap, an account-restricted
+    Telegram session would loop forever on one chat and block every later one.
+
+    Bounded sleep: ``e.seconds`` is clamped at ``MAX_FLOOD_WAIT_SECONDS`` so a
+    pathologically large value (buggy or malicious server response) cannot
+    hang the process for hours.
+
+    The ``FLOOD_WAIT_LOG_THRESHOLD`` env var (default 10) suppresses log
+    output for short waits — those are routine and noisy in healthy backfills.
+    Set to 0 to log every wait.
+    """
+    log_threshold_seconds = int(os.getenv("FLOOD_WAIT_LOG_THRESHOLD", "10"))
+    resume_from = min_id
+    retries = 0
+    while True:
+        try:
+            async for msg in client.iter_messages(entity, min_id=resume_from, **kwargs):
+                yield msg
+                if getattr(msg, "id", None) is not None:
+                    resume_from = max(resume_from, msg.id)
+                retries = 0
+            return
+        except FloodWaitError as e:
+            retries += 1
+            if retries > MAX_FLOOD_RETRIES:
+                logger.error(
+                    "FloodWait: exceeded %d retries without progress, giving up (last_msg_id=%s)",
+                    MAX_FLOOD_RETRIES,
+                    resume_from,
+                )
+                raise
+            wait_seconds = min(e.seconds, MAX_FLOOD_WAIT_SECONDS)
+            if e.seconds >= log_threshold_seconds:
+                logger.warning(
+                    "FloodWait: sleeping %ss before resuming (last_msg_id=%s, retry=%d/%d)",
+                    wait_seconds,
+                    resume_from,
+                    retries,
+                    MAX_FLOOD_RETRIES,
+                )
+            await asyncio.sleep(wait_seconds + 1)
 
 
 class TelegramBackup:
@@ -660,7 +718,9 @@ class TelegramBackup:
         batches_since_checkpoint = 0
         running_max_id = last_message_id
 
-        async for message in self.client.iter_messages(entity, min_id=last_message_id, reverse=True):
+        async for message in iter_messages_with_flood_retry(
+            self.client, entity, min_id=last_message_id, reverse=True
+        ):
             running_max_id = max(running_max_id, message.id)
 
             # Skip messages belonging to excluded forum topics
@@ -749,7 +809,9 @@ class TelegramBackup:
         batch_size = self.config.batch_size
         recovered = 0
 
-        async for message in self.client.iter_messages(entity, min_id=gap_start, max_id=gap_end, reverse=True):
+        async for message in iter_messages_with_flood_retry(
+            self.client, entity, min_id=gap_start, max_id=gap_end, reverse=True
+        ):
             # Skip messages belonging to excluded forum topics
             if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                 continue
