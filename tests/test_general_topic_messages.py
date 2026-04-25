@@ -53,6 +53,9 @@ async def _make_adapter_with_messages():
             (3, datetime(2024, 3, 1, 10), "sexy topic msg", 47),
             (4, datetime(2024, 3, 2, 10), "another sexy msg", 47),
             (5, datetime(2024, 4, 1, 10), "photos topic", 144),
+            # Post-forum-enable: Telegram sets reply_to_top_id=1 explicitly on
+            # new General messages. Must appear alongside NULL rows under topic_id=1.
+            (6, datetime(2024, 5, 1, 10), "post-forum general (explicit 1)", 1),
         ]
         for mid, dt, body, top in rows:
             session.add(Message(id=mid, chat_id=chat_id, date=dt, text=body, reply_to_top_id=top))
@@ -62,13 +65,14 @@ async def _make_adapter_with_messages():
 
 
 @pytest.mark.asyncio
-async def test_general_topic_includes_null_reply_to_top_id():
-    """topic_id=1 (General) must match messages whose reply_to_top_id IS NULL."""
+async def test_general_topic_includes_null_and_explicit_one():
+    """topic_id=1 (General) must match both NULL reply_to_top_id (pre-forum) and
+    explicit reply_to_top_id=1 (post-forum-enable) messages."""
     adapter, engine, chat_id = await _make_adapter_with_messages()
     try:
         messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1)
         ids = sorted(m["id"] for m in messages)
-        assert ids == [1, 2], f"General (topic_id=1) must return the 2 NULL-top messages, got {ids}"
+        assert ids == [1, 2, 6], f"General (topic_id=1) must return NULL and explicit-1 messages, got {ids}"
     finally:
         await engine.dispose()
 
@@ -93,6 +97,6 @@ async def test_no_topic_filter_returns_all():
     adapter, engine, chat_id = await _make_adapter_with_messages()
     try:
         all_msgs = await adapter.get_messages_paginated(chat_id=chat_id)
-        assert sorted(m["id"] for m in all_msgs) == [1, 2, 3, 4, 5]
+        assert sorted(m["id"] for m in all_msgs) == [1, 2, 3, 4, 5, 6]
     finally:
         await engine.dispose()
