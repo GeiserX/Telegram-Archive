@@ -22,7 +22,7 @@ psycopg2-binary>=2.9.9
 alembic>=1.14.0
 greenlet>=3.1.0
 # Web Push notifications (v5.0+)
-pywebpush>=2.0.0
+pywebpush>=2.3.0
 py-vapid>=1.9.0
 cryptography>=42.0.8
 # HTML import parsing (v7.0+)
