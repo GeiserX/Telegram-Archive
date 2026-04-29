@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # The module import triggers FastAPI initialization, which may fail on
@@ -761,6 +762,105 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
         msg = mock_bc.call_args[0][1]
         self.assertEqual(msg["type"], "pin")
         self.assertEqual(msg["message_ids"], [1, 2])
+
+
+@_skip_unless_web_main
+class TestSecurityHelpers(unittest.TestCase):
+    """Test small security helper branches directly."""
+
+    def test_get_client_ip_uses_direct_ip_by_default(self):
+        """Proxy headers are ignored unless TRUST_PROXY_HEADERS is enabled."""
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": "203.0.113.10", "x-real-ip": "203.0.113.11"},
+        )
+
+        with patch.object(web_main, "TRUST_PROXY_HEADERS", False):
+            self.assertEqual(web_main._get_client_ip(request), "10.0.0.5")
+
+    def test_get_client_ip_uses_proxy_headers_when_trusted(self):
+        """Trusted proxy mode prefers X-Forwarded-For, then X-Real-IP."""
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": "203.0.113.10, 198.51.100.8", "x-real-ip": "203.0.113.11"},
+        )
+
+        with patch.object(web_main, "TRUST_PROXY_HEADERS", True):
+            self.assertEqual(web_main._get_client_ip(request), "203.0.113.10")
+
+    def test_get_client_ip_falls_back_to_real_ip_when_forwarded_empty(self):
+        """Trusted proxy mode falls back to X-Real-IP when X-Forwarded-For is blank."""
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": " ", "x-real-ip": "203.0.113.11"},
+        )
+
+        with patch.object(web_main, "TRUST_PROXY_HEADERS", True):
+            self.assertEqual(web_main._get_client_ip(request), "203.0.113.11")
+
+    def test_websocket_origin_allows_missing_and_same_origin(self):
+        """Originless and same-origin WebSockets are allowed."""
+        self.assertTrue(web_main._websocket_origin_allowed(SimpleNamespace(headers={"host": "example.test"})))
+        self.assertTrue(
+            web_main._websocket_origin_allowed(
+                SimpleNamespace(headers={"origin": "https://example.test", "host": "example.test"})
+            )
+        )
+
+    def test_websocket_origin_uses_cors_allowlist(self):
+        """Cross-origin WebSockets must match CORS_ORIGINS."""
+        websocket = SimpleNamespace(headers={"origin": "https://viewer.example", "host": "archive.example"})
+        with patch.dict(os.environ, {"CORS_ORIGINS": "https://viewer.example, https://other.example"}):
+            self.assertTrue(web_main._websocket_origin_allowed(websocket))
+        with patch.dict(os.environ, {"CORS_ORIGINS": "https://other.example"}):
+            self.assertFalse(web_main._websocket_origin_allowed(websocket))
+
+    def test_enforce_media_acl_allows_unrestricted_user(self):
+        """Master/unrestricted users can access any normalized media path."""
+        user = web_main.UserContext(username="master", role="master", allowed_chat_ids=None)
+        web_main._enforce_media_acl("123/file.jpg", user)
+
+    def test_enforce_media_acl_avatar_branches(self):
+        """Restricted users only get avatars for allowed chat IDs."""
+        user = web_main.UserContext(username="viewer", role="viewer", allowed_chat_ids={123})
+        web_main._enforce_media_acl("avatars/chats/123_456.jpg", user)
+
+        for path in ("avatars/chats", "avatars/chats/not-a-number.jpg", "avatars/chats/999_456.jpg"):
+            with self.subTest(path=path), self.assertRaises(web_main.HTTPException) as ctx:
+                web_main._enforce_media_acl(path, user)
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_enforce_media_acl_rejects_malformed_or_unallowed_media_path(self):
+        """Restricted users cannot access non-chat folders or unallowed chat IDs."""
+        user = web_main.UserContext(username="viewer", role="viewer", allowed_chat_ids={123})
+        for path in ("one-segment", "_shared/file.jpg", "999/file.jpg"):
+            with self.subTest(path=path), self.assertRaises(web_main.HTTPException) as ctx:
+                web_main._enforce_media_acl(path, user)
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_strip_original_media_paths_handles_media_items(self):
+        """No-download sessions strip both legacy media and multi-media item paths."""
+        messages = [
+            {
+                "media": {"file_path": "1/original.jpg", "downloaded": True},
+                "media_items": [
+                    {"file_path": "1/a.jpg", "downloaded": True},
+                    "not-a-dict",
+                    {"file_path": "1/b.jpg", "downloaded": True},
+                ],
+            },
+            {"media": None, "media_items": None},
+        ]
+
+        web_main._strip_original_media_paths(messages)
+
+        self.assertEqual(messages[0]["media"]["file_path"], None)
+        self.assertFalse(messages[0]["media"]["downloaded"])
+        self.assertTrue(messages[0]["media"]["no_download"])
+        self.assertEqual(messages[0]["media_items"][0]["file_path"], None)
+        self.assertFalse(messages[0]["media_items"][0]["downloaded"])
+        self.assertTrue(messages[0]["media_items"][0]["no_download"])
+        self.assertEqual(messages[0]["media_items"][2]["file_path"], None)
 
 
 if __name__ == "__main__":

@@ -470,6 +470,29 @@ async def test_call_with_flood_retry_gives_up(fake_db):
 
 
 @pytest.mark.asyncio
+async def test_call_with_flood_retry_aborts_excessive_wait(fake_db):
+    """call_with_flood_retry must not sleep when Telegram asks for an excessive wait."""
+    from src import telegram_backup
+
+    sleeps: list[float] = []
+
+    async def huge_wait():
+        raise FloodWaitError(request=None, capture=86400)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with (
+        patch.object(telegram_backup, "MAX_FLOOD_WAIT_SECONDS", 30),
+        patch.object(telegram_backup.asyncio, "sleep", record_sleep),
+        pytest.raises(FloodWaitError),
+    ):
+        await telegram_backup.call_with_flood_retry(huge_wait)
+
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
 async def test_call_with_flood_retry_clamps_negative_sleep(fake_db):
     """Negative e.seconds in call_with_flood_retry must be clamped to 0."""
     from src import telegram_backup
