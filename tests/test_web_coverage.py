@@ -109,6 +109,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
             return
         self._saved_db = web_main.db
         self._saved_auth = web_main.AUTH_ENABLED
+        self._saved_allow_anonymous = web_main.ALLOW_ANONYMOUS_VIEWER
         self._saved_sessions = dict(web_main._sessions)
         self._saved_push = web_main.push_manager
         self._saved_display = web_main.config.display_chat_ids
@@ -120,6 +121,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         self.mock_db = _mock_db()
         web_main.db = self.mock_db
         web_main.AUTH_ENABLED = False
+        web_main.ALLOW_ANONYMOUS_VIEWER = True
         web_main._sessions.clear()
         web_main.push_manager = None
         web_main.config.display_chat_ids = set()
@@ -131,6 +133,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
             return
         web_main.db = self._saved_db
         web_main.AUTH_ENABLED = self._saved_auth
+        web_main.ALLOW_ANONYMOUS_VIEWER = self._saved_allow_anonymous
         web_main._sessions.clear()
         web_main._sessions.update(self._saved_sessions)
         web_main.push_manager = self._saved_push
@@ -345,6 +348,40 @@ class TestServeMedia(_WebTestBase):
                 resp = await client.get("/media/123/photo.jpg", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 403)
 
+    async def test_media_rejects_shared_folder_for_restricted_user(self):
+        """Restricted users cannot fetch deduplicated _shared files directly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            shared_dir = os.path.join(tmpdir, "_shared")
+            os.makedirs(shared_dir)
+            with open(os.path.join(shared_dir, "secret.jpg"), "w") as f:
+                f.write("secret")
+
+            web_main.AUTH_ENABLED = True
+            token = "restricted-shared"
+            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={123})
+            async with self._client() as client:
+                resp = await client.get("/media/_shared/secret.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 403)
+
+    async def test_media_rejects_original_file_for_no_download_user(self):
+        """no_download users cannot fetch original media bytes by omitting download=1."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            chat_dir = os.path.join(tmpdir, "123")
+            os.makedirs(chat_dir)
+            with open(os.path.join(chat_dir, "photo.jpg"), "w") as f:
+                f.write("img")
+
+            web_main.AUTH_ENABLED = True
+            token = "no-download-original"
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_ids={123}, no_download=True
+            )
+            async with self._client() as client:
+                resp = await client.get("/media/123/photo.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 403)
+
     async def test_media_avatar_access_check(self):
         """serve_media enforces chat-level access for avatar paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -403,6 +440,17 @@ class TestServeThumbnail(_WebTestBase):
             web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={999})
             async with self._client() as client:
                 resp = await client.get("/media/thumb/200/123/photo.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 403)
+
+    async def test_thumbnail_rejects_shared_folder_for_restricted_user(self):
+        """Restricted users cannot request thumbnails for non-chat media folders."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            web_main.AUTH_ENABLED = True
+            token = "th-shared"
+            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={123})
+            async with self._client() as client:
+                resp = await client.get("/media/thumb/200/_shared/secret.jpg", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 403)
 
     async def test_thumbnail_avatar_access_check(self):
@@ -1138,6 +1186,14 @@ class TestInternalPushEdgeCases(_WebTestBase):
             resp = await client.post("/internal/push", json={"type": "test"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "error")
+
+    async def test_internal_push_requires_secret_for_private_network(self):
+        """Non-loopback private network callers need INTERNAL_PUSH_SECRET."""
+        transport = ASGITransport(app=web_main.app, client=("172.18.0.2", 12345))
+        with patch.dict(os.environ, {}, clear=True):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/internal/push", json={"type": "test"})
+        self.assertEqual(resp.status_code, 403)
 
 
 # ============================================================================

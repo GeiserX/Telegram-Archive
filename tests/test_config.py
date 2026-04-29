@@ -923,6 +923,18 @@ class TestListenerLogging(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def test_listener_deletions_default_false(self):
+        """LISTEN_DELETIONS defaults to false to preserve archive data."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "ENABLE_LISTENER": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.enable_listener)
+            self.assertFalse(config.listen_deletions)
+
     def test_listener_enabled_with_deletions(self):
         """ENABLE_LISTENER=true with LISTEN_DELETIONS=true covers deletion warning path."""
         env_vars = {

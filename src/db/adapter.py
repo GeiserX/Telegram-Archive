@@ -1120,7 +1120,7 @@ class DatabaseAdapter:
                 stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit)
             else:
                 # Offset-based pagination (legacy fallback)
-                stmt = stmt.order_by(Message.date.desc()).limit(limit).offset(offset)
+                stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit).offset(offset)
 
             result = await session.execute(stmt)
             messages = []
