@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.db.migrate import _migrate_table, migrate_sqlite_to_postgres, verify_migration
+from src.db.migrate import MIGRATION_MODELS, _migrate_table, migrate_sqlite_to_postgres, verify_migration
 
 # ============================================================
 # Helper: build a mock DatabaseManager whose get_session()
@@ -177,7 +177,7 @@ class TestMigrateFullFlow:
         mock_target.close.assert_awaited_once()
 
         # All tables should have 0 records since source is empty
-        for table in ["users", "chats", "messages", "media", "reactions", "sync_status", "metadata"]:
+        for table in [model.__tablename__ for model in MIGRATION_MODELS]:
             assert result[table] == 0
 
     @pytest.mark.asyncio
@@ -334,8 +334,8 @@ class TestVerifyMigrationFlow:
                 postgres_url="postgresql+asyncpg://u:p@h/d",
             )
 
-        # Should have entries for all 7 tables
-        assert len(result) == 7
+        # Should have entries for every ORM table that participates in app state
+        assert len(result) == len(MIGRATION_MODELS)
         for _table_name, counts in result.items():
             assert counts["sqlite"] == 100
             assert counts["postgres"] == 100

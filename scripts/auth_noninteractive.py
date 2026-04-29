@@ -34,6 +34,10 @@ def _get_session_path() -> str:
     return os.path.join(session_dir, session_name)
 
 
+def _get_phone_code_hash_path(session_path: str) -> str:
+    return f"{session_path}.phone_code_hash"
+
+
 async def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print(__doc__)
@@ -57,6 +61,8 @@ async def main():
 
     if action == "send":
         result = await client.send_code_request(phone)
+        with open(_get_phone_code_hash_path(session_path), "w") as f:
+            f.write(result.phone_code_hash)
         print(f"Verification code sent to Telegram app ({result.type.__class__.__name__})")
         print(f"Phone code hash: {result.phone_code_hash}")
         await client.disconnect()
@@ -69,11 +75,18 @@ async def main():
         code = sys.argv[2]
         password = sys.argv[3] if len(sys.argv) > 3 else None
 
-        # Must send_code_request first to establish the flow
-        await client.send_code_request(phone)
+        phone_code_hash = os.getenv("TELEGRAM_PHONE_CODE_HASH", "").strip()
+        hash_path = _get_phone_code_hash_path(session_path)
+        if not phone_code_hash and os.path.exists(hash_path):
+            with open(hash_path) as f:
+                phone_code_hash = f.read().strip()
+        if not phone_code_hash:
+            print("Missing phone_code_hash. Run `send` first or set TELEGRAM_PHONE_CODE_HASH.")
+            await client.disconnect()
+            sys.exit(1)
 
         try:
-            await client.sign_in(phone, code)
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
         except Exception as e:
             error_str = str(e)
             if (
@@ -93,6 +106,10 @@ async def main():
 
         me = await client.get_me()
         print(f"Authenticated as {me.first_name} (@{me.username})")
+        try:
+            os.remove(hash_path)
+        except FileNotFoundError:
+            pass
         await client.disconnect()
 
     else:

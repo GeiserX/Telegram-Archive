@@ -93,8 +93,9 @@ class RealtimeNotifier:
         if self._db_manager:
             self._is_postgresql = not self._db_manager._is_sqlite
         else:
+            database_url = os.getenv("DATABASE_URL", "").lower()
             db_type = os.getenv("DB_TYPE", "sqlite").lower()
-            self._is_postgresql = db_type in ("postgresql", "postgres")
+            self._is_postgresql = database_url.startswith("postgresql") or db_type in ("postgresql", "postgres")
 
         if self._is_postgresql:
             logger.info("Realtime notifier: Using PostgreSQL LISTEN/NOTIFY")

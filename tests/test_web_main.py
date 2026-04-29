@@ -142,8 +142,8 @@ class TestConnectionManagerBroadcast(unittest.IsolatedAsyncioTestCase):
         await self.mgr.broadcast_to_chat(42, {"type": "test"})
 
         ws1.send_json.assert_awaited_once_with({"type": "test"})
-        # ws2 has empty subscriptions, so it also receives (matches "not subscribed_chats" branch)
-        ws2.send_json.assert_awaited_once()
+        # Empty subscriptions no longer receive chat-specific events.
+        ws2.send_json.assert_not_awaited()
 
     async def test_broadcast_to_chat_respects_acl(self):
         """broadcast_to_chat skips connections whose ACL excludes the chat."""
@@ -159,6 +159,7 @@ class TestConnectionManagerBroadcast(unittest.IsolatedAsyncioTestCase):
         ws = AsyncMock()
         ws.send_json.side_effect = Exception("broken pipe")
         await self.mgr.connect(ws)
+        self.mgr.subscribe(ws, 1)
 
         await self.mgr.broadcast_to_chat(1, {"type": "test"})
         self.assertNotIn(ws, self.mgr.active_connections)
