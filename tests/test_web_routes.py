@@ -84,6 +84,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._saved_db = web_main.db
         self._saved_auth = web_main.AUTH_ENABLED
+        self._saved_allow_anonymous = web_main.ALLOW_ANONYMOUS_VIEWER
         self._saved_sessions = dict(web_main._sessions)
         self._saved_push = web_main.push_manager
         self._saved_display = web_main.config.display_chat_ids
@@ -93,6 +94,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         self.mock_db = _mock_db()
         web_main.db = self.mock_db
         web_main.AUTH_ENABLED = False
+        web_main.ALLOW_ANONYMOUS_VIEWER = True
         web_main._sessions.clear()
         web_main.push_manager = None
         web_main.config.display_chat_ids = set()
@@ -102,6 +104,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         web_main.db = self._saved_db
         web_main.AUTH_ENABLED = self._saved_auth
+        web_main.ALLOW_ANONYMOUS_VIEWER = self._saved_allow_anonymous
         web_main._sessions.clear()
         web_main._sessions.update(self._saved_sessions)
         web_main.push_manager = self._saved_push
@@ -155,7 +158,7 @@ class TestAuthCheckEndpoint(_WebTestBase):
     """Test /api/auth/check endpoint."""
 
     async def test_returns_authenticated_when_auth_disabled(self):
-        """auth check returns authenticated=True and role=master when auth is disabled."""
+        """auth check returns anonymous master only with explicit anonymous opt-in."""
         async with self._client() as client:
             resp = await client.get("/api/auth/check")
         self.assertEqual(resp.status_code, 200)
@@ -163,6 +166,17 @@ class TestAuthCheckEndpoint(_WebTestBase):
         self.assertTrue(data["authenticated"])
         self.assertFalse(data["auth_required"])
         self.assertEqual(data["role"], "master")
+
+    async def test_returns_setup_required_when_auth_missing_without_opt_in(self):
+        """auth check fails closed when credentials are missing and anonymous mode is not explicit."""
+        web_main.ALLOW_ANONYMOUS_VIEWER = False
+        async with self._client() as client:
+            resp = await client.get("/api/auth/check")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["authenticated"])
+        self.assertTrue(data["auth_required"])
+        self.assertTrue(data["setup_required"])
 
     async def test_returns_unauthenticated_when_no_cookie(self):
         """auth check returns authenticated=False when auth enabled but no cookie."""
@@ -1365,10 +1379,19 @@ class TestRequireAuth(_WebTestBase):
     """Test require_auth dependency."""
 
     async def test_returns_anonymous_master_when_auth_disabled(self):
-        """require_auth returns anonymous master when auth is disabled."""
+        """require_auth returns anonymous master only with explicit anonymous opt-in."""
         result = await web_main.require_auth(auth_cookie=None)
         self.assertEqual(result.username, "anonymous")
         self.assertEqual(result.role, "master")
+
+    async def test_auth_disabled_without_opt_in_fails_closed(self):
+        """require_auth raises setup error when auth is missing and anonymous mode is not explicit."""
+        web_main.ALLOW_ANONYMOUS_VIEWER = False
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            await web_main.require_auth(auth_cookie=None)
+        self.assertEqual(ctx.exception.status_code, 503)
 
     async def test_raises_401_when_no_cookie(self):
         """require_auth raises 401 when auth enabled and no cookie."""

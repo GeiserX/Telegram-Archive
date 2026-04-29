@@ -343,8 +343,8 @@ class TestNoDownload:
         resp = client.get("/media/-1001/photo.jpg?download=1", cookies={"viewer_auth": cookie})
         assert resp.status_code == 403
 
-    def test_no_download_allows_inline_media(self, auth_env, tmp_path):
-        """no_download users can still view media inline (without download=1)."""
+    def test_no_download_blocks_original_media_without_download_param(self, auth_env, tmp_path):
+        """no_download users cannot fetch original bytes by omitting download=1."""
         client, mod, db = _get_client()
         db.verify_viewer_token.return_value = {
             "id": 10,
@@ -360,9 +360,9 @@ class TestNoDownload:
         (media_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
         mod._media_root = tmp_path / "media"
 
-        # Inline request (no download param) should succeed
+        # Inline request (no download param) is still a direct byte fetch.
         resp = client.get("/media/-1001/photo.jpg", cookies={"viewer_auth": cookie})
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
     def test_no_download_blocks_export(self, auth_env):
         """no_download users cannot export chat history."""

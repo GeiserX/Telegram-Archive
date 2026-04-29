@@ -38,8 +38,8 @@ from .message_utils import extract_topic_id
 logger = logging.getLogger(__name__)
 
 
-MAX_FLOOD_RETRIES = 5
-MAX_FLOOD_WAIT_SECONDS = 600
+MAX_FLOOD_RETRIES = int(os.getenv("MAX_FLOOD_RETRIES", "5"))
+MAX_FLOOD_WAIT_SECONDS = int(os.getenv("MAX_FLOOD_WAIT_SECONDS", "3600"))
 
 
 async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
@@ -62,7 +62,15 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
                     getattr(coro_fn, "__name__", coro_fn),
                 )
                 raise
-            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
+            if e.seconds > MAX_FLOOD_WAIT_SECONDS:
+                logger.error(
+                    "FloodWait: required wait %ss exceeds MAX_FLOOD_WAIT_SECONDS=%s on %s",
+                    e.seconds,
+                    MAX_FLOOD_WAIT_SECONDS,
+                    getattr(coro_fn, "__name__", coro_fn),
+                )
+                raise
+            wait_seconds = max(0, e.seconds)
             logger.warning(
                 "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
                 wait_seconds,
@@ -71,6 +79,21 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
                 max_retries,
             )
             await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
+
+
+def _finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str:
+    """Move a temporary download into place while preserving Telethon's chosen extension."""
+    if actual_path and os.path.exists(actual_path):
+        final_path = actual_path.replace(".part", "", 1)
+        if final_path != actual_path:
+            os.replace(actual_path, final_path)
+        return final_path
+
+    if os.path.exists(temporary_path):
+        os.replace(temporary_path, fallback_path)
+        return fallback_path
+
+    return actual_path or fallback_path
 
 
 async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
@@ -85,9 +108,8 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     time iteration yields a message. Without the cap, an account-restricted
     Telegram session would loop forever on one chat and block every later one.
 
-    Bounded sleep: ``e.seconds`` is clamped at ``MAX_FLOOD_WAIT_SECONDS`` so a
-    pathologically large value (buggy or malicious server response) cannot
-    hang the process for hours.
+    Bounded sleep: waits above ``MAX_FLOOD_WAIT_SECONDS`` abort the current
+    operation instead of retrying before Telegram's required wait has elapsed.
 
     The ``FLOOD_WAIT_LOG_THRESHOLD`` env var (default 10) suppresses log
     output for short waits — those are routine and noisy in healthy backfills.
@@ -121,7 +143,15 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     resume_from,
                 )
                 raise
-            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
+            if e.seconds > MAX_FLOOD_WAIT_SECONDS:
+                logger.error(
+                    "FloodWait: required wait %ss exceeds MAX_FLOOD_WAIT_SECONDS=%s; aborting (last_msg_id=%s)",
+                    e.seconds,
+                    MAX_FLOOD_WAIT_SECONDS,
+                    resume_from,
+                )
+                raise
+            wait_seconds = max(0, e.seconds)
             if e.seconds >= log_threshold_seconds:
                 logger.warning(
                     "FloodWait: sleeping %ss before resuming (last_msg_id=%s, retry=%d/%d)",
@@ -285,7 +315,7 @@ class TelegramBackup:
                 seen_chat_ids = set()
                 for cid in self.config.chat_ids:
                     try:
-                        entity = await self.client.get_entity(cid)
+                        entity = await call_with_flood_retry(self.client.get_entity, cid)
 
                         class SimpleDialog:
                             def __init__(self, entity):
@@ -369,7 +399,7 @@ class TelegramBackup:
                     for include_id in missing_include_ids:
                         is_in_archive = include_id in archived_chat_ids
                         try:
-                            entity = await self.client.get_entity(include_id)
+                            entity = await call_with_flood_retry(self.client.get_entity, include_id)
 
                             class SimpleDialog:
                                 def __init__(self, entity):
@@ -649,7 +679,7 @@ class TelegramBackup:
 
                 # Fetch messages from Telegram in batch
                 try:
-                    messages = await self.client.get_messages(chat_id, ids=message_ids)
+                    messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=message_ids)
                 except Exception as e:
                     logger.warning(f"Cannot access chat {chat_id} for media verification: {e}")
                     failed += len(records)
@@ -915,7 +945,7 @@ class TelegramBackup:
             summary["chats_scanned"] += 1
 
             try:
-                entity = await self.client.get_entity(cid)
+                entity = await call_with_flood_retry(self.client.get_entity, cid)
             except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
                 logger.warning(f"Gap-fill: skipping chat {cid} (no access): {e.__class__.__name__}")
                 continue
@@ -998,7 +1028,7 @@ class TelegramBackup:
 
             try:
                 # Fetch current state from Telegram
-                remote_messages = await self.client.get_messages(entity, ids=batch_ids)
+                remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
 
                 for msg_id, remote_msg in zip(batch_ids, remote_messages):
                     # Check for deletion
@@ -1054,7 +1084,9 @@ class TelegramBackup:
             from telethon.tl.types import InputMessagesFilterPinned
 
             # Fetch all pinned messages from Telegram (up to 100)
-            pinned_messages = await self.client.get_messages(entity, filter=InputMessagesFilterPinned(), limit=100)
+            pinned_messages = await call_with_flood_retry(
+                self.client.get_messages, entity, filter=InputMessagesFilterPinned(), limit=100
+            )
 
             if pinned_messages:
                 pinned_ids = [msg.id for msg in pinned_messages]
@@ -1161,7 +1193,7 @@ class TelegramBackup:
             elif fwd.from_id:
                 # Try to resolve the name from the entity
                 try:
-                    fwd_entity = await self.client.get_entity(fwd.from_id)
+                    fwd_entity = await call_with_flood_retry(self.client.get_entity, fwd.from_id)
                     if hasattr(fwd_entity, "title"):
                         message_data["raw_data"]["forward_from_name"] = fwd_entity.title
                     elif hasattr(fwd_entity, "first_name"):
@@ -1405,6 +1437,19 @@ class TelegramBackup:
         # Generate unique media ID
         media_id = f"{chat_id}_{message.id}_{media_type}"
 
+        # Contacts, locations, and polls are Telegram message payloads rather
+        # than downloadable files. Store them as metadata-only records when the
+        # caller asks for media processing.
+        if media_type in {"contact", "geo", "poll"}:
+            return {
+                "id": media_id,
+                "type": media_type,
+                "message_id": message.id,
+                "chat_id": chat_id,
+                "file_size": 0,
+                "downloaded": False,
+            }
+
         # Get Telegram's file unique ID for deduplication
         telegram_file_id = None
         if hasattr(media, "photo"):
@@ -1467,9 +1512,17 @@ class TelegramBackup:
                             shutil.copy2(shared_file_path, file_path)
                     else:
                         # First time seeing this file - download to shared and create symlink
-                        actual_path = await self.client.download_media(message, shared_file_path)
-                        if actual_path and isinstance(actual_path, str):
-                            shared_file_path = actual_path
+                        tmp_shared_file_path = f"{shared_file_path}.part"
+                        if os.path.exists(tmp_shared_file_path):
+                            os.remove(tmp_shared_file_path)
+                        actual_path = await call_with_flood_retry(
+                            self.client.download_media, message, tmp_shared_file_path
+                        )
+                        shared_file_path = _finalize_atomic_download(
+                            actual_path if isinstance(actual_path, str) else None,
+                            tmp_shared_file_path,
+                            shared_file_path,
+                        )
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
                         # Create symlink in chat directory
@@ -1492,9 +1545,15 @@ class TelegramBackup:
             else:
                 # No deduplication - download directly to chat directory
                 if not os.path.exists(file_path):
-                    actual_path = await self.client.download_media(message, file_path)
-                    if actual_path and isinstance(actual_path, str):
-                        file_path = actual_path
+                    tmp_file_path = f"{file_path}.part"
+                    if os.path.exists(tmp_file_path):
+                        os.remove(tmp_file_path)
+                    actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
+                    file_path = _finalize_atomic_download(
+                        actual_path if isinstance(actual_path, str) else None,
+                        tmp_file_path,
+                        file_path,
+                    )
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size with actual size from disk
@@ -1820,7 +1879,7 @@ class TelegramBackup:
                     continue
                 # Try to get the topic's first message for metadata
                 try:
-                    msgs = await self.client.get_messages(entity, ids=[topic_id])
+                    msgs = await call_with_flood_retry(self.client.get_messages, entity, ids=[topic_id])
                     if msgs and msgs[0]:
                         msg = msgs[0]
                         topic_data = {

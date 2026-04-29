@@ -532,7 +532,7 @@
                         <div v-else v-for="topic in topics" :key="topic.id"
                             @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, topic)"
                             class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
-                            :class="{'bg-tg-active': currentNav.topicId === topic.id}"
+                            :class="{'bg-tg-active': currentNav.topicId === topic.id}">
                             <!-- Topic icon -->
                             <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
                                 :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
@@ -1939,10 +1939,14 @@
                             noDownload.value = !!data.no_download
                             console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
-                            // Auto-login via ?token= URL parameter
+                            // Auto-login via token URL. Prefer #token= so bearer-equivalent
+                            // share tokens are not sent to servers/proxies in request logs.
                             if (!isAuthenticated.value && authRequired.value) {
                                 const urlParams = new URLSearchParams(window.location.search)
-                                const urlToken = urlParams.get('token')
+                                const hashParams = window.location.hash.startsWith('#')
+                                    ? new URLSearchParams(window.location.hash.slice(1))
+                                    : new URLSearchParams()
+                                const urlToken = hashParams.get('token') || urlParams.get('token')
                                 if (urlToken) {
                                     try {
                                         const tokenRes = await fetch('/auth/token', {
@@ -1963,6 +1967,7 @@
                                     // Remove token from URL to prevent leaking in browser history
                                     const cleanUrl = new URL(window.location)
                                     cleanUrl.searchParams.delete('token')
+                                    cleanUrl.hash = ''
                                     window.history.replaceState({}, '', cleanUrl)
                                 }
                             }
@@ -3489,7 +3494,7 @@
                 const adminNewToken = ref('')
                 const adminNewTokenUrl = computed(() => {
                     if (!adminNewToken.value) return ''
-                    return `${window.location.origin}/?token=${adminNewToken.value}`
+                    return `${window.location.origin}/#token=${encodeURIComponent(adminNewToken.value)}`
                 })
 
                 const loadAdminViewers = async () => {

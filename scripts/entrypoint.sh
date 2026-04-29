@@ -13,7 +13,7 @@ fi
 
 # Run Alembic migrations if database exists
 if [ "$SKIP_MIGRATIONS" = "false" ]; then
-  if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; then
+  if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ] || [[ "$DATABASE_URL" == postgresql* ]]; then
     echo "Running database migrations..."
     python -c "
 from alembic.config import Config
@@ -22,14 +22,25 @@ import os
 import sys
 import time
 import psycopg2
+from urllib.parse import urlparse
 
-# Build connection URL
-host = os.getenv('POSTGRES_HOST', 'localhost')
-port = os.getenv('POSTGRES_PORT', '5432')
-user = os.getenv('POSTGRES_USER', 'telegram')
-password = os.getenv('POSTGRES_PASSWORD', '')
-db = os.getenv('POSTGRES_DB', 'telegram_backup')
-url = f'postgresql://{user}:{password}@{host}:{port}/{db}'
+# Build connection URL from the same DATABASE_URL-preferred contract the app uses.
+raw_url = os.getenv('DATABASE_URL', '')
+if raw_url:
+    url = raw_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+    parsed = urlparse(url)
+    host = parsed.hostname or 'localhost'
+    port = str(parsed.port or 5432)
+    user = parsed.username or 'telegram'
+    password = parsed.password or ''
+    db = (parsed.path or '/telegram_backup').lstrip('/')
+else:
+    host = os.getenv('POSTGRES_HOST', 'localhost')
+    port = os.getenv('POSTGRES_PORT', '5432')
+    user = os.getenv('POSTGRES_USER', 'telegram')
+    password = os.getenv('POSTGRES_PASSWORD', '')
+    db = os.getenv('POSTGRES_DB', 'telegram_backup')
+    url = f'postgresql://{user}:{password}@{host}:{port}/{db}'
 
 print(f'Connecting to PostgreSQL at {host}:{port}...')
 
@@ -202,9 +213,14 @@ config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
 print('Migrations complete.')
 "
-  elif [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ]; then
+  elif [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ] || [[ "$DATABASE_URL" == sqlite* ]]; then
     # SQLite - check if database file exists before running migrations
     DB_PATH="${DB_PATH:-${DATABASE_PATH:-${BACKUP_PATH:-/data/backups}/telegram_backup.db}}"
+    if [[ "$DATABASE_URL" == sqlite+aiosqlite:///* ]]; then
+      DB_PATH="${DATABASE_URL#sqlite+aiosqlite:///}"
+    elif [[ "$DATABASE_URL" == sqlite:///* ]]; then
+      DB_PATH="${DATABASE_URL#sqlite:///}"
+    fi
 
     if [ -f "$DB_PATH" ]; then
       echo "SQLite database found at $DB_PATH - running migrations..."
@@ -214,7 +230,13 @@ from alembic import command
 import os
 import sqlite3
 
-db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
+database_url = os.getenv('DATABASE_URL', '')
+if database_url.startswith('sqlite+aiosqlite:///'):
+    db_path = database_url.removeprefix('sqlite+aiosqlite:///')
+elif database_url.startswith('sqlite:///'):
+    db_path = database_url.removeprefix('sqlite:///')
+else:
+    db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
 url = f'sqlite:///{db_path}'
 
 # Check if this is a pre-Alembic database that needs stamping

@@ -509,7 +509,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 - **Docker Compose security hardening** — Both services now use `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, and `tmpfs: [/tmp]`. Viewer volume mounted read-only.
 - **GitHub Actions bumped** — `docker/build-push-action` v5→v6, `codecov/codecov-action` v4→v5.
-- **Removed `.cursor/rules/project.mdc`** — Redundant with `AGENTS.md` which is the single source of truth for AI assistant configuration.
+- **Removed `.cursor/rules/project.mdc`** — Redundant with `CLAUDE.md` which is the single source of truth for AI assistant configuration.
 
 ## [6.2.2] - 2026-02-07
 
@@ -1103,7 +1103,7 @@ See [Upgrading to v5.0.0](#upgrading-to-v500-from-v4x) below for detailed instru
 
 ### Improved
 - Release workflow now extracts changelog notes for GitHub releases
-- Added release guidelines to AGENTS.md
+- Added release guidelines to CLAUDE.md
 - Documented chat ID format requirements
 
 ## [4.1.3] - 2026-01-15
