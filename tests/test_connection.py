@@ -8,8 +8,31 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telethon.errors import FloodWaitError
 
+from src import connection
 from src.connection import TelegramConnection
+
+
+@pytest.mark.asyncio
+async def test_connection_call_with_flood_retry_aborts_excessive_wait():
+    """Shared connection retry helper must fail fast on excessive FloodWaits."""
+    sleeps: list[float] = []
+
+    async def huge_wait():
+        raise FloodWaitError(request=None, capture=86400)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with (
+        patch.object(connection, "MAX_FLOOD_WAIT_SECONDS", 30),
+        patch.object(connection.asyncio, "sleep", record_sleep),
+        pytest.raises(FloodWaitError),
+    ):
+        await connection._call_with_flood_retry(huge_wait)
+
+    assert sleeps == []
 
 
 class TestTelegramConnectionInit(unittest.TestCase):
