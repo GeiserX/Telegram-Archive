@@ -156,7 +156,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:7.6.4 \
+  drumsergio/telegram-archive:7.7.0 \
   python -m src auth
 ```
 
@@ -167,7 +167,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:7.6.4 \
+  drumsergio/telegram-archive:7.7.0 \
   python -m src auth
 
 # Then restart the backup container
@@ -208,7 +208,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:7.6.4
+    image: drumsergio/telegram-archive-viewer:7.7.0
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -338,8 +338,8 @@ CHAT_TYPES=private,groups
 CHAT_TYPES=channels
 CHANNELS_EXCLUDE_CHAT_IDS=-1001234567890
 
-# Backup only one specific channel while keeping type-based options
-CHAT_TYPES=groups
+# Backup groups plus one specific channel
+CHAT_TYPES=groups,channels
 CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 ```
 
@@ -440,7 +440,7 @@ For production stability, pin to specific versions instead of `latest`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:7.6.4  # Pin to a reviewed release
+    image: drumsergio/telegram-archive:7.7.0  # Pin to a reviewed release
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available versions.

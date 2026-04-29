@@ -24,8 +24,20 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
-MAX_FLOOD_RETRIES = int(os.getenv("MAX_FLOOD_RETRIES", "5"))
-MAX_FLOOD_WAIT_SECONDS = int(os.getenv("MAX_FLOOD_WAIT_SECONDS", "3600"))
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
+        return default
+
+
+MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
+MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 
 
 async def _call_with_flood_retry(coro_fn, *args, **kwargs):

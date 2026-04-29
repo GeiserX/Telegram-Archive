@@ -13,7 +13,7 @@ fi
 
 # Run Alembic migrations if database exists
 if [ "$SKIP_MIGRATIONS" = "false" ]; then
-  if [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ] || [[ "$DATABASE_URL" == postgresql* ]]; then
+  if { [[ -n "$DATABASE_URL" ]] && { [[ "$DATABASE_URL" == postgresql://* ]] || [[ "$DATABASE_URL" == postgresql+asyncpg://* ]] || [[ "$DATABASE_URL" == postgres://* ]]; }; } || { [[ -z "$DATABASE_URL" ]] && { [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "postgres" ]; }; }; then
     echo "Running database migrations..."
     python -c "
 from alembic.config import Config
@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 # Build connection URL from the same DATABASE_URL-preferred contract the app uses.
 raw_url = os.getenv('DATABASE_URL', '')
 if raw_url:
-    url = raw_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+    url = raw_url.replace('postgresql+asyncpg://', 'postgresql://', 1).replace('postgres://', 'postgresql://', 1)
     parsed = urlparse(url)
     host = parsed.hostname or 'localhost'
     port = str(parsed.port or 5432)
@@ -213,7 +213,7 @@ config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
 print('Migrations complete.')
 "
-  elif [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ] || [[ "$DATABASE_URL" == sqlite* ]]; then
+  elif { [[ -n "$DATABASE_URL" ]] && { [[ "$DATABASE_URL" == sqlite://* ]] || [[ "$DATABASE_URL" == sqlite+aiosqlite://* ]]; }; } || { [[ -z "$DATABASE_URL" ]] && { [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ]; }; }; then
     # SQLite - check if database file exists before running migrations
     DB_PATH="${DB_PATH:-${DATABASE_PATH:-${BACKUP_PATH:-/data/backups}/telegram_backup.db}}"
     if [[ "$DATABASE_URL" == sqlite+aiosqlite:///* ]]; then

@@ -1492,7 +1492,13 @@ class TestProcessMedia(unittest.TestCase):
 
         self.backup._get_media_type = MagicMock(return_value="video")
         self.backup._get_media_filename = MagicMock(return_value="test.mp4")
-        self.backup.client.download_media = AsyncMock(return_value=None)
+
+        async def fake_download(_message, path):
+            with open(path, "wb") as f:
+                f.write(b"video")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
 
         result = _run(self.backup._process_media(msg, 100))
 
