@@ -646,7 +646,17 @@ class TestDownloadMedia:
         msg.media = media
         msg.id = 1
 
-        result = await listener._download_media(msg, -100)
+        shared_checks = {"n": 0}
+
+        def exists(path):
+            if str(path) == "/tmp/test_media/_shared/123.jpg":
+                shared_checks["n"] += 1
+                return shared_checks["n"] > 1
+            return False
+
+        mock_exists.side_effect = exists
+        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+            result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
 
@@ -667,7 +677,17 @@ class TestDownloadMedia:
         msg.media = media
         msg.id = 1
 
-        result = await listener._download_media(msg, -100)
+        file_checks = {"n": 0}
+
+        def exists(path):
+            if str(path) == "/tmp/test_media/-100/123.jpg":
+                file_checks["n"] += 1
+                return file_checks["n"] > 1
+            return False
+
+        mock_exists.side_effect = exists
+        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/-100/123.jpg"):
+            result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
 
@@ -2163,7 +2183,17 @@ class TestDownloadMediaSymlinkFallback:
         msg.media = media
         msg.id = 1
 
-        result = await listener._download_media(msg, -100)
+        shared_checks = {"n": 0}
+
+        def exists(path):
+            if str(path) == "/tmp/test_media/_shared/123.jpg":
+                shared_checks["n"] += 1
+                return shared_checks["n"] > 1
+            return False
+
+        mock_exists.side_effect = exists
+        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+            result = await listener._download_media(msg, -100)
         assert result is not None
         mock_move.assert_called_once()
 

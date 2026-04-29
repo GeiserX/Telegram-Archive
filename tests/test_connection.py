@@ -8,8 +8,37 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telethon.errors import FloodWaitError
 
+from src import connection
 from src.connection import TelegramConnection
+
+
+def test_get_int_env_falls_back_for_invalid_value():
+    """Malformed flood-wait env values fall back instead of crashing imports."""
+    with patch.dict(os.environ, {"MAX_FLOOD_RETRIES": "not-an-int"}):
+        assert connection._get_int_env("MAX_FLOOD_RETRIES", 5) == 5
+
+
+@pytest.mark.asyncio
+async def test_connection_call_with_flood_retry_aborts_excessive_wait():
+    """Shared connection retry helper must fail fast on excessive FloodWaits."""
+    sleeps: list[float] = []
+
+    async def huge_wait():
+        raise FloodWaitError(request=None, capture=86400)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with (
+        patch.object(connection, "MAX_FLOOD_WAIT_SECONDS", 30),
+        patch.object(connection.asyncio, "sleep", record_sleep),
+        pytest.raises(FloodWaitError),
+    ):
+        await connection._call_with_flood_retry(huge_wait)
+
+    assert sleeps == []
 
 
 class TestTelegramConnectionInit(unittest.TestCase):

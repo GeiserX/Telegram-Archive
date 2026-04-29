@@ -4,13 +4,12 @@ Catches events as they happen and updates the local database immediately.
 
 Safety features:
 - LISTEN_EDITS: Apply text edits (default: true, safe)
-- LISTEN_DELETIONS: Delete messages (default: true, protected by zero-footprint)
+- LISTEN_DELETIONS: Delete messages (default: false, opt-in mirror mode)
 - Mass operation detection: Blocks bulk edits/deletions to protect data
 
-ZERO-FOOTPRINT PROTECTION:
-When mass operations are detected, NO changes are written to the database.
-Operations are buffered and only applied after a safety delay, ensuring
-that burst attacks are caught BEFORE any data is modified.
+Mass operation protection is rate limiting, not buffering. Operations under
+the threshold are applied immediately; disable LISTEN_DELETIONS to guarantee
+Telegram deletions never remove archived messages.
 """
 
 import asyncio
@@ -38,8 +37,24 @@ from .config import Config
 from .db import DatabaseAdapter, create_adapter
 from .message_utils import extract_topic_id
 from .realtime import NotificationType, RealtimeNotifier
+from .telegram_backup import call_with_flood_retry
 
 logger = logging.getLogger(__name__)
+
+
+def _finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str | None:
+    """Move a temporary download into place while preserving Telethon's chosen extension."""
+    if actual_path and os.path.exists(actual_path):
+        final_path = actual_path[:-5] if actual_path.endswith(".part") else actual_path
+        if final_path != actual_path:
+            os.replace(actual_path, final_path)
+        return final_path if os.path.exists(final_path) else None
+
+    if os.path.exists(temporary_path):
+        os.replace(temporary_path, fallback_path)
+        return fallback_path if os.path.exists(fallback_path) else None
+
+    return None
 
 
 class MassOperationProtector:
@@ -623,9 +638,20 @@ class TelegramListener:
                             shutil.copy2(shared_file_path, file_path)
                     else:
                         # First time seeing this file - download to shared and create symlink
-                        actual_path = await self.client.download_media(message, shared_file_path)
-                        if actual_path and isinstance(actual_path, str):
-                            shared_file_path = actual_path
+                        tmp_shared_file_path = f"{shared_file_path}.part"
+                        if os.path.exists(tmp_shared_file_path):
+                            os.remove(tmp_shared_file_path)
+                        actual_path = await call_with_flood_retry(
+                            self.client.download_media, message, tmp_shared_file_path
+                        )
+                        shared_file_path = _finalize_atomic_download(
+                            actual_path if isinstance(actual_path, str) else None,
+                            tmp_shared_file_path,
+                            shared_file_path,
+                        )
+                        if not shared_file_path or not os.path.exists(shared_file_path):
+                            logger.warning("Media download did not produce a file")
+                            return None
                         logger.debug(f"📥 Downloaded media to shared: {file_name}")
 
                         try:
@@ -641,9 +667,18 @@ class TelegramListener:
             else:
                 # No deduplication - download directly
                 if not os.path.exists(file_path):
-                    actual_path = await self.client.download_media(message, file_path)
-                    if actual_path and isinstance(actual_path, str):
-                        file_path = actual_path
+                    tmp_file_path = f"{file_path}.part"
+                    if os.path.exists(tmp_file_path):
+                        os.remove(tmp_file_path)
+                    actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
+                    file_path = _finalize_atomic_download(
+                        actual_path if isinstance(actual_path, str) else None,
+                        tmp_file_path,
+                        file_path,
+                    )
+                    if not file_path or not os.path.exists(file_path):
+                        logger.warning("Media download did not produce a file")
+                        return None
 
             # Return the path as stored in DB (relative to media root)
             return f"{self.config.media_path}/{chat_id}/{file_name}"
@@ -720,7 +755,7 @@ class TelegramListener:
             Rate-limited: if too many deletions occur in a short time,
             further deletions are blocked to protect the backup.
             """
-            # Check if deletions are enabled (DEFAULT: TRUE with rate limiting)
+            # Check if deletions are enabled (DEFAULT: FALSE; opt-in mirror mode)
             if not self.config.listen_deletions:
                 if event.deleted_ids:
                     self.stats["deletions_skipped"] += len(event.deleted_ids)
@@ -979,7 +1014,7 @@ class TelegramListener:
                         if hasattr(event, "user_id") and event.user_id:
                             actor_id = event.user_id
                             try:
-                                actor = await self.client.get_entity(event.user_id)
+                                actor = await call_with_flood_retry(self.client.get_entity, event.user_id)
                                 actor_name = getattr(actor, "first_name", "") or getattr(actor, "title", "")
                                 if hasattr(actor, "last_name") and actor.last_name:
                                     actor_name += f" {actor.last_name}"
@@ -1045,7 +1080,7 @@ class TelegramListener:
                 if action_type in ("photo_changed", "title_changed"):
                     # Get full entity for update
                     try:
-                        entity = await self.client.get_entity(chat_id)
+                        entity = await call_with_flood_retry(self.client.get_entity, chat_id)
                         if entity:
                             # Update chat in database
                             chat_data = {

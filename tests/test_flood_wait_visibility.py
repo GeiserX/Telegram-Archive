@@ -10,8 +10,8 @@ Three things under test:
    logs the wait (above ``FLOOD_WAIT_LOG_THRESHOLD``), resumes iteration from
    the last yielded message id, and gives up after ``MAX_FLOOD_RETRIES``
    consecutive flood-waits without progress.
-3. ``e.seconds`` is clamped at ``MAX_FLOOD_WAIT_SECONDS`` so a pathologically
-   large value cannot hang the process for hours.
+3. waits above ``MAX_FLOOD_WAIT_SECONDS`` abort instead of retrying before
+   Telegram's required wait has elapsed.
 """
 
 import importlib
@@ -75,6 +75,17 @@ def test_config_kwargs_include_flood_sleep_threshold_zero():
 
     kwargs = config.get_telegram_client_kwargs()
     assert kwargs.get("flood_sleep_threshold") == 0
+
+
+def test_flood_env_int_parser_invalid_falls_back(fake_db, caplog):
+    """Invalid retry/wait env values should fall back consistently."""
+    from src import telegram_backup
+
+    with patch.dict(os.environ, {"MAX_FLOOD_WAIT_SECONDS": "not-an-int"}), caplog.at_level(logging.WARNING):
+        value = telegram_backup._get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
+
+    assert value == 3600
+    assert any("Invalid MAX_FLOOD_WAIT_SECONDS" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -270,8 +281,8 @@ async def test_iter_with_flood_retry_gives_up_after_max_retries(caplog, fake_db)
 
 
 @pytest.mark.asyncio
-async def test_iter_with_flood_retry_caps_sleep_seconds(fake_db):
-    """An e.seconds value above MAX_FLOOD_WAIT_SECONDS must be clamped."""
+async def test_iter_with_flood_retry_aborts_waits_above_max(fake_db):
+    """An e.seconds value above MAX_FLOOD_WAIT_SECONDS must not retry early."""
     from src import telegram_backup
 
     calls = {"n": 0}
@@ -289,11 +300,12 @@ async def test_iter_with_flood_retry_caps_sleep_seconds(fake_db):
     async def record_sleep(seconds):
         sleeps.append(seconds)
 
-    with patch.object(telegram_backup.asyncio, "sleep", record_sleep):
+    with patch.object(telegram_backup.asyncio, "sleep", record_sleep), pytest.raises(FloodWaitError):
         async for _msg in telegram_backup.iter_messages_with_flood_retry(fake_client, "chat", min_id=0, reverse=True):
             pass
 
-    assert sleeps == [telegram_backup.MAX_FLOOD_WAIT_SECONDS + 1]
+    assert sleeps == []
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -467,6 +479,29 @@ async def test_call_with_flood_retry_gives_up(fake_db):
         pytest.raises(FloodWaitError),
     ):
         await telegram_backup.call_with_flood_retry(always_floods)
+
+
+@pytest.mark.asyncio
+async def test_call_with_flood_retry_aborts_excessive_wait(fake_db):
+    """call_with_flood_retry must not sleep when Telegram asks for an excessive wait."""
+    from src import telegram_backup
+
+    sleeps: list[float] = []
+
+    async def huge_wait():
+        raise FloodWaitError(request=None, capture=86400)
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with (
+        patch.object(telegram_backup, "MAX_FLOOD_WAIT_SECONDS", 30),
+        patch.object(telegram_backup.asyncio, "sleep", record_sleep),
+        pytest.raises(FloodWaitError),
+    ):
+        await telegram_backup.call_with_flood_retry(huge_wait)
+
+    assert sleeps == []
 
 
 @pytest.mark.asyncio
