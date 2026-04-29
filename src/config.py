@@ -253,7 +253,7 @@ class Config:
         # LISTEN_DELETIONS: Delete messages from backup when deleted on Telegram
         # ⚠️ DEFAULT FALSE - Enabling defeats the purpose of having a backup!
         # Only enable if you explicitly want to mirror Telegram exactly
-        self.listen_deletions = os.getenv("LISTEN_DELETIONS", "true").lower() == "true"
+        self.listen_deletions = _parse_bool(os.getenv("LISTEN_DELETIONS"), default=False)
 
         # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
         # When enabled, new messages are saved immediately instead of waiting for scheduled backup

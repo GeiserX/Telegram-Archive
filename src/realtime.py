@@ -28,6 +28,18 @@ def _json_serializer(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _database_url_uses_postgres(database_url: str) -> bool:
+    return database_url.startswith(("postgresql://", "postgresql+asyncpg://", "postgres://"))
+
+
+def _env_uses_postgres() -> bool:
+    database_url = os.getenv("DATABASE_URL", "").lower()
+    if database_url:
+        return _database_url_uses_postgres(database_url)
+    db_type = os.getenv("DB_TYPE", "sqlite").lower()
+    return db_type in ("postgresql", "postgres")
+
+
 class NotificationType(str, Enum):
     """Types of real-time notifications."""
 
@@ -93,8 +105,7 @@ class RealtimeNotifier:
         if self._db_manager:
             self._is_postgresql = not self._db_manager._is_sqlite
         else:
-            db_type = os.getenv("DB_TYPE", "sqlite").lower()
-            self._is_postgresql = db_type in ("postgresql", "postgres")
+            self._is_postgresql = _env_uses_postgres()
 
         if self._is_postgresql:
             logger.info("Realtime notifier: Using PostgreSQL LISTEN/NOTIFY")
@@ -216,8 +227,7 @@ class RealtimeListener:
         if self._db_manager:
             self._is_postgresql = not self._db_manager._is_sqlite
         else:
-            db_type = os.getenv("DB_TYPE", "sqlite").lower()
-            self._is_postgresql = db_type in ("postgresql", "postgres")
+            self._is_postgresql = _env_uses_postgres()
 
         if self._is_postgresql:
             logger.info("Realtime listener: Using PostgreSQL LISTEN")

@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:latest
+    image: drumsergio/telegram-archive:7.7.0
     container_name: telegram-backup
     restart: unless-stopped
     command: ["python", "-m", "src", "schedule"]
@@ -44,7 +44,7 @@ services:
       #   CHAT_TYPES: "private,groups,channels"  # All chats of these types
       # =======================================================================
       CHAT_IDS: ${CHAT_IDS:-}
-      CHAT_TYPES: ${CHAT_TYPES-private,groups,channels}
+      CHAT_TYPES: ${CHAT_TYPES:-private,groups,channels}
 
       # Granular Filtering (only used in type-based mode)
       GLOBAL_INCLUDE_CHAT_IDS: ${GLOBAL_INCLUDE_CHAT_IDS:-}
@@ -74,7 +74,7 @@ services:
       ENABLE_LISTENER: ${ENABLE_LISTENER:-false}
       # Granular listener controls (only apply when ENABLE_LISTENER=true):
       # LISTEN_EDITS: ${LISTEN_EDITS:-true}
-      # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-true}
+      # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-false}
       # LISTEN_NEW_MESSAGES: ${LISTEN_NEW_MESSAGES:-true}
       # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-false}
       # LISTEN_CHAT_ACTIONS: ${LISTEN_CHAT_ACTIONS:-true}
@@ -87,6 +87,7 @@ services:
       # Batch sync alternative (expensive — prefer ENABLE_LISTENER instead)
       SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
       VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
+      INTERNAL_PUSH_SECRET: ${INTERNAL_PUSH_SECRET:-}
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -119,17 +120,21 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:latest
+    image: drumsergio/telegram-archive-viewer:7.7.0
     container_name: telegram-viewer
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Bind to localhost by default. Put this behind a reverse proxy with auth
+      # configured before exposing it publicly.
+      - "127.0.0.1:8000:8000"
     environment:
       BACKUP_PATH: /data/backups
 
-      # Authentication (recommended — set both to enable)
+      # Authentication is required by default. To deliberately run a local
+      # anonymous viewer, set ALLOW_ANONYMOUS_VIEWER=true.
       VIEWER_USERNAME: ${VIEWER_USERNAME:-}
       VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
+      ALLOW_ANONYMOUS_VIEWER: ${ALLOW_ANONYMOUS_VIEWER:-false}
       AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-30}
 
       # Display
@@ -143,6 +148,8 @@ services:
       # CORS_ORIGINS: ${CORS_ORIGINS:-*}
       # SECURE_COOKIES: auto-detect from protocol; override with true/false
       # SECURE_COOKIES: ${SECURE_COOKIES:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      INTERNAL_PUSH_SECRET: ${INTERNAL_PUSH_SECRET:-}
 
       # Notifications
       # PUSH_NOTIFICATIONS: ${PUSH_NOTIFICATIONS:-basic}
@@ -186,7 +193,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:latest
+  #   image: drumsergio/telegram-archive-viewer:7.7.0
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:

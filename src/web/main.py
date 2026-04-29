@@ -17,10 +17,10 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -90,7 +90,7 @@ class ConnectionManager:
             allowed = self._allowed_chats.get(websocket)
             if allowed is not None and chat_id not in allowed:
                 continue
-            if chat_id in subscribed_chats or not subscribed_chats:
+            if chat_id in subscribed_chats:
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
@@ -275,7 +275,7 @@ async def stats_calculation_scheduler():
 
             # If we've passed the target time today, schedule for tomorrow
             if now.hour >= target_hour:
-                next_run = next_run.replace(day=now.day + 1)
+                next_run = next_run + timedelta(days=1)
 
             # Wait until next run
             wait_seconds = (next_run - now).total_seconds()
@@ -442,6 +442,8 @@ async def add_security_headers(request: Request, call_next):
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
+ALLOW_ANONYMOUS_VIEWER = os.getenv("ALLOW_ANONYMOUS_VIEWER", "false").lower() == "true"
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
 AUTH_COOKIE_NAME = "viewer_auth"
 
 AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
@@ -453,8 +455,12 @@ _LOGIN_RATE_WINDOW = 300  # per 5 minutes
 
 if AUTH_ENABLED:
     logger.info(f"Viewer authentication is ENABLED (Master: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
+elif ALLOW_ANONYMOUS_VIEWER:
+    logger.warning("Viewer authentication is DISABLED by explicit ALLOW_ANONYMOUS_VIEWER=true")
 else:
-    logger.info("Viewer authentication is DISABLED (no VIEWER_USERNAME / VIEWER_PASSWORD set)")
+    logger.error(
+        "Viewer authentication is not configured. Set VIEWER_USERNAME/VIEWER_PASSWORD or ALLOW_ANONYMOUS_VIEWER=true"
+    )
 
 
 @dataclass
@@ -499,6 +505,32 @@ def _check_rate_limit(ip: str) -> bool:
 
 def _record_login_attempt(ip: str) -> None:
     _login_attempts.setdefault(ip, []).append(time.time())
+
+
+def _get_client_ip(request: Request) -> str:
+    """Return the rate-limit/audit IP, only trusting proxy headers when explicitly enabled."""
+    direct_ip = request.client.host if request.client else "unknown"
+    if not TRUST_PROXY_HEADERS:
+        return direct_ip
+
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or request.headers.get("x-real-ip", "") or direct_ip
+
+
+def _websocket_origin_allowed(websocket: WebSocket) -> bool:
+    """Allow same-origin WebSockets and explicitly configured CORS origins."""
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+
+    parsed = urlparse(origin)
+    origin_host = parsed.netloc
+    host = websocket.headers.get("host", "")
+    if origin_host and origin_host == host:
+        return True
+
+    allowed_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+    return origin in allowed_origins
 
 
 def _is_db_connection_error(exc: Exception) -> bool:
@@ -639,7 +671,9 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
 async def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
     """Dependency that enforces session-based auth. Returns UserContext."""
     if not AUTH_ENABLED:
-        return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
+        if ALLOW_ANONYMOUS_VIEWER:
+            return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
+        raise HTTPException(status_code=503, detail="Viewer authentication is not configured")
 
     if not auth_cookie:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -688,6 +722,55 @@ def get_user_chat_ids(user: UserContext) -> set[int] | None:
     return user.allowed_chat_ids & master_filter
 
 
+def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False) -> None:
+    """Enforce chat-scoped access for a media URL path before serving bytes."""
+    user_chat_ids = get_user_chat_ids(user)
+    if user_chat_ids is None:
+        return
+
+    parts = path.split("/")
+    if len(parts) < 2:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if parts[0] == "avatars":
+        # Avatar path: avatars/{users|chats}/{chat_id}_{photo_id}.jpg
+        if len(parts) < 3:
+            raise HTTPException(status_code=403, detail="Access denied")
+        name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
+        try:
+            avatar_chat_id = int(name.split("_")[0])
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+        if avatar_chat_id not in user_chat_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        return
+
+    try:
+        media_chat_id = int(parts[0])
+    except ValueError:
+        logger.warning("Blocked restricted media request for non-chat folder: %s", parts[0])
+        raise HTTPException(status_code=403, detail="Access denied")
+    if media_chat_id not in user_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
+def _strip_original_media_paths(messages: list[dict]) -> None:
+    """Remove original media file paths from API responses for no-download sessions."""
+    for message in messages:
+        media = message.get("media")
+        if isinstance(media, dict):
+            media["file_path"] = None
+            media["downloaded"] = False
+            media["no_download"] = True
+        media_items = message.get("media_items")
+        if isinstance(media_items, list):
+            for item in media_items:
+                if isinstance(item, dict):
+                    item["file_path"] = None
+                    item["downloaded"] = False
+                    item["no_download"] = True
+
+
 # Setup paths
 templates_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
@@ -723,26 +806,11 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
+    if user.no_download and not folder.startswith("avatars/"):
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
     # Chat-level access check
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None:
-        folder_parts = folder.split("/")
-        if folder_parts[0] == "avatars":
-            # Avatar thumbnail: folder=avatars/{users|chats}, filename={chat_id}_{photo_id}.jpg
-            name = filename.rsplit(".", 1)[0] if "." in filename else filename
-            try:
-                avatar_chat_id = int(name.split("_")[0])
-                if avatar_chat_id not in user_chat_ids:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            except ValueError:
-                raise HTTPException(status_code=403, detail="Access denied")
-        else:
-            try:
-                media_chat_id = int(folder_parts[0])
-                if media_chat_id not in user_chat_ids:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            except ValueError:
-                pass
+    _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
 
     from .thumbnails import ensure_thumbnail
 
@@ -759,10 +827,10 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
-    # v7.2.0: Server-side download restriction
-    # Inline rendering (images, video, audio in browser) is always allowed.
-    # Explicit downloads (download=1 query param) are blocked for restricted users.
-    if user.no_download and download:
+    # Server-side download restriction. Original media bytes are not served to
+    # no-download users because a direct GET is indistinguishable from browser
+    # inline rendering once the URL is known. Avatars stay available for UI chrome.
+    if user.no_download and not path.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
     # Reject path traversal and absolute paths before any filesystem operations
@@ -778,27 +846,7 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None:
-        parts = path.split("/")
-        if len(parts) >= 2:
-            if parts[0] == "avatars" and len(parts) >= 3:
-                # Avatar path: avatars/{users|chats}/{chat_id}_{photo_id}.jpg
-                # Extract chat_id from filename to enforce per-chat ACL
-                name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
-                try:
-                    avatar_chat_id = int(name.split("_")[0])
-                    if avatar_chat_id not in user_chat_ids:
-                        raise HTTPException(status_code=403, detail="Access denied")
-                except ValueError:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            elif parts[0] != "avatars":
-                try:
-                    media_chat_id = int(parts[0])
-                    if media_chat_id not in user_chat_ids:
-                        raise HTTPException(status_code=403, detail="Access denied")
-                except ValueError:
-                    pass
+    _enforce_media_acl(path, user)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -844,7 +892,9 @@ async def health_check():
 async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Check current authentication status. Returns role and username if authenticated."""
     if not AUTH_ENABLED:
-        return {"authenticated": True, "auth_required": False, "role": "master", "username": "anonymous"}
+        if ALLOW_ANONYMOUS_VIEWER:
+            return {"authenticated": True, "auth_required": False, "role": "master", "username": "anonymous"}
+        return {"authenticated": False, "auth_required": True, "setup_required": True}
 
     if not auth_cookie:
         return {"authenticated": False, "auth_required": True}
@@ -869,18 +919,11 @@ async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_C
 async def login(request: Request):
     """Authenticate user (master via env vars or viewer via DB accounts)."""
     if not AUTH_ENABLED:
-        return JSONResponse({"success": True, "message": "Auth disabled"})
+        if ALLOW_ANONYMOUS_VIEWER:
+            return JSONResponse({"success": True, "message": "Auth disabled by explicit opt-in"})
+        raise HTTPException(status_code=503, detail="Viewer authentication is not configured")
 
-    direct_ip = request.client.host if request.client else "unknown"
-    _trusted = direct_ip.startswith(("172.", "10.", "192.168.", "127.")) or direct_ip in ("::1", "localhost")
-    if _trusted:
-        client_ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or request.headers.get("x-real-ip", "")
-            or direct_ip
-        )
-    else:
-        client_ip = direct_ip
+    client_ip = _get_client_ip(request)
 
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
@@ -915,7 +958,8 @@ async def login(request: Request):
                     try:
                         allowed = set(json.loads(viewer["allowed_chat_ids"]))
                     except json.JSONDecodeError, TypeError:
-                        allowed = None
+                        logger.warning("Corrupted allowed_chat_ids for viewer %s, denying login", username)
+                        raise HTTPException(status_code=403, detail="Invalid viewer scope")
 
                 viewer_no_download = bool(viewer.get("no_download", 0))
                 token = await _create_session(username, "viewer", allowed, no_download=viewer_no_download)
@@ -1034,16 +1078,7 @@ async def auth_via_token(request: Request):
     if not db:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    direct_ip = request.client.host if request.client else "unknown"
-    _trusted = direct_ip.startswith(("172.", "10.", "192.168.", "127.")) or direct_ip in ("::1", "localhost")
-    if _trusted:
-        client_ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or request.headers.get("x-real-ip", "")
-            or direct_ip
-        )
-    else:
-        client_ip = direct_ip
+    client_ip = _get_client_ip(request)
 
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
@@ -1075,7 +1110,8 @@ async def auth_via_token(request: Request):
         try:
             allowed = set(json.loads(token_record["allowed_chat_ids"]))
         except json.JSONDecodeError, TypeError:
-            allowed = None
+            logger.warning("Corrupted allowed_chat_ids for share token %s, denying login", token_record["id"])
+            raise HTTPException(status_code=403, detail="Invalid token scope")
 
     token_no_download = bool(token_record.get("no_download", 0))
     token_label = token_record.get("label") or f"token:{token_record['id']}"
@@ -1236,8 +1272,8 @@ async def get_chats(
 async def get_messages(
     chat_id: int,
     user: UserContext = Depends(require_auth),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     search: str | None = None,
     before_date: str | None = None,
     before_id: int | None = None,
@@ -1279,6 +1315,8 @@ async def get_messages(
             before_id=before_id,
             topic_id=topic_id,
         )
+        if user.no_download:
+            _strip_original_media_paths(messages)
         return messages
     except Exception as e:
         logger.error(f"Error fetching messages: {e}", exc_info=True)
@@ -1561,10 +1599,12 @@ async def internal_push(request: Request):
 
     # Accept from loopback + private IPs (Docker internal, RFC1918)
     is_allowed = False
+    is_loopback = False
     if client_host:
         try:
             ip = ipaddress.ip_address(client_host)
-            is_allowed = ip.is_loopback or ip.is_private
+            is_loopback = ip.is_loopback
+            is_allowed = is_loopback or ip.is_private
         except ValueError:
             pass
 
@@ -1572,8 +1612,12 @@ async def internal_push(request: Request):
         logger.warning(f"Rejected /internal/push from non-private IP: {client_host}")
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Optional shared secret for multi-tenant Docker environments
+    # Require a shared secret for non-loopback private/Docker networks. Loopback
+    # stays usable for single-container/local setups.
     push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+    if not is_loopback and not push_secret:
+        logger.warning(f"Rejected /internal/push from {client_host}: INTERNAL_PUSH_SECRET is required")
+        raise HTTPException(status_code=403, detail="INTERNAL_PUSH_SECRET required")
     if push_secret:
         auth_header = request.headers.get("Authorization", "")
         if not secrets.compare_digest(auth_header, f"Bearer {push_secret}"):
@@ -2139,6 +2183,10 @@ async def websocket_endpoint(websocket: WebSocket):
     Auth is enforced via cookie sent during WebSocket upgrade.
     Per-user chat filtering is applied to subscriptions.
     """
+    if not _websocket_origin_allowed(websocket):
+        await websocket.close(code=4003, reason="Forbidden origin")
+        return
+
     # Validate auth from cookie before accepting
     cookies = websocket.cookies
     auth_cookie = cookies.get(AUTH_COOKIE_NAME)
@@ -2154,6 +2202,9 @@ async def websocket_endpoint(websocket: WebSocket):
             return
         user_ctx = UserContext(session.username, session.role, session.allowed_chat_ids)
         ws_user_chat_ids = get_user_chat_ids(user_ctx)
+    elif not ALLOW_ANONYMOUS_VIEWER:
+        await websocket.close(code=4001, reason="Viewer authentication is not configured")
+        return
 
     await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
 

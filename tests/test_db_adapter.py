@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.db.adapter import DatabaseAdapter, _strip_tz, retry_on_locked
+from src.db.models import Message
 
 # ============================================================
 # _strip_tz helper
@@ -2048,6 +2049,26 @@ class TestGetMessagesPaginated:
 
         result = await adapter.get_messages_paginated(chat_id=100, before_date=datetime(2025, 6, 1), before_id=50)
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_offset_pagination_orders_same_timestamp_by_id_desc(self):
+        """Offset pagination uses the deterministic date DESC, id DESC ordering."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        await adapter.get_messages_paginated(chat_id=100, limit=2, offset=4)
+
+        stmt = mock_session.execute.await_args.args[0]
+        order_by = list(stmt._order_by_clauses)
+        assert str(order_by[0]) == str(Message.date.desc())
+        assert str(order_by[1]) == str(Message.id.desc())
+        assert stmt._limit_clause.value == 2
+        assert stmt._offset_clause.value == 4
 
     @pytest.mark.asyncio
     async def test_with_search_filter(self):

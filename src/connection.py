@@ -24,8 +24,20 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
-MAX_FLOOD_RETRIES = 5
-MAX_FLOOD_WAIT_SECONDS = 600
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
+        return default
+
+
+MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
+MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 
 
 async def _call_with_flood_retry(coro_fn, *args, **kwargs):
@@ -41,7 +53,15 @@ async def _call_with_flood_retry(coro_fn, *args, **kwargs):
                     "FloodWait: exceeded %d retries on %s", MAX_FLOOD_RETRIES, getattr(coro_fn, "__name__", coro_fn)
                 )
                 raise
-            wait_seconds = max(0, min(e.seconds, MAX_FLOOD_WAIT_SECONDS))
+            if e.seconds > MAX_FLOOD_WAIT_SECONDS:
+                logger.error(
+                    "FloodWait: required wait %ss exceeds MAX_FLOOD_WAIT_SECONDS=%s on %s",
+                    e.seconds,
+                    MAX_FLOOD_WAIT_SECONDS,
+                    getattr(coro_fn, "__name__", coro_fn),
+                )
+                raise
+            wait_seconds = max(0, e.seconds)
             logger.warning(
                 "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
                 wait_seconds,
@@ -261,6 +281,12 @@ class TelegramConnection:
                 logger.info(f"Reconnected as {self._me.first_name}")
         except Exception as e:
             logger.warning(f"Connection check failed: {e}, reconnecting...")
+            self._connected = False
+            if self._client:
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
             await self.connect()
 
         return self._client

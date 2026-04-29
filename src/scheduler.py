@@ -43,6 +43,7 @@ class BackupScheduler:
         self.config = config
         self.scheduler = AsyncIOScheduler()
         self.running = False
+        self._backup_lock = asyncio.Lock()
 
         # Shared Telegram connection (used by both backup and listener)
         self._connection: TelegramConnection | None = None
@@ -67,45 +68,50 @@ class BackupScheduler:
         Uses the shared connection - no need to pause the listener since both
         use the same TelegramClient.
         """
-        try:
-            logger.info("Scheduled backup starting...")
+        if self._backup_lock.locked():
+            logger.warning("Skipping scheduled backup because another backup is already running")
+            return
 
-            # Ensure connection is still alive
-            client = await self._connection.ensure_connected()
+        async with self._backup_lock:
+            try:
+                logger.info("Scheduled backup starting...")
 
-            # Run backup using shared client
-            await run_backup(self.config, client=client)
+                # Ensure connection is still alive
+                client = await self._connection.ensure_connected()
 
-            # Run gap-fill if enabled
-            gap_fill_ok = True
-            if self.config.fill_gaps:
-                try:
-                    from .telegram_backup import run_fill_gaps
+                # Run backup using shared client
+                await run_backup(self.config, client=client)
 
-                    logger.info("Running post-backup gap-fill...")
-                    result = await run_fill_gaps(self.config, client=client)
-                    if result.get("errors", 0) > 0:
+                # Run gap-fill if enabled
+                gap_fill_ok = True
+                if self.config.fill_gaps:
+                    try:
+                        from .telegram_backup import run_fill_gaps
+
+                        logger.info("Running post-backup gap-fill...")
+                        result = await run_fill_gaps(self.config, client=client)
+                        if result.get("errors", 0) > 0:
+                            gap_fill_ok = False
+                            logger.warning(
+                                f"Gap-fill completed with {result['errors']} error(s) "
+                                f"({result['total_recovered']} messages recovered)"
+                            )
+                    except Exception as e:
                         gap_fill_ok = False
-                        logger.warning(
-                            f"Gap-fill completed with {result['errors']} error(s) "
-                            f"({result['total_recovered']} messages recovered)"
-                        )
-                except Exception as e:
-                    gap_fill_ok = False
-                    logger.error(f"Gap-fill failed: {e}", exc_info=True)
+                        logger.error(f"Gap-fill failed: {e}", exc_info=True)
 
-            # Reload tracked chats in listener after backup
-            # (new chats may have been added)
-            if self._listener:
-                await self._listener._load_tracked_chats()
+                # Reload tracked chats in listener after backup
+                # (new chats may have been added)
+                if self._listener:
+                    await self._listener._load_tracked_chats()
 
-            if gap_fill_ok:
-                logger.info("Scheduled backup completed successfully")
-            else:
-                logger.warning("Scheduled backup completed, but gap-fill had errors")
+                if gap_fill_ok:
+                    logger.info("Scheduled backup completed successfully")
+                else:
+                    logger.warning("Scheduled backup completed, but gap-fill had errors")
 
-        except Exception as e:
-            logger.error(f"Scheduled backup failed: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Scheduled backup failed: {e}", exc_info=True)
 
     def start(self):
         """Start the scheduler."""
@@ -231,28 +237,29 @@ class BackupScheduler:
 
         # Run initial backup immediately on startup (uses shared connection)
         logger.info("Running initial backup on startup...")
-        try:
-            await run_backup(self.config, client=self._connection.client)
-            logger.info("Initial backup completed")
+        async with self._backup_lock:
+            try:
+                await run_backup(self.config, client=self._connection.client)
+                logger.info("Initial backup completed")
 
-            # Run gap-fill if enabled
-            if self.config.fill_gaps:
-                try:
-                    from .telegram_backup import run_fill_gaps
+                # Run gap-fill if enabled
+                if self.config.fill_gaps:
+                    try:
+                        from .telegram_backup import run_fill_gaps
 
-                    logger.info("Running initial gap-fill...")
-                    result = await run_fill_gaps(self.config, client=self._connection.client)
-                    if result.get("errors", 0) > 0:
-                        logger.warning(f"Initial gap-fill completed with {result['errors']} error(s)")
-                except Exception as e:
-                    logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
+                        logger.info("Running initial gap-fill...")
+                        result = await run_fill_gaps(self.config, client=self._connection.client)
+                        if result.get("errors", 0) > 0:
+                            logger.warning(f"Initial gap-fill completed with {result['errors']} error(s)")
+                    except Exception as e:
+                        logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
 
-            # Reload tracked chats in listener after initial backup
-            if self._listener:
-                await self._listener._load_tracked_chats()
+                # Reload tracked chats in listener after initial backup
+                if self._listener:
+                    await self._listener._load_tracked_chats()
 
-        except Exception as e:
-            logger.error(f"Initial backup failed: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Initial backup failed: {e}", exc_info=True)
 
         # Keep running until stopped
         try:

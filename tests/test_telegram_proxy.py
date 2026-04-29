@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import tempfile
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -256,6 +257,37 @@ async def test_auth_noninteractive_passes_proxy_kwargs():
         "hash",
         proxy={"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080},
     )
+
+
+@pytest.mark.asyncio
+async def test_auth_noninteractive_verify_uses_saved_phone_code_hash():
+    client = AsyncMock()
+    client.is_user_authorized.return_value = False
+    client.get_me.return_value = SimpleNamespace(first_name="Test", username="tester")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_dir = os.path.join(tmpdir, "session")
+        os.makedirs(session_dir)
+        hash_path = os.path.join(session_dir, "telegram_backup.phone_code_hash")
+        with open(hash_path, "w") as f:
+            f.write("saved-hash")
+
+        env = {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "hash",
+            "TELEGRAM_PHONE": "+123456789",
+            "SESSION_DIR": session_dir,
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(auth_noninteractive.sys, "argv", ["auth_noninteractive.py", "verify", "12345"]),
+            patch("scripts.auth_noninteractive.TelegramClient", return_value=client),
+        ):
+            await auth_noninteractive.main()
+
+    client.send_code_request.assert_not_called()
+    client.sign_in.assert_awaited_once_with(phone="+123456789", code="12345", phone_code_hash="saved-hash")
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,18 @@ class TestBackupSchedulerInit:
             assert scheduler._listener is None
             assert scheduler._listener_task is None
 
+    def test_init_creates_backup_lock(self):
+        """BackupScheduler creates a lock to prevent overlapping backup runs."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.should_skip_topic = MagicMock(return_value=False)
+            scheduler = BackupScheduler(config)
+
+            assert hasattr(scheduler, "_backup_lock")
+            assert hasattr(scheduler._backup_lock, "locked")
+
     def test_init_registers_signal_handlers(self):
         """BackupScheduler registers SIGINT and SIGTERM handlers."""
         with patch("src.scheduler.signal.signal") as mock_signal:
@@ -228,6 +240,17 @@ class TestBackupSchedulerRunBackupJob:
 
         # Should NOT raise
         await scheduler._run_backup_job()
+
+    async def test_run_backup_job_skips_when_another_backup_running(self, scheduler_with_connection):
+        """Backup job does not overlap with an already running backup."""
+        scheduler = scheduler_with_connection
+        await scheduler._backup_lock.acquire()
+        try:
+            with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
+                await scheduler._run_backup_job()
+            mock_backup.assert_not_called()
+        finally:
+            scheduler._backup_lock.release()
 
     async def test_run_backup_job_gap_fill_with_errors(self):
         """Backup job logs warning when gap-fill has errors."""

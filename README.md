@@ -120,6 +120,8 @@ cp .env.example .env
 TELEGRAM_API_ID=12345678          # Your API ID
 TELEGRAM_API_HASH=abcdef123456    # Your API Hash  
 TELEGRAM_PHONE=+1234567890        # Your phone (with country code)
+VIEWER_USERNAME=admin             # Required for web access
+VIEWER_PASSWORD=change-this       # Required for web access
 ```
 
 **Optional: enable a SOCKS5 proxy for all Telegram connections** (useful in regions where Telegram is blocked or behind corporate firewalls)
@@ -154,7 +156,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:latest \
+  drumsergio/telegram-archive:7.7.0 \
   python -m src auth
 ```
 
@@ -164,8 +166,8 @@ docker run -it --rm \
 # If using docker compose with a session volume
 docker run -it --rm \
   --env-file .env \
-  -v telegram-archive_session:/data/session \
-  drumsergio/telegram-archive:latest \
+  -v ./data:/data \
+  drumsergio/telegram-archive:7.7.0 \
   python -m src auth
 
 # Then restart the backup container
@@ -187,6 +189,8 @@ docker compose up -d
 
 **View your backup** at http://localhost:8000
 
+The default compose binds the viewer to `127.0.0.1`. Put it behind a reverse proxy only after setting `VIEWER_USERNAME` and `VIEWER_PASSWORD`. To deliberately run without auth for a local-only viewer, set `ALLOW_ANONYMOUS_VIEWER=true`.
+
 ### Common Issues
 
 | Problem | Solution |
@@ -204,9 +208,9 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:latest
+    image: drumsergio/telegram-archive-viewer:7.7.0
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       BACKUP_PATH: /data/backups
       DATABASE_DIR: /data/db
@@ -214,8 +218,9 @@ services:
       VIEWER_PASSWORD: your-secure-password
       VIEWER_TIMEZONE: Europe/Madrid
     volumes:
-      - /path/to/backups:/data/backups:ro
-      - /path/to/db:/data/db:ro
+      # SQLite needs write access for WAL files, sessions, audit logs, and thumbnails.
+      # Use :ro only when the database is PostgreSQL and media is mounted separately.
+      - /path/to/data:/data
 ```
 
 Browse your backups at **http://localhost:8000**
@@ -274,13 +279,13 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | **Real-time Listener** | | | See [Real-time Listener](#real-time-listener) below |
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
 | `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
-| `LISTEN_DELETIONS` | `true` | B | Mirror deletions (protected by [mass operation rate limiting](#mass-operation-protection)) |
+| `LISTEN_DELETIONS` | `false` | B | Mirror deletions from Telegram. Opt-in only; enabling this can delete archived messages |
 | `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
-| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Seconds to buffer operations before applying |
+| `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |
 | **Database** | | | See [Database Configuration](#database-configuration) below |
 | `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
 | `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |
@@ -293,10 +298,15 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `POSTGRES_PASSWORD` | - | B/V | PostgreSQL password (required when using PostgreSQL) |
 | `POSTGRES_DB` | `telegram_backup` | B/V | PostgreSQL database name |
 | **Viewer & Authentication** | | | |
-| `VIEWER_USERNAME` | - | V | Web viewer username (both username and password required to enable auth) |
-| `VIEWER_PASSWORD` | - | V | Web viewer password |
+| `VIEWER_USERNAME` | - | V | Master web viewer username |
+| `VIEWER_PASSWORD` | - | V | Master web viewer password |
+| `ALLOW_ANONYMOUS_VIEWER` | `false` | V | Explicitly allow unauthenticated local viewer mode |
 | `AUTH_SESSION_DAYS` | `30` | V | Days before re-authentication is required |
 | `DISPLAY_CHAT_IDS` | - | V | Restrict viewer to specific chats (comma-separated IDs) |
+| `TRUST_PROXY_HEADERS` | `false` | V | Trust `X-Forwarded-For` / `X-Real-IP` only when your reverse proxy overwrites them |
+| `INTERNAL_PUSH_SECRET` | - | B/V | Shared secret for SQLite backup-to-viewer realtime push over Docker/private networks |
+| `VIEWER_HOST` | `localhost` | B | Viewer host for SQLite realtime push from backup/listener |
+| `VIEWER_PORT` | `8080` | B | Viewer port for SQLite realtime push from backup/listener |
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
 | **Security** | | | |
@@ -328,12 +338,12 @@ CHAT_TYPES=private,groups
 CHAT_TYPES=channels
 CHANNELS_EXCLUDE_CHAT_IDS=-1001234567890
 
-# Backup all groups plus one specific channel
-CHAT_TYPES=groups
+# Backup groups plus one specific channel
+CHAT_TYPES=groups,channels
 CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 ```
 
-> `*_INCLUDE_*` variables are **additive** — they add chats to what `CHAT_TYPES` already selects. For exclusive selection, use `CHAT_IDS` instead.
+> Include variables are **allow-lists**, not additive overrides. `GLOBAL_INCLUDE_CHAT_IDS` limits all selected types to those IDs; type-specific include variables limit only that type. For the simplest exclusive selection, use `CHAT_IDS`.
 
 **Chat ID format** — Telegram uses "marked" IDs:
 - **Users**: positive numbers (`123456789`)
@@ -358,23 +368,23 @@ The scheduled backup only captures new messages. To also track edits and deletio
 ```yaml
 ENABLE_LISTENER: "true"        # Master switch — required
 LISTEN_EDITS: "true"           # Track text edits (safe, default: true)
-LISTEN_DELETIONS: "true"       # Mirror deletions (default: true, protected by rate limiting)
+LISTEN_DELETIONS: "false"      # Keep archive entries when Telegram messages are deleted
 LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 ```
 
 **How it works:** stays connected to Telegram between scheduled backups, captures changes as they happen, and automatically reconnects if disconnected.
 
-**Backup protection:** when `LISTEN_DELETIONS=true`, deletions are protected by the [mass operation rate limiter](#mass-operation-protection). Set `LISTEN_DELETIONS=false` to never delete anything from your backup.
+**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you explicitly want mirror behavior where Telegram deletions also remove archived messages.
 
 **Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow — only use for a one-time catch-up, then switch to the real-time listener.
 
 ### Mass Operation Protection
 
-When the listener is enabled and `LISTEN_DELETIONS=true`, a sliding-window rate limiter protects against mass deletion attacks:
+When the listener is enabled and `LISTEN_DELETIONS=true`, a sliding-window rate limiter limits mass deletion damage:
 
-1. Operations are **buffered** for `MASS_OPERATION_BUFFER_DELAY` seconds before being applied
+1. Operations under the threshold are applied immediately
 2. A sliding window tracks operations per chat over `MASS_OPERATION_WINDOW_SECONDS`
-3. When `MASS_OPERATION_THRESHOLD` is exceeded, the **entire buffer is discarded** — zero changes written
+3. When `MASS_OPERATION_THRESHOLD` is exceeded, remaining operations are blocked for that window
 
 **Example:** someone deletes 50 messages in 10 seconds with default settings (threshold=10, window=30s) — the first 10 are applied, remaining 40 are blocked. For **zero** deletions from your backup, set `LISTEN_DELETIONS=false`.
 
@@ -389,7 +399,7 @@ Telegram Archive supports **SQLite** (default, zero-config) and **PostgreSQL** (
 **Using PostgreSQL:**
 
 1. Uncomment the `postgres` service in `docker-compose.yml`
-2. Set `DB_TYPE=postgresql` and `POSTGRES_PASSWORD` in your `.env`
+2. Set `DB_TYPE=postgresql` and `POSTGRES_PASSWORD` in your `.env`, or use a full `DATABASE_URL`
 3. Uncomment `depends_on` in both backup and viewer services
 4. Run `docker compose up -d`
 
@@ -430,7 +440,7 @@ For production stability, pin to specific versions instead of `latest`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:v7.1.7  # Pin to specific version
+    image: drumsergio/telegram-archive:7.7.0  # Pin to a reviewed release
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available versions.
@@ -551,7 +561,7 @@ DETAIL: Key (id)=(XXXX) already exists
 
    Or use the provided script:
    ```bash
-   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/master/scripts/fix_reactions_sequence.sql
+   curl -O https://raw.githubusercontent.com/GeiserX/Telegram-Archive/main/scripts/fix_reactions_sequence.sql
    docker exec -i <postgres-container> psql -U telegram -d telegram_backup < fix_reactions_sequence.sql
    ```
 

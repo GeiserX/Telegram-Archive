@@ -70,12 +70,13 @@ def auth_env():
 
 @pytest.fixture
 def no_auth_env():
-    """Clear auth env vars."""
+    """Clear auth env vars and explicitly opt in to anonymous mode."""
     with patch.dict(
         os.environ,
         {
             "VIEWER_USERNAME": "",
             "VIEWER_PASSWORD": "",
+            "ALLOW_ANONYMOUS_VIEWER": "true",
         },
     ):
         yield
