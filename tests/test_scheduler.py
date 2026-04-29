@@ -59,8 +59,10 @@ class TestBackupSchedulerInit:
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
+            config.should_skip_topic = MagicMock(return_value=False)
             scheduler = BackupScheduler(config)
 
+            assert hasattr(scheduler, "_backup_lock")
             assert hasattr(scheduler._backup_lock, "locked")
 
     def test_init_registers_signal_handlers(self):

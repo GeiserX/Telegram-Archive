@@ -45,7 +45,7 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
-          python -m pytest tests/ --tb=short
+          python -m pytest tests/ -q -p no:cacheprovider --tb=short
 
   build-and-push:
     runs-on: ubuntu-latest

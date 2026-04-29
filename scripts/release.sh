@@ -66,7 +66,7 @@ echo "🧪 Running release checks..."
 PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" -m ruff check .
 "$PYTHON_BIN" -m ruff format --check .
-"$PYTHON_BIN" -m pytest tests/ --tb=short
+"$PYTHON_BIN" -m pytest tests/ -q -p no:cacheprovider --tb=short
 
 # Create and push tag
 echo "📦 Creating tag $VERSION..."

@@ -109,6 +109,15 @@ class TestRealtimeNotifierInitMethod:
 
         assert notifier._is_postgresql is True
 
+    async def test_init_database_url_takes_precedence_over_db_type(self):
+        """DATABASE_URL chooses transport before DB_TYPE fallback."""
+        notifier = RealtimeNotifier()
+
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://u:p@host/db", "DB_TYPE": "sqlite"}, clear=True):
+            await notifier.init()
+
+        assert notifier._is_postgresql is True
+
     async def test_init_detects_postgres_alias_from_env(self):
         """init() recognizes 'postgres' as PostgreSQL."""
         notifier = RealtimeNotifier()
@@ -602,6 +611,15 @@ class TestRealtimeListenerInitMethod:
         listener = RealtimeListener()
 
         with patch.dict(os.environ, {"DB_TYPE": "postgresql"}, clear=True):
+            await listener.init()
+
+        assert listener._is_postgresql is True
+
+    async def test_init_database_url_takes_precedence_over_db_type(self):
+        """Listener and notifier share DATABASE_URL-first transport detection."""
+        listener = RealtimeListener()
+
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://u:p@host/db", "DB_TYPE": "sqlite"}, clear=True):
             await listener.init()
 
         assert listener._is_postgresql is True

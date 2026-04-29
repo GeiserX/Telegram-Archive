@@ -4,6 +4,45 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.7.0] - 2026-04-29
+
+### Security
+
+- **Viewer now fails closed when credentials are missing** — If `VIEWER_USERNAME`/`VIEWER_PASSWORD` are not configured, the HTTP API and WebSocket endpoint reject access unless `ALLOW_ANONYMOUS_VIEWER=true` is explicitly set.
+- **Restricted media access is enforced consistently** — Media, thumbnails, avatars, and non-chat folders now share centralized chat ACL checks, preventing restricted users from reading `_shared` files or unrelated chat media.
+- **No-download users can no longer fetch original or thumbnail bytes** — Accounts and share tokens with `no_download=true` receive metadata only; direct original media and generated thumbnail URLs return 403, while UI avatars remain available.
+- **Internal push events require a secret off-loopback** — `/internal/push` requires `INTERNAL_PUSH_SECRET` for non-loopback/private-network callers, reducing spoofing risk between co-located containers.
+- **WebSocket upgrades validate origin** — Cross-origin WebSocket connections must be same-origin or explicitly allowed by `CORS_ORIGINS`.
+- **Non-interactive auth hash files are owner-only** — Persisted `phone_code_hash` sidecar files are now created with `0600` permissions.
+
+### Fixed
+
+- **Scheduled backups no longer overlap** — The scheduler uses a backup lock so initial and cron-triggered jobs cannot run concurrently.
+- **FloodWait handling is explicit and bounded** — One-shot Telegram API calls now retry through shared helpers and abort instead of sleeping when Telegram asks for waits above `MAX_FLOOD_WAIT_SECONDS`.
+- **FloodWait env parsing is resilient** — Invalid `MAX_FLOOD_RETRIES` and `MAX_FLOOD_WAIT_SECONDS` values fall back to safe defaults instead of crashing imports.
+- **Media downloads finalize atomically** — Temporary `.part` files are moved into place only when an actual file exists, preserving Telethon-selected extensions and avoiding bogus stored paths.
+- **Telegram contact, geo, and poll media are metadata-only** — These message types no longer trigger file download attempts.
+- **Database URL precedence is consistent** — Entrypoint migrations and realtime notifier/listener mode detection now honor `DATABASE_URL` before `DB_TYPE`, including `postgres://`, `postgresql://`, `postgresql+asyncpg://`, and SQLite URLs.
+- **Database migration coverage includes app-state tables** — SQLite-to-PostgreSQL migration now includes viewer accounts, sessions, tokens, folders, forum topics, push subscriptions, and settings.
+- **Share token URLs avoid query-string leakage** — Generated links use `#token=` fragments and preserve subpath deployments.
+
+### Changed
+
+- **Deletion listening is safer by default** — `LISTEN_DELETIONS` now defaults to `false` so archives do not mirror Telegram deletions unless explicitly configured.
+- **Docker examples pin the 7.7.0 release** — Compose and README snippets now reference `drumsergio/telegram-archive:7.7.0` and `drumsergio/telegram-archive-viewer:7.7.0`.
+- **Viewer compose binds to localhost by default** — The example viewer service binds `127.0.0.1:8000:8000` and documents reverse-proxy/auth requirements before public exposure.
+- **CI and release checks are stricter** — Docker publish workflows run ruff and pytest before publishing, shellcheck tracks `main`, Docker Hub description sync covers both images, and release checks match the documented local test command.
+
+### Documentation
+
+- **Viewer authentication setup is documented** — README and `.env.example` now show required viewer credentials and the explicit anonymous opt-in.
+- **Chat include filters are documented as allow-lists** — Examples now correctly show `CHAT_TYPES=groups,channels` when including one specific channel alongside groups.
+- **Operational safety docs were refreshed** — README and `.env.example` now describe deletion mirroring, flood-wait controls, proxy header trust, and internal push secrets.
+
+### Tests
+
+- Added regression coverage for fail-closed viewer auth, no-download media restrictions, thumbnail ACLs, WebSocket subscription filtering, internal push auth, scheduler locking, flood-wait aborts, atomic downloads, `DATABASE_URL` behavior, non-interactive auth hash reuse, and migration model enumeration.
+
 ## [7.6.4] - 2026-04-25
 
 ### Fixed

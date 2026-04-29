@@ -14,6 +14,12 @@ from src import connection
 from src.connection import TelegramConnection
 
 
+def test_get_int_env_falls_back_for_invalid_value():
+    """Malformed flood-wait env values fall back instead of crashing imports."""
+    with patch.dict(os.environ, {"MAX_FLOOD_RETRIES": "not-an-int"}):
+        assert connection._get_int_env("MAX_FLOOD_RETRIES", 5) == 5
+
+
 @pytest.mark.asyncio
 async def test_connection_call_with_flood_retry_aborts_excessive_wait():
     """Shared connection retry helper must fail fast on excessive FloodWaits."""

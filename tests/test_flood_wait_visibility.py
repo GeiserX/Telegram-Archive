@@ -77,6 +77,17 @@ def test_config_kwargs_include_flood_sleep_threshold_zero():
     assert kwargs.get("flood_sleep_threshold") == 0
 
 
+def test_flood_env_int_parser_invalid_falls_back(fake_db, caplog):
+    """Invalid retry/wait env values should fall back consistently."""
+    from src import telegram_backup
+
+    with patch.dict(os.environ, {"MAX_FLOOD_WAIT_SECONDS": "not-an-int"}), caplog.at_level(logging.WARNING):
+        value = telegram_backup._get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
+
+    assert value == 3600
+    assert any("Invalid MAX_FLOOD_WAIT_SECONDS" in r.getMessage() for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_connection_passes_flood_sleep_threshold_to_client(fake_db):
     from src.connection import TelegramConnection
@@ -294,6 +305,7 @@ async def test_iter_with_flood_retry_aborts_waits_above_max(fake_db):
             pass
 
     assert sleeps == []
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio

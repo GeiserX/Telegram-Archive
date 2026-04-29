@@ -3494,7 +3494,10 @@
                 const adminNewToken = ref('')
                 const adminNewTokenUrl = computed(() => {
                     if (!adminNewToken.value) return ''
-                    return `${window.location.origin}/#token=${encodeURIComponent(adminNewToken.value)}`
+                    const url = new URL(window.location.href)
+                    url.search = ''
+                    url.hash = `token=${encodeURIComponent(adminNewToken.value)}`
+                    return url.toString()
                 })
 
                 const loadAdminViewers = async () => {

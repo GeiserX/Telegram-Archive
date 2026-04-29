@@ -38,8 +38,19 @@ from .message_utils import extract_topic_id
 logger = logging.getLogger(__name__)
 
 
-MAX_FLOOD_RETRIES = int(os.getenv("MAX_FLOOD_RETRIES", "5"))
-MAX_FLOOD_WAIT_SECONDS = int(os.getenv("MAX_FLOOD_WAIT_SECONDS", "3600"))
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
+        return default
+
+
+MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
+MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 
 
 async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
@@ -81,19 +92,19 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
             await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
 
 
-def _finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str:
+def _finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str | None:
     """Move a temporary download into place while preserving Telethon's chosen extension."""
     if actual_path and os.path.exists(actual_path):
-        final_path = actual_path.replace(".part", "", 1)
+        final_path = actual_path[:-5] if actual_path.endswith(".part") else actual_path
         if final_path != actual_path:
             os.replace(actual_path, final_path)
-        return final_path
+        return final_path if os.path.exists(final_path) else None
 
     if os.path.exists(temporary_path):
         os.replace(temporary_path, fallback_path)
-        return fallback_path
+        return fallback_path if os.path.exists(fallback_path) else None
 
-    return actual_path or fallback_path
+    return None
 
 
 async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
@@ -1523,6 +1534,9 @@ class TelegramBackup:
                             tmp_shared_file_path,
                             shared_file_path,
                         )
+                        if not shared_file_path or not os.path.exists(shared_file_path):
+                            logger.warning("Media download did not produce a file")
+                            return None
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
                         # Create symlink in chat directory
@@ -1554,6 +1568,9 @@ class TelegramBackup:
                         tmp_file_path,
                         file_path,
                     )
+                    if not file_path or not os.path.exists(file_path):
+                        logger.warning("Media download did not produce a file")
+                        return None
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size with actual size from disk

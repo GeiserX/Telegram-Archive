@@ -806,6 +806,9 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
+    if user.no_download and not folder.startswith("avatars/"):
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
     # Chat-level access check
     _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
 
@@ -2199,6 +2202,9 @@ async def websocket_endpoint(websocket: WebSocket):
             return
         user_ctx = UserContext(session.username, session.role, session.allowed_chat_ids)
         ws_user_chat_ids = get_user_chat_ids(user_ctx)
+    elif not ALLOW_ANONYMOUS_VIEWER:
+        await websocket.close(code=4001, reason="Viewer authentication is not configured")
+        return
 
     await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
 

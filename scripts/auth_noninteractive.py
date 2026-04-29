@@ -61,7 +61,9 @@ async def main():
 
     if action == "send":
         result = await client.send_code_request(phone)
-        with open(_get_phone_code_hash_path(session_path), "w") as f:
+        hash_path = _get_phone_code_hash_path(session_path)
+        fd = os.open(hash_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write(result.phone_code_hash)
         print(f"Verification code sent to Telegram app ({result.type.__class__.__name__})")
         print(f"Phone code hash: {result.phone_code_hash}")

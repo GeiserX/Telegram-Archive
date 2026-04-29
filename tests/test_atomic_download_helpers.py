@@ -40,3 +40,13 @@ def test_listener_finalize_atomic_download_uses_temporary_fallback(tmp_path):
     assert result == str(fallback_path)
     assert fallback_path.read_bytes() == b"image"
     assert not temporary_path.exists()
+
+
+def test_finalize_atomic_download_returns_none_when_no_file_was_created(tmp_path):
+    """Helpers must not report success when Telethon did not create a file."""
+    missing_temp = tmp_path / "missing.part"
+    fallback_path = tmp_path / "fallback.jpg"
+
+    assert telegram_backup._finalize_atomic_download(None, str(missing_temp), str(fallback_path)) is None
+    assert listener._finalize_atomic_download(None, str(missing_temp), str(fallback_path)) is None
+    assert not fallback_path.exists()

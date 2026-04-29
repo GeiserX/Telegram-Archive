@@ -453,6 +453,19 @@ class TestServeThumbnail(_WebTestBase):
                 resp = await client.get("/media/thumb/200/_shared/secret.jpg", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 403)
 
+    async def test_thumbnail_rejects_no_download_for_media_bytes(self):
+        """no_download users cannot fetch derived thumbnail bytes for media."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            web_main.AUTH_ENABLED = True
+            token = "th-no-download"
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_ids={123}, no_download=True
+            )
+            async with self._client() as client:
+                resp = await client.get("/media/thumb/200/123/photo.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 403)
+
     async def test_thumbnail_avatar_access_check(self):
         """serve_thumbnail enforces access for avatar thumbnails."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -506,6 +519,31 @@ class TestServeThumbnail(_WebTestBase):
                     resp = await client.get("/media/thumb/200/123/photo.jpg")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("image/webp", resp.headers.get("content-type", ""))
+
+
+# ============================================================================
+# WebSocket endpoint
+# ============================================================================
+
+
+@_skip_unless_web
+class TestWebSocketEndpoint(_WebTestBase):
+    """Test /ws/updates auth decisions."""
+
+    async def test_websocket_fails_closed_when_auth_not_configured(self):
+        """WebSockets must not bypass setup-required auth mode."""
+        web_main.AUTH_ENABLED = False
+        web_main.ALLOW_ANONYMOUS_VIEWER = False
+        websocket = MagicMock()
+        websocket.headers = {"host": "test"}
+        websocket.cookies = {}
+        websocket.close = AsyncMock()
+
+        with patch.object(web_main.ws_manager, "connect", new_callable=AsyncMock) as mock_connect:
+            await web_main.websocket_endpoint(websocket)
+
+        websocket.close.assert_awaited_once_with(code=4001, reason="Viewer authentication is not configured")
+        mock_connect.assert_not_awaited()
 
 
 # ============================================================================
