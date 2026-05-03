@@ -33,7 +33,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
-from .message_utils import extract_topic_id
+from .message_utils import compute_file_hash, deduplicate_shared_file, extract_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -1498,6 +1498,7 @@ class TelegramBackup:
             file_path = os.path.join(chat_media_dir, file_name)
 
             # Check if deduplication is enabled
+            content_hash = None
             if getattr(self.config, "deduplicate_media", True):
                 # Global deduplication: use _shared directory for actual files
                 shared_dir = os.path.join(self.config.media_path, "_shared")
@@ -1508,6 +1509,7 @@ class TelegramBackup:
                 if not os.path.exists(file_path):
                     if os.path.exists(shared_file_path):
                         # File exists in shared - create symlink
+                        content_hash = compute_file_hash(shared_file_path)
                         try:
                             # Use relative symlink for portability
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
@@ -1539,6 +1541,11 @@ class TelegramBackup:
                             return None
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
+                        # Content-hash dedup: check if identical content already exists
+                        shared_file_path, content_hash, reused = await deduplicate_shared_file(
+                            self.db, shared_file_path, shared_dir
+                        )
+
                         # Create symlink in chat directory
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
@@ -1546,16 +1553,21 @@ class TelegramBackup:
                                 os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                         except OSError as e:
-                            # Symlink not supported (e.g., Windows) - move file to chat dir instead
+                            # Symlink not supported (e.g., Windows) - copy/move to chat dir
                             logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
 
-                            shutil.move(shared_file_path, file_path)
+                            if reused:
+                                shutil.copy2(shared_file_path, file_path)
+                            else:
+                                shutil.move(shared_file_path, file_path)
 
                 # Update file_size with actual size from disk (follow symlinks)
                 actual_path = shared_file_path if os.path.exists(shared_file_path) else file_path
                 if os.path.exists(actual_path):
                     file_size = os.path.getsize(actual_path)
+                    if not content_hash:
+                        content_hash = compute_file_hash(actual_path)
             else:
                 # No deduplication - download directly to chat directory
                 if not os.path.exists(file_path):
@@ -1573,9 +1585,10 @@ class TelegramBackup:
                         return None
                     logger.debug(f"Downloaded media: {file_name}")
 
-                # Update file_size with actual size from disk
+                # Update file_size and compute hash from disk
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
+                    content_hash = compute_file_hash(file_path)
 
             # Extract media metadata
             media_data = {
@@ -1587,6 +1600,7 @@ class TelegramBackup:
                 "file_path": file_path,
                 "file_size": file_size,
                 "mime_type": getattr(media, "mime_type", None),
+                "content_hash": content_hash,
                 "downloaded": True,
                 "download_date": datetime.now(),
             }
