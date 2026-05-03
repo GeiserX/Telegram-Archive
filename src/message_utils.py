@@ -1,5 +1,19 @@
 """Shared message processing utilities used by backup and listener modules."""
 
+import hashlib
+
+
+def compute_file_hash(filepath: str, chunk_size: int = 65536) -> str | None:
+    """Compute SHA-256 hex digest of a file, following symlinks."""
+    try:
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
 
 def extract_topic_id(message: object) -> int | None:
     """Extract forum topic ID from a Telegram message's reply_to metadata.

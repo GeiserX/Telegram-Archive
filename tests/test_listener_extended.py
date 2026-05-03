@@ -1629,8 +1629,8 @@ class TestOnNewMessageAdvanced:
         )
         handler = handlers[events.NewMessage]
 
-        # Mock _download_media to return a path
-        listener._download_media = AsyncMock(return_value="/tmp/media/-100/photo.jpg")
+        # Mock _download_media to return (path, content_hash) tuple
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/photo.jpg", None))
 
         event = MagicMock()
         event.chat_id = -1001234567890

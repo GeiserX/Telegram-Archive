@@ -35,7 +35,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
-from .message_utils import extract_topic_id
+from .message_utils import compute_file_hash, deduplicate_shared_file, extract_topic_id
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import call_with_flood_retry
 
@@ -568,11 +568,11 @@ class TelegramListener:
             return f"{telegram_file_id}{ext}"
         return f"{message.id}_{media_type}{ext}"
 
-    async def _download_media(self, message, chat_id: int) -> str | None:
+    async def _download_media(self, message, chat_id: int) -> tuple[str, str | None] | None:
         """
         Download media from a message.
 
-        Returns the file path if successful, None otherwise.
+        Returns (file_path, content_hash) if successful, None otherwise.
         """
         media = message.media
         media_type = self._get_media_type(media)
@@ -630,7 +630,7 @@ class TelegramListener:
                             if os.path.lexists(file_path):
                                 os.unlink(file_path)
                             os.symlink(rel_path, file_path)
-                            logger.debug(f"🔗 Created symlink for deduplicated media: {file_name}")
+                            logger.debug(f"Created symlink for deduplicated media: {file_name}")
                         except OSError as e:
                             logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
@@ -652,7 +652,12 @@ class TelegramListener:
                         if not shared_file_path or not os.path.exists(shared_file_path):
                             logger.warning("Media download did not produce a file")
                             return None
-                        logger.debug(f"📥 Downloaded media to shared: {file_name}")
+                        logger.debug(f"Downloaded media to shared: {file_name}")
+
+                        # Content-hash dedup: check if identical content already exists
+                        shared_file_path, content_hash, reused = await deduplicate_shared_file(
+                            self.db, shared_file_path, shared_dir
+                        )
 
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
@@ -663,7 +668,10 @@ class TelegramListener:
                             logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
 
-                            shutil.move(shared_file_path, file_path)
+                            if reused:
+                                shutil.copy2(shared_file_path, file_path)
+                            else:
+                                shutil.move(shared_file_path, file_path)
             else:
                 # No deduplication - download directly
                 if not os.path.exists(file_path):
@@ -680,8 +688,14 @@ class TelegramListener:
                         logger.warning("Media download did not produce a file")
                         return None
 
+            # Compute content hash for the file on disk
+            resolved = file_path
+            if os.path.islink(file_path):
+                resolved = os.path.realpath(file_path)
+            file_content_hash = compute_file_hash(resolved) if os.path.exists(resolved) else None
+
             # Return the path as stored in DB (relative to media root)
-            return f"{self.config.media_path}/{chat_id}/{file_name}"
+            return f"{self.config.media_path}/{chat_id}/{file_name}", file_content_hash
 
         except Exception as e:
             logger.error(f"Error downloading media: {e}")
@@ -923,8 +937,9 @@ class TelegramListener:
                     # Download media immediately if enabled
                     if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
                         try:
-                            media_path = await self._download_media(message, chat_id)
-                            if media_path:
+                            download_result = await self._download_media(message, chat_id)
+                            if download_result:
+                                media_path, content_hash = download_result
                                 # Create media record (FK to messages now satisfied)
                                 media_id = f"{chat_id}_{message.id}_{media_type}"
                                 await self.db.insert_media(
@@ -934,6 +949,7 @@ class TelegramListener:
                                         "chat_id": chat_id,
                                         "type": media_type,
                                         "file_path": media_path,
+                                        "content_hash": content_hash,
                                         "downloaded": True,
                                         "download_date": datetime.utcnow(),
                                     }

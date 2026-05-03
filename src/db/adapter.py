@@ -659,6 +659,7 @@ class DatabaseAdapter:
                 "width": media_data.get("width"),
                 "height": media_data.get("height"),
                 "duration": media_data.get("duration"),
+                "content_hash": media_data.get("content_hash"),
                 "downloaded": 1 if media_data.get("downloaded") else 0,
                 "download_date": media_data.get("download_date"),
             }
@@ -672,6 +673,20 @@ class DatabaseAdapter:
 
             await session.execute(stmt)
             await session.commit()
+
+    async def find_media_by_content_hash(self, content_hash: str) -> dict[str, Any] | None:
+        """Find an existing downloaded media record with the given SHA-256 content hash."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Media).where(and_(Media.content_hash == content_hash, Media.downloaded == 1)).limit(1)
+            result = await session.execute(stmt)
+            media = result.scalar_one_or_none()
+            if media is None:
+                return None
+            return {
+                "file_path": media.file_path,
+                "file_name": media.file_name,
+                "content_hash": media.content_hash,
+            }
 
     async def get_media_for_chat(self, chat_id: int) -> list[dict[str, Any]]:
         """
