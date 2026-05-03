@@ -568,11 +568,11 @@ class TelegramListener:
             return f"{telegram_file_id}{ext}"
         return f"{message.id}_{media_type}{ext}"
 
-    async def _download_media(self, message, chat_id: int) -> tuple[str, str | None] | None:
+    async def _download_media(self, message, chat_id: int) -> tuple[str, str, str | None] | None:
         """
         Download media from a message.
 
-        Returns (file_path, content_hash) if successful, None otherwise.
+        Returns (file_path, file_name, content_hash) if successful, None otherwise.
         """
         media = message.media
         media_type = self._get_media_type(media)
@@ -616,6 +616,7 @@ class TelegramListener:
             file_path = os.path.join(chat_media_dir, file_name)
 
             # Download with deduplication if enabled
+            content_hash = None
             if getattr(self.config, "deduplicate_media", True):
                 # Global deduplication: use _shared directory for actual files
                 shared_dir = os.path.join(self.config.media_path, "_shared")
@@ -625,6 +626,7 @@ class TelegramListener:
                 if not os.path.exists(file_path):
                     if os.path.exists(shared_file_path):
                         # File exists in shared - create symlink
+                        content_hash = compute_file_hash(shared_file_path)
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
                             if os.path.lexists(file_path):
@@ -688,14 +690,15 @@ class TelegramListener:
                         logger.warning("Media download did not produce a file")
                         return None
 
-            # Compute content hash for the file on disk
-            resolved = file_path
-            if os.path.islink(file_path):
-                resolved = os.path.realpath(file_path)
-            file_content_hash = compute_file_hash(resolved) if os.path.exists(resolved) else None
+            # Compute content hash only if not already obtained during dedup
+            if not content_hash:
+                resolved = file_path
+                if os.path.islink(file_path):
+                    resolved = os.path.realpath(file_path)
+                content_hash = compute_file_hash(resolved) if os.path.exists(resolved) else None
 
             # Return the path as stored in DB (relative to media root)
-            return f"{self.config.media_path}/{chat_id}/{file_name}", file_content_hash
+            return f"{self.config.media_path}/{chat_id}/{file_name}", file_name, content_hash
 
         except Exception as e:
             logger.error(f"Error downloading media: {e}")
@@ -939,7 +942,7 @@ class TelegramListener:
                         try:
                             download_result = await self._download_media(message, chat_id)
                             if download_result:
-                                media_path, content_hash = download_result
+                                media_path, media_file_name, content_hash = download_result
                                 # Create media record (FK to messages now satisfied)
                                 media_id = f"{chat_id}_{message.id}_{media_type}"
                                 await self.db.insert_media(
@@ -949,6 +952,7 @@ class TelegramListener:
                                         "chat_id": chat_id,
                                         "type": media_type,
                                         "file_path": media_path,
+                                        "file_name": media_file_name,
                                         "content_hash": content_hash,
                                         "downloaded": True,
                                         "download_date": datetime.utcnow(),

@@ -138,6 +138,8 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
         backup.config.deduplicate_media = True
         backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         backup.client = AsyncMock()
+        backup.db = AsyncMock()
+        backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
         # download_media returns the actual path with .mp4
         backup.client.download_media = AsyncMock(return_value=actual_returned_path)
 
@@ -181,6 +183,8 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -396,6 +400,8 @@ class TestShutilMoveFallback(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -509,6 +515,8 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         self.listener.config.deduplicate_media = True
         self.listener.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.listener.client = AsyncMock()
+        self.listener.db = AsyncMock()
+        self.listener.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -706,6 +714,8 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -877,6 +887,8 @@ class TestBackupDedupSymlinkFailFallback(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)

@@ -1629,8 +1629,8 @@ class TestOnNewMessageAdvanced:
         )
         handler = handlers[events.NewMessage]
 
-        # Mock _download_media to return (path, content_hash) tuple
-        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/photo.jpg", None))
+        # Mock _download_media to return (path, file_name, content_hash) tuple
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/photo.jpg", "photo.jpg", "abc123hash"))
 
         event = MagicMock()
         event.chat_id = -1001234567890
@@ -1655,6 +1655,8 @@ class TestOnNewMessageAdvanced:
         db.insert_media.assert_called_once()
         media_data = db.insert_media.call_args[0][0]
         assert media_data["file_path"] == "/tmp/media/-100/photo.jpg"
+        assert media_data["file_name"] == "photo.jpg"
+        assert media_data["content_hash"] == "abc123hash"
         assert media_data["downloaded"] is True
 
     async def test_media_download_failure_does_not_crash(self):
