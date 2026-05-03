@@ -161,6 +161,7 @@ class Media(Base):
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
     duration: Mapped[int | None] = mapped_column(Integer)
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256 hex digest
     downloaded: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
@@ -180,6 +181,7 @@ class Media(Base):
         Index("idx_media_message", "message_id", "chat_id"),
         Index("idx_media_downloaded", "chat_id", "downloaded"),
         Index("idx_media_type", "type"),
+        Index("idx_media_content_hash", "content_hash"),
     )
 
 

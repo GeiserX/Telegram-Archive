@@ -92,6 +92,15 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check artifact from migration 011: media.content_hash column
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.columns
+            WHERE table_name = 'media' AND column_name = 'content_hash'
+        );
+    \"\"\")
+    has_011_content_hash = cur.fetchone()[0]
+
     # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -180,7 +189,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_010_all:
+    if has_011_content_hash:
+        stamp_version = '011'
+    elif has_010_all:
         stamp_version = '010'
     elif has_009_table:
         stamp_version = '009'
@@ -260,6 +271,11 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check artifact from migration 011: media.content_hash column
+    cur.execute(\"PRAGMA table_info(media)\")
+    media_columns = {row[1] for row in cur.fetchall()}
+    has_011_content_hash = 'content_hash' in media_columns
+
     # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")
     has_010_tokens = cur.fetchone() is not None
@@ -301,7 +317,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_010_all:
+    if has_011_content_hash:
+        stamp_version = '011'
+    elif has_010_all:
         stamp_version = '010'
     elif has_009_table:
         stamp_version = '009'
