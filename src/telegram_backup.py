@@ -1346,11 +1346,18 @@ class TelegramBackup:
             return
 
         try:
-            # Avoid redundant downloads when we already have the current photo
-            needs_download = not os.path.exists(avatar_path) or os.path.getsize(avatar_path) == 0
-
-            if not needs_download:
-                return
+            # Avoid redundant downloads when we already have the current photo.
+            # lexists treats an existing symlink (even one pointing into an
+            # archive store like git-annex whose target may be unreachable
+            # from this process) as "we have it". Without this guard, a
+            # broken-but-intentional symlink at avatar_path made
+            # download_profile_photo follow the symlink into a missing
+            # parent directory and surface as ENOENT (issue #143).
+            if os.path.lexists(avatar_path):
+                # Symlink-or-file already in place: skip unless it is a
+                # zero-byte regular file from a prior interrupted download.
+                if os.path.islink(avatar_path) or os.path.getsize(avatar_path) > 0:
+                    return
 
             result = await self.client.download_profile_photo(
                 entity,
