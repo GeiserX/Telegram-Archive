@@ -636,9 +636,19 @@ class TelegramBackup:
             if not file_path:
                 continue
 
-            # Check if file exists
-            if not os.path.exists(file_path):
+            # Detect "truly missing" via lexists so an existing symlink
+            # whose ultimate target is unreachable (e.g. git-annex object
+            # outside the bind mount) is not flagged for re-download.
+            # Re-downloading it would atomic-rename a regular file on top
+            # of the symlink, mutating an archived working tree (issue #143).
+            if not os.path.lexists(file_path):
                 missing_files.append(record)
+                continue
+
+            # Trust symlinks: their content is managed externally and may
+            # be unreachable from this process. We cannot meaningfully
+            # check size or emptiness without following the link.
+            if os.path.islink(file_path):
                 continue
 
             # Check if file is empty (interrupted download)

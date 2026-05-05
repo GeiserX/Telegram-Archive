@@ -321,26 +321,34 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         finally:
             loop.close()
 
-    def test_verify_cleanup_removes_dangling_symlink(self):
-        """_verify_and_redownload_media removes dangling symlinks via lexists before re-download."""
+    def test_verify_trusts_existing_symlink_even_when_dangling(self):
+        """Verify-media trusts an existing chat-dir symlink, even when its target is unreachable.
+
+        For archived layouts (issue #143), a chat-dir symlink whose target
+        sits in a separate object store may resolve only on the host -- not
+        from inside the container that runs the backup. Re-downloading such
+        files would atomic-rename a regular file on top of the user's
+        symlink, mutating the working tree. Verify must therefore treat any
+        symlink as authoritative and skip it.
+        """
         chat_id = -1001234567890
         chat_dir = os.path.join(self.media_path, str(chat_id))
         shared_dir = os.path.join(self.media_path, "_shared")
         os.makedirs(chat_dir)
         os.makedirs(shared_dir)
 
-        # Create a dangling symlink
+        # Reproduce the dangling-symlink layout.
         old_target = os.path.join(shared_dir, "deleted.jpg")
         dangling_link = os.path.join(chat_dir, "photo.jpg")
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), dangling_link)
+        original_target = os.readlink(dangling_link)
         os.remove(old_target)
 
         self.assertTrue(os.path.lexists(dangling_link))
         self.assertFalse(os.path.exists(dangling_link))
 
-        # Set up DB to return media record pointing at the dangling symlink
         self.backup.db.get_media_for_verification.return_value = [
             {
                 "file_path": dangling_link,
@@ -350,35 +358,64 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
             }
         ]
 
-        # Mock the Telegram message fetch
+        # Sentinel: a redownload would call _process_media. We assert it does
+        # NOT, so prepare it as a strict mock that fails the test if invoked.
+        self.backup._process_media = AsyncMock()
+        self.backup.client.get_messages = AsyncMock()
+
+        self._run(self.backup._verify_and_redownload_media())
+
+        # Verify nothing was re-downloaded or inserted.
+        self.backup._process_media.assert_not_awaited()
+        self.backup.client.get_messages.assert_not_awaited()
+        self.backup.db.insert_media.assert_not_awaited()
+
+        # The dangling symlink is byte-for-byte unchanged.
+        self.assertTrue(os.path.islink(dangling_link))
+        self.assertEqual(os.readlink(dangling_link), original_target)
+
+    def test_verify_redownloads_when_path_truly_missing(self):
+        """When file_path doesn't even lexist, verify still triggers a re-download.
+
+        Distinguishes "truly absent" (no entry on disk at all) from
+        "symlink whose target is unreachable" -- only the former is a
+        legitimate verify-flow recovery target.
+        """
+        chat_id = -1001234567891
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(chat_dir)
+        gone = os.path.join(chat_dir, "never_existed.jpg")
+
+        self.assertFalse(os.path.lexists(gone))
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {
+                "file_path": gone,
+                "file_size": 1024,
+                "chat_id": chat_id,
+                "message_id": 99,
+            }
+        ]
+
         mock_msg = MagicMock()
-        mock_msg.id = 42
+        mock_msg.id = 99
         mock_msg.media = MagicMock()
         self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
 
-        # Mock _process_media to return a successful result
-        new_shared = os.path.join(shared_dir, "photo_new.jpg")
-        with open(new_shared, "wb") as f:
-            f.write(b"new photo data")
-
         self.backup._process_media = AsyncMock(
             return_value={
-                "id": f"{chat_id}_42_photo",
+                "id": f"{chat_id}_99_photo",
                 "type": "photo",
-                "message_id": 42,
+                "message_id": 99,
                 "chat_id": chat_id,
-                "file_path": dangling_link,
+                "file_path": gone,
                 "downloaded": True,
             }
         )
 
         self._run(self.backup._verify_and_redownload_media())
 
-        # The cleanup code should have removed the dangling symlink before re-download
-        # (lexists check + os.remove in the verification loop)
-        # Verify _process_media was called (re-download attempted)
         self.backup._process_media.assert_awaited_once()
-        # Verify db.insert_media was called (successful re-download)
         self.backup.db.insert_media.assert_awaited_once()
 
 
