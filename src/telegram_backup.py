@@ -1505,11 +1505,20 @@ class TelegramBackup:
                 os.makedirs(shared_dir, exist_ok=True)
                 shared_file_path = os.path.join(shared_dir, file_name)
 
-                # Check if file already exists (either directly or in shared)
-                if not os.path.exists(file_path):
-                    if os.path.exists(shared_file_path):
-                        # File exists in shared - create symlink
-                        content_hash = compute_file_hash(shared_file_path)
+                # Check if file already exists (either directly or in shared).
+                # Uses lexists so a previously recorded symlink short-circuits
+                # the download even when its ultimate target is unreachable
+                # (e.g. a git-annex object outside the bind mount). Without
+                # this, intentional broken symlinks cause re-downloads that
+                # overwrite _shared/ entries via atomic rename and may rewrite
+                # chat-dir targets through content-hash dedup -- breaking
+                # idempotency for archived layouts.
+                if not os.path.lexists(file_path):
+                    if os.path.lexists(shared_file_path):
+                        # File exists in shared - create symlink. Hash only
+                        # when the target resolves; skip on a broken link to
+                        # avoid raising in compute_file_hash.
+                        content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
                         try:
                             # Use relative symlink for portability
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
@@ -1569,8 +1578,10 @@ class TelegramBackup:
                     if not content_hash:
                         content_hash = compute_file_hash(actual_path)
             else:
-                # No deduplication - download directly to chat directory
-                if not os.path.exists(file_path):
+                # No deduplication - download directly to chat directory.
+                # lexists short-circuits the download when a symlink is
+                # already recorded, even if its target is unreachable.
+                if not os.path.lexists(file_path):
                     tmp_file_path = f"{file_path}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
