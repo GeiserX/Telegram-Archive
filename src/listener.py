@@ -496,10 +496,13 @@ class TelegramListener:
                 logger.debug(f"No avatar set for {chat_id}")
                 return
 
-            needs_download = not os.path.exists(avatar_path) or os.path.getsize(avatar_path) == 0
-
-            if not needs_download:
-                return
+            # lexists short-circuits when an avatar (even a symlink whose
+            # target is unreachable from this process) is already on disk,
+            # so we don't try to overwrite an archive entry. Mirrors the
+            # backup-flow guard in src/telegram_backup.py (issue #143).
+            if os.path.lexists(avatar_path):
+                if os.path.islink(avatar_path) or os.path.getsize(avatar_path) > 0:
+                    return
 
             result = await self.client.download_profile_photo(entity, file=avatar_path, download_big=False)
             if result:

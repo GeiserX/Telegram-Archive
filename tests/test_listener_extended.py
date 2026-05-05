@@ -783,9 +783,10 @@ class TestDownloadAvatar:
         listener.client.download_profile_photo.assert_not_called()
 
     @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
-    @patch("os.path.exists", return_value=True)
+    @patch("os.path.lexists", return_value=True)
+    @patch("os.path.islink", return_value=False)
     @patch("os.path.getsize", return_value=1024)
-    async def test_skips_download_when_file_exists(self, mock_size, mock_exists, mock_paths):
+    async def test_skips_download_when_file_exists(self, mock_size, mock_islink, mock_lexists, mock_paths):
         """If avatar file already exists with content, skip download."""
         listener = TelegramListener(_make_config(), _make_db())
         listener.client = AsyncMock()

@@ -1383,6 +1383,37 @@ class TestEnsureProfilePhoto(unittest.TestCase):
         _run(self.backup._ensure_profile_photo(entity, 42))
 
     @patch("src.telegram_backup.get_avatar_paths")
+    def test_existing_symlink_avatar_is_preserved(self, mock_get_paths):
+        """A symlink at avatar_path is trusted, even when its target is unreachable.
+
+        Reproduces the archived-layout scenario from issue #143: avatar files
+        committed to git-annex appear as symlinks pointing into
+        ``.git/annex/objects/...``. From inside a container that only mounts
+        the working tree, those targets resolve to a missing path and the
+        old ``os.path.exists`` check tried to overwrite the symlink, which
+        crashed with ENOENT. With the lexists guard the symlink is treated
+        as authoritative and no download is attempted.
+        """
+        target = os.path.join(self.temp_dir, "absent_target.jpg")
+        avatar_path = os.path.join(self.temp_dir, "broken_symlink_avatar.jpg")
+        os.symlink(target, avatar_path)
+        original_target = os.readlink(avatar_path)
+
+        # Confirm the dangling symlink scenario.
+        self.assertTrue(os.path.lexists(avatar_path))
+        self.assertFalse(os.path.exists(avatar_path))
+
+        mock_get_paths.return_value = (avatar_path, "/legacy.jpg")
+        entity = MagicMock()
+
+        _run(self.backup._ensure_profile_photo(entity, 42))
+
+        # No download was attempted; symlink is byte-for-byte unchanged.
+        self.backup.client.download_profile_photo.assert_not_awaited()
+        self.assertTrue(os.path.islink(avatar_path))
+        self.assertEqual(os.readlink(avatar_path), original_target)
+
+    @patch("src.telegram_backup.get_avatar_paths")
     def test_uses_marked_id_when_no_marked_id_passed(self, mock_get_paths):
         """When marked_id is None, falls back to _get_marked_id."""
         mock_get_paths.return_value = (None, "/legacy.jpg")
