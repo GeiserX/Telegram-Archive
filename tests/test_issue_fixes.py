@@ -304,7 +304,3 @@ class TestDockerfileAssumptions(unittest.TestCase):
         # Python will not write .pyc files. The actual enforcement is in the Dockerfile.
         # We verify the mechanism exists.
         self.assertTrue(hasattr(sys, "dont_write_bytecode"))
-
-
-if __name__ == "__main__":
-    unittest.main()
