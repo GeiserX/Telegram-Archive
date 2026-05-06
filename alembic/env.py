@@ -79,6 +79,7 @@ def get_database_url() -> str:
     if not db_path:
         backup_path = os.getenv("BACKUP_PATH", "/data/backups")
         db_path = os.path.join(backup_path, "telegram_backup.db")
+    db_path = os.path.abspath(db_path)
     return f"sqlite+aiosqlite:///{db_path}"
 
 
