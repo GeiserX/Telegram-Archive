@@ -88,6 +88,7 @@ async def migrate_sqlite_to_postgres(
         if not sqlite_path:
             backup_path = os.getenv("BACKUP_PATH", "/data/backups")
             sqlite_path = os.path.join(backup_path, "telegram_backup.db")
+        sqlite_path = os.path.abspath(sqlite_path)
 
     if not os.path.exists(sqlite_path):
         raise FileNotFoundError(f"SQLite database not found: {sqlite_path}")
@@ -195,6 +196,7 @@ async def verify_migration(sqlite_path: str = None, postgres_url: str = None) ->
         if not sqlite_path:
             backup_path = os.getenv("BACKUP_PATH", "/data/backups")
             sqlite_path = os.path.join(backup_path, "telegram_backup.db")
+        sqlite_path = os.path.abspath(sqlite_path)
 
     if postgres_url is None:
         host = os.getenv("POSTGRES_HOST", "localhost")
