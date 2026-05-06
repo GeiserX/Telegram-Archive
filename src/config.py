@@ -219,7 +219,11 @@ class Config:
         elif db_dir_env:
             self.database_path = os.path.abspath(os.path.join(db_dir_env, "telegram_backup.db"))
         else:
-            self.database_path = os.path.join(self.backup_path, "telegram_backup.db")
+            db_path_v3 = os.getenv("DB_PATH")
+            if db_path_v3:
+                self.database_path = os.path.abspath(db_path_v3)
+            else:
+                self.database_path = os.path.join(self.backup_path, "telegram_backup.db")
 
         self.media_path = os.path.join(self.backup_path, "media")
 
