@@ -226,7 +226,10 @@ print('Migrations complete.')
 "
   elif { [[ -n "$DATABASE_URL" ]] && { [[ "$DATABASE_URL" == sqlite://* ]] || [[ "$DATABASE_URL" == sqlite+aiosqlite://* ]]; }; } || { [[ -z "$DATABASE_URL" ]] && { [ "$DB_TYPE" = "sqlite" ] || [ -z "$DB_TYPE" ]; }; }; then
     # SQLite - check if database file exists before running migrations
-    DB_PATH="${DB_PATH:-${DATABASE_PATH:-${BACKUP_PATH:-/data/backups}/telegram_backup.db}}"
+    DB_PATH="${DATABASE_PATH:-${DATABASE_DIR:+${DATABASE_DIR}/telegram_backup.db}}"
+    DB_PATH="${DB_PATH:-${BACKUP_PATH:-/data/backups}/telegram_backup.db}"
+    # Resolve to absolute path (realpath -m works even if file doesn't exist yet)
+    DB_PATH="$(realpath -m "$DB_PATH")"
     if [[ "$DATABASE_URL" == sqlite+aiosqlite:///* ]]; then
       DB_PATH="${DATABASE_URL#sqlite+aiosqlite:///}"
     elif [[ "$DATABASE_URL" == sqlite:///* ]]; then

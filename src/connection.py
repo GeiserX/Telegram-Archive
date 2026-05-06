@@ -164,6 +164,7 @@ class TelegramConnection:
             return self._client
 
         logger.info("Connecting to Telegram...")
+        logger.info(f"Using Telethon session database: {self.config.session_path}.session")
 
         session_file = self.config.session_path + ".session"
         snapshot_file = self.config.session_path + ".session.bak"
