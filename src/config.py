@@ -110,7 +110,7 @@ class Config:
         self.schedule = os.getenv("SCHEDULE", "0 */6 * * *")
 
         # Backup options
-        self.backup_path = os.getenv("BACKUP_PATH", "/data/backups")
+        self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = os.getenv("DOWNLOAD_MEDIA", "true").lower() == "true"
         self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
 
@@ -205,7 +205,7 @@ class Config:
         # Store session in a separate directory from backups
         # If BACKUP_PATH is /data/backups, session goes to /data/session
         backup_parent = os.path.dirname(self.backup_path.rstrip("/\\"))
-        self.session_dir = os.getenv("SESSION_DIR", os.path.join(backup_parent, "session"))
+        self.session_dir = os.path.abspath(os.getenv("SESSION_DIR", os.path.join(backup_parent, "session")))
         self.session_path = os.path.join(self.session_dir, self.session_name)
 
         # Database path configuration
@@ -215,11 +215,15 @@ class Config:
         db_dir_env = os.getenv("DATABASE_DIR")
 
         if db_path_env:
-            self.database_path = db_path_env
+            self.database_path = os.path.abspath(db_path_env)
         elif db_dir_env:
-            self.database_path = os.path.join(db_dir_env, "telegram_backup.db")
+            self.database_path = os.path.abspath(os.path.join(db_dir_env, "telegram_backup.db"))
         else:
-            self.database_path = os.path.join(self.backup_path, "telegram_backup.db")
+            db_path_v3 = os.getenv("DB_PATH")
+            if db_path_v3:
+                self.database_path = os.path.abspath(db_path_v3)
+            else:
+                self.database_path = os.path.join(self.backup_path, "telegram_backup.db")
 
         self.media_path = os.path.join(self.backup_path, "media")
 
