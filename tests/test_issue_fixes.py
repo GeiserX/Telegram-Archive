@@ -120,21 +120,25 @@ class TestListenerSessionPathLogging:
         listener = TelegramListener(config, db)
         return listener
 
-    async def test_listener_create_logs_session_path_at_info_level(self):
-        """listener.create() emits INFO log with session DB path before client creation."""
+    async def test_listener_connect_logs_session_path_at_info_level(self):
+        """listener.connect() emits INFO log with session DB path before client creation."""
         listener = self._make_listener()
 
         with (
             patch("src.listener.TelegramClient") as mock_client_cls,
             patch("src.listener.logger") as mock_logger,
+            patch("src.db.get_db_manager", new_callable=AsyncMock) as mock_get_db,
+            patch("src.listener.RealtimeNotifier") as mock_notifier_cls,
         ):
             mock_client = AsyncMock()
             mock_client.connect = AsyncMock()
             mock_client.is_user_authorized = AsyncMock(return_value=True)
             mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1234567890"))
+            mock_client.on = MagicMock(return_value=lambda f: f)
             mock_client_cls.return_value = mock_client
+            mock_notifier_cls.return_value = AsyncMock()
 
-            await listener.create(listener.config)
+            await listener.connect()
 
         info_calls = [call for call in mock_logger.info.call_args_list]
         session_log_found = any(
@@ -142,7 +146,7 @@ class TestListenerSessionPathLogging:
         )
         assert session_log_found, f"Expected INFO log with session path, got: {info_calls}"
 
-    async def test_listener_create_logs_before_client_instantiation(self):
+    async def test_listener_connect_logs_before_client_instantiation(self):
         """The session path log appears BEFORE TelegramClient() is called in listener."""
         listener = self._make_listener()
 
@@ -156,19 +160,23 @@ class TestListenerSessionPathLogging:
             mock_client.connect = AsyncMock()
             mock_client.is_user_authorized = AsyncMock(return_value=True)
             mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1234567890"))
+            mock_client.on = MagicMock(return_value=lambda f: f)
             call_order.append("client")
             return mock_client
 
         with (
             patch("src.listener.TelegramClient", side_effect=track_client),
             patch("src.listener.logger") as mock_logger,
+            patch("src.db.get_db_manager", new_callable=AsyncMock),
+            patch("src.listener.RealtimeNotifier") as mock_notifier_cls,
         ):
             mock_logger.info = track_log
             mock_logger.debug = MagicMock()
             mock_logger.warning = MagicMock()
             mock_logger.error = MagicMock()
+            mock_notifier_cls.return_value = AsyncMock()
 
-            await listener.create(listener.config)
+            await listener.connect()
 
         assert "log" in call_order
         assert "client" in call_order
