@@ -796,8 +796,8 @@ class TestDownloadAvatar:
         listener.client.download_profile_photo.assert_not_called()
 
     @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
-    @patch("os.path.exists", return_value=False)
-    async def test_downloads_avatar_when_file_missing(self, mock_exists, mock_paths):
+    @patch("os.path.lexists", return_value=False)
+    async def test_downloads_avatar_when_file_missing(self, mock_lexists, mock_paths):
         """Downloads avatar when file does not exist."""
         listener = TelegramListener(_make_config(), _make_db())
         listener.client = AsyncMock()
@@ -808,9 +808,10 @@ class TestDownloadAvatar:
         listener.client.download_profile_photo.assert_called_once()
 
     @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
-    @patch("os.path.exists", return_value=True)
+    @patch("os.path.lexists", return_value=True)
+    @patch("os.path.islink", return_value=False)
     @patch("os.path.getsize", return_value=0)
-    async def test_downloads_avatar_when_file_empty(self, mock_size, mock_exists, mock_paths):
+    async def test_downloads_avatar_when_file_empty(self, mock_size, mock_islink, mock_lexists, mock_paths):
         """Downloads avatar when file exists but is empty (0 bytes)."""
         listener = TelegramListener(_make_config(), _make_db())
         listener.client = AsyncMock()
@@ -831,8 +832,8 @@ class TestDownloadAvatar:
         await listener._download_avatar(entity, 123)
 
     @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
-    @patch("os.path.exists", return_value=False)
-    async def test_handles_none_download_result(self, mock_exists, mock_paths):
+    @patch("os.path.lexists", return_value=False)
+    async def test_handles_none_download_result(self, mock_lexists, mock_paths):
         """When download_profile_photo returns None, logs debug instead of info."""
         listener = TelegramListener(_make_config(), _make_db())
         listener.client = AsyncMock()
