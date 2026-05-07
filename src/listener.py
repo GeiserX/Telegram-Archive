@@ -497,10 +497,13 @@ class TelegramListener:
                 logger.debug(f"No avatar set for {chat_id}")
                 return
 
-            needs_download = not os.path.exists(avatar_path) or os.path.getsize(avatar_path) == 0
-
-            if not needs_download:
-                return
+            # lexists short-circuits when an avatar (even a symlink whose
+            # target is unreachable from this process) is already on disk,
+            # so we don't try to overwrite an archive entry. Mirrors the
+            # backup-flow guard in src/telegram_backup.py (issue #143).
+            if os.path.lexists(avatar_path):
+                if os.path.islink(avatar_path) or os.path.getsize(avatar_path) > 0:
+                    return
 
             result = await self.client.download_profile_photo(entity, file=avatar_path, download_big=False)
             if result:
@@ -624,10 +627,16 @@ class TelegramListener:
                 os.makedirs(shared_dir, exist_ok=True)
                 shared_file_path = os.path.join(shared_dir, file_name)
 
-                if not os.path.exists(file_path):
-                    if os.path.exists(shared_file_path):
-                        # File exists in shared - create symlink
-                        content_hash = compute_file_hash(shared_file_path)
+                # lexists treats an existing symlink as "already recorded"
+                # even when its ultimate target is unreachable (e.g. a
+                # git-annex object outside the bind mount). Mirrors the
+                # backup-flow gate in src/telegram_backup.py for idempotent
+                # behavior on archived layouts. See issue #143.
+                if not os.path.lexists(file_path):
+                    if os.path.lexists(shared_file_path):
+                        # File exists in shared - create symlink. Hash only
+                        # when the target resolves; skip on broken links.
+                        content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
                             if os.path.lexists(file_path):
@@ -676,8 +685,10 @@ class TelegramListener:
                             else:
                                 shutil.move(shared_file_path, file_path)
             else:
-                # No deduplication - download directly
-                if not os.path.exists(file_path):
+                # No deduplication - download directly. lexists short-circuits
+                # the download when a symlink is already recorded, even if its
+                # target is unreachable.
+                if not os.path.lexists(file_path):
                     tmp_file_path = f"{file_path}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)

@@ -537,7 +537,24 @@ data/
 | "Permission denied" | `chmod -R 755 data/` |
 | Media files missing/corrupted | Set `VERIFY_MEDIA=true` to re-download them |
 | Backup interrupted | Set `VERIFY_MEDIA=true` once to recover missing files |
+| Re-run touches every media file in a git-annex / DataLad backup | See [git-annex / DataLad layouts](#git-annex--datalad-layouts) below |
 | "duplicate key value violates unique constraint reactions_pkey" | See [Reactions Sequence Fix](#reactions-sequence-fix-postgresql) below |
+
+### git-annex / DataLad layouts
+
+When the media tree is committed to git-annex (or DataLad), files appear
+as symlinks pointing into the repository's annex object store. The
+backup process treats an existing symlink as authoritative and never
+overwrites it on re-run -- but content-hash deduplication only
+recognizes existing `_shared/` blobs when their symlink targets are
+reachable from the running process. If you mount only the working tree
+into a container, the annex object store sits outside the mount and is
+invisible to the backup.
+
+For fully idempotent re-runs against an annex-managed archive, ensure
+the annex object store is reachable -- typically by mounting the
+repository root (not just the per-session subdirectory) and pointing
+the data path at the session subdirectory inside it.
 
 ### Reactions Sequence Fix (PostgreSQL)
 

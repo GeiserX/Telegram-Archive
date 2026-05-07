@@ -239,12 +239,14 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
             resolved = os.path.realpath(chat_file)
             self.assertEqual(resolved, os.path.realpath(returned_path))
 
-    def test_process_media_dedup_removes_dangling_before_symlink(self):
-        """A dangling symlink at the file_path is replaced with a valid one during first-download dedup.
+    def test_process_media_preserves_existing_symlink(self):
+        """An existing symlink at file_path short-circuits the download path.
 
-        This exercises the "first time seeing this file" branch (Path B) in _process_media,
-        where the shared file does NOT exist yet. download_media creates it, then the
-        lexists+unlink guard removes the dangling symlink before os.symlink.
+        The dedup gate uses ``os.path.lexists`` so a symlink already recorded
+        in the chat directory is treated as "we have it", regardless of whether
+        the ultimate target resolves. This is the idempotent-rerun contract
+        from issue #143: archived layouts (e.g. git-annex) keep their
+        symlinks intact across re-runs.
         """
         shared_dir = os.path.join(self.media_path, "_shared")
         chat_dir = os.path.join(self.media_path, "300")
@@ -253,48 +255,42 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
 
         file_name = "video_xyz.mp4"
 
-        # Create a dangling symlink in the chat directory pointing to a deleted file
+        # Reproduce the user's git-annex-style layout: chat dir holds a
+        # symlink pointing at a target that is unreachable from this process.
         old_target = os.path.join(shared_dir, "old_deleted_file.mp4")
         chat_link = os.path.join(chat_dir, file_name)
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), chat_link)
+        original_target = os.readlink(chat_link)
         os.remove(old_target)
 
-        # Confirm dangling
+        # Confirm the symlink is present but its target is unreachable.
         self.assertTrue(os.path.lexists(chat_link))
         self.assertFalse(os.path.exists(chat_link))
 
-        # The shared file must NOT exist yet so we hit the "first download" branch.
-        # download_media will "create" it as a side effect.
-        new_shared = os.path.join(shared_dir, file_name)
-
-        def fake_download(message, path):
-            """Simulate Telethon writing the file at the requested path."""
-            with open(path, "wb") as f:
-                f.write(b"new video data")
-            return path
-
-        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+        download_mock = AsyncMock()
+        self.backup.client.download_media = download_mock
         self.backup._get_media_type = MagicMock(return_value="video")
         self.backup._get_media_filename = MagicMock(return_value=file_name)
         self.backup._get_media_size = MagicMock(return_value=1024)
 
         msg = self._make_message(msg_id=20, file_id="xyz")
 
-        # The dangling symlink means os.path.exists(file_path) is False AND
-        # shared file doesn't exist, so we enter the first-download branch.
-        # The fix uses lexists+unlink before os.symlink to avoid EEXIST.
         result = self._run(self.backup._process_media(msg, 300))
 
+        # Metadata is still returned so the caller can reinsert the DB row.
         self.assertIsNotNone(result)
         self.assertTrue(result["downloaded"])
+        self.assertEqual(result["file_path"], chat_link)
 
-        # After the fix, the symlink should be valid and point to new shared file
-        self.assertTrue(os.path.lexists(chat_link))
-        self.assertTrue(os.path.exists(chat_link))
+        # No download was attempted -- the symlink was trusted.
+        download_mock.assert_not_awaited()
+
+        # The original symlink is preserved byte-for-byte; nothing was
+        # rewritten or replaced.
         self.assertTrue(os.path.islink(chat_link))
-        self.assertEqual(os.path.realpath(chat_link), os.path.realpath(new_shared))
+        self.assertEqual(os.readlink(chat_link), original_target)
 
 
 class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
@@ -325,26 +321,34 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         finally:
             loop.close()
 
-    def test_verify_cleanup_removes_dangling_symlink(self):
-        """_verify_and_redownload_media removes dangling symlinks via lexists before re-download."""
+    def test_verify_trusts_existing_symlink_even_when_dangling(self):
+        """Verify-media trusts an existing chat-dir symlink, even when its target is unreachable.
+
+        For archived layouts (issue #143), a chat-dir symlink whose target
+        sits in a separate object store may resolve only on the host -- not
+        from inside the container that runs the backup. Re-downloading such
+        files would atomic-rename a regular file on top of the user's
+        symlink, mutating the working tree. Verify must therefore treat any
+        symlink as authoritative and skip it.
+        """
         chat_id = -1001234567890
         chat_dir = os.path.join(self.media_path, str(chat_id))
         shared_dir = os.path.join(self.media_path, "_shared")
         os.makedirs(chat_dir)
         os.makedirs(shared_dir)
 
-        # Create a dangling symlink
+        # Reproduce the dangling-symlink layout.
         old_target = os.path.join(shared_dir, "deleted.jpg")
         dangling_link = os.path.join(chat_dir, "photo.jpg")
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), dangling_link)
+        original_target = os.readlink(dangling_link)
         os.remove(old_target)
 
         self.assertTrue(os.path.lexists(dangling_link))
         self.assertFalse(os.path.exists(dangling_link))
 
-        # Set up DB to return media record pointing at the dangling symlink
         self.backup.db.get_media_for_verification.return_value = [
             {
                 "file_path": dangling_link,
@@ -354,35 +358,64 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
             }
         ]
 
-        # Mock the Telegram message fetch
+        # Sentinel: a redownload would call _process_media. We assert it does
+        # NOT, so prepare it as a strict mock that fails the test if invoked.
+        self.backup._process_media = AsyncMock()
+        self.backup.client.get_messages = AsyncMock()
+
+        self._run(self.backup._verify_and_redownload_media())
+
+        # Verify nothing was re-downloaded or inserted.
+        self.backup._process_media.assert_not_awaited()
+        self.backup.client.get_messages.assert_not_awaited()
+        self.backup.db.insert_media.assert_not_awaited()
+
+        # The dangling symlink is byte-for-byte unchanged.
+        self.assertTrue(os.path.islink(dangling_link))
+        self.assertEqual(os.readlink(dangling_link), original_target)
+
+    def test_verify_redownloads_when_path_truly_missing(self):
+        """When file_path doesn't even lexist, verify still triggers a re-download.
+
+        Distinguishes "truly absent" (no entry on disk at all) from
+        "symlink whose target is unreachable" -- only the former is a
+        legitimate verify-flow recovery target.
+        """
+        chat_id = -1001234567891
+        chat_dir = os.path.join(self.media_path, str(chat_id))
+        os.makedirs(chat_dir)
+        gone = os.path.join(chat_dir, "never_existed.jpg")
+
+        self.assertFalse(os.path.lexists(gone))
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {
+                "file_path": gone,
+                "file_size": 1024,
+                "chat_id": chat_id,
+                "message_id": 99,
+            }
+        ]
+
         mock_msg = MagicMock()
-        mock_msg.id = 42
+        mock_msg.id = 99
         mock_msg.media = MagicMock()
         self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
 
-        # Mock _process_media to return a successful result
-        new_shared = os.path.join(shared_dir, "photo_new.jpg")
-        with open(new_shared, "wb") as f:
-            f.write(b"new photo data")
-
         self.backup._process_media = AsyncMock(
             return_value={
-                "id": f"{chat_id}_42_photo",
+                "id": f"{chat_id}_99_photo",
                 "type": "photo",
-                "message_id": 42,
+                "message_id": 99,
                 "chat_id": chat_id,
-                "file_path": dangling_link,
+                "file_path": gone,
                 "downloaded": True,
             }
         )
 
         self._run(self.backup._verify_and_redownload_media())
 
-        # The cleanup code should have removed the dangling symlink before re-download
-        # (lexists check + os.remove in the verification loop)
-        # Verify _process_media was called (re-download attempted)
         self.backup._process_media.assert_awaited_once()
-        # Verify db.insert_media was called (successful re-download)
         self.backup.db.insert_media.assert_awaited_once()
 
 
@@ -539,8 +572,14 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         msg.reply_to = None
         return msg
 
-    def test_listener_dedup_pre_unlink_dangling_shared_exists(self):
-        """Listener removes dangling symlink before creating new one when shared file exists."""
+    def test_listener_dedup_preserves_dangling_when_shared_exists(self):
+        """An existing chat-dir symlink is preserved as-is, even if dangling.
+
+        Even when a candidate shared file is present at the expected path, the
+        listener trusts the chat-dir symlink that was already recorded. This
+        avoids rewriting symlink targets across runs (issue #143) when content
+        is managed by an external system like git-annex.
+        """
         chat_id = 100
         shared_dir = os.path.join(self.media_path, "_shared")
         chat_dir = os.path.join(self.media_path, str(chat_id))
@@ -551,18 +590,18 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         shared_file = os.path.join(shared_dir, file_name)
         chat_file = os.path.join(chat_dir, file_name)
 
-        # Create shared file
+        # Shared file is present (e.g. recovered or freshly downloaded by a
+        # parallel job), but the chat dir already records a dangling link.
         with open(shared_file, "wb") as f:
             f.write(b"shared data")
 
-        # Create dangling symlink in chat dir
         old_target = os.path.join(shared_dir, "old_gone.jpg")
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        original_target = os.readlink(chat_file)
         os.remove(old_target)
 
-        # Dangling: lexists=True, exists=False
         self.assertTrue(os.path.lexists(chat_file))
         self.assertFalse(os.path.exists(chat_file))
 
@@ -573,9 +612,8 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         result = self._run(self.listener._download_media(msg, chat_id))
 
         self.assertIsNotNone(result)
-        # After fix: symlink should now point to the correct shared file
-        self.assertTrue(os.path.exists(chat_file))
         self.assertTrue(os.path.islink(chat_file))
+        self.assertEqual(os.readlink(chat_file), original_target)
 
     def test_listener_dedup_copy2_fallback_when_symlink_fails(self):
         """Listener uses shutil.copy2 when symlink fails on shared-exists path."""
@@ -634,8 +672,13 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
             resolved = os.path.realpath(chat_file)
             self.assertEqual(resolved, os.path.realpath(returned_path))
 
-    def test_listener_dedup_first_download_pre_unlink_dangling(self):
-        """Listener removes dangling symlink before new symlink on first-download path."""
+    def test_listener_dedup_preserves_existing_symlink(self):
+        """Listener leaves an existing chat-dir symlink alone, even when broken.
+
+        The dedup gate uses ``os.path.lexists`` so an already-recorded symlink
+        short-circuits the download. This is the listener-side mirror of the
+        backup-flow contract from issue #143.
+        """
         chat_id = 400
         shared_dir = os.path.join(self.media_path, "_shared")
         chat_dir = os.path.join(self.media_path, str(chat_id))
@@ -645,24 +688,18 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         file_name = "doc_abc.pdf"
         chat_file = os.path.join(chat_dir, file_name)
 
-        # Create dangling symlink
         old_target = os.path.join(shared_dir, "old.pdf")
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        original_target = os.readlink(chat_file)
         os.remove(old_target)
 
         self.assertTrue(os.path.lexists(chat_file))
         self.assertFalse(os.path.exists(chat_file))
 
-        new_shared = os.path.join(shared_dir, file_name)
-
-        def fake_download(message, path):
-            with open(path, "wb") as f:
-                f.write(b"new pdf content")
-            return path
-
-        self.listener.client.download_media = AsyncMock(side_effect=fake_download)
+        download_mock = AsyncMock()
+        self.listener.client.download_media = download_mock
         self.listener._get_media_type = MagicMock(return_value="document")
         self.listener._get_media_filename = MagicMock(return_value=file_name)
 
@@ -670,9 +707,13 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
 
         result = self._run(self.listener._download_media(msg, chat_id))
 
+        # Result is still produced so the listener can record DB metadata.
         self.assertIsNotNone(result)
-        self.assertTrue(os.path.exists(chat_file))
+
+        # No download was attempted; the symlink is byte-for-byte unchanged.
+        download_mock.assert_not_awaited()
         self.assertTrue(os.path.islink(chat_file))
+        self.assertEqual(os.readlink(chat_file), original_target)
 
     def test_listener_no_dedup_captures_return_value(self):
         """Listener captures download_media return value in non-dedup path."""
@@ -739,8 +780,14 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         msg.reply_to = None
         return msg
 
-    def test_shared_exists_pre_unlinks_dangling_symlink(self):
-        """When shared file exists and chat dir has dangling symlink, pre-unlink before new symlink."""
+    def test_shared_exists_preserves_existing_chat_symlink(self):
+        """An existing chat-dir symlink is preserved even when shared file is present.
+
+        Once the chat directory records a symlink for a media name, we treat
+        it as authoritative -- we never rewrite its target on a subsequent
+        run, even if the candidate shared file exists. Idempotent rerun
+        contract from issue #143.
+        """
         chat_id = 800
         shared_dir = os.path.join(self.media_path, "_shared")
         chat_dir = os.path.join(self.media_path, str(chat_id))
@@ -751,18 +798,16 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         shared_file = os.path.join(shared_dir, file_name)
         chat_file = os.path.join(chat_dir, file_name)
 
-        # Create shared file (the valid target)
         with open(shared_file, "wb") as f:
             f.write(b"shared photo data")
 
-        # Create dangling symlink in chat dir (points to deleted old file)
         old_target = os.path.join(shared_dir, "old_deleted.jpg")
         with open(old_target, "w") as f:
             f.write("old")
         os.symlink(os.path.relpath(old_target, chat_dir), chat_file)
+        original_target = os.readlink(chat_file)
         os.remove(old_target)
 
-        # Dangling: exists=False (follows symlink), lexists=True
         self.assertFalse(os.path.exists(chat_file))
         self.assertTrue(os.path.lexists(chat_file))
 
@@ -774,10 +819,8 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         result = self._run(self.backup._process_media(msg, chat_id))
 
         self.assertIsNotNone(result)
-        # After fix: symlink replaced, now valid
-        self.assertTrue(os.path.exists(chat_file))
         self.assertTrue(os.path.islink(chat_file))
-        self.assertEqual(os.path.realpath(chat_file), os.path.realpath(shared_file))
+        self.assertEqual(os.readlink(chat_file), original_target)
 
     def test_shared_exists_copy2_fallback_when_symlink_fails(self):
         """When shared file exists but symlink fails, use shutil.copy2 instead of re-downloading."""
