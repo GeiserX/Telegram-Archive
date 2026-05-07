@@ -23,7 +23,7 @@ COPY alembic.ini .
 # Create non-root user for security
 RUN useradd -m -u 1000 telegram && \
     mkdir -p /data/backups && \
-    chown -R telegram:telegram /app /data && \
+    chown -R telegram:telegram /data && \
     chmod +x /app/scripts/entrypoint.sh
 
 # Switch to non-root user
@@ -32,7 +32,9 @@ USER telegram
 # Set default environment variables
 ENV BACKUP_PATH=/data/backups \
     LOG_LEVEL=INFO \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # Volume for persistent data
 VOLUME ["/data"]

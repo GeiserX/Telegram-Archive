@@ -342,6 +342,7 @@ class TelegramListener:
             logger.info(f"Connected as {me.first_name} ({me.phone})")
         else:
             # Create new client
+            logger.info(f"Using Telethon session database: {self.config.session_path}.session")
             self.client = TelegramClient(
                 self.config.session_path,
                 self.config.api_id,
