@@ -646,12 +646,20 @@ class TestDownloadMedia:
         msg.media = media
         msg.id = 1
 
-        shared_checks = {"n": 0}
+        # The shared file "appears" once download_media is called. Track that
+        # state with a flag rather than a call counter so the test is robust
+        # to changes in how many times `os.path.exists` is consulted.
+        downloaded = {"done": False}
+
+        async def fake_download(*args, **kwargs):
+            downloaded["done"] = True
+            return "/tmp/test_media/_shared/123.jpg"
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
             if str(path) == "/tmp/test_media/_shared/123.jpg":
-                shared_checks["n"] += 1
-                return shared_checks["n"] > 1
+                return downloaded["done"]
             return False
 
         mock_exists.side_effect = exists
@@ -677,12 +685,18 @@ class TestDownloadMedia:
         msg.media = media
         msg.id = 1
 
-        file_checks = {"n": 0}
+        # The chat file "appears" once download_media is called.
+        downloaded = {"done": False}
+
+        async def fake_download(*args, **kwargs):
+            downloaded["done"] = True
+            return "/tmp/test_media/-100/123.jpg"
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
             if str(path) == "/tmp/test_media/-100/123.jpg":
-                file_checks["n"] += 1
-                return file_checks["n"] > 1
+                return downloaded["done"]
             return False
 
         mock_exists.side_effect = exists
@@ -769,9 +783,10 @@ class TestDownloadAvatar:
         listener.client.download_profile_photo.assert_not_called()
 
     @patch("src.listener.get_avatar_paths", return_value=("/path/avatar.jpg", "/legacy/path"))
-    @patch("os.path.exists", return_value=True)
+    @patch("os.path.lexists", return_value=True)
+    @patch("os.path.islink", return_value=False)
     @patch("os.path.getsize", return_value=1024)
-    async def test_skips_download_when_file_exists(self, mock_size, mock_exists, mock_paths):
+    async def test_skips_download_when_file_exists(self, mock_size, mock_islink, mock_lexists, mock_paths):
         """If avatar file already exists with content, skip download."""
         listener = TelegramListener(_make_config(), _make_db())
         listener.client = AsyncMock()
@@ -2175,8 +2190,6 @@ class TestDownloadMediaSymlinkFallback:
         db = _make_db()
         listener = TelegramListener(config, db)
         listener.client = AsyncMock()
-        listener.client.download_media = AsyncMock(return_value="/tmp/test_media/_shared/123.jpg")
-
         msg = MagicMock()
         media = MagicMock(spec=MessageMediaPhoto)
         media.photo = MagicMock()
@@ -2185,12 +2198,19 @@ class TestDownloadMediaSymlinkFallback:
         msg.media = media
         msg.id = 1
 
-        shared_checks = {"n": 0}
+        # Track when the shared file "appears" so the post-download exists()
+        # check sees it on the first call (the gate now uses lexists).
+        downloaded = {"done": False}
+
+        async def fake_download(*args, **kwargs):
+            downloaded["done"] = True
+            return "/tmp/test_media/_shared/123.jpg"
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
             if str(path) == "/tmp/test_media/_shared/123.jpg":
-                shared_checks["n"] += 1
-                return shared_checks["n"] > 1
+                return downloaded["done"]
             return False
 
         mock_exists.side_effect = exists
