@@ -630,6 +630,7 @@ class TelegramBackup:
 
         missing_files = []
         corrupted_files = []
+        skipped_symlinks = 0
 
         # Phase 1: Check which files need re-downloading
         for record in media_records:
@@ -650,6 +651,7 @@ class TelegramBackup:
             # be unreachable from this process. We cannot meaningfully
             # check size or emptiness without following the link.
             if os.path.islink(file_path):
+                skipped_symlinks += 1
                 continue
 
             # Check if file is empty (interrupted download)
@@ -667,7 +669,10 @@ class TelegramBackup:
 
         total_issues = len(missing_files) + len(corrupted_files)
         if total_issues == 0:
-            logger.info("✓ All media files verified - no issues found")
+            msg = "✓ All media files verified - no issues found"
+            if skipped_symlinks:
+                msg += f" ({skipped_symlinks} symlink entries skipped)"
+            logger.info(msg)
             logger.info("=" * 60)
             return
 
