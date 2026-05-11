@@ -33,7 +33,13 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
-from .message_utils import compute_file_hash, deduplicate_shared_file, extract_topic_id
+from .message_utils import (
+    compute_file_hash,
+    deduplicate_shared_file,
+    extract_topic_id,
+    get_shared_file_path,
+    resolve_shared_file_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1526,57 +1532,59 @@ class TelegramBackup:
                 # Global deduplication: use _shared directory for actual files
                 shared_dir = os.path.join(self.config.media_path, "_shared")
                 os.makedirs(shared_dir, exist_ok=True)
-                shared_file_path = os.path.join(shared_dir, file_name)
 
-                # Check if file already exists (either directly or in shared).
-                # Uses lexists so a previously recorded symlink short-circuits
-                # the download even when its ultimate target is unreachable
-                # (e.g. a git-annex object outside the bind mount). Without
-                # this, intentional broken symlinks cause re-downloads that
-                # overwrite _shared/ entries via atomic rename and may rewrite
-                # chat-dir targets through content-hash dedup -- breaking
-                # idempotency for archived layouts.
+                # Resolve existing file in shared store (sharded or flat fallback)
+                shared_file_path = resolve_shared_file_path(shared_dir, file_name, None)
+
                 if not os.path.lexists(file_path):
-                    if os.path.lexists(shared_file_path):
+                    if shared_file_path:
                         # File exists in shared - create symlink. Hash only
-                        # when the target resolves; skip on a broken link to
-                        # avoid raising in compute_file_hash.
+                        # when the target resolves; skip on broken links.
                         content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
                         try:
-                            # Use relative symlink for portability
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
                             if os.path.lexists(file_path):
                                 os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                             logger.debug(f"Created symlink for deduplicated media: {file_name}")
                         except OSError as e:
-                            # Symlink not supported (e.g., Windows), copy shared file instead
                             logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
 
                             shutil.copy2(shared_file_path, file_path)
                     else:
-                        # First time seeing this file - download to shared and create symlink
-                        tmp_shared_file_path = f"{shared_file_path}.part"
+                        # First time seeing this file - download to sharded shared path
+                        # Use a flat temp path; we'll move to the shard after hashing
+                        tmp_shared_file_path = os.path.join(shared_dir, f"{file_name}.part")
                         if os.path.exists(tmp_shared_file_path):
                             os.remove(tmp_shared_file_path)
                         actual_path = await call_with_flood_retry(
                             self.client.download_media, message, tmp_shared_file_path
                         )
-                        shared_file_path = _finalize_atomic_download(
+                        tmp_shared_file_path = _finalize_atomic_download(
                             actual_path if isinstance(actual_path, str) else None,
                             tmp_shared_file_path,
-                            shared_file_path,
+                            os.path.join(shared_dir, file_name),
                         )
-                        if not shared_file_path or not os.path.exists(shared_file_path):
+                        if not tmp_shared_file_path or not os.path.exists(tmp_shared_file_path):
                             logger.warning("Media download did not produce a file")
                             return None
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
                         # Content-hash dedup: check if identical content already exists
-                        shared_file_path, content_hash, reused = await deduplicate_shared_file(
-                            self.db, shared_file_path, shared_dir
+                        tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(
+                            self.db, tmp_shared_file_path, shared_dir
                         )
+
+                        # Move to sharded location if we own this file (not reused)
+                        if not reused and content_hash:
+                            final_shared = get_shared_file_path(shared_dir, file_name, content_hash)
+                            os.makedirs(os.path.dirname(final_shared), exist_ok=True)
+                            if tmp_shared_file_path != final_shared:
+                                os.replace(tmp_shared_file_path, final_shared)
+                            shared_file_path = final_shared
+                        else:
+                            shared_file_path = tmp_shared_file_path
 
                         # Create symlink in chat directory
                         try:
@@ -1585,7 +1593,6 @@ class TelegramBackup:
                                 os.unlink(file_path)
                             os.symlink(rel_path, file_path)
                         except OSError as e:
-                            # Symlink not supported (e.g., Windows) - copy/move to chat dir
                             logger.warning(f"Symlink not supported, using direct path: {e}")
                             import shutil
 
@@ -1595,7 +1602,9 @@ class TelegramBackup:
                                 shutil.move(shared_file_path, file_path)
 
                 # Update file_size with actual size from disk (follow symlinks)
-                actual_path = shared_file_path if os.path.exists(shared_file_path) else file_path
+                if not shared_file_path:
+                    shared_file_path = resolve_shared_file_path(shared_dir, file_name, content_hash)
+                actual_path = shared_file_path if shared_file_path and os.path.exists(shared_file_path) else file_path
                 if os.path.exists(actual_path):
                     file_size = os.path.getsize(actual_path)
                     if not content_hash:
@@ -2098,9 +2107,12 @@ def main():
     import asyncio
 
     from .config import Config, setup_logging
+    from .migrate_shared_media import migrate_shared_media
 
     config = Config()
     setup_logging(config)
+
+    migrate_shared_media(config.media_path)
 
     return asyncio.run(run_backup(config))
 

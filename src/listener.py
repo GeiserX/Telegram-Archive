@@ -35,7 +35,13 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
-from .message_utils import compute_file_hash, deduplicate_shared_file, extract_topic_id
+from .message_utils import (
+    compute_file_hash,
+    deduplicate_shared_file,
+    extract_topic_id,
+    get_shared_file_path,
+    resolve_shared_file_path,
+)
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import call_with_flood_retry
 
@@ -625,15 +631,12 @@ class TelegramListener:
                 # Global deduplication: use _shared directory for actual files
                 shared_dir = os.path.join(self.config.media_path, "_shared")
                 os.makedirs(shared_dir, exist_ok=True)
-                shared_file_path = os.path.join(shared_dir, file_name)
 
-                # lexists treats an existing symlink as "already recorded"
-                # even when its ultimate target is unreachable (e.g. a
-                # git-annex object outside the bind mount). Mirrors the
-                # backup-flow gate in src/telegram_backup.py for idempotent
-                # behavior on archived layouts. See issue #143.
+                # Resolve existing file in shared store (sharded or flat fallback)
+                shared_file_path = resolve_shared_file_path(shared_dir, file_name, None)
+
                 if not os.path.lexists(file_path):
-                    if os.path.lexists(shared_file_path):
+                    if shared_file_path:
                         # File exists in shared - create symlink. Hash only
                         # when the target resolves; skip on broken links.
                         content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
@@ -649,27 +652,37 @@ class TelegramListener:
 
                             shutil.copy2(shared_file_path, file_path)
                     else:
-                        # First time seeing this file - download to shared and create symlink
-                        tmp_shared_file_path = f"{shared_file_path}.part"
+                        # First time seeing this file - download to sharded shared path
+                        tmp_shared_file_path = os.path.join(shared_dir, f"{file_name}.part")
                         if os.path.exists(tmp_shared_file_path):
                             os.remove(tmp_shared_file_path)
                         actual_path = await call_with_flood_retry(
                             self.client.download_media, message, tmp_shared_file_path
                         )
-                        shared_file_path = _finalize_atomic_download(
+                        tmp_shared_file_path = _finalize_atomic_download(
                             actual_path if isinstance(actual_path, str) else None,
                             tmp_shared_file_path,
-                            shared_file_path,
+                            os.path.join(shared_dir, file_name),
                         )
-                        if not shared_file_path or not os.path.exists(shared_file_path):
+                        if not tmp_shared_file_path or not os.path.exists(tmp_shared_file_path):
                             logger.warning("Media download did not produce a file")
                             return None
                         logger.debug(f"Downloaded media to shared: {file_name}")
 
                         # Content-hash dedup: check if identical content already exists
-                        shared_file_path, content_hash, reused = await deduplicate_shared_file(
-                            self.db, shared_file_path, shared_dir
+                        tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(
+                            self.db, tmp_shared_file_path, shared_dir
                         )
+
+                        # Move to sharded location if we own this file (not reused)
+                        if not reused and content_hash:
+                            final_shared = get_shared_file_path(shared_dir, file_name, content_hash)
+                            os.makedirs(os.path.dirname(final_shared), exist_ok=True)
+                            if tmp_shared_file_path != final_shared:
+                                os.replace(tmp_shared_file_path, final_shared)
+                            shared_file_path = final_shared
+                        else:
+                            shared_file_path = tmp_shared_file_path
 
                         try:
                             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
