@@ -193,7 +193,8 @@ async def download_and_shard_media(
 
     # Move to sharded location if we own this file (not reused)
     if not reused and content_hash:
-        final_shared = get_shared_file_path(shared_dir, file_name, content_hash)
+        actual_name = os.path.basename(tmp_shared_file_path)
+        final_shared = get_shared_file_path(shared_dir, actual_name, content_hash)
         os.makedirs(os.path.dirname(final_shared), exist_ok=True)
         if tmp_shared_file_path != final_shared:
             os.replace(tmp_shared_file_path, final_shared)
