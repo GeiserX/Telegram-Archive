@@ -20,6 +20,8 @@
   <strong>Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule.</strong>
 </p>
 
+<p align="center"><em>This project is developed with AI assistance (Claude Code).</em></p>
+
 ## Features
 
 ### 📦 Backup Engine
