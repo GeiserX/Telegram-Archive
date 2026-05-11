@@ -313,6 +313,11 @@ async def main():
             logger.warning("   → This is expensive but catches changes made while offline")
         logger.info("=" * 60)
 
+        # Migrate flat _shared/ to sharded layout (idempotent, runs once)
+        from .migrate_shared_media import migrate_shared_media
+
+        migrate_shared_media(config.media_path)
+
         # Create and run scheduler
         scheduler = BackupScheduler(config)
         await scheduler.run_forever()
