@@ -105,17 +105,35 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
     errors = 0
 
     for filename, file_paths in all_files_to_process.items():
-        shared_path = os.path.join(shared_dir, filename)
+        # Resolve existing shared path (sharded or flat)
+        shared_path = None
+        source_existed = False
 
-        # Check if already in shared
-        if os.path.exists(shared_path):
-            # File already in shared, just need to create symlinks
-            source_path = shared_path
-            source_existed = True
-        else:
-            # Use first file as source
+        # Check sharded locations (scan 256 buckets) then flat
+        for entry in os.scandir(shared_dir):
+            if entry.is_dir() and len(entry.name) == 2:
+                candidate = os.path.join(entry.path, filename)
+                if os.path.exists(candidate):
+                    shared_path = candidate
+                    source_existed = True
+                    break
+        if not shared_path:
+            flat_candidate = os.path.join(shared_dir, filename)
+            if os.path.exists(flat_candidate):
+                shared_path = flat_candidate
+                source_existed = True
+
+        if not source_existed:
+            # Use first file as source — compute hash to determine shard bucket
             source_path = file_paths[0]
-            source_existed = False
+            source_hash = get_file_hash(source_path)
+            if source_hash:
+                bucket = source_hash[:2]
+                shared_path = os.path.join(shared_dir, bucket, filename)
+            else:
+                shared_path = os.path.join(shared_dir, filename)
+        else:
+            source_path = shared_path
 
         try:
             source_size = os.path.getsize(source_path)
@@ -132,9 +150,10 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
 
             # Skip if this is the source file and we haven't moved it yet
             if file_path == source_path and not source_existed:
-                # Move source to shared
+                # Move source to shared (sharded path)
                 if not dry_run:
                     try:
+                        os.makedirs(os.path.dirname(shared_path), exist_ok=True)
                         os.rename(source_path, shared_path)
                         # Create symlink in original location
                         rel_path = os.path.relpath(shared_path, chat_dir)

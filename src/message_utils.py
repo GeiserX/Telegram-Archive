@@ -7,6 +7,37 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def get_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str:
+    """Build the sharded path for a file in the shared store.
+
+    Uses the first 2 hex characters of the content_hash as a subdirectory
+    (256 buckets). Falls back to flat layout when no hash is available.
+    """
+    file_name = os.path.basename(file_name)
+    if content_hash and len(content_hash) >= 2:
+        bucket = content_hash[:2]
+        return os.path.join(shared_dir, bucket, file_name)
+    return os.path.join(shared_dir, file_name)
+
+
+def resolve_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str | None:
+    """Find an existing file in the shared store, checking sharded then flat.
+
+    Returns the path if found (via lexists, so symlinks count), else None.
+    """
+    file_name = os.path.basename(file_name)
+    # Check sharded location first
+    if content_hash and len(content_hash) >= 2:
+        sharded = os.path.join(shared_dir, content_hash[:2], file_name)
+        if os.path.lexists(sharded):
+            return sharded
+    # Fallback: flat layout (pre-sharding installs)
+    flat = os.path.join(shared_dir, file_name)
+    if os.path.lexists(flat):
+        return flat
+    return None
+
+
 async def deduplicate_shared_file(
     db: object,
     shared_file_path: str,
@@ -29,7 +60,10 @@ async def deduplicate_shared_file(
     if not existing or not existing.get("file_name"):
         return shared_file_path, content_hash, False
 
-    existing_shared = os.path.join(shared_dir, existing["file_name"])
+    existing_hash = existing.get("content_hash", "")
+    existing_shared = resolve_shared_file_path(shared_dir, existing["file_name"], existing_hash)
+    if not existing_shared:
+        return shared_file_path, content_hash, False
 
     # Path traversal guard: resolved path must stay within shared_dir
     real_shared_dir = os.path.realpath(shared_dir)
