@@ -35,26 +35,16 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
-from .message_utils import compute_file_hash, deduplicate_shared_file, extract_topic_id
+from .message_utils import (
+    compute_file_hash,
+    download_and_shard_media,
+    extract_topic_id,
+    finalize_atomic_download,
+)
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import call_with_flood_retry
 
 logger = logging.getLogger(__name__)
-
-
-def _finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str | None:
-    """Move a temporary download into place while preserving Telethon's chosen extension."""
-    if actual_path and os.path.exists(actual_path):
-        final_path = actual_path[:-5] if actual_path.endswith(".part") else actual_path
-        if final_path != actual_path:
-            os.replace(actual_path, final_path)
-        return final_path if os.path.exists(final_path) else None
-
-    if os.path.exists(temporary_path):
-        os.replace(temporary_path, fallback_path)
-        return fallback_path if os.path.exists(fallback_path) else None
-
-    return None
 
 
 class MassOperationProtector:
@@ -625,75 +615,32 @@ class TelegramListener:
                 # Global deduplication: use _shared directory for actual files
                 shared_dir = os.path.join(self.config.media_path, "_shared")
                 os.makedirs(shared_dir, exist_ok=True)
-                shared_file_path = os.path.join(shared_dir, file_name)
 
-                # lexists treats an existing symlink as "already recorded"
-                # even when its ultimate target is unreachable (e.g. a
-                # git-annex object outside the bind mount). Mirrors the
-                # backup-flow gate in src/telegram_backup.py for idempotent
-                # behavior on archived layouts. See issue #143.
-                if not os.path.lexists(file_path):
-                    if os.path.lexists(shared_file_path):
-                        # File exists in shared - create symlink. Hash only
-                        # when the target resolves; skip on broken links.
-                        content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
-                        try:
-                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-                            if os.path.lexists(file_path):
-                                os.unlink(file_path)
-                            os.symlink(rel_path, file_path)
-                            logger.debug(f"Created symlink for deduplicated media: {file_name}")
-                        except OSError as e:
-                            logger.warning(f"Symlink not supported, using direct path: {e}")
-                            import shutil
+                async def _download_fn(tmp_path):
+                    return await call_with_flood_retry(self.client.download_media, message, tmp_path)
 
-                            shutil.copy2(shared_file_path, file_path)
-                    else:
-                        # First time seeing this file - download to shared and create symlink
-                        tmp_shared_file_path = f"{shared_file_path}.part"
-                        if os.path.exists(tmp_shared_file_path):
-                            os.remove(tmp_shared_file_path)
-                        actual_path = await call_with_flood_retry(
-                            self.client.download_media, message, tmp_shared_file_path
-                        )
-                        shared_file_path = _finalize_atomic_download(
-                            actual_path if isinstance(actual_path, str) else None,
-                            tmp_shared_file_path,
-                            shared_file_path,
-                        )
-                        if not shared_file_path or not os.path.exists(shared_file_path):
-                            logger.warning("Media download did not produce a file")
-                            return None
-                        logger.debug(f"Downloaded media to shared: {file_name}")
-
-                        # Content-hash dedup: check if identical content already exists
-                        shared_file_path, content_hash, reused = await deduplicate_shared_file(
-                            self.db, shared_file_path, shared_dir
-                        )
-
-                        try:
-                            rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-                            if os.path.lexists(file_path):
-                                os.unlink(file_path)
-                            os.symlink(rel_path, file_path)
-                        except OSError as e:
-                            logger.warning(f"Symlink not supported, using direct path: {e}")
-                            import shutil
-
-                            if reused:
-                                shutil.copy2(shared_file_path, file_path)
-                            else:
-                                shutil.move(shared_file_path, file_path)
+                shared_file_path, content_hash = await download_and_shard_media(
+                    db=self.db,
+                    download_coro=_download_fn,
+                    shared_dir=shared_dir,
+                    chat_media_dir=chat_media_dir,
+                    file_name=file_name,
+                    file_path=file_path,
+                    logger=logger,
+                )
+                if not shared_file_path and not os.path.lexists(file_path):
+                    return None
             else:
                 # No deduplication - download directly. lexists short-circuits
                 # the download when a symlink is already recorded, even if its
                 # target is unreachable.
                 if not os.path.lexists(file_path):
-                    tmp_file_path = f"{file_path}.part"
+                    task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
+                    tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
                     actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
-                    file_path = _finalize_atomic_download(
+                    file_path = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
                         file_path,

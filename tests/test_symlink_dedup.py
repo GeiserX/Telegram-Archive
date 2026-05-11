@@ -166,7 +166,9 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
         chat_link = os.path.join(chat_dir, "fileid123.bin")
         if os.path.lexists(chat_link):
             resolved = os.path.realpath(chat_link)
-            self.assertEqual(resolved, os.path.realpath(actual_returned_path))
+            # File is sharded but retains Telethon's .mp4 extension
+            self.assertTrue(os.path.exists(resolved))
+            self.assertTrue(resolved.endswith("fileid123.mp4"))
 
 
 class TestProcessMediaDedupSymlink(unittest.TestCase):
@@ -237,7 +239,8 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         chat_file = os.path.join(chat_dir, "photo_abc")
         if os.path.lexists(chat_file):
             resolved = os.path.realpath(chat_file)
-            self.assertEqual(resolved, os.path.realpath(returned_path))
+            self.assertTrue(os.path.exists(resolved))
+            self.assertTrue(resolved.endswith("photo_abc.mp4"))
 
     def test_process_media_preserves_existing_symlink(self):
         """An existing symlink at file_path short-circuits the download path.
@@ -497,8 +500,12 @@ class TestShutilMoveFallback(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertTrue(result["downloaded"])
-        # shutil.move should have been called as fallback
-        mock_move.assert_called_once_with(shared_file, chat_file)
+        # shutil.move should have been called with the sharded path as source
+        mock_move.assert_called_once()
+        call_args = mock_move.call_args[0]
+        self.assertTrue(call_args[0].startswith(shared_dir))
+        self.assertIn("fallback_file.jpg", call_args[0])
+        self.assertEqual(call_args[1], chat_file)
 
     def test_no_shutil_move_when_symlink_succeeds(self):
         """shutil.move is NOT called when os.symlink succeeds normally."""
@@ -670,7 +677,8 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         chat_file = os.path.join(chat_dir, file_name)
         if os.path.lexists(chat_file):
             resolved = os.path.realpath(chat_file)
-            self.assertEqual(resolved, os.path.realpath(returned_path))
+            self.assertTrue(os.path.exists(resolved))
+            self.assertTrue(resolved.endswith("video_xyz.mp4"))
 
     def test_listener_dedup_preserves_existing_symlink(self):
         """Listener leaves an existing chat-dir symlink alone, even when broken.

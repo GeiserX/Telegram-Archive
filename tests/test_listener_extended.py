@@ -663,7 +663,7 @@ class TestDownloadMedia:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
             result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
@@ -700,7 +700,7 @@ class TestDownloadMedia:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/-100/123.jpg"):
+        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/-100/123.jpg"):
             result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
@@ -2215,7 +2215,7 @@ class TestDownloadMediaSymlinkFallback:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.listener._finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
             result = await listener._download_media(msg, -100)
         assert result is not None
         mock_move.assert_called_once()

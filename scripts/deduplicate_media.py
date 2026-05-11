@@ -30,18 +30,19 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import Config
+from src.message_utils import get_shared_file_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def get_file_hash(filepath: str, chunk_size: int = 8192) -> str:
-    """Get MD5 hash of a file for content comparison."""
-    hash_md5 = hashlib.md5()
+    """Get SHA-256 hash of a file for content comparison and shard placement."""
+    h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(chunk_size), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def deduplicate_media(dry_run: bool = False, verbose: bool = False):
@@ -105,17 +106,33 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
     errors = 0
 
     for filename, file_paths in all_files_to_process.items():
-        shared_path = os.path.join(shared_dir, filename)
+        # Check if file already exists in shared store
+        shared_path = None
+        source_existed = False
 
-        # Check if already in shared
-        if os.path.exists(shared_path):
-            # File already in shared, just need to create symlinks
-            source_path = shared_path
+        # Check flat location first (fast path)
+        flat_candidate = os.path.join(shared_dir, filename)
+        if os.path.exists(flat_candidate):
+            shared_path = flat_candidate
             source_existed = True
         else:
-            # Use first file as source
+            # Compute hash of first available file to check sharded location
             source_path = file_paths[0]
-            source_existed = False
+            source_hash = get_file_hash(source_path)
+            if source_hash:
+                sharded_candidate = get_shared_file_path(shared_dir, filename, source_hash)
+                if os.path.exists(sharded_candidate):
+                    shared_path = sharded_candidate
+                    source_existed = True
+                else:
+                    shared_path = sharded_candidate  # destination
+            else:
+                shared_path = flat_candidate  # fallback
+
+        if source_existed:
+            source_path = shared_path
+        else:
+            source_path = file_paths[0]
 
         try:
             source_size = os.path.getsize(source_path)
@@ -132,9 +149,10 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
 
             # Skip if this is the source file and we haven't moved it yet
             if file_path == source_path and not source_existed:
-                # Move source to shared
+                # Move source to shared (sharded path)
                 if not dry_run:
                     try:
+                        os.makedirs(os.path.dirname(shared_path), exist_ok=True)
                         os.rename(source_path, shared_path)
                         # Create symlink in original location
                         rel_path = os.path.relpath(shared_path, chat_dir)
