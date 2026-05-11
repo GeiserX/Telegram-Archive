@@ -41,18 +41,19 @@ def migrate_shared_media(media_path: str) -> int:
     if os.path.exists(marker):
         return 0
 
-    entries = []
-    try:
-        entries = list(os.scandir(shared_dir))
-    except OSError:
-        return 0
-
     # Only process regular files directly in _shared/.
     # Symlinks are excluded: moving a symlink to a subdirectory breaks its
     # relative target (e.g. git-annex pointers like ../../.git/annex/objects/...).
     # They remain in flat _shared/ and are found via the fallback in
     # resolve_shared_file_path().
-    flat_files = [e for e in entries if e.is_file(follow_symlinks=False) and not e.name.startswith(".")]
+    # .part files are excluded: they are in-progress downloads.
+    flat_files = []
+    try:
+        for e in os.scandir(shared_dir):
+            if e.is_file(follow_symlinks=False) and not e.name.startswith(".") and not e.name.endswith(".part"):
+                flat_files.append(e)
+    except OSError:
+        return 0
 
     if not flat_files:
         # No flat files — mark as migrated
@@ -60,6 +61,12 @@ def migrate_shared_media(media_path: str) -> int:
         return 0
 
     logger.info(f"Migrating {len(flat_files)} files from flat _shared/ to sharded layout...")
+
+    # Compute chat directories once (not per file)
+    try:
+        chat_dirs = [e.path for e in os.scandir(media_path) if e.is_dir() and not e.name.startswith("_")]
+    except OSError:
+        chat_dirs = []
 
     migrated = 0
     for entry in flat_files:
@@ -80,24 +87,22 @@ def migrate_shared_media(media_path: str) -> int:
                 os.remove(src_path)
             continue
 
+        # Relink symlinks BEFORE moving: if crash occurs between relink and move,
+        # symlinks are dangling but file is still in flat_files on restart → full retry.
+        _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs)
+
         os.replace(src_path, dest_path)
         migrated += 1
-
-        # Update symlinks in chat directories that pointed at the old flat path
-        _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path)
 
     _write_marker(marker)
     logger.info(f"Migration complete: {migrated} files moved to sharded layout")
     return migrated
 
 
-def _relink_chat_symlinks(media_path: str, shared_dir: str, file_name: str, new_target: str) -> None:
+def _relink_chat_symlinks(
+    media_path: str, shared_dir: str, file_name: str, new_target: str, chat_dirs: list[str]
+) -> None:
     """Find and update chat-dir symlinks that pointed at the old flat shared path."""
-    try:
-        chat_dirs = [e.path for e in os.scandir(media_path) if e.is_dir() and not e.name.startswith("_")]
-    except OSError:
-        return
-
     old_rel_suffix = os.path.join("_shared", file_name)
 
     for chat_dir in chat_dirs:
@@ -107,7 +112,9 @@ def _relink_chat_symlinks(media_path: str, shared_dir: str, file_name: str, new_
 
         target = os.readlink(link_path)
         # Check if this symlink points to the old flat location
-        if target.endswith(old_rel_suffix) or os.path.basename(os.path.dirname(target)) == "_shared":
+        if target.endswith(old_rel_suffix) or (
+            os.path.basename(os.path.dirname(target)) == "_shared" and os.path.basename(target) == file_name
+        ):
             new_rel = os.path.relpath(new_target, chat_dir)
             os.unlink(link_path)
             os.symlink(new_rel, link_path)
@@ -117,5 +124,5 @@ def _write_marker(marker_path: str) -> None:
     try:
         with open(marker_path, "w") as f:
             f.write("sharding migration complete\n")
-    except OSError:
-        pass
+    except OSError as e:
+        logger.error(f"Failed to write migration marker: {e}")

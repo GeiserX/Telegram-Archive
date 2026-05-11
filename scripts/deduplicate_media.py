@@ -30,18 +30,19 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import Config
+from src.message_utils import get_shared_file_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def get_file_hash(filepath: str, chunk_size: int = 8192) -> str:
-    """Get MD5 hash of a file for content comparison."""
-    hash_md5 = hashlib.md5()
+    """Get SHA-256 hash of a file for content comparison and shard placement."""
+    h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(chunk_size), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def deduplicate_media(dry_run: bool = False, verbose: bool = False):
@@ -105,35 +106,33 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
     errors = 0
 
     for filename, file_paths in all_files_to_process.items():
-        # Resolve existing shared path (sharded or flat)
+        # Check if file already exists in shared store
         shared_path = None
         source_existed = False
 
-        # Check sharded locations (scan 256 buckets) then flat
-        for entry in os.scandir(shared_dir):
-            if entry.is_dir() and len(entry.name) == 2:
-                candidate = os.path.join(entry.path, filename)
-                if os.path.exists(candidate):
-                    shared_path = candidate
-                    source_existed = True
-                    break
-        if not shared_path:
-            flat_candidate = os.path.join(shared_dir, filename)
-            if os.path.exists(flat_candidate):
-                shared_path = flat_candidate
-                source_existed = True
-
-        if not source_existed:
-            # Use first file as source — compute hash to determine shard bucket
+        # Check flat location first (fast path)
+        flat_candidate = os.path.join(shared_dir, filename)
+        if os.path.exists(flat_candidate):
+            shared_path = flat_candidate
+            source_existed = True
+        else:
+            # Compute hash of first available file to check sharded location
             source_path = file_paths[0]
             source_hash = get_file_hash(source_path)
             if source_hash:
-                bucket = source_hash[:2]
-                shared_path = os.path.join(shared_dir, bucket, filename)
+                sharded_candidate = get_shared_file_path(shared_dir, filename, source_hash)
+                if os.path.exists(sharded_candidate):
+                    shared_path = sharded_candidate
+                    source_existed = True
+                else:
+                    shared_path = sharded_candidate  # destination
             else:
-                shared_path = os.path.join(shared_dir, filename)
-        else:
+                shared_path = flat_candidate  # fallback
+
+        if source_existed:
             source_path = shared_path
+        else:
+            source_path = file_paths[0]
 
         try:
             source_size = os.path.getsize(source_path)
