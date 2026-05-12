@@ -761,6 +761,38 @@ class DatabaseAdapter:
                 for m in result.scalars()
             ]
 
+    async def get_pending_media_downloads(self) -> list[dict[str, Any]]:
+        """Get media records that failed to download and need retry.
+
+        Returns records where downloaded=0 for downloadable media types
+        (excludes contact/geo/poll which are metadata-only).
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media)
+                .where(
+                    and_(
+                        Media.downloaded == 0,
+                        Media.type.notin_(["contact", "geo", "poll"]),
+                    )
+                )
+                .order_by(Media.chat_id, Media.message_id)
+            )
+            result = await session.execute(stmt)
+            return [
+                {
+                    "id": m.id,
+                    "message_id": m.message_id,
+                    "chat_id": m.chat_id,
+                    "type": m.type,
+                    "file_path": m.file_path,
+                    "file_name": m.file_name,
+                    "file_size": m.file_size,
+                    "downloaded": m.downloaded,
+                }
+                for m in result.scalars()
+            ]
+
     async def mark_media_for_redownload(self, media_id: str) -> None:
         """Mark a media record as needing re-download."""
         async with self.db_manager.async_session_factory() as session:
