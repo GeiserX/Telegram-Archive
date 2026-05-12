@@ -567,6 +567,9 @@ class TelegramBackup:
             logger.info(f"Total storage: {stats['total_size_mb']} MB")
             logger.info("=" * 60)
 
+            # Retry previously failed media downloads
+            await self._retry_pending_media_downloads()
+
             # Run media verification if enabled
             if self.config.verify_media:
                 await self._verify_and_redownload_media()
@@ -752,6 +755,88 @@ class TelegramBackup:
         logger.info("Media verification completed!")
         logger.info(f"Re-downloaded: {redownloaded} files")
         logger.info(f"Failed/Unrecoverable: {failed} files")
+        logger.info("=" * 60)
+
+    async def _retry_pending_media_downloads(self) -> None:
+        """Retry downloading media that previously failed.
+
+        Picks up records with downloaded=0 (excluding metadata-only types
+        like contact/geo/poll) and re-attempts the download from Telegram.
+        Respects MAX_MEDIA_SIZE_BYTES — files that still exceed the limit
+        are skipped silently.
+        """
+        pending = await self.db.get_pending_media_downloads(self.config.get_max_media_size_bytes())
+        if not pending:
+            return
+
+        logger.info("=" * 60)
+        logger.info(f"Retrying {len(pending)} pending media downloads...")
+
+        # Group by chat_id for efficient batch fetching
+        by_chat: dict[int, list[dict]] = {}
+        for record in pending:
+            chat_id = record.get("chat_id")
+            if chat_id:
+                by_chat.setdefault(chat_id, []).append(record)
+
+        downloaded = 0
+        skipped = 0
+        failed = 0
+
+        for chat_id, records in by_chat.items():
+            if chat_id in self.config.skip_media_chat_ids:
+                skipped += len(records)
+                continue
+
+            try:
+                message_ids = [r["message_id"] for r in records if r.get("message_id")]
+                if not message_ids:
+                    continue
+
+                try:
+                    messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=message_ids)
+                except Exception as e:
+                    logger.warning(f"Cannot access chat for pending media retry: {e}")
+                    failed += len(records)
+                    continue
+
+                msg_map = {}
+                for msg in messages:
+                    if msg:
+                        msg_map[msg.id] = msg
+
+                for record in records:
+                    msg_id = record.get("message_id")
+                    msg = msg_map.get(msg_id)
+
+                    if not msg:
+                        skipped += 1
+                        continue
+
+                    if not msg.media:
+                        skipped += 1
+                        continue
+
+                    # Re-attempt _process_media (which handles size checks internally)
+                    try:
+                        result = await self._process_media(msg, chat_id)
+                        if result and result.get("downloaded"):
+                            await self.db.insert_media(result)
+                            downloaded += 1
+                        else:
+                            skipped += 1
+                    except Exception as e:
+                        logger.debug(f"Retry failed for pending media: {e}")
+                        failed += 1
+
+            except Exception as e:
+                logger.error(f"Error retrying pending media for chat: {e}")
+                failed += len(records)
+
+        if downloaded > 0 or failed > 0:
+            logger.info(f"Pending media retry: {downloaded} downloaded, {skipped} skipped, {failed} failed")
+        else:
+            logger.info("Pending media retry: no actionable items")
         logger.info("=" * 60)
 
     async def _backup_dialog(self, dialog, is_archived: bool = False) -> int:
