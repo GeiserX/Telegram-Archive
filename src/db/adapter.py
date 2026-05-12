@@ -761,23 +761,22 @@ class DatabaseAdapter:
                 for m in result.scalars()
             ]
 
-    async def get_pending_media_downloads(self) -> list[dict[str, Any]]:
+    async def get_pending_media_downloads(self, max_media_size_bytes: int | None = None) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 
         Returns records where downloaded=0 for downloadable media types
         (excludes contact/geo/poll which are metadata-only).
+        Files exceeding max_media_size_bytes are excluded to prevent
+        infinite retry of over-limit media.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                select(Media)
-                .where(
-                    and_(
-                        Media.downloaded == 0,
-                        Media.type.notin_(["contact", "geo", "poll"]),
-                    )
-                )
-                .order_by(Media.chat_id, Media.message_id)
-            )
+            conditions = [
+                Media.downloaded == 0,
+                Media.type.notin_(["contact", "geo", "poll"]),
+            ]
+            if max_media_size_bytes is not None:
+                conditions.append(or_(Media.file_size.is_(None), Media.file_size <= max_media_size_bytes))
+            stmt = select(Media).where(and_(*conditions)).order_by(Media.chat_id, Media.message_id)
             result = await session.execute(stmt)
             return [
                 {

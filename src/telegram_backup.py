@@ -765,7 +765,7 @@ class TelegramBackup:
         Respects MAX_MEDIA_SIZE_BYTES — files that still exceed the limit
         are skipped silently.
         """
-        pending = await self.db.get_pending_media_downloads()
+        pending = await self.db.get_pending_media_downloads(self.config.get_max_media_size_bytes())
         if not pending:
             return
 
