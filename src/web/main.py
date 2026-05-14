@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
@@ -1673,14 +1673,14 @@ async def get_message_by_date(
             user_tz = ZoneInfo(tz_str)
         except Exception:
             logger.warning(f"Invalid timezone '{tz_str}', falling back to UTC")
-            user_tz = ZoneInfo("UTC")
+            user_tz = UTC
 
         # Parse date string (YYYY-MM-DD) as a date in the user's timezone
         naive_date = datetime.strptime(date, "%Y-%m-%d")
         # Create timezone-aware datetime at start of day in user's timezone
         local_start_of_day = naive_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=user_tz)
         # Convert to UTC for database query
-        target_date = local_start_of_day.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        target_date = local_start_of_day.astimezone(UTC).replace(tzinfo=None)
 
         message = await db.find_message_by_date_with_joins(chat_id, target_date)
 
