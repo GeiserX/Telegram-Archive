@@ -25,7 +25,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -45,7 +45,7 @@ jobs:
           python -m pytest tests/ -q -p no:cacheprovider --tb=short
 
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs: test
     permissions:
       contents: read
@@ -89,9 +89,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-
-
-
-
-
