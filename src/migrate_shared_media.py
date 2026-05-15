@@ -41,16 +41,14 @@ def migrate_shared_media(media_path: str) -> int:
     if os.path.exists(marker):
         return 0
 
-    # Only process regular files directly in _shared/.
-    # Symlinks are excluded: moving a symlink to a subdirectory breaks its
-    # relative target (e.g. git-annex pointers like ../../.git/annex/objects/...).
-    # They remain in flat _shared/ and are found via the fallback in
-    # resolve_shared_file_path().
-    # .part files are excluded: they are in-progress downloads.
     flat_files = []
     try:
         for e in os.scandir(shared_dir):
-            if e.is_file(follow_symlinks=False) and not e.name.startswith(".") and not e.name.endswith(".part"):
+            if (
+                (e.is_file(follow_symlinks=False) or e.is_symlink())
+                and not e.name.startswith(".")
+                and not e.name.endswith(".part")
+            ):
                 flat_files.append(e)
     except OSError:
         return 0

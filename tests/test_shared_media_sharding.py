@@ -193,3 +193,29 @@ class TestMigrateSharedMedia(unittest.TestCase):
         count = migrate_shared_media(self.media_path)
         assert count == 0
         assert os.path.exists(os.path.join(bucket_dir, "photo.jpg"))
+
+    def test_migrates_symlinks_with_reachable_targets(self):
+        # Simulate git-annex: symlink whose target is readable
+        content = "annex object data"
+        annex_obj = self._create_file(os.path.join(self.tmpdir, ".git", "annex", "objects", "obj"), content)
+        link_path = os.path.join(self.shared_dir, "annexed.jpg")
+        os.symlink(os.path.relpath(annex_obj, self.shared_dir), link_path)
+
+        count = migrate_shared_media(self.media_path)
+
+        assert count == 1
+        assert not os.path.lexists(link_path)
+        expected_hash = self._content_hash(content)
+        sharded = os.path.join(self.shared_dir, expected_hash[:2], "annexed.jpg")
+        assert os.path.islink(sharded)
+
+    def test_skips_symlinks_with_unreachable_targets(self):
+        # Docker case: symlink target doesn't exist, hash fails → skipped
+        link_path = os.path.join(self.shared_dir, "broken.jpg")
+        os.symlink("../../.git/annex/objects/XX/YY/key", link_path)
+
+        count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        # Symlink stays in flat location
+        assert os.path.islink(link_path)
