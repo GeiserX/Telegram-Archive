@@ -28,11 +28,11 @@
             --sab: env(safe-area-inset-bottom, 0px);
             --sal: env(safe-area-inset-left, 0px);
         }
-        
+
         html {
             background-color: #0f172a;
         }
-        
+
         body {
             font-family: 'Inter', sans-serif;
             padding-top: var(--sat);
@@ -207,7 +207,7 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
-        
+
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
@@ -221,7 +221,7 @@
         .message-text a:hover {
             color: #93c5fd;
         }
-        
+
         /* Album Grid Styles */
         .album-grid {
             max-width: 400px;
@@ -356,7 +356,7 @@
                             <h1 class="text-xl font-bold">Telegram Archive</h1>
                             <!-- Stats Dropdown Button (hidden if SHOW_STATS=false) -->
                             <div class="relative" v-if="showStatsUI && statsData.stats_calculated_at">
-                                <button @click="statsPopupOpen = !statsPopupOpen" 
+                                <button @click="statsPopupOpen = !statsPopupOpen"
                                     class="flex items-center gap-1.5 px-2 py-1 text-xs text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition">
                                     <span>📊</span>
                                     <span>Stats</span>
@@ -366,7 +366,7 @@
                                 </button>
                                 <!-- Stats Popup + Click-outside overlay -->
                                 <div v-if="statsPopupOpen" @click="statsPopupOpen = false" class="fixed inset-0 z-40"></div>
-                                <div v-if="statsPopupOpen" 
+                                <div v-if="statsPopupOpen"
                                     class="absolute left-0 top-full mt-1 z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-4 min-w-[220px]">
                                     <div class="text-xs text-tg-muted space-y-2">
                                         <div class="font-semibold text-white mb-3 pb-2 border-b border-gray-700">Backup Statistics</div>
@@ -382,7 +382,7 @@
                                             <div class="text-[10px] opacity-70">
                                                 Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-blue-400 hover:text-blue-300">Sergio Fernández</a>
                                             </div>
-                                            <a href="https://github.com/sponsors/GeiserX" target="_blank" 
+                                            <a href="https://github.com/sponsors/GeiserX" target="_blank"
                                                 class="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 text-[9px] bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 rounded transition">
                                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 16 16">
                                                     <path fill-rule="evenodd" d="M4.25 2.5c-1.336 0-2.75 1.164-2.75 3 0 2.15 1.58 4.144 3.365 5.682A20.565 20.565 0 008 13.393a20.561 20.561 0 003.135-2.211C12.92 9.644 14.5 7.65 14.5 5.5c0-1.836-1.414-3-2.75-3-1.373 0-2.609.986-3.029 2.456a.75.75 0 01-1.442 0C6.859 3.486 5.623 2.5 4.25 2.5zM8 14.25l-.345.666-.002-.001-.006-.003-.018-.01a7.643 7.643 0 01-.31-.17 22.075 22.075 0 01-3.434-2.414C2.045 10.731 0 8.35 0 5.5 0 2.836 2.086 1 4.25 1 5.797 1 7.153 1.802 8 3.02 8.847 1.802 10.203 1 11.75 1 13.914 1 16 2.836 16 5.5c0 2.85-2.045 5.231-3.885 6.818a22.08 22.08 0 01-3.744 2.584l-.018.01-.006.003h-.002L8 14.25zm0 0l.345.666a.752.752 0 01-.69 0L8 14.25z"></path>
@@ -403,7 +403,7 @@
                             <span>Syncing...</span>
                         </div>
                     </div>
-                    
+
                     <div class="relative mb-3">
                         <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
                             class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -415,12 +415,12 @@
                     </div>
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
-                        <button @click="showAllChats()" 
+                        <button @click="showAllChats()"
                             :class="activeTab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             All Chats
                         </button>
-                        <button v-for="folder in folders" :key="folder.id" 
+                        <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
                             :class="activeTab === 'folder_' + folder.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
@@ -428,7 +428,7 @@
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
                         </button>
                     </div>
-                    
+
                     <!-- Last Backup Time / Real-time Status -->
                     <div class="text-xs text-tg-muted">
                         <div class="flex items-center gap-1.5">
@@ -468,7 +468,7 @@
                 </div>
 
                 <!-- Notification Permission Banner (shows when permission is 'default' AND notifications are enabled) -->
-                <div v-if="(notificationsEnabled || pushEnabled) && notificationsSupported && notificationPermission === 'default'" 
+                <div v-if="(notificationsEnabled || pushEnabled) && notificationsSupported && notificationPermission === 'default'"
                     class="px-3 py-2 bg-blue-900/80 border-b border-blue-700">
                     <div class="flex items-center gap-2 text-blue-200 text-sm">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -476,15 +476,15 @@
                                 d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
                         </svg>
                         <span>Enable notifications for new messages</span>
-                        <button @click="requestNotificationPermission()" 
+                        <button @click="requestNotificationPermission()"
                             class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
                             Enable
                         </button>
                     </div>
                 </div>
-                
+
                 <!-- Notification Blocked Banner (shows when push is subscribed but notifications blocked) -->
-                <div v-if="notificationsBlocked && pushSubscribed" 
+                <div v-if="notificationsBlocked && pushSubscribed"
                     class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
                     <div class="flex items-center gap-2 text-amber-200 text-sm">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -492,7 +492,7 @@
                                 d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                         </svg>
                         <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
-                        <button @click="unsubscribeFromPush()" 
+                        <button @click="unsubscribeFromPush()"
                             class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
                             Unsubscribe
                         </button>
@@ -515,7 +515,7 @@
                                 <p class="text-xs text-tg-muted">{{ topics.length }} topics</p>
                             </div>
                         </div>
-                        
+
                         <!-- Loading topics -->
                         <div v-if="loadingTopics" class="flex flex-col items-center justify-center py-12 text-tg-muted">
                             <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
@@ -524,7 +524,7 @@
                             </svg>
                             <span class="text-sm">Loading topics...</span>
                         </div>
-                        
+
                         <!-- Topic list -->
                         <div v-else-if="topics.length === 0" class="flex flex-col items-center justify-center py-12 text-tg-muted">
                             <span class="text-sm">No topics found</span>
@@ -556,11 +556,11 @@
                             </div>
                         </div>
                     </template>
-                    
+
                     <!-- Regular Chat List -->
                     <template v-else>
                         <!-- v6.2.0: Back button for archived/folder views -->
-                        <div v-if="canGoBack && currentNav.type === 'chatList'" 
+                        <div v-if="canGoBack && currentNav.type === 'chatList'"
                             class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
                             <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -571,7 +571,7 @@
                                 {{ currentNav.filter === 'archived' ? 'Archived Chats' : 'Back' }}
                             </h3>
                         </div>
-                        
+
                         <!-- Loading spinner while chats are loading -->
                         <div v-if="loadingChats" class="flex flex-col items-center justify-center py-12 text-tg-muted">
                             <svg class="w-8 h-8 animate-spin mb-3" fill="none" viewBox="0 0 24 24">
@@ -583,7 +583,7 @@
                         <!-- Empty state -->
                         <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
                             <svg class="w-12 h-12 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
                             </svg>
                             <span class="text-sm">{{ searchQuery ? 'No chats found' : 'No chats yet' }}</span>
@@ -606,7 +606,7 @@
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                                 </svg>
                             </div>
-                            
+
                             <!-- Chat items -->
                             <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
                                 class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
@@ -652,7 +652,7 @@
                                 </div>
                             </div>
                         </template>
-                        
+
                         <!-- Infinite Scroll Sentinel (loads more when visible) -->
                         <div v-if="hasMoreChats && !searchQuery" ref="infiniteScrollSentinel" class="p-3 flex justify-center">
                             <div v-if="loadingMoreChats" class="flex items-center gap-2 text-tg-muted text-sm">
@@ -666,7 +666,7 @@
                                 {{ chatTotal - chats.length }} more chats
                             </div>
                         </div>
-                        
+
                         <!-- Search results info -->
                         <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-gray-700/50">
                             <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
@@ -773,7 +773,7 @@
                     <!-- Pinned Message Banner (only shown in normal view, not in pinned-only view) -->
                     <!-- Click on message content → scroll to message + cycle to next -->
                     <!-- Click on pin icon (right side) → open pinned messages view -->
-                    <div v-if="pinnedMessage && !showPinnedOnly" 
+                    <div v-if="pinnedMessage && !showPinnedOnly"
                         class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 flex items-center gap-3">
                         <!-- Pin icon on left -->
                         <div class="text-blue-400">
@@ -809,9 +809,9 @@
                             </button>
                         </div>
                     </div>
-                    
+
                     <!-- Pinned Messages View Header (shown when in pinned-only mode) -->
-                    <div v-if="showPinnedOnly" 
+                    <div v-if="showPinnedOnly"
                         class="px-4 py-3 bg-tg-sidebar border-b border-gray-700 flex items-center gap-3">
                         <!-- Back button -->
                         <button @click="closePinnedView"
@@ -909,10 +909,10 @@
                                     <!-- Media (show if media exists, even if not yet downloaded) -->
                                     <div v-if="msg.media?.file_path || msg.media?.type" class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
-                                        <div v-if="!msg.media?.file_path && msg.media?.type" 
+                                        <div v-if="!msg.media?.file_path && msg.media?.type"
                                             class="bg-gray-700/50 rounded-lg p-4 flex items-center gap-3 max-w-md">
                                             <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                     d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                                             </svg>
                                             <div>
@@ -928,18 +928,18 @@
                                                 <template v-for="albumMsg in getAlbumForMessage(msg)" :key="albumMsg.id">
                                                     <div class="album-item relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition"
                                                         @click="openMedia(albumMsg)">
-                                                        <img v-if="albumMsg.media?.type === 'photo'" 
+                                                        <img v-if="albumMsg.media?.type === 'photo'"
                                                             :src="getMediaUrl(albumMsg)"
                                                             loading="lazy"
                                                             class="w-full h-full object-cover"
                                                             @error="handleImageError($event, albumMsg)">
-                                                        <video v-else-if="albumMsg.media?.type === 'video'" 
+                                                        <video v-else-if="albumMsg.media?.type === 'video'"
                                                             class="w-full h-full object-cover"
                                                             preload="metadata">
                                                             <source :src="getMediaUrl(albumMsg)" type="video/mp4">
                                                         </video>
                                                         <!-- Video indicator overlay -->
-                                                        <div v-if="albumMsg.media?.type === 'video'" 
+                                                        <div v-if="albumMsg.media?.type === 'video'"
                                                             class="absolute inset-0 flex items-center justify-center bg-black/20">
                                                             <svg class="w-10 h-10 text-white/90" fill="currentColor" viewBox="0 0 24 24">
                                                                 <path d="M8 5v14l11-7z"/>
@@ -949,7 +949,7 @@
                                                 </template>
                                             </div>
                                         </div>
-                                        
+
                                         <!-- Regular photo (not part of album) -->
                                         <img v-else-if="msg.media?.type === 'photo' && !msg.raw_data?.grouped_id" :src="getMediaUrl(msg)"
                                             loading="lazy"
@@ -959,10 +959,10 @@
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-[250px] max-w-md bg-gradient-to-r from-gray-800 to-gray-700 p-3 rounded-xl shadow-lg">
-                                            <audio 
-                                                controls 
-                                                preload="metadata" 
-                                                class="w-full" 
+                                            <audio
+                                                controls
+                                                preload="metadata"
+                                                class="w-full"
                                                 style="height: 40px; min-height: 40px;"
                                                 :src="getMediaUrl(msg)"
                                                 @error="console.error('Audio load error:', getMediaUrl(msg))">
@@ -981,7 +981,7 @@
                                         </video>
 
                                         <!-- Videos - click to open in lightbox -->
-                                        <div v-else-if="msg.media?.type === 'video'" 
+                                        <div v-else-if="msg.media?.type === 'video'"
                                             class="relative cursor-pointer group"
                                             @click="openMedia(msg)">
                                             <video preload="metadata"
@@ -1002,7 +1002,7 @@
                                         <!-- Stickers (static/animated) -->
                                         <div v-else-if="msg.media?.type === 'sticker'" class="max-w-[200px]">
                                             <img v-if="getDocumentDisplayName(msg).endsWith('.webp')"
-                                                :src="getMediaUrl(msg)" loading="lazy" 
+                                                :src="getMediaUrl(msg)" loading="lazy"
                                                 class="max-h-48 max-w-full object-contain"
                                                 @error="handleImageError($event, msg)">
                                             <div v-else class="text-xs text-tg-muted p-2 bg-black/20 rounded">
@@ -1070,7 +1070,7 @@
                                     </div>
                                 </div>
                             </div>
-                            
+
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
                             <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
                                 <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
@@ -1084,7 +1084,7 @@
 
                         <!-- Scroll sentinel for intersection observer - triggers loading when visible -->
                         <div v-if="hasMore && !loading && messages.length > 0" ref="loadMoreSentinel" class="h-1"></div>
-                        
+
                         <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
                             Beginning of chat history
                         </div>
@@ -1093,7 +1093,7 @@
                     </div>
 
                     <!-- Scroll to Bottom Button -->
-                    <button v-if="showScrollToBottom" 
+                    <button v-if="showScrollToBottom"
                         @click="scrollToLatest"
                         class="scroll-to-bottom-btn"
                         title="Scroll to latest messages">
@@ -1107,13 +1107,13 @@
         </div>
 
         <!-- Date Picker Modal -->
-        <div v-if="showDatePickerModal" 
+        <div v-if="showDatePickerModal"
             class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
             @click.self="closeDatePicker">
             <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-xl font-bold text-white">Jump to Date</h3>
-                    <button @click="closeDatePicker" 
+                    <button @click="closeDatePicker"
                         class="text-gray-400 hover:text-white transition p-1">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
@@ -1121,7 +1121,7 @@
                     </button>
                 </div>
                 <div class="mb-4">
-                    <input ref="datePickerInput" type="text" 
+                    <input ref="datePickerInput" type="text"
                         class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Select a date">
                 </div>
@@ -1137,20 +1137,20 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Lightbox Modal for Images -->
-        <div v-if="lightboxOpen" 
+        <div v-if="lightboxOpen"
             class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center"
             @click.self="closeLightbox">
-            
+
             <!-- Close Button -->
-            <button @click="closeLightbox" 
+            <button @click="closeLightbox"
                 class="absolute top-4 right-4 z-60 p-2 text-white/70 hover:text-white transition">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
             </button>
-            
+
             <!-- Download Button -->
             <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
                 class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
@@ -1158,7 +1158,7 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
             </a>
-            
+
             <!-- Previous Button -->
             <button v-if="lightboxIndex > 0" @click.stop="lightboxPrev"
                 class="absolute left-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
@@ -1166,7 +1166,7 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
             </button>
-            
+
             <!-- Next Button -->
             <button v-if="lightboxIndex < mediaMessages.length - 1" @click.stop="lightboxNext"
                 class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
@@ -1174,13 +1174,13 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                 </svg>
             </button>
-            
+
             <!-- Image -->
-            <img v-if="lightboxMedia && isLightboxImage(lightboxMedia)" 
-                :src="getMediaUrl(lightboxMedia)" 
+            <img v-if="lightboxMedia && isLightboxImage(lightboxMedia)"
+                :src="getMediaUrl(lightboxMedia)"
                 class="max-h-[90vh] max-w-[90vw] object-contain"
                 @click.stop>
-            
+
             <!-- Video -->
             <video v-else-if="lightboxMedia && isLightboxVideo(lightboxMedia)"
                 :src="getMediaUrl(lightboxMedia)"
@@ -1188,7 +1188,7 @@
                 controls autoplay
                 @click.stop>
             </video>
-            
+
             <!-- Media Info -->
             <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
                 {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
@@ -1455,22 +1455,22 @@
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
                 let chatVersion = 0  // Incremented on each selectChat to invalidate stale requests
-                
+
                 // Server-side search
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
-                
+
                 // v6.2.0: Navigation stack for folders, archived, topics
                 const navStack = ref([{ type: 'chatList', filter: 'all' }])
                 const folders = ref([])
                 const archivedCount = ref(0)
                 const topics = ref([])
                 const loadingTopics = ref(false)
-                
+
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
-                
+
                 // v6.2.0: Find the topics nav entry for sidebar display
                 // When viewing a topic's messages (currentNav.type === 'chat' with topicId),
                 // the sidebar should still show the topics list, not fall back to chat list
@@ -1487,34 +1487,34 @@
                     }
                     return null
                 })
-                
+
                 // Lightbox state
                 const lightboxOpen = ref(false)
                 const lightboxMedia = ref(null)  // Current media being viewed
                 const lightboxIndex = ref(0)    // Index in mediaMessages array
-                
+
                 // Get all viewable media messages (photos, videos, animations) for lightbox navigation
                 const mediaMessages = computed(() => {
-                    return messages.value.filter(m => 
+                    return messages.value.filter(m =>
                         m.media?.file_path && (
-                            m.media?.type === 'photo' || 
-                            m.media?.type === 'video' || 
+                            m.media?.type === 'photo' ||
+                            m.media?.type === 'video' ||
                             m.media?.type === 'animation' ||
                             (m.media?.type === 'document' && isImageDocument(m))
                         )
                     ).sort((a, b) => new Date(a.date) - new Date(b.date))  // Oldest first for intuitive prev/next
                 })
-                
+
                 // Check if media should show as image in lightbox
                 const isLightboxImage = (msg) => {
                     return msg.media?.type === 'photo' || (msg.media?.type === 'document' && isImageDocument(msg))
                 }
-                
+
                 // Check if media should show as video in lightbox
                 const isLightboxVideo = (msg) => {
                     return msg.media?.type === 'video' || msg.media?.type === 'animation'
                 }
-                
+
                 const loadChats = async (append = false) => {
                     if (!append) {
                         loadingChats.value = true
@@ -1523,11 +1523,11 @@
                     } else {
                         loadingMoreChats.value = true
                     }
-                    
+
                     try {
                         const limit = 50
                         const offset = append ? chatOffset.value : 0
-                        
+
                         // v6.2.0: Build URL with navigation filters
                         let url = `/api/chats?limit=${limit}&offset=${offset}`
                         const nav = currentNav.value
@@ -1539,7 +1539,7 @@
                         if (nav.filter && typeof nav.filter === 'object' && nav.filter.folderId) {
                             url += `&folder_id=${nav.filter.folderId}`
                         }
-                        
+
                         const res = await fetch(url, {
                             credentials: 'include'
                         })
@@ -1557,17 +1557,17 @@
                         }
                         chatsError.value = ''
                         const data = await res.json()
-                        
+
                         if (append) {
                             chats.value.push(...data.chats)
                         } else {
                             chats.value = data.chats
                         }
-                        
+
                         chatTotal.value = data.total
                         hasMoreChats.value = data.has_more
                         chatOffset.value = offset + data.chats.length
-                        
+
                     } catch (e) {
                         console.error("Failed to fetch chats", e)
                         if (e.message.includes('401') || e.message.includes('Unauthorized')) {
@@ -1580,27 +1580,27 @@
                         loadingMoreChats.value = false
                     }
                 }
-                
+
                 const loadMoreChats = () => {
                     if (!loadingMoreChats.value && hasMoreChats.value && !searchQuery.value) {
                         loadChats(true)
                     }
                 }
-                
+
                 // Server-side search with debounce
                 const onSearchInput = () => {
                     if (searchDebounceTimer) {
                         clearTimeout(searchDebounceTimer)
                     }
-                    
+
                     const query = searchQuery.value.trim()
-                    
+
                     if (!query) {
                         searchResults.value = []
                         searchLoading.value = false
                         return
                     }
-                    
+
                     searchLoading.value = true
                     searchDebounceTimer = setTimeout(async () => {
                         try {
@@ -1619,13 +1619,13 @@
                         }
                     }, 300) // 300ms debounce
                 }
-                
+
                 // Setup infinite scroll observer for chats
                 const setupInfiniteScroll = () => {
                     if (infiniteScrollObserver) {
                         infiniteScrollObserver.disconnect()
                     }
-                    
+
                     infiniteScrollObserver = new IntersectionObserver(
                         (entries) => {
                             if (entries[0].isIntersecting && hasMoreChats.value && !loadingMoreChats.value && !searchQuery.value) {
@@ -1634,7 +1634,7 @@
                         },
                         { rootMargin: '100px' }
                     )
-                    
+
                     // Watch for sentinel to be added to DOM
                     nextTick(() => {
                         if (infiniteScrollSentinel.value) {
@@ -1642,7 +1642,7 @@
                         }
                     })
                 }
-                
+
                 // v6.2.0: Navigation functions
                 const navigateTo = (state) => {
                     navStack.value.push(state)
@@ -1650,19 +1650,19 @@
                         loadChats()
                     }
                 }
-                
+
                 const navigateBack = () => {
                     if (navStack.value.length <= 1) return
                     navStack.value.pop()
                     const current = currentNav.value
-                    
+
                     if (current.type === 'chatList') {
                         loadChats()
                         // Don't clear selectedChat - main panel keeps showing current content (Telegram-like UX)
                     }
                     // For 'topics' type: sidebar shows topics, main panel keeps showing topic messages
                 }
-                
+
                 // v6.2.0: Navigate back from topics view to parent chat list (pops all topic-related entries)
                 const navigateBackToChats = () => {
                     while (navStack.value.length > 1) {
@@ -1679,7 +1679,7 @@
                     }
                     // Main panel keeps showing current topic messages
                 }
-                
+
                 const loadFolders = async () => {
                     try {
                         const res = await fetch('/api/folders', { credentials: 'include' })
@@ -1691,7 +1691,7 @@
                         console.error('Failed to load folders:', e)
                     }
                 }
-                
+
                 const loadArchivedCount = async () => {
                     try {
                         const res = await fetch('/api/archived/count', { credentials: 'include' })
@@ -1703,7 +1703,7 @@
                         console.error('Failed to load archived count:', e)
                     }
                 }
-                
+
                 const loadTopics = async (chatId) => {
                     loadingTopics.value = true
                     try {
@@ -1718,33 +1718,33 @@
                         loadingTopics.value = false
                     }
                 }
-                
+
                 const selectFolder = (folderId) => {
                     navigateTo({ type: 'chatList', filter: { folderId } })
                 }
-                
+
                 const showArchived = () => {
                     navigateTo({ type: 'chatList', filter: 'archived' })
                 }
-                
+
                 const showAllChats = () => {
                     // Reset nav stack to root
                     navStack.value = [{ type: 'chatList', filter: 'all' }]
                     loadChats()
                 }
-                
+
                 const openForumTopics = async (chat) => {
                     // v6.2.12: Store full chat object so selectTopic can use it for display name
                     navigateTo({ type: 'topics', chatId: chat.id, chatName: getChatName(chat), chat: chat })
                     await loadTopics(chat.id)
                 }
-                
+
                 const selectTopic = async (chat, topic) => {
                     // Invalidate any in-flight loads from previous chat/topic
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
                     loading.value = false
-                    
+
                     // Push topic chat view onto nav stack
                     navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
                     selectedChat.value = chat
@@ -1765,7 +1765,7 @@
                     setupMessagesScrollObserver()
                     startMessageRefresh()
                 }
-                
+
                 // v6.2.0: Active folder tab tracking
                 const activeTab = computed(() => {
                     const nav = currentNav.value
@@ -1776,7 +1776,7 @@
                     }
                     return 'all'
                 })
-                
+
                 // Topic color map (Telegram standard topic colors)
                 const topicColors = {
                     7322096: '#6FB9F0',
@@ -1786,17 +1786,17 @@
                     16749490: '#FF93B2',
                     16478047: '#FB6F5F',
                 }
-                
+
                 const getTopicColor = (iconColor) => {
                     return topicColors[iconColor] || '#6FB9F0'
                 }
-                
+
                 // Setup observer for loading older messages (Telegram-style auto-load)
                 const setupMessagesScrollObserver = () => {
                     if (messagesScrollObserver) {
                         messagesScrollObserver.disconnect()
                     }
-                    
+
                     messagesScrollObserver = new IntersectionObserver(
                         (entries) => {
                             // When sentinel becomes visible, load more messages
@@ -1805,12 +1805,12 @@
                                 loadMessages()
                             }
                         },
-                        { 
+                        {
                             root: messagesContainer.value,
                             rootMargin: '200px'  // Start loading before reaching the top
                         }
                     )
-                    
+
                     // Observe the sentinel when it's in DOM
                     nextTick(() => {
                         if (loadMoreSentinel.value) {
@@ -1829,7 +1829,7 @@
                 })
                 const statsPopupOpen = ref(false)
                 const showStatsUI = ref(true)  // Can be disabled via SHOW_STATS=false
-                
+
                 const loadStats = async () => {
                     try {
                         const res = await fetch('/api/stats', {
@@ -1838,7 +1838,7 @@
                         if (res.ok) {
                             const stats = await res.json()
                             console.log('Stats loaded:', stats)
-                            
+
                             // Store stats data
                             statsData.value = {
                                 chats: stats.chats || 0,
@@ -1847,10 +1847,10 @@
                                 total_size_mb: stats.total_size_mb || 0,
                                 stats_calculated_at: stats.stats_calculated_at
                             }
-                            
+
                             // Show/hide stats UI based on config
                             showStatsUI.value = stats.show_stats !== false
-                            
+
                             // Update timezone from config
                             if (stats.timezone) {
                                 viewerTimezone.value = stats.timezone
@@ -1858,7 +1858,7 @@
                                     moment.tz.setDefault(viewerTimezone.value)
                                 }
                             }
-                            
+
                             // Last backup time
                             if (stats.last_backup_time) {
                                 lastBackupTime.value = stats.last_backup_time
@@ -1867,7 +1867,7 @@
                                 lastBackupTime.value = null
                                 lastBackupTimeSource.value = 'metadata'
                             }
-                            
+
                             // Real-time listener status
                             listenerActive.value = !!stats.listener_active
                         } else {
@@ -1877,7 +1877,7 @@
                         console.error("Failed to fetch stats", e)
                     }
                 }
-                
+
                 const formatStatsTime = (isoString) => {
                     if (!isoString) return 'Never calculated'
                     const date = moment(isoString)
@@ -1891,7 +1891,7 @@
                     }
                     return 'Updated ' + date.format('MMM D')
                 }
-                
+
                 // Format large numbers with K/M suffix
                 const formatNumber = (num) => {
                     if (num >= 1000000) {
@@ -1902,7 +1902,7 @@
                     }
                     return num.toLocaleString()
                 }
-                
+
                 // Format size in MB to appropriate unit (MB, GB, TB)
                 const formatSize = (sizeMB) => {
                     if (!sizeMB || sizeMB === 0) return '0 MB'
@@ -1914,7 +1914,7 @@
                     }
                     return sizeMB.toFixed(0) + ' MB'
                 }
-                
+
                 // Mark initialization complete (called after WS connects and notifications init)
                 const finishInitialization = () => {
                     loadingStats.value = false
@@ -1978,12 +1978,12 @@
                                 await loadFolders()
                                 await loadArchivedCount()
                                 setupInfiniteScroll()
-                                
+
                                 // Handle deep link from push notification
                                 const urlParams = new URLSearchParams(window.location.search)
                                 const chatIdParam = urlParams.get('chat')
                                 const msgIdParam = urlParams.get('msg')
-                                
+
                                 if (chatIdParam) {
                                     const chatId = parseInt(chatIdParam)
                                     const targetChat = chats.value.find(c => c.id === chatId)
@@ -2015,11 +2015,11 @@
                     } finally {
                         loadingAuth.value = false
                     }
-                    
+
                     // Initialize WebSocket and notifications (v5.0)
                     await initNotifications()
                     initWebSocket()
-                    
+
                     // Listen for notification clicks when app is already open
                     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                         navigator.serviceWorker.addEventListener('message', async (event) => {
@@ -2040,7 +2040,7 @@
                             }
                         })
                     }
-                    
+
                     // Mark secondary initialization complete
                     finishInitialization()
                 })
@@ -2050,13 +2050,13 @@
                     if (ws) {
                         ws.close()
                     }
-                    
+
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
                     const wsUrl = `${protocol}//${window.location.host}/ws/updates`
-                    
+
                     try {
                         ws = new WebSocket(wsUrl)
-                        
+
                         ws.onopen = () => {
                             console.log('[WS] Connected to real-time updates')
                             // Subscribe to current chat if selected
@@ -2067,7 +2067,7 @@
                                 }))
                             }
                         }
-                        
+
                         ws.onmessage = (event) => {
                             try {
                                 const data = JSON.parse(event.data)
@@ -2076,12 +2076,12 @@
                                 console.error('[WS] Parse error:', e)
                             }
                         }
-                        
+
                         ws.onclose = () => {
                             console.log('[WS] Connection closed, reconnecting in 5s...')
                             wsReconnectTimer = setTimeout(initWebSocket, 5000)
                         }
-                        
+
                         ws.onerror = (e) => {
                             console.warn('[WS] Error:', e)
                         }
@@ -2089,7 +2089,7 @@
                         console.warn('[WS] Failed to connect:', e)
                     }
                 }
-                
+
                 const handleWebSocketMessage = (data) => {
                     switch (data.type) {
                         case 'new_message':
@@ -2104,7 +2104,7 @@
                                 showNotification(data)
                             }
                             break
-                        
+
                         case 'edit':
                             // Update message text in current view
                             const editMsg = messages.value.find(m => m.id === data.message_id)
@@ -2113,7 +2113,7 @@
                                 editMsg.edit_date = data.edit_date
                             }
                             break
-                        
+
                         case 'delete':
                             // Remove from current view
                             const deleteIdx = messages.value.findIndex(m => m.id === data.message_id)
@@ -2137,7 +2137,7 @@
                             break
                     }
                 }
-                
+
                 // Notification functions
                 const initNotifications = async () => {
                     // Check push notification config from server
@@ -2152,7 +2152,7 @@
                     } catch (e) {
                         console.warn('[Push] Could not fetch config:', e)
                     }
-                    
+
                     // Check basic notification settings
                     try {
                         const res = await fetch('/api/notifications/settings', { credentials: 'include' })
@@ -2171,7 +2171,7 @@
                             notificationsEnabled.value = true
                         }
                     }
-                    
+
                     // Log notification state for debugging
                     console.log('[Notifications] State:', {
                         serverEnabled: notificationsEnabled.value,
@@ -2180,23 +2180,23 @@
                         pushEnabled: pushEnabled.value,
                         pushSubscribed: pushSubscribed.value
                     })
-                    
+
                     // Register service worker (required for both basic and push notifications)
                     if ('serviceWorker' in navigator && (notificationsEnabled.value || pushEnabled.value)) {
                         try {
                             const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
                             console.log('[SW] Service worker registered with scope:', registration.scope)
-                            
+
                             // Check for existing push subscription
                             if (pushEnabled.value && 'PushManager' in window) {
                                 pushSubscription = await registration.pushManager.getSubscription()
                                 if (pushSubscription) {
                                     pushSubscribed.value = true
                                     console.log('[Push] Already subscribed')
-                                    
+
                                     // Re-sync to server in case endpoint/keys changed
                                     await syncSubscriptionToServer(pushSubscription)
-                                    
+
                                     // Check if browser has blocked notifications
                                     if (notificationPermission.value === 'denied') {
                                         notificationsBlocked.value = true
@@ -2213,14 +2213,14 @@
                         }
                     }
                 }
-                
+
                 const requestNotificationPermission = async () => {
                     if (!notificationsSupported.value) return
-                    
+
                     try {
                         const permission = await Notification.requestPermission()
                         notificationPermission.value = permission
-                        
+
                         // Auto-subscribe to push if permission granted and push is enabled
                         if (permission === 'granted' && pushEnabled.value && !pushSubscribed.value) {
                             await subscribeToPush()
@@ -2229,7 +2229,7 @@
                         console.error('Notification permission error:', e)
                     }
                 }
-                
+
                 // Convert VAPID public key from base64 to Uint8Array
                 const urlBase64ToUint8Array = (base64String) => {
                     const padding = '='.repeat((4 - base64String.length % 4) % 4)
@@ -2243,7 +2243,7 @@
                     }
                     return outputArray
                 }
-                
+
                 // Sync a push subscription to the server (shared by subscribe and auto-resubscribe)
                 const syncSubscriptionToServer = async (sub) => {
                     try {
@@ -2266,7 +2266,7 @@
                         return false
                     }
                 }
-                
+
                 const subscribeToPush = async () => {
                     console.log('[Push] Starting subscription...', {
                         pushEnabled: pushEnabled.value,
@@ -2274,22 +2274,22 @@
                         hasSW: 'serviceWorker' in navigator,
                         hasPushManager: 'PushManager' in window
                     })
-                    
+
                     if (!pushEnabled.value || !pushVapidKey.value) {
                         console.log('[Push] Not enabled or no VAPID key')
                         return false
                     }
-                    
+
                     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
                         console.log('[Push] Not supported in this browser')
                         return false
                     }
-                    
+
                     try {
                         console.log('[Push] Waiting for service worker ready...')
                         const registration = await navigator.serviceWorker.ready
                         console.log('[Push] Service worker ready, scope:', registration.scope)
-                        
+
                         // Check if already subscribed
                         const existingSub = await registration.pushManager.getSubscription()
                         if (existingSub) {
@@ -2304,7 +2304,7 @@
                             })
                             console.log('[Push] Push subscription created:', pushSubscription.endpoint.substring(0, 50) + '...')
                         }
-                        
+
                         // Send subscription to server
                         console.log('[Push] Sending subscription to server...')
                         const ok = await syncSubscriptionToServer(pushSubscription)
@@ -2318,14 +2318,14 @@
                         return false
                     }
                 }
-                
+
                 const unsubscribeFromPush = async () => {
                     if (!pushSubscription) return
-                    
+
                     try {
                         // Unsubscribe from push service
                         await pushSubscription.unsubscribe()
-                        
+
                         // Remove from server
                         await fetch('/api/push/unsubscribe', {
                             method: 'POST',
@@ -2333,7 +2333,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ endpoint: pushSubscription.endpoint })
                         })
-                        
+
                         pushSubscription = null
                         pushSubscribed.value = false
                         localStorage.removeItem('push_enabled')
@@ -2342,16 +2342,16 @@
                         console.error('[Push] Unsubscribe error:', e)
                     }
                 }
-                
+
                 const showNotification = (data) => {
                     if (notificationPermission.value !== 'granted') return
-                    
+
                     // Skip if push is enabled (service worker handles it)
                     if (pushEnabled.value && pushSubscribed.value) return
-                    
+
                     const chatName = chats.value.find(c => c.id === data.chat_id)?.title || 'New Message'
                     const body = data.message?.text?.substring(0, 100) || 'New message received'
-                    
+
                     new Notification(chatName, {
                         body: body,
                         icon: '/static/favicon.ico',
@@ -2392,7 +2392,7 @@
                         })
                     })
                 }, { deep: true })
-                
+
                 // Subscribe to WebSocket updates when chat changes
                 watch(selectedChat, (newChat, oldChat) => {
                     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2498,31 +2498,34 @@
                     }
                     // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
                     // This gives instant "scroll to bottom" experience on mobile
-                    return [...messages.value].sort((a, b) => 
+                    return [...messages.value].sort((a, b) =>
                         new Date(b.date).getTime() - new Date(a.date).getTime()
                     )
                 })
-                
+
                 // Group consecutive messages that belong to an album (same grouped_id)
                 // Note: grouped_id may be string or number depending on source, so compare as strings
                 const getGroupedId = (msg) => {
                     const gid = msg.raw_data?.grouped_id
                     return gid != null ? String(gid) : null
                 }
-                
+
                 const getAlbumForMessage = (msg) => {
                     const groupedId = getGroupedId(msg)
                     if (!groupedId) return null
-                    
+
                     // Find all messages in this album (compare as strings)
                     return sortedMessages.value.filter(m => getGroupedId(m) === groupedId)
                 }
-                
+
                 // Check if this message is the first in its album (render the album here)
                 const isFirstInAlbum = (msg, index) => {
                     const groupedId = getGroupedId(msg)
                     if (!groupedId) return false
-                    
+
+                    // Only photos and videos should be grouped in an album grid
+                    if (msg.media?.type !== 'photo' && msg.media?.type !== 'video') return false
+
                     // Check if previous message has same grouped_id
                     if (index > 0) {
                         const prevMsg = sortedMessages.value[index - 1]
@@ -2532,14 +2535,16 @@
                     }
                     return true  // First in album, render the album grid
                 }
-                
+
                 // Check if this message should be hidden (it's part of album but not first)
                 const isHiddenAlbumMessage = (msg, index) => {
                     const groupedId = getGroupedId(msg)
                     if (!groupedId) return false
+                    // Only hide photo/video messages that are part of an album
+                    if (msg.media?.type !== 'photo' && msg.media?.type !== 'video') return false
                     return !isFirstInAlbum(msg, index)
                 }
-                
+
                 // Get grid layout class based on album size (like Telegram)
                 const getAlbumGridClass = (album) => {
                     if (!album) return 'grid-cols-1'
@@ -2569,18 +2574,18 @@
 
                 // Per-chat statistics
                 const chatStats = ref(null)
-                
+
                 // Pinned messages for current chat (supports multiple pinned messages)
                 const pinnedMessages = ref([])  // Array of all pinned messages, newest first
                 const currentPinnedIndex = ref(0)  // Which pinned message is currently shown in banner
                 const showPinnedOnly = ref(false)  // Whether we're in "pinned messages only" view
-                
+
                 // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
                     if (pinnedMessages.value.length === 0) return null
                     return pinnedMessages.value[currentPinnedIndex.value] || pinnedMessages.value[0]
                 })
-                
+
                 // Load all pinned messages for a chat
                 const loadPinnedMessages = async (chatId) => {
                     try {
@@ -2599,36 +2604,36 @@
                         pinnedMessages.value = []
                     }
                 }
-                
+
                 // Handle click on pinned message content: scroll to message and cycle to next
                 const handlePinnedClick = () => {
                     if (!pinnedMessage.value) return
-                    
+
                     // If we're in pinned-only view, just scroll to the message
                     if (showPinnedOnly.value) {
                         scrollToMessage(pinnedMessage.value.id)
                         return
                     }
-                    
+
                     // Scroll to the current pinned message
                     scrollToMessage(pinnedMessage.value.id)
-                    
+
                     // Cycle to next pinned message (wrap around)
                     if (pinnedMessages.value.length > 1) {
                         currentPinnedIndex.value = (currentPinnedIndex.value + 1) % pinnedMessages.value.length
                     }
                 }
-                
+
                 // Open the "Pinned Messages Only" view
                 const openPinnedView = () => {
                     showPinnedOnly.value = true
                 }
-                
+
                 // Close the "Pinned Messages Only" view, return to normal
                 const closePinnedView = () => {
                     showPinnedOnly.value = false
                 }
-                
+
                 const loadChatStats = async (chatId) => {
                     try {
                         const res = await fetch(`/api/chats/${chatId}/stats`, {
@@ -2642,19 +2647,19 @@
                         chatStats.value = null
                     }
                 }
-                
+
                 const selectChat = async (chat) => {
                     // v6.2.0: If forum chat, open topics list instead
                     if (chat.is_forum) {
                         await openForumTopics(chat)
                         return
                     }
-                    
+
                     // Invalidate any in-flight loads from previous chat
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
                     loading.value = false  // Reset gate so loadMessages can proceed
-                    
+
                     selectedChat.value = chat
                     messages.value = []
                     page.value = 0
@@ -2676,7 +2681,7 @@
                     // Start auto-refresh for new messages
                     startMessageRefresh()
                 }
-                
+
                 // Auto-refresh messages every 3 seconds to catch new messages
                 const startMessageRefresh = () => {
                     stopMessageRefresh()  // Clear any existing timer
@@ -2685,14 +2690,14 @@
                         await checkForNewMessages()
                     }, 3000)
                 }
-                
+
                 const stopMessageRefresh = () => {
                     if (messageRefreshTimer) {
                         clearInterval(messageRefreshTimer)
                         messageRefreshTimer = null
                     }
                 }
-                
+
                 // Check for new messages and deletions
                 let isRefreshing = false
                 const checkForNewMessages = async () => {
@@ -2773,7 +2778,7 @@
                     try {
                         const limit = 50
                         let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}`
-                        
+
                         // v6.2.0: Add topic_id filter if viewing a topic
                         const nav = currentNav.value
                         if (nav.type === 'chat' && nav.topicId) {
@@ -2790,7 +2795,7 @@
                                 const oldestDate = new Date(oldest.date)
                                 return msgDate < oldestDate ? msg : oldest
                             }, messages.value[0])
-                            
+
                             if (oldestMsg?.date) {
                                 url += `&before_date=${encodeURIComponent(oldestMsg.date)}`
                                 if (oldestMsg.id) {
@@ -2815,7 +2820,7 @@
                         })
                         // Discard result if chat changed while we were fetching
                         if (chatVersion !== myVersion) return
-                        
+
                         const newMessages = await res.json()
 
                         if (newMessages.length < limit) {
@@ -2855,13 +2860,13 @@
 
                 const handleScroll = (e) => {
                     const { scrollTop } = e.target
-                    
+
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop is NEGATIVE when scrolled up from bottom
                     // scrollTop=0 is at bottom (newest), scrollTop=-1000 means scrolled up 1000px
                     showScrollToBottom.value = scrollTop < -300
                 }
-                
+
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
                 const loadMoreMessages = () => {
                     if (!loading.value && hasMore.value) {
@@ -2871,14 +2876,14 @@
 
                 const scrollToBottom = (immediate = false) => {
                     if (!messagesContainer.value) return
-                    
+
                     const doScroll = () => {
                         if (messagesContainer.value) {
                             // With flex-col-reverse: scrollTop=0 is the bottom (newest messages)
                             messagesContainer.value.scrollTop = 0
                         }
                     }
-                    
+
                     // Prime mobile scroll: briefly nudge scrollTop so the browser
                     // registers the container as scrollable (fixes iOS touch scroll)
                     const primeMobileScroll = () => {
@@ -2891,7 +2896,7 @@
                             })
                         }
                     }
-                    
+
                     if (immediate) {
                         doScroll()
                     } else {
@@ -2979,10 +2984,10 @@
                     // Check if message ABOVE (index + 1, older) is from different sender
                     const currMsg = sortedMessages.value[index]
                     const olderMsg = sortedMessages.value[index + 1]
-                    
+
                     // Last message (oldest, at top) always shows name
                     if (!olderMsg) return true
-                    
+
                     return olderMsg.sender_id !== currMsg.sender_id
                 }
 
@@ -2991,13 +2996,13 @@
                     // Show separator when this is the last message of a day (next message is different day)
                     const currMsg = sortedMessages.value[index]
                     const nextMsg = sortedMessages.value[index + 1]
-                    
+
                     // Parse as UTC and convert to viewer timezone for correct date boundaries
                     const currDate = moment.utc(currMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
-                    
+
                     // Last message (oldest) always gets a separator above it
                     if (!nextMsg) return true
-                    
+
                     const nextDate = moment.utc(nextMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
                     return currDate !== nextDate
                 }
@@ -3100,11 +3105,11 @@
                     if (!timeStr) {
                         return 'Never'
                     }
-                    
+
                     try {
                         // Ensure timezone is valid, fallback to Europe/Madrid
                         const timezone = tz && moment.tz.zone(tz) ? tz : 'Europe/Madrid'
-                        
+
                         // Always convert to the configured timezone
                         // Metadata stores UTC (with Z), sync_status might be UTC or server local
                         // To be safe, we'll try to detect and convert appropriately
@@ -3130,15 +3135,15 @@
                                 parsedMoment = moment.utc(timeStr).tz(timezone)
                             }
                         }
-                        
+
                         if (!parsedMoment.isValid()) {
                             console.error('Invalid date format:', timeStr)
                             return 'Unknown'
                         }
-                        
+
                         // Get current time in the same timezone for comparison
                         const now = moment.tz(timezone)
-                        
+
                         // Check if it's today
                         if (parsedMoment.isSame(now, 'day')) {
                             return `Today at ${parsedMoment.format('HH:mm')}`
@@ -3211,7 +3216,7 @@
                     img.style.cursor = 'default'
                     img.onclick = null
                 }
-                
+
                 const handleMediaError = (event, msg) => {
                     // Log the error for debugging (real 404s should be investigated)
                     console.error('Failed to load media:', getMediaUrl(msg))
@@ -3243,27 +3248,27 @@
                         window.open(getMediaUrl(msg), '_blank')
                     }
                 }
-                
+
                 const closeLightbox = () => {
                     lightboxOpen.value = false
                     lightboxMedia.value = null
                     document.removeEventListener('keydown', handleLightboxKeydown)
                 }
-                
+
                 const lightboxPrev = () => {
                     if (lightboxIndex.value > 0) {
                         lightboxIndex.value--
                         lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
                     }
                 }
-                
+
                 const lightboxNext = () => {
                     if (lightboxIndex.value < mediaMessages.value.length - 1) {
                         lightboxIndex.value++
                         lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
                     }
                 }
-                
+
                 const handleLightboxKeydown = (e) => {
                     if (!lightboxOpen.value) return
                     if (e.key === 'Escape') closeLightbox()
@@ -3319,10 +3324,10 @@
 
                 const openDatePicker = (initialDate) => {
                     if (!selectedChat.value) return
-                    
+
                     selectedDate.value = initialDate ? moment(initialDate).format('YYYY-MM-DD') : null
                     showDatePickerModal.value = true
-                    
+
                     nextTick(() => {
                         if (datePickerInput.value && !flatpickrInstance) {
                             flatpickrInstance = flatpickr(datePickerInput.value, {
@@ -3351,10 +3356,10 @@
 
                 const jumpToDate = async () => {
                     if (!selectedChat.value || !selectedDate.value) return
-                    
+
                     // Capture chat ID to detect if user switches chats during async operations
                     const chatIdAtStart = selectedChat.value.id
-                    
+
                     try {
                         // Fetch message for the selected date
                         // Pass timezone so backend can convert the displayed date to correct UTC bounds
@@ -3363,7 +3368,7 @@
                             `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDate.value}&timezone=${tz}`,
                             { credentials: 'include' }
                         )
-                        
+
                         if (!res.ok) {
                             if (res.status === 404) {
                                 closeDatePicker()
@@ -3372,18 +3377,18 @@
                             }
                             throw new Error('Failed to find message')
                         }
-                        
+
                         const message = await res.json()
                         closeDatePicker()
-                        
+
                         // Abort if user switched chats while waiting for response
                         if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
                             return
                         }
-                        
+
                         // Check if message is already loaded
                         const existingIndex = sortedMessages.value.findIndex(m => m.id === message.id)
-                        
+
                         if (existingIndex !== -1) {
                             // Message already loaded, just scroll to it
                             await nextTick()
@@ -3393,28 +3398,28 @@
                             // Since messages are loaded in DESC order (newest first), and we're looking for
                             // a specific date, we'll add the message to our list and scroll to it
                             // The message will be properly positioned when we load more messages
-                            
+
                             // Capture oldest loaded message date BEFORE adding the new message
                             // Store as ISO string to avoid any reactivity issues with moment objects
-                            const oldestLoadedDateBeforeJump = sortedMessages.value.length > 0 
-                                ? sortedMessages.value[0].date 
+                            const oldestLoadedDateBeforeJump = sortedMessages.value.length > 0
+                                ? sortedMessages.value[0].date
                                 : null
-                            
+
                             // Add the message to the list (it will be sorted correctly by date)
                             messages.value.push(message)
-                            
+
                             await nextTick()
-                            
+
                             // Find it in sorted messages and scroll
                             const sortedIndex = sortedMessages.value.findIndex(m => m.id === message.id)
                             if (sortedIndex !== -1) {
                                 scrollToMessage(message.id)
-                                
+
                                 // Load surrounding messages to fill the gap between jumped message
                                 // and previously loaded messages. loadMessages() uses pagination,
                                 // so we need to keep loading until the gap is filled.
                                 const targetDate = moment(message.date)
-                                
+
                                 // Only fill gap if target is older than what we had loaded
                                 if (oldestLoadedDateBeforeJump && targetDate.isBefore(moment(oldestLoadedDateBeforeJump))) {
                                     // Load messages in background to fill the gap
@@ -3423,30 +3428,30 @@
                                         let iterations = 0
                                         const maxIterations = 20 // Safety limit
                                         const targetTime = new Date(message.date).getTime()
-                                        
+
                                         while (hasMore.value && iterations < maxIterations) {
                                             // Abort if user switched to a different chat
                                             if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
                                                 return
                                             }
-                                            
+
                                             // Check if gap is filled by looking at target's position
                                             // in sorted messages (oldest first)
                                             const sorted = sortedMessages.value
                                             const targetIdx = sorted.findIndex(m => m.id === message.id)
-                                            
+
                                             // Gap is filled when target is no longer the oldest
                                             // (pagination loaded older messages)
                                             if (targetIdx > 0) {
                                                 break
                                             }
-                                            
+
                                             // Track message IDs before loading to detect new messages
                                             const idsBefore = new Set(messages.value.map(m => m.id))
-                                            
+
                                             await loadMessages()
                                             iterations++
-                                            
+
                                             // Check if any newly loaded message is at or before target date
                                             // This means pagination has reached the target (gap is filled)
                                             // without needing to load messages OLDER than the target
@@ -3460,12 +3465,12 @@
                                             if (reachedTarget) {
                                                 break
                                             }
-                                            
+
                                             // Small delay between requests
                                             await new Promise(resolve => setTimeout(resolve, 50))
                                         }
                                     }
-                                    
+
                                     // Start filling gap after a short delay
                                     setTimeout(fillGap, 200)
                                 }
