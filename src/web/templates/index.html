@@ -2047,28 +2047,35 @@
 
                 // WebSocket initialization for real-time updates
                 const initWebSocket = () => {
+                    if (wsReconnectTimer) {
+                        clearTimeout(wsReconnectTimer)
+                        wsReconnectTimer = null
+                    }
                     if (ws) {
+                        ws.onclose = null
                         ws.close()
+                        ws = null
                     }
 
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
                     const wsUrl = `${protocol}//${window.location.host}/ws/updates`
 
                     try {
-                        ws = new WebSocket(wsUrl)
+                        const socket = new WebSocket(wsUrl)
+                        ws = socket
 
-                        ws.onopen = () => {
+                        socket.onopen = () => {
                             console.log('[WS] Connected to real-time updates')
                             // Subscribe to current chat if selected
                             if (selectedChat.value) {
-                                ws.send(JSON.stringify({
+                                socket.send(JSON.stringify({
                                     action: 'subscribe',
                                     chat_id: selectedChat.value.id
                                 }))
                             }
                         }
 
-                        ws.onmessage = (event) => {
+                        socket.onmessage = (event) => {
                             try {
                                 const data = JSON.parse(event.data)
                                 handleWebSocketMessage(data)
@@ -2077,12 +2084,13 @@
                             }
                         }
 
-                        ws.onclose = () => {
+                        socket.onclose = () => {
+                            if (ws !== socket) return
                             console.log('[WS] Connection closed, reconnecting in 5s...')
                             wsReconnectTimer = setTimeout(initWebSocket, 5000)
                         }
 
-                        ws.onerror = (e) => {
+                        socket.onerror = (e) => {
                             console.warn('[WS] Error:', e)
                         }
                     } catch (e) {
@@ -2562,6 +2570,7 @@
                 const getAlbumCaption = (msg) => {
                     const groupedId = getGroupedId(msg)
                     if (!groupedId) return null
+                    if (msg.media?.type !== 'photo' && msg.media?.type !== 'video') return null
                     const album = getAlbumForMessage(msg)
                     if (!album) return null
                     const captionMsg = album.find(m => m.text && m.text.trim() !== '')
@@ -3325,7 +3334,7 @@
                 const openDatePicker = (initialDate) => {
                     if (!selectedChat.value) return
 
-                    selectedDate.value = initialDate ? moment(initialDate).format('YYYY-MM-DD') : null
+                    selectedDate.value = initialDate ? moment.utc(initialDate).tz(viewerTimezone.value).format('YYYY-MM-DD') : null
                     showDatePickerModal.value = true
 
                     nextTick(() => {
@@ -3400,9 +3409,9 @@
                             // The message will be properly positioned when we load more messages
 
                             // Capture oldest loaded message date BEFORE adding the new message
-                            // Store as ISO string to avoid any reactivity issues with moment objects
+                            // sortedMessages is newest-first, so last element is oldest
                             const oldestLoadedDateBeforeJump = sortedMessages.value.length > 0
-                                ? sortedMessages.value[0].date
+                                ? sortedMessages.value[sortedMessages.value.length - 1].date
                                 : null
 
                             // Add the message to the list (it will be sorted correctly by date)
@@ -3436,13 +3445,12 @@
                                             }
 
                                             // Check if gap is filled by looking at target's position
-                                            // in sorted messages (oldest first)
+                                            // in sorted messages (newest-first, so oldest is last)
                                             const sorted = sortedMessages.value
                                             const targetIdx = sorted.findIndex(m => m.id === message.id)
 
-                                            // Gap is filled when target is no longer the oldest
-                                            // (pagination loaded older messages)
-                                            if (targetIdx > 0) {
+                                            // Gap is filled when target is no longer the oldest loaded
+                                            if (targetIdx !== -1 && targetIdx < sorted.length - 1) {
                                                 break
                                             }
 
