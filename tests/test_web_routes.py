@@ -1378,9 +1378,16 @@ class TestResolveSession(_WebTestBase):
 class TestRequireAuth(_WebTestBase):
     """Test require_auth dependency."""
 
+    def _mock_request(self, headers=None):
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.headers = headers or {}
+        return req
+
     async def test_returns_anonymous_master_when_auth_disabled(self):
         """require_auth returns anonymous master only with explicit anonymous opt-in."""
-        result = await web_main.require_auth(auth_cookie=None)
+        result = await web_main.require_auth(request=self._mock_request(), auth_cookie=None)
         self.assertEqual(result.username, "anonymous")
         self.assertEqual(result.role, "master")
 
@@ -1390,7 +1397,7 @@ class TestRequireAuth(_WebTestBase):
         from fastapi import HTTPException
 
         with self.assertRaises(HTTPException) as ctx:
-            await web_main.require_auth(auth_cookie=None)
+            await web_main.require_auth(request=self._mock_request(), auth_cookie=None)
         self.assertEqual(ctx.exception.status_code, 503)
 
     async def test_raises_401_when_no_cookie(self):
@@ -1399,7 +1406,7 @@ class TestRequireAuth(_WebTestBase):
         from fastapi import HTTPException
 
         with self.assertRaises(HTTPException) as ctx:
-            await web_main.require_auth(auth_cookie=None)
+            await web_main.require_auth(request=self._mock_request(), auth_cookie=None)
         self.assertEqual(ctx.exception.status_code, 401)
 
     async def test_raises_401_for_invalid_session(self):
@@ -1408,7 +1415,7 @@ class TestRequireAuth(_WebTestBase):
         from fastapi import HTTPException
 
         with self.assertRaises(HTTPException) as ctx:
-            await web_main.require_auth(auth_cookie="bad-token")
+            await web_main.require_auth(request=self._mock_request(), auth_cookie="bad-token")
         self.assertEqual(ctx.exception.status_code, 401)
 
 
