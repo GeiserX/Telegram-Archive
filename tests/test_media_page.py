@@ -162,46 +162,46 @@ class TestMediaPaginated:
 
     def test_passes_types_filter(self, anon_env):
         client, _, mock_db = _get_client()
-        client.get("/api/chats/-1001/media?types=photo,video")
+        resp = client.get("/api/chats/-1001/media?types=photo,video")
+        assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
             media_types=["photo", "video"],
             limit=50,
             before_id=None,
-            sort_desc=True,
         )
 
     def test_passes_limit(self, anon_env):
         client, _, mock_db = _get_client()
-        client.get("/api/chats/-1001/media?limit=20")
+        resp = client.get("/api/chats/-1001/media?limit=20")
+        assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
             media_types=None,
             limit=20,
             before_id=None,
-            sort_desc=True,
         )
 
     def test_passes_before_id(self, anon_env):
         client, _, mock_db = _get_client()
-        client.get("/api/chats/-1001/media?before_id=abc")
+        resp = client.get("/api/chats/-1001/media?before_id=abc")
+        assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
             media_types=None,
             limit=50,
             before_id="abc",
-            sort_desc=True,
         )
 
     def test_empty_types_means_all(self, anon_env):
         client, _, mock_db = _get_client()
-        client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/-1001/media")
+        assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
             media_types=None,
             limit=50,
             before_id=None,
-            sort_desc=True,
         )
 
     def test_items_include_thumb_url(self, anon_env):

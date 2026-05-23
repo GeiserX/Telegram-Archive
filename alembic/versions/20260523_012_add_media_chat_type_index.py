@@ -24,4 +24,8 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("idx_media_chat_type", table_name="media")
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_indexes = {idx["name"] for idx in inspector.get_indexes("media")}
+    if "idx_media_chat_type" in existing_indexes:
+        op.drop_index("idx_media_chat_type", table_name="media")

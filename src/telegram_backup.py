@@ -66,25 +66,32 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
 
         from PIL import Image
 
+        from src.web.thumbnails import (
+            _IMAGE_EXTENSIONS,
+            _MAX_SOURCE_BYTES,
+            WEBP_QUALITY,
+            _thumb_path,
+        )
+
+        Image.MAX_IMAGE_PIXELS = 50_000_000
+
         source = Path(source_path)
         if not source.exists():
             return
 
-        # Only for images
-        image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
-        if source.suffix.lower() not in image_extensions:
+        if source.suffix.lower() not in _IMAGE_EXTENSIONS:
             return
 
-        # Skip large files (>50MB)
-        if source.stat().st_size > 50 * 1024 * 1024:
+        if source.stat().st_size > _MAX_SOURCE_BYTES:
             return
 
-        # Determine thumbnail path: {media_root}/.thumbs/200/{folder}/{stem}.webp
         media_root_path = Path(media_root)
+        if not source.is_relative_to(media_root_path):
+            return
+
         rel = source.relative_to(media_root_path)
         folder = str(rel.parent)
-        stem = source.stem
-        dest = media_root_path / ".thumbs" / "200" / folder / f"{stem}.webp"
+        dest = _thumb_path(media_root_path, 200, folder, source.name)
 
         if dest.exists():
             return
@@ -92,9 +99,9 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
             img.thumbnail((200, 200), Image.LANCZOS)
-            img.save(dest, "WEBP", quality=80)
+            img.save(dest, "WEBP", quality=WEBP_QUALITY)
     except Exception:
-        pass  # Non-critical, viewer will generate on-demand as fallback
+        pass
 
 
 async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):

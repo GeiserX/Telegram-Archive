@@ -2616,6 +2616,7 @@
                 // Media Gallery methods (v7.10.0)
                 const loadMediaGallery = async (append = false) => {
                     if (!selectedChat.value) return
+                    if (mediaGalleryLoading.value) return
                     mediaGalleryLoading.value = true
                     try {
                         const typeMap = {

@@ -1434,7 +1434,6 @@ async def get_chat_media(
     types: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=200),
     before_id: str = Query(default=""),
-    sort: str = Query(default="desc"),
     user: UserContext = Depends(require_auth),
 ):
     """Get paginated media items for a chat, with optional type filtering."""
@@ -1453,10 +1452,14 @@ async def get_chat_media(
             media_types=media_types,
             limit=limit,
             before_id=before_id or None,
-            sort_desc=(sort == "desc"),
         )
         for item in result["items"]:
             file_path = item.get("file_path", "")
+            if ".." in file_path.split("/") or file_path.startswith("/"):
+                item["thumb_url"] = None
+                item.pop("file_path", None)
+                continue
+
             parts = file_path.split("/", 1)
             if len(parts) == 2:
                 folder, filename = parts

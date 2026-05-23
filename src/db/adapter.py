@@ -722,28 +722,23 @@ class DatabaseAdapter:
         media_types: list[str] | None = None,
         limit: int = 50,
         before_id: str | None = None,
-        sort_desc: bool = True,
     ) -> dict[str, Any]:
         """
         Get paginated media records for a chat with cursor-based pagination.
 
-        Args:
-            chat_id: Chat identifier
-            media_types: Optional list of media types to filter by
-            limit: Maximum number of items to return
-            before_id: Cursor for pagination (media id to paginate from)
-            sort_desc: Sort by message date descending if True
-
-        Returns:
-            Dict with 'items' list and 'has_more' boolean
+        Uses composite cursor (Message.date, Media.id) for deterministic ordering.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Media, Message.date, Message.sender_name).join(
-                Message,
-                and_(
-                    Media.message_id == Message.id,
-                    Media.chat_id == Message.chat_id,
-                ),
+            stmt = (
+                select(Media, Message.date, User.first_name, User.last_name)
+                .join(
+                    Message,
+                    and_(
+                        Media.message_id == Message.id,
+                        Media.chat_id == Message.chat_id,
+                    ),
+                )
+                .outerjoin(User, Message.sender_id == User.id)
             )
             stmt = stmt.where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
 
@@ -751,20 +746,27 @@ class DatabaseAdapter:
                 stmt = stmt.where(Media.type.in_(media_types))
 
             if before_id:
-                cursor_stmt = select(Media.message_id).where(Media.id == before_id)
+                cursor_stmt = (
+                    select(Media.id, Message.date)
+                    .join(
+                        Message,
+                        and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id),
+                    )
+                    .where(Media.id == before_id)
+                )
                 cursor_result = await session.execute(cursor_stmt)
-                cursor_message_id = cursor_result.scalar_one_or_none()
-                if cursor_message_id is not None:
-                    if sort_desc:
-                        stmt = stmt.where(Media.message_id < cursor_message_id)
-                    else:
-                        stmt = stmt.where(Media.message_id > cursor_message_id)
+                cursor_row = cursor_result.one_or_none()
+                if cursor_row is None:
+                    return {"items": [], "has_more": False}
+                cursor_media_id, cursor_date = cursor_row
+                stmt = stmt.where(
+                    or_(
+                        Message.date < cursor_date,
+                        and_(Message.date == cursor_date, Media.id < cursor_media_id),
+                    )
+                )
 
-            if sort_desc:
-                stmt = stmt.order_by(Message.date.desc())
-            else:
-                stmt = stmt.order_by(Message.date.asc())
-
+            stmt = stmt.order_by(Message.date.desc(), Media.id.desc())
             stmt = stmt.limit(limit + 1)
             result = await session.execute(stmt)
             rows = result.all()
@@ -783,10 +785,10 @@ class DatabaseAdapter:
                     "width": media.width,
                     "height": media.height,
                     "duration": media.duration,
-                    "message_date": message_date.isoformat() if message_date else None,
-                    "sender_name": sender_name,
+                    "message_date": msg_date.isoformat() if msg_date else None,
+                    "sender_name": f"{first_name or ''} {last_name or ''}".strip() or None,
                 }
-                for media, message_date, sender_name in rows[:limit]
+                for media, msg_date, first_name, last_name in rows[:limit]
             ]
 
             return {"items": items, "has_more": has_more}
