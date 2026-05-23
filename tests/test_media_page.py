@@ -283,6 +283,79 @@ class TestMediaCounts:
         assert resp.status_code == 403
 
 
+class TestMediaPathValidation:
+    """Tests for path traversal protection and URL generation."""
+
+    def test_traversal_path_gets_null_thumb_url(self, anon_env):
+        mock_db = _make_mock_db()
+        mock_db.get_media_paginated = AsyncMock(
+            return_value={
+                "items": [
+                    {
+                        "id": "file_evil",
+                        "message_id": 1,
+                        "chat_id": -1001,
+                        "type": "photo",
+                        "file_path": "../../../etc/passwd",
+                        "file_name": "passwd",
+                        "file_size": 100,
+                        "mime_type": "image/jpeg",
+                        "width": 100,
+                        "height": 100,
+                        "duration": None,
+                        "message_date": "2026-01-01T00:00:00",
+                        "sender_name": "Attacker",
+                    },
+                ],
+                "has_more": False,
+            }
+        )
+        client, _, _ = _get_client(mock_db)
+        resp = client.get("/api/chats/-1001/media")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["thumb_url"] is None
+        assert "file_path" not in data["items"][0]
+
+    def test_absolute_path_gets_null_thumb_url(self, anon_env):
+        mock_db = _make_mock_db()
+        mock_db.get_media_paginated = AsyncMock(
+            return_value={
+                "items": [
+                    {
+                        "id": "file_abs",
+                        "message_id": 2,
+                        "chat_id": -1001,
+                        "type": "photo",
+                        "file_path": "/etc/shadow",
+                        "file_name": "shadow",
+                        "file_size": 100,
+                        "mime_type": "text/plain",
+                        "width": None,
+                        "height": None,
+                        "duration": None,
+                        "message_date": "2026-01-01T00:00:00",
+                        "sender_name": None,
+                    },
+                ],
+                "has_more": False,
+            }
+        )
+        client, _, _ = _get_client(mock_db)
+        resp = client.get("/api/chats/-1001/media")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["thumb_url"] is None
+        assert "file_path" not in data["items"][0]
+
+    def test_valid_path_includes_media_url(self, anon_env):
+        client, _, _ = _get_client()
+        resp = client.get("/api/chats/-1001/media")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"][0]["media_url"] == "/media/-1001/photo_123.jpg"
+
+
 class TestMediaACL:
     """Tests for media access control list enforcement."""
 
