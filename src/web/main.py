@@ -1454,7 +1454,16 @@ async def get_chat_media(
             before_id=before_id or None,
         )
         for item in result["items"]:
-            file_path = item.get("file_path", "")
+            file_path = item.get("file_path", "") or ""
+            # Strip media root prefix for absolute paths stored in DB
+            if _media_root and file_path.startswith("/"):
+                media_root_str = str(_media_root) + "/"
+                if file_path.startswith(media_root_str):
+                    file_path = file_path[len(media_root_str) :]
+                else:
+                    item["thumb_url"] = None
+                    item.pop("file_path", None)
+                    continue
             if ".." in file_path.split("/") or file_path.startswith("/"):
                 item["thumb_url"] = None
                 item.pop("file_path", None)
