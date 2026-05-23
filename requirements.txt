@@ -1,8 +1,7 @@
-# NOTE: pyproject.toml is now the primary source of truth for dependencies.
-# This file is kept for backward compatibility with Docker builds and tools
-# that don't yet support pyproject.toml.
-#
-# For local development, prefer: pip install -e .
+# NOTE: pyproject.toml + uv.lock are now the primary source of truth for dependencies.
+# Docker builds use `uv sync --frozen` from the lockfile.
+# This file is kept for backward compatibility with local development:
+#   pip install -r requirements.txt
 
 telethon>=1.37.0
 python-socks[asyncio]>=2.7.1

@@ -8,11 +8,12 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Install uv for fast, reproducible dependency installation
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /bin/uv
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies (locked versions)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
 COPY src/ ./src/
@@ -34,7 +35,8 @@ ENV BACKUP_PATH=/data/backups \
     LOG_LEVEL=INFO \
     PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
 
 # Volume for persistent data
 VOLUME ["/data"]
