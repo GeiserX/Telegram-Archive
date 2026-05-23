@@ -30,6 +30,8 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 
 ### Viewer Polish
 
+- [x] Media Gallery Phase 1+2 (grid view for photos/videos, list view for voice/files) — v7.10.0
+- [ ] Media Gallery Phase 3: Links tab (shared URLs extracted from messages)
 - [ ] Custom themes (light mode, OLED dark, Telegram classic)
 - [ ] Voice message player with waveform visualization
 - [ ] Keyboard shortcuts (j/k navigation, Esc to close, etc.)
