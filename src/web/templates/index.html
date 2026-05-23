@@ -287,7 +287,7 @@
                 <p class="text-sm text-amber-200 mb-8 text-center" v-else-if="authCheckFailed">
                     ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
                 </p>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-else>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="!loadingAuth">
                     Authentication is disabled
                 </p>
 
