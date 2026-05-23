@@ -2,4 +2,4 @@
 Telegram Backup Automation - Main Package
 """
 
-__version__ = "7.10.3"
+__version__ = "7.10.4"
