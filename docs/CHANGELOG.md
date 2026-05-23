@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.10.0] - 2026-05-23
+
+### Added
+- **Media Gallery**: Dedicated per-chat media page with grid view for photos/videos, list view for voice messages and files
+- **Media API**: New endpoints `GET /api/chats/{id}/media` and `GET /api/chats/{id}/media/counts` for paginated media browsing
+- **Thumbnail pre-generation**: Thumbnails are now generated during backup for instant gallery loading
+- **Thumbnail concurrency limit**: Semaphore prevents memory exhaustion when loading large grids
+- **Database index**: New composite index `idx_media_chat_type(chat_id, type)` for efficient media type filtering
+
 ## [7.7.0] - 2026-04-29
 
 ### Security

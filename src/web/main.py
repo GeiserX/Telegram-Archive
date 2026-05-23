@@ -1428,6 +1428,81 @@ async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/chats/{chat_id}/media")
+async def get_chat_media(
+    chat_id: int,
+    types: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=200),
+    before_id: str = Query(default=""),
+    user: UserContext = Depends(require_auth),
+):
+    """Get paginated media items for a chat, with optional type filtering."""
+    allowed = get_user_chat_ids(user)
+    if allowed is not None and chat_id not in allowed:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    media_types = [t.strip() for t in types.split(",") if t.strip()] or None
+
+    try:
+        result = await db.get_media_paginated(
+            chat_id,
+            media_types=media_types,
+            limit=limit,
+            before_id=before_id or None,
+        )
+        for item in result["items"]:
+            file_path = item.get("file_path", "")
+            if ".." in file_path.split("/") or file_path.startswith("/"):
+                item["thumb_url"] = None
+                item.pop("file_path", None)
+                continue
+
+            parts = file_path.split("/", 1)
+            if len(parts) == 2:
+                folder, filename = parts
+                item["thumb_url"] = f"/media/thumb/200/{folder}/{filename}"
+            else:
+                item["thumb_url"] = None
+
+            if user.no_download:
+                item.pop("file_path", None)
+            else:
+                item["media_url"] = f"/media/{file_path}"
+
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching chat media: {e}", exc_info=True)
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/chats/{chat_id}/media/counts")
+async def get_chat_media_counts(
+    chat_id: int,
+    user: UserContext = Depends(require_auth),
+):
+    """Get media type counts for a chat."""
+    allowed = get_user_chat_ids(user)
+    if allowed is not None and chat_id not in allowed:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        counts = await db.get_media_counts(chat_id)
+        return counts
+    except Exception as e:
+        logger.error(f"Error fetching media counts: {e}", exc_info=True)
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/folders")
 async def get_folders(user: UserContext = Depends(require_auth)):
     """Get all chat folders with their chat counts.

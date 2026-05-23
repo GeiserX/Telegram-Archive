@@ -758,6 +758,16 @@
                                 </svg>
                             </div>
 
+                            <!-- Media Gallery Button -->
+                            <button @click="showMediaGallery = true"
+                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                title="Shared Media Gallery">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+                                </svg>
+                            </button>
+
                             <!-- Export Button - always visible -->
                             <button @click="exportChat"
                                 class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
@@ -827,7 +837,119 @@
                         </div>
                     </div>
 
+                    <!-- Media Gallery View (replaces message area when active) -->
+                    <template v-if="showMediaGallery">
+                    <div class="flex flex-col h-full flex-1 min-h-0">
+                        <!-- Header with back button -->
+                        <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700">
+                            <button @click="showMediaGallery = false" class="text-gray-400 hover:text-white">
+                                <i class="fas fa-arrow-left"></i>
+                            </button>
+                            <h3 class="text-white font-medium">Shared Media</h3>
+                        </div>
+
+                        <!-- Tab bar -->
+                        <div class="flex gap-1 px-4 py-2 border-b border-gray-700">
+                            <button v-for="tab in mediaTabs" :key="tab.id"
+                                @click="switchMediaTab(tab.id)"
+                                :class="mediaGalleryTab === tab.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-gray-400 hover:text-white'"
+                                class="px-3 py-1.5 rounded-lg text-sm font-medium transition">
+                                {{ tab.label }}
+                                <span v-if="mediaGalleryCounts[tab.id]" class="ml-1 text-xs opacity-75">
+                                    ({{ mediaGalleryCounts[tab.id] }})
+                                </span>
+                            </button>
+                        </div>
+
+                        <!-- Content area -->
+                        <div class="flex-1 overflow-y-auto p-2">
+                            <!-- Loading state -->
+                            <div v-if="mediaGalleryLoading && mediaGalleryItems.length === 0" class="grid grid-cols-3 md:grid-cols-4 gap-1">
+                                <div v-for="i in 12" :key="i" class="aspect-square bg-gray-700 rounded animate-pulse"></div>
+                            </div>
+
+                            <!-- Photos/Videos Grid -->
+                            <template v-if="mediaGalleryTab === 'photos'">
+                                <div class="grid grid-cols-3 md:grid-cols-4 gap-1">
+                                    <div v-for="item in mediaGalleryItems" :key="item.id"
+                                        @click="openMediaItem(item)"
+                                        class="aspect-square relative cursor-pointer group overflow-hidden rounded">
+                                        <img :src="item.thumb_url" :alt="item.file_name"
+                                            class="w-full h-full object-cover" loading="lazy" decoding="async">
+                                        <!-- Video overlay -->
+                                        <div v-if="item.type === 'video' || item.type === 'animation'"
+                                            class="absolute bottom-1 left-1 bg-black/70 text-white text-xs px-1 rounded">
+                                            <i class="fas fa-play text-[10px] mr-0.5"></i>
+                                            {{ formatDuration(item.duration) }}
+                                        </div>
+                                        <!-- Hover overlay -->
+                                        <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition"></div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Voice/Audio List -->
+                            <template v-else-if="mediaGalleryTab === 'voice'">
+                                <div class="space-y-1">
+                                    <div v-for="item in mediaGalleryItems" :key="item.id"
+                                        class="flex items-center gap-3 p-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 cursor-pointer"
+                                        @click="jumpToMessage(item)">
+                                        <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                                            <i class="fas fa-play text-white text-sm"></i>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="text-sm text-white">{{ item.sender_name || 'Unknown' }}</div>
+                                            <div class="text-xs text-gray-400">{{ formatDuration(item.duration) }}</div>
+                                        </div>
+                                        <div class="text-xs text-gray-500">{{ formatMediaDate(item.message_date) }}</div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Files List -->
+                            <template v-else-if="mediaGalleryTab === 'files'">
+                                <div class="space-y-1">
+                                    <div v-for="item in mediaGalleryItems" :key="item.id"
+                                        class="flex items-center gap-3 p-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50">
+                                        <div class="w-10 h-10 rounded-lg bg-gray-700 flex items-center justify-center flex-shrink-0">
+                                            <i class="fas fa-file text-gray-400"></i>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="text-sm text-white truncate">{{ item.file_name }}</div>
+                                            <div class="text-xs text-gray-400">{{ formatFileSize(item.file_size) }} &middot; {{ formatMediaDate(item.message_date) }}</div>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <button v-if="item.media_url && !noDownload" @click.stop="downloadMedia(item)"
+                                                class="text-gray-400 hover:text-white p-1">
+                                                <i class="fas fa-download"></i>
+                                            </button>
+                                            <button @click.stop="jumpToMessage(item)" class="text-gray-400 hover:text-white p-1" title="Go to message">
+                                                <i class="fas fa-crosshairs"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- Empty state -->
+                            <div v-if="!mediaGalleryLoading && mediaGalleryItems.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-500">
+                                <i class="fas fa-photo-film text-4xl mb-3"></i>
+                                <p>No media found</p>
+                            </div>
+
+                            <!-- Load more -->
+                            <div v-if="mediaGalleryHasMore && mediaGalleryItems.length > 0" class="flex justify-center py-4">
+                                <button @click="loadMoreMedia" :disabled="mediaGalleryLoading"
+                                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm disabled:opacity-50">
+                                    {{ mediaGalleryLoading ? 'Loading...' : 'Load more' }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    </template>
+
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
+                    <template v-else>
                     <div class="flex-1 relative min-h-0">
                     <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
@@ -1102,6 +1224,7 @@
                         </svg>
                     </button>
                     </div>
+                    </template>
                 </template>
             </div>
         </div>
@@ -1756,6 +1879,7 @@
                     pinnedMessages.value = []
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false
+                    showMediaGallery.value = false
                     await loadMessages()
                     if (chatVersion !== myVersion) return
                     await loadChatStats(chat.id)
@@ -2489,6 +2613,155 @@
                     showAdminPanel.value = false
                 }
 
+                // Media Gallery methods (v7.10.0)
+                const loadMediaGallery = async (append = false) => {
+                    if (!selectedChat.value) return
+                    if (mediaGalleryLoading.value) return
+                    mediaGalleryLoading.value = true
+                    try {
+                        const typeMap = {
+                            photos: 'photo,video,animation',
+                            voice: 'voice,audio',
+                            files: 'document',
+                        }
+                        const types = typeMap[mediaGalleryTab.value] || ''
+                        const lastItem = append && mediaGalleryItems.value.length > 0
+                            ? mediaGalleryItems.value[mediaGalleryItems.value.length - 1]
+                            : null
+                        const params = new URLSearchParams({
+                            types,
+                            limit: '50',
+                        })
+                        if (lastItem) params.set('before_id', lastItem.id)
+
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/media?${params}`, {
+                            credentials: 'include'
+                        })
+                        if (!res.ok) throw new Error('Failed to load media')
+                        const data = await res.json()
+                        if (append) {
+                            mediaGalleryItems.value.push(...data.items)
+                        } else {
+                            mediaGalleryItems.value = data.items
+                        }
+                        mediaGalleryHasMore.value = data.has_more
+                    } catch (e) {
+                        console.error('Failed to load media gallery:', e)
+                    } finally {
+                        mediaGalleryLoading.value = false
+                    }
+                }
+
+                const loadMediaCounts = async () => {
+                    if (!selectedChat.value) return
+                    try {
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/media/counts`, {
+                            credentials: 'include'
+                        })
+                        if (res.ok) {
+                            const data = await res.json()
+                            mediaGalleryCounts.value = {
+                                photos: (data.photo || 0) + (data.video || 0) + (data.animation || 0),
+                                voice: (data.voice || 0) + (data.audio || 0),
+                                files: data.document || 0,
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to load media counts:', e)
+                    }
+                }
+
+                const switchMediaTab = (tabId) => {
+                    mediaGalleryTab.value = tabId
+                    mediaGalleryItems.value = []
+                    mediaGalleryHasMore.value = true
+                    loadMediaGallery()
+                }
+
+                const loadMoreMedia = () => {
+                    loadMediaGallery(true)
+                }
+
+                const openMediaItem = (item) => {
+                    if (item.type === 'photo' || item.type === 'video' || item.type === 'animation') {
+                        // Open in lightbox — reuse existing lightbox infrastructure
+                        const mediaList = mediaGalleryItems.value.filter(m =>
+                            m.type === 'photo' || m.type === 'video' || m.type === 'animation'
+                        )
+                        const idx = mediaList.indexOf(item)
+                        // Map to the format the existing lightbox expects
+                        lightboxMedia.value = mediaList.map(m => ({
+                            media: {
+                                type: m.type,
+                                file_path: m.file_path,
+                                file_name: m.file_name,
+                                width: m.width,
+                                height: m.height,
+                                mime_type: m.mime_type,
+                            },
+                            id: m.message_id,
+                        }))
+                        lightboxIndex.value = idx >= 0 ? idx : 0
+                        lightboxOpen.value = true
+                    }
+                }
+
+                const jumpToMessage = async (item) => {
+                    showMediaGallery.value = false
+                    await loadMessagesAroundId(item.message_id)
+                }
+
+                const downloadMedia = (item) => {
+                    if (item.media_url) {
+                        window.open(item.media_url + '?download=1', '_blank')
+                    }
+                }
+
+                const formatDuration = (seconds) => {
+                    if (!seconds) return '0:00'
+                    const m = Math.floor(seconds / 60)
+                    const s = seconds % 60
+                    return `${m}:${s.toString().padStart(2, '0')}`
+                }
+
+                const formatMediaDate = (dateStr) => {
+                    if (!dateStr) return ''
+                    const d = new Date(dateStr)
+                    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                }
+
+                const formatFileSize = (bytes) => {
+                    if (!bytes) return ''
+                    if (bytes < 1024) return bytes + ' B'
+                    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+                    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+                }
+
+                const loadMessagesAroundId = async (messageId) => {
+                    if (!selectedChat.value) return
+                    const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=50`, {
+                        credentials: 'include'
+                    })
+                    if (res.ok) {
+                        const data = await res.json()
+                        messages.value = data.messages || data
+                        await nextTick()
+                        const el = document.querySelector(`[data-msg-id="${messageId}"]`)
+                        if (el) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                            el.classList.add('bg-yellow-500/10')
+                            setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                        }
+                    }
+                }
+
+                watch(showMediaGallery, (val) => {
+                    if (val) {
+                        loadMediaGallery()
+                        loadMediaCounts()
+                    }
+                })
+
                 const filteredChats = computed(() => {
                     // If searching, use server-side search results
                     if (searchQuery.value.trim()) {
@@ -2589,6 +2862,20 @@
                 const currentPinnedIndex = ref(0)  // Which pinned message is currently shown in banner
                 const showPinnedOnly = ref(false)  // Whether we're in "pinned messages only" view
 
+                // Media Gallery state (v7.10.0)
+                const showMediaGallery = ref(false)
+                const mediaGalleryTab = ref('photos')
+                const mediaGalleryItems = ref([])
+                const mediaGalleryLoading = ref(false)
+                const mediaGalleryHasMore = ref(true)
+                const mediaGalleryCounts = ref({})
+
+                const mediaTabs = [
+                    { id: 'photos', label: 'Photos & Videos' },
+                    { id: 'voice', label: 'Voice' },
+                    { id: 'files', label: 'Files' },
+                ]
+
                 // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
                     if (pinnedMessages.value.length === 0) return null
@@ -2678,6 +2965,7 @@
                     pinnedMessages.value = []  // Reset pinned messages when changing chat
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
+                    showMediaGallery.value = false  // Exit media gallery when changing chat
                     await loadMessages()
                     if (chatVersion !== myVersion) return  // Another chat was selected, abort
                     await loadChatStats(chat.id)  // Load stats for this chat
@@ -3690,6 +3978,25 @@
                     handlePinnedClick,
                     openPinnedView,
                     closePinnedView,
+                    // Media Gallery (v7.10.0)
+                    showMediaGallery,
+                    mediaGalleryTab,
+                    mediaGalleryItems,
+                    mediaGalleryLoading,
+                    mediaGalleryHasMore,
+                    mediaGalleryCounts,
+                    mediaTabs,
+                    loadMediaGallery,
+                    loadMediaCounts,
+                    switchMediaTab,
+                    loadMoreMedia,
+                    openMediaItem,
+                    jumpToMessage,
+                    downloadMedia,
+                    formatDuration,
+                    formatMediaDate,
+                    formatFileSize,
+                    loadMessagesAroundId,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,

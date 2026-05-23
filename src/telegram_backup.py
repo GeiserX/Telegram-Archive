@@ -59,6 +59,51 @@ MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
 MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 
 
+def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
+    """Pre-generate 200px WebP thumbnail for gallery grid view."""
+    try:
+        from pathlib import Path
+
+        from PIL import Image
+
+        from src.web.thumbnails import (
+            _IMAGE_EXTENSIONS,
+            _MAX_SOURCE_BYTES,
+            WEBP_QUALITY,
+            _thumb_path,
+        )
+
+        Image.MAX_IMAGE_PIXELS = 50_000_000
+
+        source = Path(source_path)
+        if not source.exists():
+            return
+
+        if source.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return
+
+        if source.stat().st_size > _MAX_SOURCE_BYTES:
+            return
+
+        media_root_path = Path(media_root)
+        if not source.is_relative_to(media_root_path):
+            return
+
+        rel = source.relative_to(media_root_path)
+        folder = str(rel.parent)
+        dest = _thumb_path(media_root_path, 200, folder, source.name)
+
+        if dest.exists():
+            return
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as img:
+            img.thumbnail((200, 200), Image.LANCZOS)
+            img.save(dest, "WEBP", quality=WEBP_QUALITY)
+    except Exception:
+        pass
+
+
 async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
     """Retry a single async call on FloodWaitError with bounded sleep.
 
@@ -1679,6 +1724,12 @@ class TelegramBackup:
                         media_data["height"] = attr.h
                     if hasattr(attr, "duration"):
                         media_data["duration"] = attr.duration
+
+            # Pre-generate thumbnail for instant gallery loading
+            try:
+                _pre_generate_thumbnail(file_path, self.config.media_path)
+            except Exception:
+                pass  # Non-critical, viewer generates on-demand as fallback
 
             # Return media data - caller is responsible for inserting to database
             # (to ensure message exists before media FK constraint)
