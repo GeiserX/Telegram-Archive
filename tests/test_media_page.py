@@ -44,23 +44,26 @@ def _make_mock_db():
     db.delete_session = AsyncMock()
     # Media-specific mocks
     db.get_media_paginated = AsyncMock(
-        return_value=[
-            {
-                "id": "file_abc123",
-                "message_id": 100,
-                "chat_id": -1001,
-                "type": "photo",
-                "file_path": "-1001/photo_123.jpg",
-                "file_name": "photo_123.jpg",
-                "file_size": 245000,
-                "mime_type": "image/jpeg",
-                "width": 1920,
-                "height": 1080,
-                "duration": None,
-                "message_date": "2026-01-15T10:30:00",
-                "sender_name": "TestUser",
-            },
-        ]
+        return_value={
+            "items": [
+                {
+                    "id": "file_abc123",
+                    "message_id": 100,
+                    "chat_id": -1001,
+                    "type": "photo",
+                    "file_path": "-1001/photo_123.jpg",
+                    "file_name": "photo_123.jpg",
+                    "file_size": 245000,
+                    "mime_type": "image/jpeg",
+                    "width": 1920,
+                    "height": 1080,
+                    "duration": None,
+                    "message_date": "2026-01-15T10:30:00",
+                    "sender_name": "TestUser",
+                },
+            ],
+            "has_more": False,
+        }
     )
     db.get_media_counts = AsyncMock(
         return_value={
@@ -152,9 +155,10 @@ class TestMediaPaginated:
         resp = client.get("/api/chats/-1001/media")
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["id"] == "file_abc123"
+        assert "items" in data
+        assert "has_more" in data
+        assert len(data["items"]) == 1
+        assert data["items"][0]["id"] == "file_abc123"
 
     def test_passes_types_filter(self, anon_env):
         client, _, mock_db = _get_client()
@@ -205,7 +209,7 @@ class TestMediaPaginated:
         resp = client.get("/api/chats/-1001/media")
         assert resp.status_code == 200
         data = resp.json()
-        assert data[0]["thumb_url"] == "/media/thumb/200/-1001/photo_123.jpg"
+        assert data["items"][0]["thumb_url"] == "/media/thumb/200/-1001/photo_123.jpg"
 
     def test_no_download_strips_media_url(self, auth_env):
         import src.web.main as main_mod
@@ -234,8 +238,8 @@ class TestMediaPaginated:
         resp = client.get("/api/chats/-1001/media", cookies={"viewer_auth": cookie})
         assert resp.status_code == 200
         data = resp.json()
-        assert "media_url" not in data[0]
-        assert "file_path" not in data[0]
+        assert "media_url" not in data["items"][0]
+        assert "file_path" not in data["items"][0]
 
 
 class TestMediaCounts:
