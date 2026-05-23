@@ -22,6 +22,9 @@ _MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 _IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 
+# Limit concurrent thumbnail generations to cap peak memory (~15MB per decode)
+_generation_semaphore = asyncio.Semaphore(8)
+
 
 def _is_image(filename: str) -> bool:
     return Path(filename).suffix.lower() in _IMAGE_EXTENSIONS
@@ -78,6 +81,7 @@ async def ensure_thumbnail(media_root: Path, size: int, folder: str, filename: s
     if not source.exists():
         return None
 
-    loop = asyncio.get_running_loop()
-    ok = await loop.run_in_executor(None, _generate_sync, source, dest, size)
+    async with _generation_semaphore:
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(None, _generate_sync, source, dest, size)
     return dest if ok else None

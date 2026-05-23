@@ -92,6 +92,15 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check artifact from migration 012: idx_media_chat_type index
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM pg_indexes
+            WHERE indexname = 'idx_media_chat_type'
+        );
+    \"\"\")
+    has_012_index = cur.fetchone()[0]
+
     # Check artifact from migration 011: media.content_hash column
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -189,7 +198,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_011_content_hash:
+    if has_012_index:
+        stamp_version = '012'
+    elif has_011_content_hash:
         stamp_version = '011'
     elif has_010_all:
         stamp_version = '010'
@@ -275,6 +286,10 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check artifact from migration 012: idx_media_chat_type index
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_media_chat_type'\")
+    has_012_index = cur.fetchone() is not None
+
     # Check artifact from migration 011: media.content_hash column
     cur.execute(\"PRAGMA table_info(media)\")
     media_columns = {row[1] for row in cur.fetchall()}
@@ -321,7 +336,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_011_content_hash:
+    if has_012_index:
+        stamp_version = '012'
+    elif has_011_content_hash:
         stamp_version = '011'
     elif has_010_all:
         stamp_version = '010'

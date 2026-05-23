@@ -182,6 +182,7 @@ class Media(Base):
         Index("idx_media_downloaded", "chat_id", "downloaded"),
         Index("idx_media_type", "type"),
         Index("idx_media_content_hash", "content_hash"),
+        Index("idx_media_chat_type", "chat_id", "type"),
     )
 
 

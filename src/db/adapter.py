@@ -716,6 +716,100 @@ class DatabaseAdapter:
                 for m in media_records
             ]
 
+    async def get_media_paginated(
+        self,
+        chat_id: int,
+        media_types: list[str] | None = None,
+        limit: int = 50,
+        before_id: str | None = None,
+        sort_desc: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Get paginated media records for a chat with cursor-based pagination.
+
+        Args:
+            chat_id: Chat identifier
+            media_types: Optional list of media types to filter by
+            limit: Maximum number of items to return
+            before_id: Cursor for pagination (media id to paginate from)
+            sort_desc: Sort by message date descending if True
+
+        Returns:
+            Dict with 'items' list and 'has_more' boolean
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Media, Message.date, Message.sender_name).join(
+                Message,
+                and_(
+                    Media.message_id == Message.id,
+                    Media.chat_id == Message.chat_id,
+                ),
+            )
+            stmt = stmt.where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
+
+            if media_types:
+                stmt = stmt.where(Media.type.in_(media_types))
+
+            if before_id:
+                cursor_stmt = select(Media.message_id).where(Media.id == before_id)
+                cursor_result = await session.execute(cursor_stmt)
+                cursor_message_id = cursor_result.scalar_one_or_none()
+                if cursor_message_id is not None:
+                    if sort_desc:
+                        stmt = stmt.where(Media.message_id < cursor_message_id)
+                    else:
+                        stmt = stmt.where(Media.message_id > cursor_message_id)
+
+            if sort_desc:
+                stmt = stmt.order_by(Message.date.desc())
+            else:
+                stmt = stmt.order_by(Message.date.asc())
+
+            stmt = stmt.limit(limit + 1)
+            result = await session.execute(stmt)
+            rows = result.all()
+
+            has_more = len(rows) > limit
+            items = [
+                {
+                    "id": media.id,
+                    "message_id": media.message_id,
+                    "chat_id": media.chat_id,
+                    "type": media.type,
+                    "file_path": media.file_path,
+                    "file_name": media.file_name,
+                    "file_size": media.file_size,
+                    "mime_type": media.mime_type,
+                    "width": media.width,
+                    "height": media.height,
+                    "duration": media.duration,
+                    "message_date": message_date.isoformat() if message_date else None,
+                    "sender_name": sender_name,
+                }
+                for media, message_date, sender_name in rows[:limit]
+            ]
+
+            return {"items": items, "has_more": has_more}
+
+    async def get_media_counts(self, chat_id: int) -> dict[str, int]:
+        """
+        Get count of downloaded media grouped by type for a chat.
+
+        Args:
+            chat_id: Chat identifier
+
+        Returns:
+            Dict mapping media type to count (only types with count > 0)
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media.type, func.count())
+                .where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
+                .group_by(Media.type)
+            )
+            result = await session.execute(stmt)
+            return {row[0]: row[1] for row in result.all()}
+
     async def delete_media_for_chat(self, chat_id: int) -> int:
         """
         Delete all media records for a specific chat.
