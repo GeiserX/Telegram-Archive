@@ -272,7 +272,7 @@
 </head>
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
-    <div id="app" v-cloak class="w-full h-full">
+    <div id="app" v-cloak class="w-full h-full" hidden>
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
@@ -285,14 +285,17 @@
                 </div>
 
                 <h1 class="text-3xl font-bold mb-2 text-center text-white">Telegram Archive</h1>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-if="authRequired">
+                <div v-if="loadingAuth" class="flex justify-center mb-8">
+                    <svg class="w-6 h-6 animate-spin text-blue-200" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                </div>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="authRequired">
                     Sign in to access your backup
                 </p>
                 <p class="text-sm text-amber-200 mb-8 text-center" v-else-if="authCheckFailed">
                     ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
-                </p>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="!loadingAuth">
-                    Authentication is disabled
                 </p>
 
                 <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
@@ -4160,6 +4163,7 @@
                 }
             }
         }).mount('#app')
+        document.getElementById('app').removeAttribute('hidden')
     </script>
 </body>
 
