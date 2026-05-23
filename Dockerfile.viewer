@@ -3,16 +3,17 @@ FROM python:3.14-slim
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements-viewer.txt .
-
 # Install system libraries for Pillow (thumbnail generation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo libwebp7 libwebpmux3 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements-viewer.txt
+# Install uv for fast, reproducible dependency installation
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /bin/uv
+
+# Install dependencies (locked versions)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy only the necessary application code for the viewer
 COPY src/__init__.py ./src/
@@ -32,7 +33,8 @@ USER telegram
 # Set default environment variables
 ENV BACKUP_PATH=/data/backups \
     LOG_LEVEL=INFO \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PATH="/app/.venv/bin:$PATH"
 
 # Volume for persistent data (read-only access to backups)
 VOLUME ["/data"]
@@ -42,9 +44,3 @@ EXPOSE 8000
 
 # Run web viewer
 CMD ["uvicorn", "src.web.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-
-
-
-
-

@@ -1,5 +1,7 @@
-# Requirements for Telegram Archive Web Viewer (standalone)
-# This is a lighter dependency set - no Telegram client needed
+# NOTE: pyproject.toml + uv.lock are now the primary source of truth for dependencies.
+# Docker builds use `uv sync --frozen` from the lockfile.
+# This file is kept for backward compatibility with local development:
+#   pip install -r requirements-viewer.txt
 
 # Web framework
 fastapi>=0.115.0
@@ -24,9 +26,3 @@ cryptography>=42.0.8
 
 # Image processing for thumbnails (v7.2.0+)
 Pillow>=10.0.0
-
-
-
-
-
-
