@@ -77,6 +77,10 @@
             }
         }
 
+        [v-cloak] {
+            display: none !important;
+        }
+
         body,
         #app {
             max-width: 100vw;
@@ -268,7 +272,7 @@
 </head>
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
-    <div id="app" class="w-full h-full">
+    <div id="app" v-cloak class="w-full h-full">
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
