@@ -928,7 +928,7 @@ async def read_root():
     """Serve the main application page."""
     return FileResponse(
         templates_dir / "index.html",
-        headers={"Cache-Control": "no-cache, must-revalidate"},
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
 
