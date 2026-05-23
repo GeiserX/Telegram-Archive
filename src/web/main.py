@@ -446,6 +446,12 @@ ALLOW_ANONYMOUS_VIEWER = os.getenv("ALLOW_ANONYMOUS_VIEWER", "false").lower() ==
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
 AUTH_COOKIE_NAME = "viewer_auth"
 
+# Trusted Proxy Authentication (v7.9.0)
+AUTH_PROXY_HEADER = os.getenv("AUTH_PROXY_HEADER", "").strip()
+AUTH_PROXY_ADMIN_USERS = {u.strip() for u in os.getenv("AUTH_PROXY_ADMIN_USERS", "").split(",") if u.strip()}
+AUTH_PROXY_DEFAULT_ACCESS = os.getenv("AUTH_PROXY_DEFAULT_ACCESS", "none").strip().lower()
+_PROXY_AUTH_ENABLED = bool(AUTH_PROXY_HEADER)
+
 AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "30"))
 AUTH_SESSION_SECONDS = AUTH_SESSION_DAYS * 24 * 60 * 60
 _MAX_SESSIONS_PER_USER = 10
@@ -455,6 +461,8 @@ _LOGIN_RATE_WINDOW = 300  # per 5 minutes
 
 if AUTH_ENABLED:
     logger.info(f"Viewer authentication is ENABLED (Master: {VIEWER_USERNAME}, Session: {AUTH_SESSION_DAYS} days)")
+elif _PROXY_AUTH_ENABLED:
+    logger.info(f"Trusted proxy authentication is ENABLED (Header: {AUTH_PROXY_HEADER})")
 elif ALLOW_ANONYMOUS_VIEWER:
     logger.warning("Viewer authentication is DISABLED by explicit ALLOW_ANONYMOUS_VIEWER=true")
 else:
@@ -668,12 +676,73 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
     return session
 
 
-async def require_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> UserContext:
+async def _resolve_proxy_user(proxy_username: str) -> UserContext:
+    """Resolve a trusted proxy-authenticated user to a UserContext.
+
+    Admin users (in AUTH_PROXY_ADMIN_USERS) get master role with full access.
+    Other users are auto-created as viewer accounts with access determined by
+    AUTH_PROXY_DEFAULT_ACCESS (none = no chats until admin grants, all = full access).
+    """
+    if proxy_username in AUTH_PROXY_ADMIN_USERS:
+        return UserContext(username=proxy_username, role="master", allowed_chat_ids=None)
+
+    # Look up or auto-create viewer account
+    if db:
+        viewer = await db.get_viewer_by_username(proxy_username)
+        if viewer:
+            if not viewer["is_active"]:
+                raise HTTPException(status_code=403, detail="Account disabled")
+            allowed = None
+            if viewer["allowed_chat_ids"]:
+                try:
+                    allowed = set(json.loads(viewer["allowed_chat_ids"]))
+                except json.JSONDecodeError, TypeError:
+                    allowed = set()
+            return UserContext(
+                username=proxy_username,
+                role="viewer",
+                allowed_chat_ids=allowed,
+                no_download=bool(viewer.get("no_download", 0)),
+            )
+
+        # Auto-create with configured default access
+        allowed_json = None  # None = all chats
+        if AUTH_PROXY_DEFAULT_ACCESS != "all":
+            allowed_json = "[]"  # Empty = no chats until admin grants access
+        await db.create_viewer_account(
+            username=proxy_username,
+            password_hash="",
+            salt="proxy-auth",
+            allowed_chat_ids=allowed_json,
+            created_by="proxy-auth",
+            is_active=1,
+        )
+        logger.info(f"Auto-created proxy-authenticated viewer account: {proxy_username}")
+
+        allowed_set: set[int] | None = None if AUTH_PROXY_DEFAULT_ACCESS == "all" else set()
+        return UserContext(username=proxy_username, role="viewer", allowed_chat_ids=allowed_set)
+
+    # No DB — proxy admin users are the only ones that work without DB
+    raise HTTPException(status_code=503, detail="Database required for proxy authentication")
+
+
+async def require_auth(
+    request: Request, auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)
+) -> UserContext:
     """Dependency that enforces session-based auth. Returns UserContext."""
-    if not AUTH_ENABLED:
+    if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
         if ALLOW_ANONYMOUS_VIEWER:
             return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
         raise HTTPException(status_code=503, detail="Viewer authentication is not configured")
+
+    # Trusted proxy header authentication (v7.9.0)
+    if _PROXY_AUTH_ENABLED:
+        proxy_user = request.headers.get(AUTH_PROXY_HEADER, "").strip()
+        if proxy_user:
+            return await _resolve_proxy_user(proxy_user)
+
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     if not auth_cookie:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -889,9 +958,26 @@ async def health_check():
 
 
 @app.get("/api/auth/check")
-async def check_auth(auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
+async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)):
     """Check current authentication status. Returns role and username if authenticated."""
-    if not AUTH_ENABLED:
+    # Trusted proxy header — if header present, user is authenticated by the proxy
+    if _PROXY_AUTH_ENABLED:
+        proxy_user = request.headers.get(AUTH_PROXY_HEADER, "").strip()
+        if proxy_user:
+            try:
+                user_ctx = await _resolve_proxy_user(proxy_user)
+                return {
+                    "authenticated": True,
+                    "auth_required": True,
+                    "role": user_ctx.role,
+                    "username": user_ctx.username,
+                    "no_download": user_ctx.no_download,
+                    "proxy_auth": True,
+                }
+            except HTTPException:
+                return {"authenticated": False, "auth_required": True}
+
+    if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
         if ALLOW_ANONYMOUS_VIEWER:
             return {"authenticated": True, "auth_required": False, "role": "master", "username": "anonymous"}
         return {"authenticated": False, "auth_required": True, "setup_required": True}
@@ -2192,7 +2278,20 @@ async def websocket_endpoint(websocket: WebSocket):
     auth_cookie = cookies.get(AUTH_COOKIE_NAME)
     ws_user_chat_ids: set[int] | None = None
 
-    if AUTH_ENABLED:
+    # Trusted proxy header auth for WebSocket upgrade
+    if _PROXY_AUTH_ENABLED:
+        proxy_user = websocket.headers.get(AUTH_PROXY_HEADER, "").strip()
+        if proxy_user:
+            try:
+                user_ctx = await _resolve_proxy_user(proxy_user)
+                ws_user_chat_ids = get_user_chat_ids(user_ctx)
+            except HTTPException:
+                await websocket.close(code=4001, reason="Proxy auth failed")
+                return
+        elif not AUTH_ENABLED and not ALLOW_ANONYMOUS_VIEWER:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+    elif AUTH_ENABLED:
         if not auth_cookie:
             await websocket.close(code=4001, reason="Unauthorized")
             return
