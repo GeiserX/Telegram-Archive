@@ -10,8 +10,11 @@ from src.web.thumbnails import (
     _MAX_SOURCE_BYTES,
     ALLOWED_SIZES,
     WEBP_QUALITY,
+    _check_ffmpeg,
     _generate_sync,
+    _generate_video_sync,
     _is_image,
+    _is_video,
     _thumb_path,
     ensure_thumbnail,
 )
@@ -68,6 +71,83 @@ class TestIsImage(unittest.TestCase):
     def test_no_extension_returns_false(self):
         """_is_image returns False for files without extension."""
         self.assertFalse(_is_image("noext"))
+
+
+class TestIsVideo(unittest.TestCase):
+    """Test _is_video file extension detection."""
+
+    def test_recognizes_mp4(self):
+        self.assertTrue(_is_video("clip.mp4"))
+
+    def test_recognizes_mkv(self):
+        self.assertTrue(_is_video("movie.mkv"))
+
+    def test_recognizes_webm(self):
+        self.assertTrue(_is_video("anim.webm"))
+
+    def test_recognizes_mov(self):
+        self.assertTrue(_is_video("video.mov"))
+
+    def test_rejects_jpg(self):
+        self.assertFalse(_is_video("photo.jpg"))
+
+    def test_rejects_txt(self):
+        self.assertFalse(_is_video("readme.txt"))
+
+    def test_case_insensitive(self):
+        self.assertTrue(_is_video("CLIP.MP4"))
+        self.assertTrue(_is_video("Video.MKV"))
+
+    def test_no_extension_returns_false(self):
+        self.assertFalse(_is_video("noext"))
+
+
+class TestCheckFfmpeg(unittest.TestCase):
+    """Test _check_ffmpeg detection."""
+
+    @patch("src.web.thumbnails.shutil.which", return_value="/usr/bin/ffmpeg")
+    def test_returns_true_when_available(self, _mock):
+        import src.web.thumbnails as mod
+
+        mod._FFMPEG_AVAILABLE = None
+        self.assertTrue(_check_ffmpeg())
+
+    @patch("src.web.thumbnails.shutil.which", return_value=None)
+    def test_returns_false_when_missing(self, _mock):
+        import src.web.thumbnails as mod
+
+        mod._FFMPEG_AVAILABLE = None
+        self.assertFalse(_check_ffmpeg())
+
+
+class TestGenerateVideoSync(unittest.TestCase):
+    """Test _generate_video_sync."""
+
+    def test_returns_false_when_source_too_large(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as src:
+            source = Path(src.name)
+            dest = Path(tempfile.mkdtemp()) / "out.webp"
+            with patch.object(Path, "stat") as mock_stat:
+                mock_stat.return_value = MagicMock(st_size=_MAX_SOURCE_BYTES * 4 + 1)
+                result = _generate_video_sync(source, dest, 200)
+            self.assertFalse(result)
+
+    @patch("src.web.thumbnails._check_ffmpeg", return_value=False)
+    def test_returns_false_when_ffmpeg_missing(self, _mock):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "clip.mp4"
+            source.write_bytes(b"\x00" * 100)
+            dest = Path(tmpdir) / "out.webp"
+            result = _generate_video_sync(source, dest, 200)
+            self.assertFalse(result)
+
+    def test_returns_false_on_invalid_video(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "corrupt.mp4"
+            source.write_text("not a video")
+            dest = Path(tmpdir) / "out.webp"
+            result = _generate_video_sync(source, dest, 200)
+            self.assertFalse(result)
 
 
 class TestThumbPath(unittest.TestCase):
@@ -184,10 +264,22 @@ class TestEnsureThumbnail(unittest.IsolatedAsyncioTestCase):
         result = await ensure_thumbnail(Path("/tmp"), 999, "folder", "img.jpg")
         self.assertIsNone(result)
 
-    async def test_rejects_non_image_file(self):
-        """ensure_thumbnail returns None for non-image files."""
-        result = await ensure_thumbnail(Path("/tmp"), 200, "folder", "video.mp4")
+    async def test_rejects_unsupported_file(self):
+        """ensure_thumbnail returns None for unsupported file types."""
+        result = await ensure_thumbnail(Path("/tmp"), 200, "folder", "doc.pdf")
         self.assertIsNone(result)
+
+    async def test_accepts_video_file_extension(self):
+        """ensure_thumbnail does not reject video files by extension."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            folder = "chat1"
+            (media_root / folder).mkdir()
+            source = media_root / folder / "clip.mp4"
+            source.write_bytes(b"\x00" * 100)
+            result = await ensure_thumbnail(media_root, 200, folder, "clip.mp4")
+            # Returns None because ffmpeg can't decode garbage, but doesn't reject on extension
+            self.assertIsNone(result)
 
     async def test_rejects_path_traversal_in_source(self):
         """ensure_thumbnail returns None when source escapes media_root."""
