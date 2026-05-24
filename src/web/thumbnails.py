@@ -124,7 +124,22 @@ async def ensure_thumbnail(
         return dest
 
     if not source.exists():
-        return None
+        # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
+        # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
+        alt_folders = []
+        if not folder.startswith("-"):
+            alt_folders = [f"-{folder}", f"-100{folder}"]
+        else:
+            alt_folders = [folder[1:]]
+        found = False
+        for alt in alt_folders:
+            alt_source = (media_root / alt / filename).resolve()
+            if alt_source.is_relative_to(media_root_resolved) and alt_source.exists():
+                source = alt_source
+                found = True
+                break
+        if not found:
+            return None
 
     async with _generation_semaphore:
         loop = asyncio.get_running_loop()
