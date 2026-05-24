@@ -325,9 +325,9 @@
 
                     <p v-if="loginError" class="text-sm text-red-200 bg-red-500/20 rounded-lg p-2 text-center">{{
                         loginError }}</p>
-                    <button type="submit" :disabled="loadingAuth"
+                    <button type="submit"
                         class="w-full bg-white text-blue-600 hover:bg-blue-50 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl py-3 font-semibold transition shadow-lg hover:shadow-xl">
-                        {{ loadingAuth ? 'Signing in...' : 'Sign in' }}
+                        Sign in
                     </button>
                 </form>
             </div>
