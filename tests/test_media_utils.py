@@ -45,6 +45,13 @@ class TestLegacyFolderAlternatesForward(unittest.TestCase):
         self.assertEqual(len(result), 2)
 
 
+    def test_non_numeric_folder_returns_empty_list(self):
+        """Non-numeric folder names return empty list (no alternates possible)."""
+        self.assertEqual(legacy_folder_alternates("chat1"), [])
+        self.assertEqual(legacy_folder_alternates("photos"), [])
+        self.assertEqual(legacy_folder_alternates("-abc"), [])
+
+
 class TestLegacyFolderAlternatesReverse(unittest.TestCase):
     """Reverse resolution: negative folder -> possible old positive folder."""
 

@@ -17,10 +17,13 @@ def legacy_folder_alternates(folder: str) -> list[str]:
         "-1234567890"    → ["1234567890"]           (basic group)
         "-1001234567890" → ["1234567890"]           (channel)
     """
-    if not folder.startswith("-"):
+    try:
+        if not folder.startswith("-"):
+            folder_int = int(folder)
+            return [f"-{folder}", str(-(CHANNEL_ID_OFFSET + folder_int))]
         folder_int = int(folder)
-        return [f"-{folder}", str(-(CHANNEL_ID_OFFSET + folder_int))]
-    folder_int = int(folder)
+    except ValueError:
+        return []
     raw = -folder_int
     if raw > CHANNEL_ID_OFFSET:
         return [str(raw - CHANNEL_ID_OFFSET)]
