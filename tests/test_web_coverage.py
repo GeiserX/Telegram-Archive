@@ -348,6 +348,45 @@ class TestServeMedia(_WebTestBase):
                 resp = await client.get("/media/123/photo.jpg", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 403)
 
+    async def test_media_acl_enforced_on_resolved_path_not_url(self):
+        """ACL bypass prevention: user requests positive folder, file resolves to
+        a negative folder the user does NOT have access to — must deny."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = web_main.Path(tmpdir).resolve()
+            web_main._media_root = media_root
+            # File lives under negative folder -999 (the actual chat folder on disk)
+            denied_dir = os.path.join(tmpdir, "-999")
+            os.makedirs(denied_dir)
+            with open(os.path.join(denied_dir, "secret.jpg"), "w") as f:
+                f.write("secret")
+
+            web_main.AUTH_ENABLED = True
+            token = "acl-bypass-test"
+            # User only has access to chat 555, NOT -999
+            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={555})
+            # Request via positive folder "999" — legacy fallback resolves to "-999"
+            async with self._client() as client:
+                resp = await client.get("/media/999/secret.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 403)
+
+    async def test_media_acl_allows_resolved_path_when_authorized(self):
+        """User with access to the resolved negative chat can access via positive folder."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = web_main.Path(tmpdir).resolve()
+            web_main._media_root = media_root
+            denied_dir = os.path.join(tmpdir, "-999")
+            os.makedirs(denied_dir)
+            with open(os.path.join(denied_dir, "photo.jpg"), "w") as f:
+                f.write("img")
+
+            web_main.AUTH_ENABLED = True
+            token = "acl-allow-test"
+            # User has access to -999 (the resolved folder)
+            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={-999})
+            async with self._client() as client:
+                resp = await client.get("/media/999/photo.jpg", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 200)
+
     async def test_media_rejects_shared_folder_for_restricted_user(self):
         """Restricted users cannot fetch deduplicated _shared files directly."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -513,7 +552,7 @@ class TestServeThumbnail(_WebTestBase):
             with patch(
                 "src.web.thumbnails.ensure_thumbnail",
                 new_callable=AsyncMock,
-                return_value=web_main.Path(thumb_file),
+                return_value=(web_main.Path(thumb_file), "123"),
             ):
                 async with self._client() as client:
                     resp = await client.get("/media/thumb/200/123/photo.jpg")

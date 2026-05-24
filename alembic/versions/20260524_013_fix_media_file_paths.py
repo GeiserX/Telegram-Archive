@@ -23,7 +23,9 @@ down_revision = "012"
 branch_labels = None
 depends_on = None
 
-_BATCH_SIZE = 5000
+# Can't import from src.web.media_utils in migrations (different runtime context)
+# Define locally to keep migration self-contained
+_CHANNEL_ID_OFFSET = 1_000_000_000_000
 
 
 def _derive_stale_folder(chat_id: int) -> str | None:
@@ -36,71 +38,46 @@ def _derive_stale_folder(chat_id: int) -> str | None:
     if chat_id >= 0:
         return None
     raw = -chat_id
-    if raw > 1000000000000:
-        return str(raw - 1000000000000)
+    if raw > _CHANNEL_ID_OFFSET:
+        return str(raw - _CHANNEL_ID_OFFSET)
     return str(raw)
 
 
 def upgrade():
     conn = op.get_bind()
-    dialect = conn.dialect.name
 
-    if dialect == "postgresql":
-        # Get all distinct negative chat_ids that have media
-        result = conn.execute(sa.text("SELECT DISTINCT chat_id FROM media WHERE chat_id < 0 AND file_path IS NOT NULL"))
-        chat_ids = [row[0] for row in result]
+    # Get all distinct negative chat_ids that have media
+    result = conn.execute(sa.text("SELECT DISTINCT chat_id FROM media WHERE chat_id < 0 AND file_path IS NOT NULL"))
+    chat_ids = [row[0] for row in result]
 
-        for chat_id in chat_ids:
-            stale_folder = _derive_stale_folder(chat_id)
-            if stale_folder is None:
-                continue
-            correct_folder = str(chat_id)
+    for chat_id in chat_ids:
+        stale_folder = _derive_stale_folder(chat_id)
+        if stale_folder is None:
+            continue
+        correct_folder = str(chat_id)
 
-            # Only update rows where file_path contains the stale folder
-            # Use pattern: .../<stale_folder>/... → .../<correct_folder>/...
-            stale_pattern = f"%/{stale_folder}/%"
-            conn.execute(
-                sa.text(
-                    "UPDATE media SET file_path = REPLACE(file_path, :old_seg, :new_seg) "
-                    "WHERE chat_id = :cid AND file_path LIKE :pattern"
-                ),
-                {
-                    "old_seg": f"/{stale_folder}/",
-                    "new_seg": f"/{correct_folder}/",
-                    "cid": chat_id,
-                    "pattern": stale_pattern,
-                },
-            )
-
-    elif dialect == "sqlite":
-        result = conn.execute(sa.text("SELECT DISTINCT chat_id FROM media WHERE chat_id < 0 AND file_path IS NOT NULL"))
-        chat_ids = [row[0] for row in result]
-
-        for chat_id in chat_ids:
-            stale_folder = _derive_stale_folder(chat_id)
-            if stale_folder is None:
-                continue
-            correct_folder = str(chat_id)
-
-            stale_pattern = f"%/{stale_folder}/%"
-            conn.execute(
-                sa.text(
-                    "UPDATE media SET file_path = REPLACE(file_path, :old_seg, :new_seg) "
-                    "WHERE chat_id = :cid AND file_path LIKE :pattern"
-                ),
-                {
-                    "old_seg": f"/{stale_folder}/",
-                    "new_seg": f"/{correct_folder}/",
-                    "cid": chat_id,
-                    "pattern": stale_pattern,
-                },
-            )
+        # Only update rows where file_path contains the stale folder
+        # Use pattern: .../<stale_folder>/... → .../<correct_folder>/...
+        stale_pattern = f"%/{stale_folder}/%"
+        conn.execute(
+            sa.text(
+                "UPDATE media SET file_path = REPLACE(file_path, :old_seg, :new_seg) "
+                "WHERE chat_id = :cid AND file_path LIKE :pattern"
+            ),
+            {
+                "old_seg": f"/{stale_folder}/",
+                "new_seg": f"/{correct_folder}/",
+                "cid": chat_id,
+                "pattern": stale_pattern,
+            },
+        )
 
 
 def downgrade():
-    # Reversible: swap the folder components back
+    # WARNING: This reverses ALL negative-folder paths to positive, including rows
+    # created after the upgrade. This is intentional — old code expects positive
+    # folders in file_path. The runtime fallback handles disk resolution.
     conn = op.get_bind()
-    dialect = conn.dialect.name
 
     result = conn.execute(sa.text("SELECT DISTINCT chat_id FROM media WHERE chat_id < 0 AND file_path IS NOT NULL"))
     chat_ids = [row[0] for row in result]
