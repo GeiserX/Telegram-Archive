@@ -1291,7 +1291,7 @@
             </button>
 
             <!-- Next Button -->
-            <button v-if="lightboxIndex < mediaMessages.length - 1" @click.stop="lightboxNext"
+            <button v-if="lightboxIndex < (lightboxList.length || mediaMessages.length) - 1" @click.stop="lightboxNext"
                 class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
@@ -1314,9 +1314,9 @@
 
             <!-- Media Info -->
             <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
-                {{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}
-                <span v-if="mediaMessages.length > 1" class="ml-2 opacity-70">
-                    {{ lightboxIndex + 1 }} / {{ mediaMessages.length }}
+                <template v-if="lightboxMedia.date">{{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}</template>
+                <span v-if="(lightboxList.length || mediaMessages.length) > 1" class="ml-2 opacity-70">
+                    {{ lightboxIndex + 1 }} / {{ lightboxList.length || mediaMessages.length }}
                 </span>
             </div>
         </div>
@@ -1614,7 +1614,8 @@
                 // Lightbox state
                 const lightboxOpen = ref(false)
                 const lightboxMedia = ref(null)  // Current media being viewed
-                const lightboxIndex = ref(0)    // Index in mediaMessages array
+                const lightboxIndex = ref(0)    // Index in lightboxList array
+                const lightboxList = ref([])    // Current set of items for prev/next navigation
 
                 // Get all viewable media messages (photos, videos, animations) for lightbox navigation
                 const mediaMessages = computed(() => {
@@ -2698,13 +2699,11 @@
 
                 const openMediaItem = (item) => {
                     if (item.type === 'photo' || item.type === 'video' || item.type === 'animation') {
-                        // Open in lightbox — reuse existing lightbox infrastructure
                         const mediaList = mediaGalleryItems.value.filter(m =>
                             m.type === 'photo' || m.type === 'video' || m.type === 'animation'
                         )
                         const idx = mediaList.indexOf(item)
-                        // Map to the format the existing lightbox expects
-                        lightboxMedia.value = mediaList.map(m => ({
+                        const mapped = mediaList.map(m => ({
                             media: {
                                 type: m.type,
                                 file_path: m.file_path,
@@ -2714,9 +2713,14 @@
                                 mime_type: m.mime_type,
                             },
                             id: m.message_id,
+                            date: m.date,
                         }))
-                        lightboxIndex.value = idx >= 0 ? idx : 0
+                        lightboxList.value = mapped
+                        const startIdx = idx >= 0 ? idx : 0
+                        lightboxIndex.value = startIdx
+                        lightboxMedia.value = mapped[startIdx]
                         lightboxOpen.value = true
+                        document.addEventListener('keydown', handleLightboxKeydown)
                     }
                 }
 
@@ -3533,13 +3537,12 @@
                 }
 
                 const openMedia = (msg) => {
-                    // Open lightbox for images and videos, direct link for other media
                     if (msg.media?.type === 'photo' || msg.media?.type === 'video' || msg.media?.type === 'animation' ||
                         (msg.media?.type === 'document' && isImageDocument(msg))) {
+                        lightboxList.value = []
                         lightboxMedia.value = msg
                         lightboxIndex.value = mediaMessages.value.findIndex(m => m.id === msg.id && m.chat_id === msg.chat_id)
                         lightboxOpen.value = true
-                        // Add keyboard listener
                         document.addEventListener('keydown', handleLightboxKeydown)
                     } else {
                         window.open(getMediaUrl(msg), '_blank')
@@ -3549,20 +3552,23 @@
                 const closeLightbox = () => {
                     lightboxOpen.value = false
                     lightboxMedia.value = null
+                    lightboxList.value = []
                     document.removeEventListener('keydown', handleLightboxKeydown)
                 }
 
                 const lightboxPrev = () => {
+                    const list = lightboxList.value.length > 0 ? lightboxList.value : mediaMessages.value
                     if (lightboxIndex.value > 0) {
                         lightboxIndex.value--
-                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                        lightboxMedia.value = list[lightboxIndex.value]
                     }
                 }
 
                 const lightboxNext = () => {
-                    if (lightboxIndex.value < mediaMessages.value.length - 1) {
+                    const list = lightboxList.value.length > 0 ? lightboxList.value : mediaMessages.value
+                    if (lightboxIndex.value < list.length - 1) {
                         lightboxIndex.value++
-                        lightboxMedia.value = mediaMessages.value[lightboxIndex.value]
+                        lightboxMedia.value = list[lightboxIndex.value]
                     }
                 }
 
@@ -4026,6 +4032,7 @@
                     lightboxOpen,
                     lightboxMedia,
                     lightboxIndex,
+                    lightboxList,
                     mediaMessages,
                     closeLightbox,
                     lightboxPrev,

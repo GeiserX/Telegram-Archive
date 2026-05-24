@@ -1505,7 +1505,22 @@ async def get_chat_media(
             if len(parts) == 2:
                 folder, filename = parts
                 ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-                if ext in ("jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"):
+                if ext in (
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "gif",
+                    "webp",
+                    "bmp",
+                    "tiff",
+                    "mp4",
+                    "mkv",
+                    "avi",
+                    "mov",
+                    "webm",
+                    "m4v",
+                    "3gp",
+                ):
                     item["thumb_url"] = f"/media/thumb/200/{folder}/{filename}"
                 else:
                     item["thumb_url"] = None
