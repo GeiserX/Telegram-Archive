@@ -44,7 +44,6 @@ class TestLegacyFolderAlternatesForward(unittest.TestCase):
         result = legacy_folder_alternates("42")
         self.assertEqual(len(result), 2)
 
-
     def test_non_numeric_folder_returns_empty_list(self):
         """Non-numeric folder names return empty list (no alternates possible)."""
         self.assertEqual(legacy_folder_alternates("chat1"), [])
