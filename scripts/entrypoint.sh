@@ -93,15 +93,24 @@ if has_tables and not has_alembic:
         );
     \"\"\")
     # Check artifact from migration 013: file_path values use negative chat_id folders
-    # If any media row for a negative chat_id has a correctly-negative folder, 013 has run
+    # Guard: media table may not exist on very old databases
     cur.execute(\"\"\"
         SELECT EXISTS (
-            SELECT 1 FROM media
-            WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%'
-            LIMIT 1
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'media'
         );
     \"\"\")
-    has_013_paths = cur.fetchone()[0]
+    has_media_table = cur.fetchone()[0]
+    has_013_paths = False
+    if has_media_table:
+        cur.execute(\"\"\"
+            SELECT EXISTS (
+                SELECT 1 FROM media
+                WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%'
+                LIMIT 1
+            );
+        \"\"\")
+        has_013_paths = cur.fetchone()[0]
 
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"\"\"
@@ -300,8 +309,13 @@ if has_tables and not has_alembic:
     ''')
 
     # Check artifact from migration 013: file_path values use negative chat_id folders
-    cur.execute(\"SELECT EXISTS(SELECT 1 FROM media WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%' LIMIT 1)\")
-    has_013_paths = cur.fetchone()[0]
+    # Guard: media table may not exist on very old databases
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='media'\")
+    has_media_table = cur.fetchone() is not None
+    has_013_paths = False
+    if has_media_table:
+        cur.execute(\"SELECT EXISTS(SELECT 1 FROM media WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%' LIMIT 1)\")
+        has_013_paths = cur.fetchone()[0]
 
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_media_chat_type'\")

@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..realtime import RealtimeListener
+from .media_utils import legacy_folder_alternates, legacy_marked_chat_ids
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -821,8 +822,8 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
         raise HTTPException(status_code=403, detail="Access denied")
     if media_chat_id not in user_chat_ids:
         # Legacy fallback: positive folder may correspond to negative marked ID
-        if media_chat_id > 0 and (-media_chat_id in user_chat_ids or -(1000000000000 + media_chat_id) in user_chat_ids):
-            pass
+        if media_chat_id > 0 and any(mid in user_chat_ids for mid in legacy_marked_chat_ids(media_chat_id)):
+            logger.debug("ACL legacy grant: positive folder mapped to allowed chat via marked-ID convention")
         else:
             raise HTTPException(status_code=403, detail="Access denied")
 
@@ -885,7 +886,7 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if user.no_download and not folder.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
-    # Chat-level access check
+    # Early ACL check on requested path (prevents existence leakage)
     _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
 
     from .thumbnails import ensure_thumbnail, resolve_cache_dir
@@ -894,9 +895,14 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if _thumb_cache_dir is None:
         _thumb_cache_dir = resolve_cache_dir(_media_root)
 
-    thumb_path = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
-    if not thumb_path:
+    result = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
+    if not result:
         raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    thumb_path, resolved_folder = result
+    # Secondary ACL on resolved path if it differs (prevents bypass via legacy fallback)
+    if resolved_folder != folder:
+        _enforce_media_acl(f"{resolved_folder}/{filename}", user, thumbnail=True)
 
     return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
@@ -928,23 +934,20 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
         resolved = None
         if len(parts) == 2:
             folder, rest = parts
-            alt_folders = []
-            if not folder.startswith("-"):
-                alt_folders = [f"-{folder}", f"-100{folder}"]
-            else:
-                alt_folders = [folder[1:]]
+            alt_folders = legacy_folder_alternates(folder)
             for alt in alt_folders:
                 try:
                     resolved = (_media_root / alt / rest).resolve(strict=True)
+                    logger.debug("Legacy fallback: served media via alternate folder resolution")
                     break
-                except OSError, ValueError:
+                except OSError, ValueError, RuntimeError:
                     continue
         if resolved is None:
             raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    _enforce_media_acl(path, user)
+    _enforce_media_acl(str(resolved.relative_to(_media_root)), user)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
