@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..realtime import RealtimeListener
+from .media_utils import legacy_folder_alternates, legacy_marked_chat_ids
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -821,8 +822,8 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
         raise HTTPException(status_code=403, detail="Access denied")
     if media_chat_id not in user_chat_ids:
         # Legacy fallback: positive folder may correspond to negative marked ID
-        if media_chat_id > 0 and (-media_chat_id in user_chat_ids or -(1000000000000 + media_chat_id) in user_chat_ids):
-            pass
+        if media_chat_id > 0 and any(mid in user_chat_ids for mid in legacy_marked_chat_ids(media_chat_id)):
+            logger.debug("ACL legacy grant: positive folder %d mapped to allowed chat", media_chat_id)
         else:
             raise HTTPException(status_code=403, detail="Access denied")
 
@@ -928,23 +929,22 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
         resolved = None
         if len(parts) == 2:
             folder, rest = parts
-            alt_folders = []
-            if not folder.startswith("-"):
-                alt_folders = [f"-{folder}", f"-100{folder}"]
-            else:
-                alt_folders = [folder[1:]]
+            alt_folders = legacy_folder_alternates(folder)
             for alt in alt_folders:
                 try:
                     resolved = (_media_root / alt / rest).resolve(strict=True)
+                    logger.debug("Legacy fallback: served %s via alt folder %s", path, alt)
                     break
-                except OSError, ValueError:
+                except OSError, ValueError, RuntimeError:
                     continue
         if resolved is None:
             raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    _enforce_media_acl(path, user)
+    resolved_relative = resolved.relative_to(_media_root)
+    resolved_folder = str(resolved_relative.parts[0])
+    _enforce_media_acl(f"{resolved_folder}/{'/'.join(str(p) for p in resolved_relative.parts[1:])}", user)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")

@@ -15,6 +15,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.web.media_utils import legacy_folder_alternates
+
 logger = logging.getLogger(__name__)
 
 # Limit decompression to prevent pixel-bomb OOM attacks (~50 megapixels)
@@ -126,18 +128,18 @@ async def ensure_thumbnail(
     if not source.exists():
         # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
         # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
-        alt_folders = []
-        if not folder.startswith("-"):
-            alt_folders = [f"-{folder}", f"-100{folder}"]
-        else:
-            alt_folders = [folder[1:]]
+        alt_folders = legacy_folder_alternates(folder)
         found = False
         for alt in alt_folders:
-            alt_source = (media_root / alt / filename).resolve()
-            if alt_source.is_relative_to(media_root_resolved) and alt_source.exists():
-                source = alt_source
-                found = True
-                break
+            try:
+                alt_source = (media_root / alt / filename).resolve()
+                if alt_source.is_relative_to(media_root_resolved) and alt_source.exists():
+                    logger.debug("Thumbnail legacy fallback: %s/%s via alt folder %s", folder, filename, alt)
+                    source = alt_source
+                    found = True
+                    break
+            except OSError, RuntimeError:
+                continue
         if not found:
             return None
 
