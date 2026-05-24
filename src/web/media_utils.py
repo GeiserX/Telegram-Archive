@@ -6,6 +6,10 @@ and used consistently across serve_media, thumbnails, and ACL checks.
 
 CHANNEL_ID_OFFSET: int = 1_000_000_000_000
 
+IMAGE_EXTENSIONS: set[str] = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"}
+VIDEO_EXTENSIONS: set[str] = {"mp4", "mkv", "avi", "mov", "webm", "m4v", "3gp"}
+THUMBNAIL_EXTENSIONS: set[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
 
 def legacy_folder_alternates(folder: str) -> list[str]:
     """Return alternate folder names for legacy positive/negative ID paths.
@@ -47,6 +51,8 @@ def derive_stale_folder(chat_id: int) -> str | None:
     Basic groups: chat_id = -X  →  old folder = "X"
     Channels:     chat_id = -(10^12 + X)  →  old folder = "X"
     Users:        chat_id > 0  →  no mismatch possible, return None
+
+    Used by migration 013 and tests (not imported at web runtime).
     """
     if chat_id >= 0:
         return None
