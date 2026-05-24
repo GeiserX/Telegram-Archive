@@ -77,9 +77,6 @@
             }
         }
 
-        [v-cloak] {
-            display: none !important;
-        }
 
         body,
         #app {
@@ -272,7 +269,7 @@
 </head>
 
 <body class="bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white h-screen overflow-hidden">
-    <div id="app" v-cloak class="w-full h-full">
+    <div id="app" class="w-full h-full">
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center">
             <div
@@ -2612,6 +2609,20 @@
                     showAdminPanel.value = false
                 }
 
+                // Media Gallery state (v7.10.0)
+                const showMediaGallery = ref(false)
+                const mediaGalleryTab = ref('photos')
+                const mediaGalleryItems = ref([])
+                const mediaGalleryLoading = ref(false)
+                const mediaGalleryHasMore = ref(true)
+                const mediaGalleryCounts = ref({})
+
+                const mediaTabs = [
+                    { id: 'photos', label: 'Photos & Videos' },
+                    { id: 'voice', label: 'Voice' },
+                    { id: 'files', label: 'Files' },
+                ]
+
                 // Media Gallery methods (v7.10.0)
                 const loadMediaGallery = async (append = false) => {
                     if (!selectedChat.value) return
@@ -2860,20 +2871,6 @@
                 const pinnedMessages = ref([])  // Array of all pinned messages, newest first
                 const currentPinnedIndex = ref(0)  // Which pinned message is currently shown in banner
                 const showPinnedOnly = ref(false)  // Whether we're in "pinned messages only" view
-
-                // Media Gallery state (v7.10.0)
-                const showMediaGallery = ref(false)
-                const mediaGalleryTab = ref('photos')
-                const mediaGalleryItems = ref([])
-                const mediaGalleryLoading = ref(false)
-                const mediaGalleryHasMore = ref(true)
-                const mediaGalleryCounts = ref({})
-
-                const mediaTabs = [
-                    { id: 'photos', label: 'Photos & Videos' },
-                    { id: 'voice', label: 'Voice' },
-                    { id: 'files', label: 'Files' },
-                ]
 
                 // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
