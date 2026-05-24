@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .media_utils import legacy_folder_alternates
+from .media_utils import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, legacy_folder_alternates
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +29,13 @@ ALLOWED_SIZES: set[int] = {200, 400}
 WEBP_QUALITY = 80
 _MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
-_VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".3gp"}
+_IMAGE_EXTENSIONS: set[str] = {f".{ext}" for ext in IMAGE_EXTENSIONS}
+_VIDEO_EXTENSIONS: set[str] = {f".{ext}" for ext in VIDEO_EXTENSIONS}
 
 # Limit concurrent thumbnail generations to cap peak memory (~15MB per decode)
 _generation_semaphore = asyncio.Semaphore(8)
+# Video thumbnails are heavier (ffmpeg subprocess) — lower concurrency limit
+_video_semaphore = asyncio.Semaphore(2)
 
 _DEFAULT_CACHE_DIR = "/tmp/telegram-archive-thumbs"
 
@@ -96,31 +98,36 @@ def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(source),
-                    "-ss",
-                    "00:00:01",
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    f"scale={size}:{size}:force_original_aspect_ratio=decrease",
-                    tmp_path,
-                ],
-                capture_output=True,
-                timeout=15,
-                check=True,
-            )
+            # Try at 1s first; fall back to first frame for very short videos
+            for seek_time in ("00:00:01", "00:00:00"):
+                result = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        seek_time,
+                        "-i",
+                        str(source),
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        f"scale={size}:{size}:force_original_aspect_ratio=decrease",
+                        tmp_path,
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if result.returncode == 0 and Path(tmp_path).stat().st_size > 0:
+                    break
+            else:
+                return False
             with Image.open(tmp_path) as img:
                 img.save(dest, "WEBP", quality=WEBP_QUALITY)
             return True
         finally:
             Path(tmp_path).unlink(missing_ok=True)
     except Exception as e:
-        logger.warning("Video thumbnail failed for %s: %s", source, e)
+        logger.warning("Video thumbnail generation failed: %s", e)
         return False
 
 
@@ -205,7 +212,8 @@ async def ensure_thumbnail(
         if not found:
             return None
 
-    async with _generation_semaphore:
+    sem = _video_semaphore if is_vid else _generation_semaphore
+    async with sem:
         loop = asyncio.get_running_loop()
         gen_fn = _generate_video_sync if is_vid else _generate_sync
         ok = await loop.run_in_executor(None, gen_fn, source, dest, size)

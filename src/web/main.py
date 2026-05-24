@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..realtime import RealtimeListener
-from .media_utils import legacy_folder_alternates, legacy_marked_chat_ids
+from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates, legacy_marked_chat_ids
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -1505,22 +1505,7 @@ async def get_chat_media(
             if len(parts) == 2:
                 folder, filename = parts
                 ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-                if ext in (
-                    "jpg",
-                    "jpeg",
-                    "png",
-                    "gif",
-                    "webp",
-                    "bmp",
-                    "tiff",
-                    "mp4",
-                    "mkv",
-                    "avi",
-                    "mov",
-                    "webm",
-                    "m4v",
-                    "3gp",
-                ):
+                if ext in THUMBNAIL_EXTENSIONS:
                     item["thumb_url"] = f"/media/thumb/200/{folder}/{filename}"
                 else:
                     item["thumb_url"] = None
