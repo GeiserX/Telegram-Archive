@@ -20,6 +20,8 @@ def legacy_folder_alternates(folder: str) -> list[str]:
     try:
         if not folder.startswith("-"):
             folder_int = int(folder)
+            if folder_int <= 0:
+                return []
             return [f"-{folder}", str(-(CHANNEL_ID_OFFSET + folder_int))]
         folder_int = int(folder)
     except ValueError:

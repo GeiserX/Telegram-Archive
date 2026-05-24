@@ -823,7 +823,7 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
     if media_chat_id not in user_chat_ids:
         # Legacy fallback: positive folder may correspond to negative marked ID
         if media_chat_id > 0 and any(mid in user_chat_ids for mid in legacy_marked_chat_ids(media_chat_id)):
-            logger.debug("ACL legacy grant: positive folder %d mapped to allowed chat", media_chat_id)
+            logger.debug("ACL legacy grant: positive folder mapped to allowed chat via marked-ID convention")
         else:
             raise HTTPException(status_code=403, detail="Access denied")
 
@@ -886,18 +886,18 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if user.no_download and not folder.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
-    # Chat-level access check
-    _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
-
     from .thumbnails import ensure_thumbnail, resolve_cache_dir
 
     global _thumb_cache_dir
     if _thumb_cache_dir is None:
         _thumb_cache_dir = resolve_cache_dir(_media_root)
 
-    thumb_path = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
-    if not thumb_path:
+    result = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
+    if not result:
         raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    thumb_path, resolved_folder = result
+    _enforce_media_acl(f"{resolved_folder}/{filename}", user, thumbnail=True)
 
     return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
@@ -933,7 +933,7 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
             for alt in alt_folders:
                 try:
                     resolved = (_media_root / alt / rest).resolve(strict=True)
-                    logger.debug("Legacy fallback: served %s via alt folder %s", path, alt)
+                    logger.debug("Legacy fallback: served media via alternate folder resolution")
                     break
                 except OSError, ValueError, RuntimeError:
                     continue
@@ -942,9 +942,7 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    resolved_relative = resolved.relative_to(_media_root)
-    resolved_folder = str(resolved_relative.parts[0])
-    _enforce_media_acl(f"{resolved_folder}/{'/'.join(str(p) for p in resolved_relative.parts[1:])}", user)
+    _enforce_media_acl(str(resolved.relative_to(_media_root)), user)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")

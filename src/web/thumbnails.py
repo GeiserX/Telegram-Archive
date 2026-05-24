@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.web.media_utils import legacy_folder_alternates
+from .media_utils import legacy_folder_alternates
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +89,12 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
 
 async def ensure_thumbnail(
     media_root: Path, size: int, folder: str, filename: str, *, cache_dir: Path | None = None
-) -> Path | None:
-    """Return the path to a cached thumbnail, generating it if needed.
+) -> tuple[Path, str] | None:
+    """Return (thumb_path, resolved_folder) or None.
 
-    Returns None when the request is invalid or generation fails.
-    Includes path traversal protection.
+    resolved_folder is the actual folder the source was found in (may differ
+    from the requested folder due to legacy ID fallback). Callers use this
+    for ACL enforcement on the resolved path.
 
     When cache_dir is provided, thumbnails are written there instead of
     under {media_root}/.thumbs/ — this supports read-only media volumes.
@@ -122,20 +123,21 @@ async def ensure_thumbnail(
         if not dest.is_relative_to(thumbs_root):
             return None
 
+    resolved_folder = folder
+
     if dest.exists():
-        return dest
+        return dest, resolved_folder
 
     if not source.exists():
-        # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
-        # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
         alt_folders = legacy_folder_alternates(folder)
         found = False
         for alt in alt_folders:
             try:
                 alt_source = (media_root / alt / filename).resolve()
                 if alt_source.is_relative_to(media_root_resolved) and alt_source.exists():
-                    logger.debug("Thumbnail legacy fallback: %s/%s via alt folder %s", folder, filename, alt)
+                    logger.debug("Thumbnail legacy fallback resolved via alternate folder")
                     source = alt_source
+                    resolved_folder = alt
                     found = True
                     break
             except OSError, RuntimeError:
@@ -146,4 +148,4 @@ async def ensure_thumbnail(
     async with _generation_semaphore:
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(None, _generate_sync, source, dest, size)
-    return dest if ok else None
+    return (dest, resolved_folder) if ok else None

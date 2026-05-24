@@ -50,6 +50,10 @@ class TestLegacyFolderAlternatesForward(unittest.TestCase):
         self.assertEqual(legacy_folder_alternates("photos"), [])
         self.assertEqual(legacy_folder_alternates("-abc"), [])
 
+    def test_zero_folder_returns_empty_list(self):
+        """Folder '0' is not a valid Telegram entity ID."""
+        self.assertEqual(legacy_folder_alternates("0"), [])
+
 
 class TestLegacyFolderAlternatesReverse(unittest.TestCase):
     """Reverse resolution: negative folder -> possible old positive folder."""
@@ -68,6 +72,11 @@ class TestLegacyFolderAlternatesReverse(unittest.TestCase):
         """Smallest channel ID -1000000000001 resolves to 1."""
         result = legacy_folder_alternates("-1000000000001")
         self.assertEqual(result, ["1"])
+
+    def test_reverse_exact_offset_treated_as_basic_group(self):
+        """Exact CHANNEL_ID_OFFSET boundary is treated as basic group (not channel)."""
+        result = legacy_folder_alternates(str(-CHANNEL_ID_OFFSET))
+        self.assertEqual(result, [str(CHANNEL_ID_OFFSET)])
 
     def test_reverse_always_returns_one_alternate(self):
         """Reverse resolution always returns exactly one alternate."""
@@ -129,6 +138,10 @@ class TestDeriveStaleFolder(unittest.TestCase):
     def test_boundary_smallest_channel(self):
         """Smallest channel ID -1000000000001 derives folder 1."""
         self.assertEqual(derive_stale_folder(-1000000000001), "1")
+
+    def test_exact_offset_treated_as_basic_group(self):
+        """Exact -CHANNEL_ID_OFFSET is basic group, not channel (raw == offset, not >)."""
+        self.assertEqual(derive_stale_folder(-CHANNEL_ID_OFFSET), str(CHANNEL_ID_OFFSET))
 
     def test_result_is_string_when_not_none(self):
         """Non-None results are strings."""

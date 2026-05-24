@@ -214,7 +214,9 @@ class TestEnsureThumbnail(unittest.IsolatedAsyncioTestCase):
 
             result = await ensure_thumbnail(media_root, 200, folder, "img.jpg")
             self.assertIsNotNone(result)
-            self.assertEqual(result, thumb.resolve())
+            thumb_path, resolved_folder = result
+            self.assertEqual(thumb_path, thumb.resolve())
+            self.assertEqual(resolved_folder, folder)
 
     async def test_returns_none_when_source_does_not_exist(self):
         """ensure_thumbnail returns None when source file is missing."""
@@ -238,8 +240,10 @@ class TestEnsureThumbnail(unittest.IsolatedAsyncioTestCase):
 
             result = await ensure_thumbnail(media_root, 200, folder, "photo.png")
             self.assertIsNotNone(result)
-            self.assertTrue(result.exists())
-            self.assertEqual(result.suffix, ".webp")
+            thumb_path, resolved_folder = result
+            self.assertTrue(thumb_path.exists())
+            self.assertEqual(thumb_path.suffix, ".webp")
+            self.assertEqual(resolved_folder, folder)
 
 
 if __name__ == "__main__":
