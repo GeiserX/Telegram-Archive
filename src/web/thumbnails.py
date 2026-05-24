@@ -47,6 +47,10 @@ def resolve_cache_dir(media_root: Path | None) -> Path:
         candidate = media_root / ".thumbs"
         try:
             candidate.mkdir(parents=True, exist_ok=True)
+            # Verify actual write access (dir may exist on a read-only mount)
+            probe = candidate / ".write_test"
+            probe.touch()
+            probe.unlink()
             return candidate
         except OSError:
             pass
