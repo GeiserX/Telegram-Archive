@@ -140,7 +140,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
     """Blocking thumbnail generation -- meant for run_in_executor."""
     try:
         if source.stat().st_size > _MAX_SOURCE_BYTES:
-            logger.warning("Source too large for thumbnail: %s (%d bytes)", source, source.stat().st_size)
+            logger.warning("Source too large for thumbnail (%d bytes)", source.stat().st_size)
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
@@ -148,7 +148,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
             img.save(dest, "WEBP", quality=WEBP_QUALITY)
         return True
     except Exception as e:
-        logger.warning("Thumbnail generation failed for %s: %s", source, e)
+        logger.warning("Thumbnail generation failed: %s", e)
         return False
 
 

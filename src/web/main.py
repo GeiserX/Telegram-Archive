@@ -818,7 +818,7 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
     try:
         media_chat_id = int(parts[0])
     except ValueError:
-        logger.warning("Blocked restricted media request for non-chat folder: %s", parts[0])
+        logger.warning("Blocked restricted media request for non-numeric folder")
         raise HTTPException(status_code=403, detail="Access denied")
     if media_chat_id not in user_chat_ids:
         # Legacy fallback: positive folder may correspond to negative marked ID
