@@ -295,12 +295,20 @@
                 <form @submit.prevent="performLogin" class="space-y-5">
                     <!-- Login mode toggle -->
                     <div class="flex rounded-xl overflow-hidden border border-white/30">
-                        <button type="button" @click="loginMode = 'password'" :class="loginMode === 'password' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">Password</button>
+                        <button type="button" @click="loginMode = 'password'" :class="loginMode === 'password' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">User/Password</button>
                         <button type="button" @click="loginMode = 'token'" :class="loginMode === 'token' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">Share Token</button>
                     </div>
 
-                    <!-- Password login -->
-                    <template v-if="loginMode === 'password'">
+                    <!-- Token login -->
+                    <div v-if="loginMode === 'token'">
+                        <label class="block text-sm font-medium mb-2 text-blue-100">Share Token</label>
+                        <input v-model="tokenInput" type="text" autocomplete="off"
+                            placeholder="Paste your share token"
+                            class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition font-mono text-sm">
+                    </div>
+
+                    <!-- Password login (default) -->
+                    <div v-else class="space-y-5">
                         <div>
                             <label class="block text-sm font-medium mb-2 text-blue-100">Username</label>
                             <input v-model="loginForm.username" type="text" autocomplete="username"
@@ -313,17 +321,7 @@
                                 placeholder="Enter your password"
                                 class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition">
                         </div>
-                    </template>
-
-                    <!-- Token login -->
-                    <template v-else>
-                        <div>
-                            <label class="block text-sm font-medium mb-2 text-blue-100">Share Token</label>
-                            <input v-model="tokenInput" type="text" autocomplete="off"
-                                placeholder="Paste your share token"
-                                class="w-full bg-white/20 backdrop-blur-sm text-white placeholder-blue-200 rounded-xl px-4 py-3 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition font-mono text-sm">
-                        </div>
-                    </template>
+                    </div>
 
                     <p v-if="loginError" class="text-sm text-red-200 bg-red-500/20 rounded-lg p-2 text-center">{{
                         loginError }}</p>
