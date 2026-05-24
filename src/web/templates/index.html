@@ -285,20 +285,14 @@
                 </div>
 
                 <h1 class="text-3xl font-bold mb-2 text-center text-white">Telegram Archive</h1>
-                <div v-if="loadingAuth" class="flex justify-center mb-8">
-                    <svg class="w-6 h-6 animate-spin text-blue-200" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                    </svg>
-                </div>
-                <p class="text-sm text-blue-100 mb-8 text-center" v-else-if="authRequired">
+                <p class="text-sm text-amber-200 mb-8 text-center" v-if="authCheckFailed">
+                    Could not verify authentication. Try opening in your browser instead of in-app.
+                </p>
+                <p class="text-sm text-blue-100 mb-8 text-center" v-else>
                     Sign in to access your backup
                 </p>
-                <p class="text-sm text-amber-200 mb-8 text-center" v-else-if="authCheckFailed">
-                    ⚠️ Could not verify authentication. Try opening in your browser instead of in-app.
-                </p>
 
-                <form @submit.prevent="performLogin" class="space-y-5" v-if="authRequired || authCheckFailed">
+                <form @submit.prevent="performLogin" class="space-y-5">
                     <!-- Login mode toggle -->
                     <div class="flex rounded-xl overflow-hidden border border-white/30">
                         <button type="button" @click="loginMode = 'password'" :class="loginMode === 'password' ? 'bg-white/30 text-white' : 'text-blue-200 hover:text-white'" class="flex-1 py-2 text-sm font-medium transition">Password</button>
