@@ -1,12 +1,16 @@
 """On-demand thumbnail generation with disk caching.
 
 Generates WebP thumbnails at whitelisted sizes, stored under
-{media_root}/.thumbs/{size}/{folder}/{stem}.webp.
+{cache_dir}/{size}/{folder}/{stem}.webp.
 Pillow runs in a thread executor to avoid blocking the async event loop.
+
+The cache directory is separate from the media root so thumbnails work
+even when the media volume is mounted read-only.
 """
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -24,6 +28,32 @@ _IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
 
 # Limit concurrent thumbnail generations to cap peak memory (~15MB per decode)
 _generation_semaphore = asyncio.Semaphore(8)
+
+_DEFAULT_CACHE_DIR = "/tmp/telegram-archive-thumbs"
+
+
+def resolve_cache_dir(media_root: Path | None) -> Path:
+    """Determine the thumbnail cache directory.
+
+    Priority: THUMBNAIL_CACHE_DIR env > {media_root}/.thumbs (if writable) > /tmp fallback.
+    """
+    env_dir = os.environ.get("THUMBNAIL_CACHE_DIR")
+    if env_dir:
+        p = Path(env_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    if media_root:
+        candidate = media_root / ".thumbs"
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except OSError:
+            pass
+
+    p = Path(_DEFAULT_CACHE_DIR)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _is_image(filename: str) -> bool:
@@ -51,11 +81,16 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
         return False
 
 
-async def ensure_thumbnail(media_root: Path, size: int, folder: str, filename: str) -> Path | None:
+async def ensure_thumbnail(
+    media_root: Path, size: int, folder: str, filename: str, *, cache_dir: Path | None = None
+) -> Path | None:
     """Return the path to a cached thumbnail, generating it if needed.
 
     Returns None when the request is invalid or generation fails.
     Includes path traversal protection.
+
+    When cache_dir is provided, thumbnails are written there instead of
+    under {media_root}/.thumbs/ — this supports read-only media volumes.
     """
     if size not in ALLOWED_SIZES:
         return None
@@ -70,10 +105,16 @@ async def ensure_thumbnail(media_root: Path, size: int, folder: str, filename: s
     if not source.is_relative_to(media_root_resolved):
         return None
 
-    dest = _thumb_path(media_root, size, folder, filename).resolve()
-    thumbs_root = (media_root / ".thumbs").resolve()
-    if not dest.is_relative_to(thumbs_root):
-        return None
+    if cache_dir:
+        stem = Path(filename).stem
+        dest = (cache_dir / str(size) / folder / f"{stem}.webp").resolve()
+        if not dest.is_relative_to(cache_dir.resolve()):
+            return None
+    else:
+        dest = _thumb_path(media_root, size, folder, filename).resolve()
+        thumbs_root = (media_root / ".thumbs").resolve()
+        if not dest.is_relative_to(thumbs_root):
+            return None
 
     if dest.exists():
         return dest
