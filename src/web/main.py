@@ -867,6 +867,9 @@ if static_dir.exists():
 # Media is served via authenticated endpoint below (not StaticFiles)
 _media_root = Path(config.media_path).resolve() if os.path.exists(config.media_path) else None
 
+# Thumbnail cache lives outside media root so it works with read-only media volumes
+_thumb_cache_dir: Path | None = None
+
 
 # Thumbnail endpoint MUST be defined before the catch-all /media/{path:path} route
 @app.get("/media/thumb/{size}/{folder:path}/{filename}")
@@ -881,9 +884,13 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     # Chat-level access check
     _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
 
-    from .thumbnails import ensure_thumbnail
+    from .thumbnails import ensure_thumbnail, resolve_cache_dir
 
-    thumb_path = await ensure_thumbnail(_media_root, size, folder, filename)
+    global _thumb_cache_dir
+    if _thumb_cache_dir is None:
+        _thumb_cache_dir = resolve_cache_dir(_media_root)
+
+    thumb_path = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
     if not thumb_path:
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
