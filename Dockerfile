@@ -3,9 +3,10 @@ FROM python:3.14-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (ffmpeg for video thumbnail extraction)
 RUN apt-get update && apt-get install -y \
     gcc \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast, reproducible dependency installation

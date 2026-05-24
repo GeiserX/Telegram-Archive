@@ -11,6 +11,9 @@ even when the media volume is mounted read-only.
 import asyncio
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image
@@ -27,6 +30,7 @@ WEBP_QUALITY = 80
 _MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 _IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+_VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".3gp"}
 
 # Limit concurrent thumbnail generations to cap peak memory (~15MB per decode)
 _generation_semaphore = asyncio.Semaphore(8)
@@ -66,6 +70,60 @@ def _is_image(filename: str) -> bool:
     return Path(filename).suffix.lower() in _IMAGE_EXTENSIONS
 
 
+def _is_video(filename: str) -> bool:
+    return Path(filename).suffix.lower() in _VIDEO_EXTENSIONS
+
+
+_FFMPEG_AVAILABLE: bool | None = None
+
+
+def _check_ffmpeg() -> bool:
+    global _FFMPEG_AVAILABLE
+    if _FFMPEG_AVAILABLE is None:
+        _FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
+    return _FFMPEG_AVAILABLE
+
+
+def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
+    """Extract a frame from video and create thumbnail — blocking."""
+    try:
+        if source.stat().st_size > _MAX_SOURCE_BYTES * 4:
+            return False
+        if not _check_ffmpeg():
+            logger.debug("ffmpeg not available for video thumbnails")
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-ss",
+                    "00:00:01",
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    f"scale={size}:{size}:force_original_aspect_ratio=decrease",
+                    tmp_path,
+                ],
+                capture_output=True,
+                timeout=15,
+                check=True,
+            )
+            with Image.open(tmp_path) as img:
+                img.save(dest, "WEBP", quality=WEBP_QUALITY)
+            return True
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("Video thumbnail failed for %s: %s", source, e)
+        return False
+
+
 def _thumb_path(media_root: Path, size: int, folder: str, filename: str) -> Path:
     stem = Path(filename).stem
     return media_root / ".thumbs" / str(size) / folder / f"{stem}.webp"
@@ -102,7 +160,9 @@ async def ensure_thumbnail(
     if size not in ALLOWED_SIZES:
         return None
 
-    if not _is_image(filename):
+    is_img = _is_image(filename)
+    is_vid = _is_video(filename)
+    if not is_img and not is_vid:
         return None
 
     # Path traversal protection: resolve and verify containment
@@ -147,5 +207,6 @@ async def ensure_thumbnail(
 
     async with _generation_semaphore:
         loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(None, _generate_sync, source, dest, size)
+        gen_fn = _generate_video_sync if is_vid else _generate_sync
+        ok = await loop.run_in_executor(None, gen_fn, source, dest, size)
     return (dest, resolved_folder) if ok else None
