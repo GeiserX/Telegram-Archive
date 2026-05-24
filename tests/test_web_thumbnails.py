@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from src.web.thumbnails import (
     _IMAGE_EXTENSIONS,
     _MAX_SOURCE_BYTES,
-    _VIDEO_EXTENSIONS,
     ALLOWED_SIZES,
     WEBP_QUALITY,
     _check_ffmpeg,
