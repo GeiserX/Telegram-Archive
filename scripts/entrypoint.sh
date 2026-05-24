@@ -92,6 +92,17 @@ if has_tables and not has_alembic:
             CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
         );
     \"\"\")
+    # Check artifact from migration 013: file_path values use negative chat_id folders
+    # If any media row for a negative chat_id has a correctly-negative folder, 013 has run
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT 1 FROM media
+            WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%'
+            LIMIT 1
+        );
+    \"\"\")
+    has_013_paths = cur.fetchone()[0]
+
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -198,7 +209,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_012_index:
+    if has_013_paths:
+        stamp_version = '013'
+    elif has_012_index:
         stamp_version = '012'
     elif has_011_content_hash:
         stamp_version = '011'
@@ -286,6 +299,10 @@ if has_tables and not has_alembic:
         )
     ''')
 
+    # Check artifact from migration 013: file_path values use negative chat_id folders
+    cur.execute(\"SELECT EXISTS(SELECT 1 FROM media WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%' LIMIT 1)\")
+    has_013_paths = cur.fetchone()[0]
+
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_media_chat_type'\")
     has_012_index = cur.fetchone() is not None
@@ -336,7 +353,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_012_index:
+    if has_013_paths:
+        stamp_version = '013'
+    elif has_012_index:
         stamp_version = '012'
     elif has_011_content_hash:
         stamp_version = '011'

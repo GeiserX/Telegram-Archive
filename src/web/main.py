@@ -820,7 +820,11 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
         logger.warning("Blocked restricted media request for non-chat folder: %s", parts[0])
         raise HTTPException(status_code=403, detail="Access denied")
     if media_chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
+        # Legacy fallback: positive folder may correspond to negative marked ID
+        if media_chat_id > 0 and (-media_chat_id in user_chat_ids or -(1000000000000 + media_chat_id) in user_chat_ids):
+            pass
+        else:
+            raise HTTPException(status_code=403, detail="Access denied")
 
 
 def _strip_original_media_paths(messages: list[dict]) -> None:
@@ -918,7 +922,25 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     try:
         resolved = candidate.resolve(strict=True)
     except OSError, ValueError:
-        raise HTTPException(status_code=404, detail="File not found")
+        # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
+        # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
+        parts = path.split("/", 1)
+        resolved = None
+        if len(parts) == 2:
+            folder, rest = parts
+            alt_folders = []
+            if not folder.startswith("-"):
+                alt_folders = [f"-{folder}", f"-100{folder}"]
+            else:
+                alt_folders = [folder[1:]]
+            for alt in alt_folders:
+                try:
+                    resolved = (_media_root / alt / rest).resolve(strict=True)
+                    break
+                except OSError, ValueError:
+                    continue
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
