@@ -886,6 +886,9 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if user.no_download and not folder.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
+    # Early ACL check on requested path (prevents existence leakage)
+    _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
+
     from .thumbnails import ensure_thumbnail, resolve_cache_dir
 
     global _thumb_cache_dir
@@ -897,7 +900,9 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
     thumb_path, resolved_folder = result
-    _enforce_media_acl(f"{resolved_folder}/{filename}", user, thumbnail=True)
+    # Secondary ACL on resolved path if it differs (prevents bypass via legacy fallback)
+    if resolved_folder != folder:
+        _enforce_media_acl(f"{resolved_folder}/{filename}", user, thumbnail=True)
 
     return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
