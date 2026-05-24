@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.10.10] - 2026-05-24
+
+### Fixed
+- **Viewer login page renders again** — Fixed a Vue setup-time crash from the media gallery code that initialized `showMediaGallery` after a watcher referenced it. The crash mounted the app as an empty page before the user/password login form could render.
+
 ## [7.10.0] - 2026-05-23
 
 ### Added
