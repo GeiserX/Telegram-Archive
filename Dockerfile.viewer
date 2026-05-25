@@ -3,9 +3,10 @@ FROM python:3.14-slim
 # Set working directory
 WORKDIR /app
 
-# Install system libraries for Pillow (thumbnail generation)
+# Install system libraries for Pillow + ffmpeg for video thumbnail extraction
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo libwebp7 libwebpmux3 zlib1g \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast, reproducible dependency installation
