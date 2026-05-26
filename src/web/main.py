@@ -947,7 +947,9 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not resolved.is_relative_to(_media_root):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    _enforce_media_acl(str(resolved.relative_to(_media_root)), user)
+    # ACL uses the original request path (chat folder), not the resolved symlink
+    # target — symlinks into _shared/ don't carry chat folder context.
+    _enforce_media_acl(path, user)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
