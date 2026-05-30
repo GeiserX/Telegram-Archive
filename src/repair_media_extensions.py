@@ -51,14 +51,21 @@ def _is_corrupt_basename(basename: str, clean_name: str) -> bool:
 def _repair_direct_file(corrupt_path: str, clean_path: str) -> bool:
     """No-dedup case: rename the corrupt on-disk file to its clean name.
 
-    Returns True when ``clean_path`` ends up holding the intended content.
+    Returns True when ``clean_path`` ends up holding the intended content,
+    which signals the caller to repoint ``media.file_path`` at it.
     """
     if os.path.lexists(clean_path):
-        # A clean file already exists. Keep it; only adopt it when content matches.
+        # A clean file already exists.
+        if not os.path.lexists(corrupt_path):
+            # The user already renamed it by hand (the #175 reporter's own
+            # workaround) — adopt the clean file so the DB row is corrected.
+            return True
         if os.path.isfile(clean_path) and os.path.isfile(corrupt_path):
             if compute_file_hash(clean_path) == compute_file_hash(corrupt_path):
                 return True  # redundant corrupt copy; leave it untouched (no delete)
         return False  # genuine distinct file or unreadable — do not clobber
+    if not os.path.lexists(corrupt_path):
+        return False  # nothing on disk under either name
     os.replace(corrupt_path, clean_path)
     return True
 
@@ -77,6 +84,12 @@ def _repair_symlink_blob(link_path: str, shared_dir: str) -> bool:
     blob_path = os.path.normpath(os.path.join(link_dir, target))
     blob_dir = os.path.dirname(blob_path)
     blob_name = os.path.basename(blob_path)
+
+    # Only ever rename blobs that live inside our own _shared store; never touch
+    # externally managed targets (e.g. git-annex) the symlink may point at.
+    shared_root = os.path.normpath(shared_dir)
+    if os.path.commonpath([shared_root, blob_path]) != shared_root:
+        return False
 
     if not _is_corrupt_basename(blob_name, clean_name):
         return False

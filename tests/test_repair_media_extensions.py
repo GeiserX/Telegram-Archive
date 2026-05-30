@@ -95,6 +95,28 @@ async def test_repair_no_dedup_skips_when_clean_exists_with_different_content(tm
     assert "m1" not in db.updates
 
 
+async def test_repair_no_dedup_adopts_manually_renamed_file(tmp_path):
+    """The #175 reporter renamed files by hand; repair must still fix the DB row.
+
+    Clean file exists, corrupt path is already gone -> adopt the clean file and
+    repoint media.file_path (otherwise the marker suppresses any later retry).
+    """
+    media = _media_root(tmp_path)
+    chat = media / "-100123"
+    chat.mkdir()
+    clean = chat / "abc.mp4"
+    clean.write_bytes(b"video")
+    corrupt_recorded = chat / "abc.mp4.7.140234567890"  # in DB, no longer on disk
+
+    db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt_recorded)}])
+
+    repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 1
+    assert db.updates["m1"] == str(clean)
+    assert clean.read_bytes() == b"video"
+
+
 async def test_repair_no_dedup_adopts_clean_when_content_matches(tmp_path):
     media = _media_root(tmp_path)
     chat = media / "-100123"
@@ -165,6 +187,30 @@ async def test_repair_dedup_relinks_when_clean_blob_already_present(tmp_path):
     assert repaired == 1
     assert os.path.realpath(link) == str(clean_blob)
     assert clean_blob.read_bytes() == b"video"
+
+
+async def test_repair_dedup_never_renames_blob_outside_shared(tmp_path):
+    """A symlink pointing at an externally managed store must not be touched."""
+    media = _media_root(tmp_path)
+    external = tmp_path / "external_store"
+    external.mkdir()
+    external_blob = external / "abc.mp4.7.140234567890"
+    external_blob.write_bytes(b"managed-elsewhere")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(external_blob, chat))
+
+    db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": str(link)}])
+
+    repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 0
+    # External file untouched; no clean sibling created next to it.
+    assert external_blob.exists()
+    assert not (external / "abc.mp4").exists()
+    assert os.readlink(link) == os.path.relpath(external_blob, chat)
 
 
 # ---------------------------------------------------------------------------
