@@ -2131,6 +2131,10 @@ async def run_backup(config: Config, client: TelegramClient | None = None):
     backup = await TelegramBackup.create(config, client=client)
     try:
         await backup.connect()
+        # One-time repair of media files corrupted by the pre-7.11.3 finalize bug (#175).
+        from .repair_media_extensions import repair_media_extensions
+
+        await repair_media_extensions(config.media_path, backup.db)
         await backup.backup_all()
     finally:
         await backup.disconnect()
