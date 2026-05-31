@@ -17,11 +17,18 @@ This pass is anchored to the DB's clean ``file_name`` so detection has zero
 false positives: a path is only treated as corrupt when its basename equals
 ``file_name`` plus a ``.<int>.<int>`` tail. It never deletes anything (per
 project safety rules) and is crash-safe and idempotent via a marker file.
+
+The marker is written only when no row was *deferred* — i.e. only when no
+transient failure (filesystem error, DB write error) left repairable work
+undone. Permanent no-ops (a genuinely distinct file already under the clean
+name) do not block the marker, since retrying them can never succeed.
 """
 
+import asyncio
 import logging
 import os
 import re
+from typing import Protocol
 
 from .message_utils import compute_file_hash
 
@@ -29,8 +36,18 @@ logger = logging.getLogger(__name__)
 
 REPAIR_MARKER = ".repaired-175"
 
-# Secondary guard: pid is a small int, id()-derived task_id is large.
-_CORRUPT_TAIL = re.compile(r"\.\d{1,7}\.\d{4,}$")
+# Secondary guard: the task_id (id()-derived) is always large; the pid may be
+# any positive int. Anchoring to the clean name is what guarantees zero false
+# positives, so the pid bound is intentionally permissive.
+_CORRUPT_TAIL = re.compile(r"\.\d+\.\d{4,}$")
+
+
+class _MediaRepairDB(Protocol):
+    """The narrow DB surface the repair pass depends on."""
+
+    async def get_media_for_verification(self) -> list[dict]: ...
+
+    async def update_media_file_path(self, media_id: object, file_path: str) -> None: ...
 
 
 def _is_corrupt_basename(basename: str, clean_name: str) -> bool:
@@ -52,7 +69,8 @@ def _repair_direct_file(corrupt_path: str, clean_path: str) -> bool:
     """No-dedup case: rename the corrupt on-disk file to its clean name.
 
     Returns True when ``clean_path`` ends up holding the intended content,
-    which signals the caller to repoint ``media.file_path`` at it.
+    which signals the caller to repoint ``media.file_path`` at it. Raises
+    ``OSError`` on a transient filesystem failure so the driver can defer it.
     """
     if os.path.lexists(clean_path):
         # A clean file already exists.
@@ -76,7 +94,11 @@ def _repair_symlink_blob(link_path: str, shared_dir: str) -> bool:
     The symlink basename is already clean; only its target blob name is corrupt.
     Renames the blob FIRST (creating the clean truth), then retargets the link,
     so a crash in between leaves a dangling link that re-resolves on the next
-    run (the clean blob is found and the link is simply re-pointed).
+    run (the clean blob is found and the link is simply re-pointed). The same
+    re-resolution heals sibling symlinks (other chats sharing the dedup'd blob)
+    whose targets still carry the old corrupt name after the blob was renamed.
+
+    Raises ``OSError`` on a transient filesystem failure so the driver defers it.
     """
     link_dir = os.path.dirname(link_path)
     clean_name = os.path.basename(link_path)
@@ -87,8 +109,11 @@ def _repair_symlink_blob(link_path: str, shared_dir: str) -> bool:
 
     # Only ever rename blobs that live inside our own _shared store; never touch
     # externally managed targets (e.g. git-annex) the symlink may point at.
-    shared_root = os.path.normpath(shared_dir)
-    if os.path.commonpath([shared_root, blob_path]) != shared_root:
+    # realpath (not normpath) so a symlinked path component can't smuggle the
+    # target outside _shared past the containment check.
+    shared_root = os.path.realpath(shared_dir)
+    real_blob_dir = os.path.realpath(blob_dir)
+    if real_blob_dir != shared_root and not real_blob_dir.startswith(shared_root + os.sep):
         return False
 
     if not _is_corrupt_basename(blob_name, clean_name):
@@ -100,7 +125,8 @@ def _repair_symlink_blob(link_path: str, shared_dir: str) -> bool:
         if os.path.isfile(clean_blob) and os.path.isfile(blob_path):
             if compute_file_hash(clean_blob) != compute_file_hash(blob_path):
                 return False  # distinct content under the clean name — skip
-        # Clean blob already present (matching or our own prior run): just relink.
+        # Clean blob already present (matching content, our own prior run, or a
+        # sibling symlink that already renamed it): just relink.
     elif os.path.isfile(blob_path):
         os.replace(blob_path, clean_blob)
     else:
@@ -112,28 +138,19 @@ def _repair_symlink_blob(link_path: str, shared_dir: str) -> bool:
     return True
 
 
-async def repair_media_extensions(media_path: str, db: object) -> int:
-    """Repair files corrupted by #175. Returns the number of records repaired.
+def _repair_records_sync(records: list[dict], shared_dir: str) -> tuple[int, int, list[tuple]]:
+    """Do the blocking filesystem repair work off the event loop.
 
-    Idempotent: a marker under ``_shared/`` short-circuits subsequent runs.
-    Never deletes files; orphan ``.part`` artifacts are only counted/logged.
+    Returns ``(repaired, deferred, pending_db_updates)`` where
+    ``pending_db_updates`` is a list of ``(media_id, clean_path)`` rows whose
+    ``media.file_path`` must be repointed by the async caller. ``deferred``
+    counts rows that hit a transient filesystem error and should be retried on
+    a later run (these block the idempotency marker).
     """
-    if not media_path or not os.path.isdir(media_path):
-        return 0
-
-    shared_dir = os.path.join(media_path, "_shared")
-    marker = os.path.join(shared_dir, REPAIR_MARKER)
-    if os.path.exists(marker):
-        return 0
-
-    try:
-        records = await db.get_media_for_verification()
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Media repair skipped — could not read media records: {e}")
-        return 0
-
     repaired = 0
-    skipped = 0
+    deferred = 0
+    pending_db_updates: list[tuple] = []
+
     for record in records:
         file_path = record.get("file_path")
         clean_name = record.get("file_name")
@@ -154,33 +171,63 @@ async def repair_media_extensions(media_path: str, db: object) -> int:
             if _is_corrupt_basename(os.path.basename(file_path), clean_name):
                 clean_path = os.path.join(os.path.dirname(file_path), clean_name)
                 if _repair_direct_file(file_path, clean_path):
-                    await db.update_media_file_path(media_id, clean_path)
+                    pending_db_updates.append((media_id, clean_path))
                     repaired += 1
-                else:
-                    skipped += 1
         except OSError:
-            skipped += 1
+            deferred += 1
 
-    orphan_parts = _count_orphan_parts(shared_dir)
+    return repaired, deferred, pending_db_updates
 
-    if repaired or skipped or orphan_parts:
+
+async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
+    """Repair files corrupted by #175. Returns the number of records repaired.
+
+    Idempotent: a marker under ``_shared/`` short-circuits subsequent runs, but
+    is written only when nothing was deferred, so transient failures are retried
+    on the next run instead of being permanently suppressed. Never deletes files.
+    """
+    if not media_path or not os.path.isdir(media_path):
+        return 0
+
+    shared_dir = os.path.join(media_path, "_shared")
+    marker = os.path.join(shared_dir, REPAIR_MARKER)
+    if os.path.exists(marker):
+        return 0
+
+    try:
+        records = await db.get_media_for_verification()
+    except Exception as e:
+        logger.warning("Media repair skipped — could not read media records (%s)", type(e).__name__)
+        return 0
+
+    # Filesystem walks, hashing, and renames are blocking; keep them off the
+    # event loop so the concurrently-running listener is not starved.
+    repaired, deferred, pending_db_updates = await asyncio.to_thread(_repair_records_sync, records, shared_dir)
+
+    # Repoint media.file_path for the no-dedup rows we renamed. A failure here
+    # leaves the file renamed but the row stale; defer so the marker is withheld
+    # and the next run's adoption branch repoints it.
+    for media_id, clean_path in pending_db_updates:
+        try:
+            await db.update_media_file_path(media_id, clean_path)
+        except Exception as e:
+            logger.warning("Media repair: DB repoint failed for one record (%s)", type(e).__name__)
+            deferred += 1
+            repaired -= 1
+
+    if repaired or deferred:
         logger.info(
-            "Media extension repair: %d repaired, %d skipped, %d orphan .part files left in place",
+            "Media extension repair: %d repaired, %d deferred for retry",
             repaired,
-            skipped,
-            orphan_parts,
+            deferred,
         )
 
-    _write_marker(marker)
+    # Only seal the pass when no repairable work was left behind by a transient
+    # failure. Permanent no-ops (distinct content under the clean name) do not
+    # set ``deferred`` and therefore never block the marker.
+    if deferred == 0:
+        _write_marker(marker)
     return repaired
-
-
-def _count_orphan_parts(shared_dir: str) -> int:
-    """Count leftover ``.part`` artifacts without deleting them."""
-    count = 0
-    for _root, _dirs, files in os.walk(shared_dir):
-        count += sum(1 for f in files if f.endswith(".part"))
-    return count
 
 
 def _write_marker(marker_path: str) -> None:
@@ -189,4 +236,4 @@ def _write_marker(marker_path: str) -> None:
         with open(marker_path, "w") as f:
             f.write("media extension repair (#175) complete\n")
     except OSError as e:
-        logger.error(f"Failed to write repair marker: {e}")
+        logger.error("Failed to write repair marker (%s)", type(e).__name__)

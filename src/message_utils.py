@@ -8,6 +8,23 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def sanitize_media_filename(name: str) -> str:
+    """Strip path components from an attacker-controlled media filename.
+
+    Telegram document ``file_name`` attributes are remote-controlled and may
+    contain ``/``, ``\\``, or ``..`` segments. Left unchecked these survive into
+    ``media.file_name`` and later into on-disk ``os.replace`` targets, allowing a
+    write outside the media store (#175 repair pass made this reachable). Collapse
+    to a bare basename and neutralise residual traversal/separators.
+    """
+    name = name.replace("\\", "/")
+    name = os.path.basename(name)
+    name = name.replace("\x00", "")
+    if name in ("", ".", ".."):
+        return "_"
+    return name
+
+
 def get_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str:
     """Build the sharded path for a file in the shared store.
 

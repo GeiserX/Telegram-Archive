@@ -1,6 +1,6 @@
 """Tests for shared atomic media download finalization helpers."""
 
-from src.message_utils import finalize_atomic_download
+from src.message_utils import finalize_atomic_download, sanitize_media_filename
 
 
 def test_finalize_atomic_download_uses_temporary_fallback(tmp_path):
@@ -73,3 +73,34 @@ def test_finalize_atomic_download_returns_none_when_no_file_was_created(tmp_path
 
     assert finalize_atomic_download(None, str(missing_temp), str(fallback_path)) is None
     assert not fallback_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# sanitize_media_filename — attacker-controlled Telegram document file names
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_strips_posix_traversal():
+    assert sanitize_media_filename("../../etc/passwd") == "passwd"
+
+
+def test_sanitize_strips_windows_traversal():
+    assert sanitize_media_filename("..\\..\\windows\\system32\\evil.dll") == "evil.dll"
+
+
+def test_sanitize_collapses_leading_path_to_basename():
+    assert sanitize_media_filename("/abs/path/movie.mp4") == "movie.mp4"
+
+
+def test_sanitize_passes_clean_names_through():
+    assert sanitize_media_filename("1234_video.mp4") == "1234_video.mp4"
+
+
+def test_sanitize_neutralises_pure_traversal_tokens():
+    assert sanitize_media_filename("..") == "_"
+    assert sanitize_media_filename("") == "_"
+    assert sanitize_media_filename(".") == "_"
+
+
+def test_sanitize_drops_nul_byte():
+    assert "\x00" not in sanitize_media_filename("evil\x00.mp4")

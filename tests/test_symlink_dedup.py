@@ -166,12 +166,12 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
         # clean filename — finalize renames the download to file_name regardless
         # of the path Telethon returned (regression guard for #175).
         chat_link = os.path.join(chat_dir, "fileid123.bin")
-        if os.path.lexists(chat_link):
-            resolved = os.path.realpath(chat_link)
-            self.assertTrue(os.path.exists(resolved))
-            self.assertEqual(os.path.basename(resolved), "fileid123.bin")
-            with open(resolved, "rb") as f:
-                self.assertEqual(f.read(), b"video data")
+        self.assertTrue(os.path.lexists(chat_link), "chat-dir symlink was never created")
+        resolved = os.path.realpath(chat_link)
+        self.assertTrue(os.path.exists(resolved))
+        self.assertEqual(os.path.basename(resolved), "fileid123.bin")
+        with open(resolved, "rb") as f:
+            self.assertEqual(f.read(), b"video data")
 
 
 class TestProcessMediaDedupSymlink(unittest.TestCase):
@@ -241,12 +241,12 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         # The chat-dir symlink should resolve to the intended clean filename;
         # finalize renames the download to file_name (regression guard for #175).
         chat_file = os.path.join(chat_dir, "photo_abc")
-        if os.path.lexists(chat_file):
-            resolved = os.path.realpath(chat_file)
-            self.assertTrue(os.path.exists(resolved))
-            self.assertEqual(os.path.basename(resolved), "photo_abc")
-            with open(resolved, "rb") as f:
-                self.assertEqual(f.read(), b"mp4 content here")
+        self.assertTrue(os.path.lexists(chat_file), "chat-dir symlink was never created")
+        resolved = os.path.realpath(chat_file)
+        self.assertTrue(os.path.exists(resolved))
+        self.assertEqual(os.path.basename(resolved), "photo_abc")
+        with open(resolved, "rb") as f:
+            self.assertEqual(f.read(), b"mp4 content here")
 
     def test_process_media_preserves_existing_symlink(self):
         """An existing symlink at file_path short-circuits the download path.
@@ -682,12 +682,12 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         # Symlink should resolve to the intended clean filename; finalize renames
         # the download to file_name, not the path Telethon returned (#175 guard).
         chat_file = os.path.join(chat_dir, file_name)
-        if os.path.lexists(chat_file):
-            resolved = os.path.realpath(chat_file)
-            self.assertTrue(os.path.exists(resolved))
-            self.assertEqual(os.path.basename(resolved), file_name)
-            with open(resolved, "rb") as f:
-                self.assertEqual(f.read(), b"video content")
+        self.assertTrue(os.path.lexists(chat_file), "chat-dir symlink was never created")
+        resolved = os.path.realpath(chat_file)
+        self.assertTrue(os.path.exists(resolved))
+        self.assertEqual(os.path.basename(resolved), file_name)
+        with open(resolved, "rb") as f:
+            self.assertEqual(f.read(), b"video content")
 
     def test_listener_dedup_preserves_existing_symlink(self):
         """Listener leaves an existing chat-dir symlink alone, even when broken.
