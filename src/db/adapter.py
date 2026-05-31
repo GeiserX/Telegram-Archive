@@ -857,6 +857,33 @@ class DatabaseAdapter:
                 for m in result.scalars()
             ]
 
+    async def iter_media_paths_for_repair(self, batch_size: int = 500):
+        """Yield ``(id, file_path, file_name)`` batches for the #175 repair pass.
+
+        Keyset-paginated on the primary key and projecting only the three columns
+        the repair needs, so memory stays bounded regardless of table size. The
+        full-table materialization in ``get_media_for_verification`` OOM-killed
+        the 256m backup container on large archives; this streams instead.
+        """
+        last_id: str | None = None
+        while True:
+            async with self.db_manager.async_session_factory() as session:
+                stmt = (
+                    select(Media.id, Media.file_path, Media.file_name)
+                    .where(or_(Media.downloaded == 1, Media.file_path.isnot(None)))
+                    .order_by(Media.id)
+                    .limit(batch_size)
+                )
+                if last_id is not None:
+                    stmt = stmt.where(Media.id > last_id)
+                rows = (await session.execute(stmt)).all()
+            if not rows:
+                return
+            yield [{"id": r[0], "file_path": r[1], "file_name": r[2]} for r in rows]
+            last_id = rows[-1][0]
+            if len(rows) < batch_size:
+                return
+
     async def get_pending_media_downloads(self, max_media_size_bytes: int | None = None) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 

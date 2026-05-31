@@ -1,5 +1,6 @@
 """Tests for the #175 media extension repair pass."""
 
+import asyncio
 import os
 from unittest import mock
 
@@ -14,13 +15,16 @@ from src.repair_media_extensions import (
 class _FakeDB:
     """Minimal async stand-in for the DatabaseAdapter media surface."""
 
-    def __init__(self, records, fail_update_ids=None):
+    def __init__(self, records, fail_update_ids=None, batch_size=500):
         self._records = records
         self.updates = {}
         self._fail_update_ids = set(fail_update_ids or ())
+        self._batch_size = batch_size
 
-    async def get_media_for_verification(self):
-        return list(self._records)
+    async def iter_media_paths_for_repair(self, batch_size=None):
+        size = batch_size or self._batch_size
+        for start in range(0, len(self._records), size):
+            yield [dict(r) for r in self._records[start : start + size]]
 
     async def update_media_file_path(self, media_id, file_path):
         if media_id in self._fail_update_ids:
@@ -505,7 +509,7 @@ def test_repair_records_sync_skips_incomplete_records(tmp_path):
 async def test_repair_offloads_fs_work_to_thread(tmp_path):
     """repair_media_extensions runs the blocking sweep via asyncio.to_thread."""
     media = _media_root(tmp_path)
-    db = _FakeDB([])
+    db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": "/x/abc.mp4"}])
 
     with mock.patch(
         "src.repair_media_extensions.asyncio.to_thread",
@@ -518,3 +522,44 @@ async def test_repair_offloads_fs_work_to_thread(tmp_path):
     args = to_thread.await_args.args
     assert args[0] is _repair_records_sync
     assert args[2] == str(media / "_shared")
+
+
+async def test_repair_streams_in_batches_without_loading_whole_table(tmp_path):
+    """Regression for the v7.11.3 OOM crash loop (#175).
+
+    The repair must consume the media table in bounded batches, not materialize
+    it all at once. Here three corrupt files span two batches of size 2; all
+    must be repaired and the worker must be invoked once per non-empty batch.
+    """
+    media = _media_root(tmp_path)
+    chat = media / "-100123"
+    chat.mkdir()
+    records = []
+    for i in range(3):
+        corrupt = chat / f"file{i}.mp4.7.140234567890"
+        corrupt.write_bytes(b"video")
+        records.append({"id": f"m{i}", "file_name": f"file{i}.mp4", "file_path": str(corrupt)})
+
+    db = _FakeDB(records, batch_size=2)
+
+    real_to_thread = asyncio.to_thread
+    with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=real_to_thread) as to_thread:
+        repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 3
+    assert to_thread.await_count == 2  # ceil(3 / 2) batches
+    for i in range(3):
+        assert (chat / f"file{i}.mp4").read_bytes() == b"video"
+        assert db.updates[f"m{i}"] == str(chat / f"file{i}.mp4")
+    assert (media / "_shared" / REPAIR_MARKER).exists()
+
+
+async def test_repair_writes_marker_on_empty_table(tmp_path):
+    """An archive with no media rows still seals the pass so it never re-runs."""
+    media = _media_root(tmp_path)
+    db = _FakeDB([])
+
+    repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 0
+    assert (media / "_shared" / REPAIR_MARKER).exists()
