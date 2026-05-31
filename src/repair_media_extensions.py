@@ -18,10 +18,17 @@ false positives: a path is only treated as corrupt when its basename equals
 ``file_name`` plus a ``.<int>.<int>`` tail. It never deletes anything (per
 project safety rules) and is crash-safe and idempotent via a marker file.
 
+After the DB-driven pass, a filesystem sweep walks the chat-folder symlinks
+directly to catch corrupt blobs whose ``media`` row is missing (the DB pass
+never visits them). The sweep is anchored to each symlink's own clean basename,
+so it keeps the same zero-false-positive guarantee.
+
 The marker is written only when no row was *deferred* — i.e. only when no
 transient failure (filesystem error, DB write error) left repairable work
 undone. Permanent no-ops (a genuinely distinct file already under the clean
-name) do not block the marker, since retrying them can never succeed.
+name) do not block the marker, since retrying them can never succeed. The
+marker name is versioned (``-v2``) so installs sealed by the DB-only v7.11.4
+pass re-run once to pick up the new orphan sweep.
 """
 
 import asyncio
@@ -35,7 +42,7 @@ from .message_utils import compute_file_hash
 
 logger = logging.getLogger(__name__)
 
-REPAIR_MARKER = ".repaired-175"
+REPAIR_MARKER = ".repaired-175-v2"
 
 # Secondary guard: the task_id (id()-derived) is always large; the pid may be
 # any positive int. Anchoring to the clean name is what guarantees zero false
@@ -180,6 +187,61 @@ def _repair_records_sync(records: list[dict], shared_dir: str) -> tuple[int, int
     return repaired, deferred, pending_db_updates
 
 
+def _iter_chat_dirs(media_path: str) -> list[str]:
+    """Immediate sub-directories of ``media_path`` that hold chat media.
+
+    Excludes ``_shared`` (the dedup blob store) and any non-directory entry.
+    """
+    chat_dirs: list[str] = []
+    try:
+        with os.scandir(media_path) as it:
+            for entry in it:
+                if entry.name == "_shared":
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    chat_dirs.append(entry.path)
+    except OSError:
+        pass
+    return chat_dirs
+
+
+def _sweep_orphan_links_sync(media_path: str, shared_dir: str) -> tuple[int, int]:
+    """Filesystem-driven sweep for corrupt blobs that have NO ``media`` row.
+
+    The DB-driven pass only visits paths recorded in ``media``; dedup symlinks
+    whose row was never written (or was pruned) are invisible to it, so their
+    corrupt-named ``_shared`` blob is never renamed (#175 zey0n residue).
+
+    This sweep walks every chat-folder symlink and reuses ``_repair_symlink_blob``,
+    which is anchored to the *symlink's own clean basename* — the same
+    zero-false-positive guarantee the DB ``file_name`` gave the primary pass. It
+    renames the corrupt blob (only inside ``_shared``) and retargets the link;
+    sibling links self-heal once the blob is clean. Never deletes anything.
+
+    Returns ``(repaired, deferred)``; ``deferred`` counts transient OS errors so
+    the idempotency marker is withheld and the sweep retries on the next run.
+    """
+    repaired = 0
+    deferred = 0
+
+    for chat_dir in _iter_chat_dirs(media_path):
+        try:
+            entries = list(os.scandir(chat_dir))
+        except OSError:
+            deferred += 1
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_symlink():
+                    continue
+                if _repair_symlink_blob(entry.path, shared_dir):
+                    repaired += 1
+            except OSError:
+                deferred += 1
+
+    return repaired, deferred
+
+
 async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
     """Repair files corrupted by #175. Returns the number of records repaired.
 
@@ -226,12 +288,29 @@ async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
         logger.warning("Media repair aborted — could not read media records (%s)", type(e).__name__)
         return repaired
 
+    # Filesystem-driven sweep for corrupt blobs whose media row is missing, so
+    # the DB-driven pass above never reaches them (#175 residue reported by a
+    # user on v7.11.4). Reuses the symlink-blob repair, anchored to each link's
+    # own clean basename, so it is just as false-positive-free.
+    try:
+        sweep_repaired, sweep_deferred = await asyncio.to_thread(_sweep_orphan_links_sync, media_path, shared_dir)
+        repaired += sweep_repaired
+        deferred += sweep_deferred
+    except Exception as e:
+        logger.warning("Media repair: orphan-link sweep failed (%s)", type(e).__name__)
+        deferred += 1
+
+    # Logged at WARNING (not INFO) so deployments running LOG_LEVEL=warn still
+    # get visible confirmation the pass ran — the absence of this line was what
+    # made the v7.11.4 repair look like a no-op to a user (#175).
     if repaired or deferred:
-        logger.info(
-            "Media extension repair: %d repaired, %d deferred for retry",
+        logger.warning(
+            "Media extension repair (#175): %d repaired, %d deferred for retry",
             repaired,
             deferred,
         )
+    else:
+        logger.warning("Media extension repair (#175): nothing to repair")
 
     # Only seal the pass when no repairable work was left behind by a transient
     # failure. Permanent no-ops (distinct content under the clean name) do not
