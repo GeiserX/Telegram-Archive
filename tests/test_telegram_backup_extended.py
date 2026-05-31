@@ -1710,6 +1710,25 @@ class TestRunBackup(unittest.TestCase):
         mock_backup.backup_all.assert_awaited_once()
         mock_backup.disconnect.assert_awaited_once()
 
+    @patch("src.repair_media_extensions.repair_media_extensions", new_callable=AsyncMock)
+    @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
+    def test_run_backup_runs_media_repair_before_backup(self, mock_create, mock_repair):
+        """run_backup awaits the #175 media repair pass before backing up."""
+        mock_backup = AsyncMock()
+        mock_create.return_value = mock_backup
+
+        config = MagicMock()
+        config.media_path = "/tmp/media-path"
+
+        order = []
+        mock_repair.side_effect = lambda *a, **k: order.append("repair")
+        mock_backup.backup_all.side_effect = lambda *a, **k: order.append("backup")
+
+        _run(run_backup(config))
+
+        mock_repair.assert_awaited_once_with(config.media_path, mock_backup.db)
+        self.assertEqual(order, ["repair", "backup"])
+
     @patch("src.telegram_backup.TelegramBackup.create", new_callable=AsyncMock)
     def test_run_backup_disconnects_on_error(self, mock_create):
         """run_backup calls disconnect even when backup_all raises."""

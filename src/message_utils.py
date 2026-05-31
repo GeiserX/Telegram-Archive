@@ -8,6 +8,23 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def sanitize_media_filename(name: str) -> str:
+    """Strip path components from an attacker-controlled media filename.
+
+    Telegram document ``file_name`` attributes are remote-controlled and may
+    contain ``/``, ``\\``, or ``..`` segments. Left unchecked these survive into
+    ``media.file_name`` and later into on-disk ``os.replace`` targets, allowing a
+    write outside the media store (#175 repair pass made this reachable). Collapse
+    to a bare basename and neutralise residual traversal/separators.
+    """
+    name = name.replace("\\", "/")
+    name = os.path.basename(name)
+    name = name.replace("\x00", "")
+    if name in ("", ".", ".."):
+        return "_"
+    return name
+
+
 def get_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str:
     """Build the sharded path for a file in the shared store.
 
@@ -108,18 +125,34 @@ def compute_file_hash(filepath: str, chunk_size: int = 65536) -> str | None:
 
 
 def finalize_atomic_download(actual_path: str | None, temporary_path: str, fallback_path: str) -> str | None:
-    """Move a temporary download into place while preserving Telethon's chosen extension."""
-    if actual_path and os.path.exists(actual_path):
-        final_path = actual_path[:-5] if actual_path.endswith(".part") else actual_path
-        if final_path != actual_path:
-            os.replace(actual_path, final_path)
-        return final_path if os.path.exists(final_path) else None
+    """Move a finished download to its intended filename.
 
-    if os.path.exists(temporary_path):
-        os.replace(temporary_path, fallback_path)
-        return fallback_path if os.path.exists(fallback_path) else None
+    The temp path carries a unique ``.{pid}.{task}.part`` suffix so concurrent
+    downloads never collide. Telethon's ``_get_proper_filename`` treats that
+    trailing ``.part`` as the file extension and returns the temp path verbatim,
+    so the produced file is always one of ``actual_path`` / ``temporary_path``.
+    We rename it to the caller-provided ``fallback_path`` (the intended clean
+    name, already carrying the correct extension), instead of deriving a name
+    from the temp path — stripping only ``.part`` left names like
+    ``video.mp4.7.140234567890`` on disk. See issue #175.
+    """
+    source = actual_path if (actual_path and os.path.exists(actual_path)) else None
+    if source is None and os.path.exists(temporary_path):
+        source = temporary_path
+    if source is None:
+        return None
 
-    return None
+    if source != fallback_path:
+        os.replace(source, fallback_path)
+
+    # Clean up a stale temp artifact if Telethon wrote the real file elsewhere.
+    if temporary_path not in (fallback_path, source) and os.path.exists(temporary_path):
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+
+    return fallback_path if os.path.exists(fallback_path) else None
 
 
 async def download_and_shard_media(
