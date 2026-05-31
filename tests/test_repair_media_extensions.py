@@ -7,7 +7,9 @@ from unittest import mock
 from src.repair_media_extensions import (
     REPAIR_MARKER,
     _is_corrupt_basename,
+    _iter_chat_dirs,
     _repair_records_sync,
+    _sweep_orphan_links_sync,
     repair_media_extensions,
 )
 
@@ -507,21 +509,29 @@ def test_repair_records_sync_skips_incomplete_records(tmp_path):
 
 
 async def test_repair_offloads_fs_work_to_thread(tmp_path):
-    """repair_media_extensions runs the blocking sweep via asyncio.to_thread."""
+    """repair_media_extensions runs the blocking sweeps via asyncio.to_thread.
+
+    Two off-loop calls now happen: the DB-driven record repair, then the
+    filesystem-driven orphan-link sweep.
+    """
     media = _media_root(tmp_path)
     db = _FakeDB([{"id": "m1", "file_name": "abc.mp4", "file_path": "/x/abc.mp4"}])
 
     with mock.patch(
         "src.repair_media_extensions.asyncio.to_thread",
         new_callable=mock.AsyncMock,
-        return_value=(0, 0, []),
+        side_effect=[(0, 0, []), (0, 0)],
     ) as to_thread:
         await repair_media_extensions(str(media), db)
 
-    to_thread.assert_awaited_once()
-    args = to_thread.await_args.args
-    assert args[0] is _repair_records_sync
-    assert args[2] == str(media / "_shared")
+    assert to_thread.await_count == 2
+    record_call = to_thread.await_args_list[0].args
+    assert record_call[0] is _repair_records_sync
+    assert record_call[2] == str(media / "_shared")
+    sweep_call = to_thread.await_args_list[1].args
+    assert sweep_call[0] is _sweep_orphan_links_sync
+    assert sweep_call[1] == str(media)
+    assert sweep_call[2] == str(media / "_shared")
 
 
 async def test_repair_streams_in_batches_without_loading_whole_table(tmp_path):
@@ -547,7 +557,8 @@ async def test_repair_streams_in_batches_without_loading_whole_table(tmp_path):
         repaired = await repair_media_extensions(str(media), db)
 
     assert repaired == 3
-    assert to_thread.await_count == 2  # ceil(3 / 2) batches
+    # ceil(3 / 2) record batches + 1 orphan-link sweep.
+    assert to_thread.await_count == 3
     for i in range(3):
         assert (chat / f"file{i}.mp4").read_bytes() == b"video"
         assert db.updates[f"m{i}"] == str(chat / f"file{i}.mp4")
@@ -563,3 +574,203 @@ async def test_repair_writes_marker_on_empty_table(tmp_path):
 
     assert repaired == 0
     assert (media / "_shared" / REPAIR_MARKER).exists()
+
+
+# ---------------------------------------------------------------------------
+# Orphan-link filesystem sweep: corrupt blobs whose media row is missing
+# ---------------------------------------------------------------------------
+
+
+def test_iter_chat_dirs_excludes_shared_and_files(tmp_path):
+    media = _media_root(tmp_path)
+    (media / "-100111").mkdir()
+    (media / "-100222").mkdir()
+    (media / "loose.txt").write_bytes(b"x")  # a stray file, not a chat dir
+
+    chat_dirs = set(_iter_chat_dirs(str(media)))
+
+    assert chat_dirs == {str(media / "-100111"), str(media / "-100222")}
+    assert str(media / "_shared") not in chat_dirs
+
+
+def test_iter_chat_dirs_returns_empty_for_missing_root(tmp_path):
+    assert _iter_chat_dirs(str(tmp_path / "nope")) == []
+
+
+def test_sweep_heals_orphan_link_with_no_db_row(tmp_path):
+    """The #175 v7.11.4 residue: a dedup symlink whose media row is gone.
+
+    The DB-driven pass never sees it, so the orphan sweep must rename the blob
+    and retarget the link on its own.
+    """
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    corrupt_blob = shared / "abc.mp4.7.140234567890"
+    corrupt_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"  # clean link name, no DB row references it
+    link.symlink_to(os.path.relpath(corrupt_blob, chat))
+
+    repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (1, 0)
+    clean_blob = shared / "abc.mp4"
+    assert clean_blob.read_bytes() == b"video"
+    assert not corrupt_blob.exists()
+    assert os.path.realpath(link) == str(clean_blob)
+
+
+def test_sweep_leaves_clean_links_untouched(tmp_path):
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    clean_blob = shared / "abc.mp4"
+    clean_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(clean_blob, chat))
+
+    repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 0)
+    assert os.path.realpath(link) == str(clean_blob)
+
+
+def test_sweep_never_renames_blob_outside_shared(tmp_path):
+    media = _media_root(tmp_path)
+    external = tmp_path / "external_store"
+    external.mkdir()
+    external_blob = external / "abc.mp4.7.140234567890"
+    external_blob.write_bytes(b"managed-elsewhere")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(external_blob, chat))
+
+    repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 0)
+    assert external_blob.exists()
+    assert not (external / "abc.mp4").exists()
+
+
+def test_sweep_ignores_non_symlink_files_in_chat_dir(tmp_path):
+    """A real (non-symlink) corrupt-named file in a chat dir is a no-dedup row;
+    the DB pass owns it, so the orphan-link sweep must skip it."""
+    media = _media_root(tmp_path)
+    chat = media / "-100123"
+    chat.mkdir()
+    corrupt = chat / "abc.mp4.7.140234567890"
+    corrupt.write_bytes(b"video")
+
+    repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 0)
+    assert corrupt.exists()
+
+
+async def test_repair_end_to_end_heals_orphan_link_after_db_pass(tmp_path):
+    """Full driver: an orphan dedup link (no DB row) is healed by the sweep,
+    and the versioned marker is written so the pass is idempotent afterward."""
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    corrupt_blob = shared / "abc.mp4.7.140234567890"
+    corrupt_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(corrupt_blob, chat))
+
+    db = _FakeDB([])  # no media rows at all -> DB pass repairs nothing
+
+    repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 1
+    assert (shared / "abc.mp4").read_bytes() == b"video"
+    assert not corrupt_blob.exists()
+    assert os.path.realpath(link) == str(shared / "abc.mp4")
+    assert (media / "_shared" / REPAIR_MARKER).exists()
+
+
+def test_sweep_defers_when_chat_dir_unreadable(tmp_path):
+    """A chat dir that can't be scanned is deferred, not crashed past."""
+    media = _media_root(tmp_path)
+    chat = media / "-100123"
+    chat.mkdir()
+
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if path == str(chat):
+            raise OSError("EIO")  # the in-dir scan fails
+        return real_scandir(path)  # the chat-dir enumeration succeeds
+
+    with mock.patch("src.repair_media_extensions.os.scandir", side_effect=scandir):
+        repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 1)
+
+
+def test_sweep_defers_on_per_entry_oserror(tmp_path):
+    """A symlink whose repair raises OSError increments deferred, not repaired."""
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    corrupt_blob = shared / "abc.mp4.7.140234567890"
+    corrupt_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(corrupt_blob, chat))
+
+    with mock.patch(
+        "src.repair_media_extensions._repair_symlink_blob",
+        side_effect=OSError("EIO"),
+    ):
+        repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 1)
+
+
+async def test_repair_defers_when_sweep_raises(tmp_path):
+    """A non-OSError escaping the sweep is caught: deferred++, marker withheld."""
+    media = _media_root(tmp_path)
+    db = _FakeDB([])
+
+    real_to_thread = asyncio.to_thread
+
+    async def flaky(func, *args):
+        if func is _sweep_orphan_links_sync:
+            raise RuntimeError("boom")
+        return await real_to_thread(func, *args)
+
+    with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=flaky):
+        repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 0
+    assert not (media / "_shared" / REPAIR_MARKER).exists()
+
+
+async def test_repair_summary_logged_at_warning_level(tmp_path, caplog):
+    """LOG_LEVEL=warn users must see the repair ran (#175 zey0n: 'no logs')."""
+    import logging
+
+    media = _media_root(tmp_path)
+    db = _FakeDB([])
+
+    with caplog.at_level(logging.WARNING, logger="src.repair_media_extensions"):
+        await repair_media_extensions(str(media), db)
+
+    assert any(
+        record.levelno == logging.WARNING and "Media extension repair (#175)" in record.getMessage()
+        for record in caplog.records
+    )
