@@ -895,6 +895,13 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    async def update_media_file_path(self, media_id: str, file_path: str) -> None:
+        """Update the stored file_path for a single media record."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = update(Media).where(Media.id == media_id).values(file_path=file_path)
+            await session.execute(stmt)
+            await session.commit()
+
     # ========== Reaction Operations ==========
 
     @retry_on_locked()
