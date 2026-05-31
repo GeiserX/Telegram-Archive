@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 from .message_utils import compute_file_hash
@@ -45,7 +46,7 @@ _CORRUPT_TAIL = re.compile(r"\.\d+\.\d{4,}$")
 class _MediaRepairDB(Protocol):
     """The narrow DB surface the repair pass depends on."""
 
-    async def get_media_for_verification(self) -> list[dict]: ...
+    def iter_media_paths_for_repair(self, batch_size: int = ...) -> AsyncIterator[list[dict]]: ...
 
     async def update_media_file_path(self, media_id: object, file_path: str) -> None: ...
 
@@ -194,26 +195,36 @@ async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
     if os.path.exists(marker):
         return 0
 
+    repaired = 0
+    deferred = 0
+
+    # Stream the media table in keyset-paginated batches. Materializing the whole
+    # table OOM-killed the 256m backup container on large archives (#175 v7.11.3
+    # crash loop), so we hold only one batch in memory at a time.
     try:
-        records = await db.get_media_for_verification()
+        batches = db.iter_media_paths_for_repair()
+        async for records in batches:
+            # Filesystem walks, hashing, and renames are blocking; keep them off
+            # the event loop so the concurrently-running listener is not starved.
+            batch_repaired, batch_deferred, pending_db_updates = await asyncio.to_thread(
+                _repair_records_sync, records, shared_dir
+            )
+            repaired += batch_repaired
+            deferred += batch_deferred
+
+            # Repoint media.file_path for the no-dedup rows we renamed. A failure
+            # here leaves the file renamed but the row stale; defer so the marker
+            # is withheld and the next run's adoption branch repoints it.
+            for media_id, clean_path in pending_db_updates:
+                try:
+                    await db.update_media_file_path(media_id, clean_path)
+                except Exception as e:
+                    logger.warning("Media repair: DB repoint failed for one record (%s)", type(e).__name__)
+                    deferred += 1
+                    repaired -= 1
     except Exception as e:
-        logger.warning("Media repair skipped — could not read media records (%s)", type(e).__name__)
-        return 0
-
-    # Filesystem walks, hashing, and renames are blocking; keep them off the
-    # event loop so the concurrently-running listener is not starved.
-    repaired, deferred, pending_db_updates = await asyncio.to_thread(_repair_records_sync, records, shared_dir)
-
-    # Repoint media.file_path for the no-dedup rows we renamed. A failure here
-    # leaves the file renamed but the row stale; defer so the marker is withheld
-    # and the next run's adoption branch repoints it.
-    for media_id, clean_path in pending_db_updates:
-        try:
-            await db.update_media_file_path(media_id, clean_path)
-        except Exception as e:
-            logger.warning("Media repair: DB repoint failed for one record (%s)", type(e).__name__)
-            deferred += 1
-            repaired -= 1
+        logger.warning("Media repair aborted — could not read media records (%s)", type(e).__name__)
+        return repaired
 
     if repaired or deferred:
         logger.info(
