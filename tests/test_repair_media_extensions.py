@@ -700,6 +700,66 @@ async def test_repair_end_to_end_heals_orphan_link_after_db_pass(tmp_path):
     assert (media / "_shared" / REPAIR_MARKER).exists()
 
 
+def test_sweep_defers_when_chat_dir_unreadable(tmp_path):
+    """A chat dir that can't be scanned is deferred, not crashed past."""
+    media = _media_root(tmp_path)
+    chat = media / "-100123"
+    chat.mkdir()
+
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if path == str(chat):
+            raise OSError("EIO")  # the in-dir scan fails
+        return real_scandir(path)  # the chat-dir enumeration succeeds
+
+    with mock.patch("src.repair_media_extensions.os.scandir", side_effect=scandir):
+        repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 1)
+
+
+def test_sweep_defers_on_per_entry_oserror(tmp_path):
+    """A symlink whose repair raises OSError increments deferred, not repaired."""
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    corrupt_blob = shared / "abc.mp4.7.140234567890"
+    corrupt_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(corrupt_blob, chat))
+
+    with mock.patch(
+        "src.repair_media_extensions._repair_symlink_blob",
+        side_effect=OSError("EIO"),
+    ):
+        repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 1)
+
+
+async def test_repair_defers_when_sweep_raises(tmp_path):
+    """A non-OSError escaping the sweep is caught: deferred++, marker withheld."""
+    media = _media_root(tmp_path)
+    db = _FakeDB([])
+
+    real_to_thread = asyncio.to_thread
+
+    async def flaky(func, *args):
+        if func is _sweep_orphan_links_sync:
+            raise RuntimeError("boom")
+        return await real_to_thread(func, *args)
+
+    with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=flaky):
+        repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 0
+    assert not (media / "_shared" / REPAIR_MARKER).exists()
+
+
 async def test_repair_summary_logged_at_warning_level(tmp_path, caplog):
     """LOG_LEVEL=warn users must see the repair ran (#175 zey0n: 'no logs')."""
     import logging
