@@ -3198,3 +3198,62 @@ class TestUpsertChatFolderPostgres:
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
+
+
+# ============================================================
+# iter_media_paths_for_repair — real-SQLite keyset pagination (#175 OOM fix)
+# ============================================================
+
+
+class TestIterMediaPathsForRepair:
+    """Verify the repair-pass streaming query against a real SQLite database.
+
+    The v7.11.3 crash loop was an OOM: the repair loaded the entire media table
+    at once. This method must keyset-paginate so memory stays bounded, while
+    still returning every downloaded/file-bearing row exactly once, in id order.
+    """
+
+    @pytest.mark.asyncio
+    async def test_streams_all_rows_in_id_order_across_batches(self, tmp_path):
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'repair.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        try:
+            for i in range(5):
+                await adapter.insert_media(
+                    {
+                        "id": f"id{i}",
+                        "type": "photo",
+                        "file_name": f"f{i}.jpg",
+                        "file_path": f"/data/f{i}.jpg",
+                        "downloaded": True,
+                    }
+                )
+            # A row with downloaded=0 AND no file_path must be excluded.
+            await adapter.insert_media({"id": "skip", "type": "photo", "downloaded": False})
+
+            batches = [b async for b in adapter.iter_media_paths_for_repair(batch_size=2)]
+
+            # 5 matching rows in batches of 2 -> sizes [2, 2, 1].
+            assert [len(b) for b in batches] == [2, 2, 1]
+            flat = [r for b in batches for r in b]
+            assert [r["id"] for r in flat] == ["id0", "id1", "id2", "id3", "id4"]
+            assert flat[0] == {"id": "id0", "file_path": "/data/f0.jpg", "file_name": "f0.jpg"}
+            assert all(r["id"] != "skip" for r in flat)
+        finally:
+            await db_manager.close()
+
+    @pytest.mark.asyncio
+    async def test_empty_table_yields_no_batches(self, tmp_path):
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'empty.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        try:
+            batches = [b async for b in adapter.iter_media_paths_for_repair()]
+            assert batches == []
+        finally:
+            await db_manager.close()
