@@ -471,6 +471,7 @@ class TestBackupSchedulerListener:
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
+            config.should_skip_topic = MagicMock(return_value=False)
             scheduler = BackupScheduler(config)
 
             # A task that has already finished with a ConnectionError.
