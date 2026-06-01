@@ -113,6 +113,8 @@ class Config:
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = os.getenv("DOWNLOAD_MEDIA", "true").lower() == "true"
         self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
+        # Timeout for media downloads (seconds). 0 disables the timeout.
+        self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
 
         # Batch processing configuration
         self.batch_size = int(os.getenv("BATCH_SIZE", "100"))
@@ -125,6 +127,10 @@ class Config:
         # Increase this if you experience "database is locked" errors (e.g., on Unraid/slow disks).
         # Default increased to 60s for better resilience with concurrent access (backup + web viewer).
         self.database_timeout = float(os.getenv("DATABASE_TIMEOUT", "60.0"))
+
+        # Backoff intervals for connection/timeout retries.
+        self.backoff_min = float(os.getenv("BACKOFF_MIN_SECONDS", "2.0"))
+        self.backoff_max = float(os.getenv("BACKOFF_MAX_SECONDS", "300.0"))
 
         # =====================================================================
         # CHAT FILTERING - Two Modes
