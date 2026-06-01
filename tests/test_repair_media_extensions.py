@@ -9,6 +9,7 @@ from src.repair_media_extensions import (
     _is_corrupt_basename,
     _iter_chat_dirs,
     _repair_records_sync,
+    _scan_chat_symlinks,
     _sweep_orphan_links_sync,
     repair_media_extensions,
 )
@@ -593,8 +594,40 @@ def test_iter_chat_dirs_excludes_shared_and_files(tmp_path):
     assert str(media / "_shared") not in chat_dirs
 
 
-def test_iter_chat_dirs_returns_empty_for_missing_root(tmp_path):
-    assert _iter_chat_dirs(str(tmp_path / "nope")) == []
+def test_iter_chat_dirs_raises_on_missing_root(tmp_path):
+    """A failed root scan must surface, not be mistaken for an empty dir, so the
+    sweep can defer it and withhold the marker."""
+    import pytest
+
+    with pytest.raises(OSError):
+        _iter_chat_dirs(str(tmp_path / "nope"))
+
+
+def test_scan_chat_symlinks_returns_only_symlink_strings(tmp_path):
+    """The helper returns string paths (not DirEntry) and skips real files, so the
+    caller can mutate the directory after the scandir handle is closed."""
+    chat = tmp_path / "-100123"
+    chat.mkdir()
+    target = tmp_path / "blob.bin"
+    target.write_bytes(b"x")
+    (chat / "real.txt").write_bytes(b"y")  # a real file, not a symlink
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(target, chat))
+
+    result = _scan_chat_symlinks(str(chat))
+
+    assert result == [str(link)]
+    assert all(isinstance(p, str) for p in result)
+
+
+def test_sweep_defers_when_root_unreadable(tmp_path):
+    """A transient failure enumerating chat dirs defers the whole sweep."""
+    media = _media_root(tmp_path)
+
+    with mock.patch("src.repair_media_extensions._iter_chat_dirs", side_effect=OSError("EIO")):
+        repaired, deferred = _sweep_orphan_links_sync(str(media), str(media / "_shared"))
+
+    assert (repaired, deferred) == (0, 1)
 
 
 def test_sweep_heals_orphan_link_with_no_db_row(tmp_path):
@@ -755,6 +788,67 @@ async def test_repair_defers_when_sweep_raises(tmp_path):
 
     with mock.patch("src.repair_media_extensions.asyncio.to_thread", side_effect=flaky):
         repaired = await repair_media_extensions(str(media), db)
+
+    assert repaired == 0
+    assert not (media / "_shared" / REPAIR_MARKER).exists()
+
+
+class _ReadFailDB:
+    """A DB whose media-table read fails, to exercise the sweep-only fallback."""
+
+    def __init__(self):
+        self.updates = {}
+
+    async def iter_media_paths_for_repair(self, batch_size=None):
+        raise RuntimeError("simulated DB read failure")
+        yield  # pragma: no cover - makes this an async generator
+
+    async def update_media_file_path(self, media_id, file_path):  # pragma: no cover
+        self.updates[media_id] = file_path
+
+
+async def test_repair_runs_sweep_even_when_db_read_fails(tmp_path):
+    """A DB read failure must not skip the DB-independent orphan sweep.
+
+    The sweep is exactly what heals corrupt blobs whose media row is missing, so
+    a transient DB outage must still let it run. The DB failure is deferred, so
+    the marker is withheld and the DB pass retries next run.
+    """
+    media = _media_root(tmp_path)
+    shared = media / "_shared" / "ab"
+    shared.mkdir()
+    corrupt_blob = shared / "abc.mp4.7.140234567890"
+    corrupt_blob.write_bytes(b"video")
+
+    chat = media / "-100123"
+    chat.mkdir()
+    link = chat / "abc.mp4"
+    link.symlink_to(os.path.relpath(corrupt_blob, chat))
+
+    repaired = await repair_media_extensions(str(media), _ReadFailDB())
+
+    # Sweep healed the orphan even though the DB read blew up.
+    assert repaired == 1
+    assert (shared / "abc.mp4").read_bytes() == b"video"
+    assert not corrupt_blob.exists()
+    assert os.path.realpath(link) == str(shared / "abc.mp4")
+    # DB failure was deferred -> marker withheld so the DB pass retries.
+    assert not (media / "_shared" / REPAIR_MARKER).exists()
+
+
+async def test_repair_withholds_marker_when_db_read_fails_and_sweep_empty(tmp_path):
+    """DB outage on an archive with no orphan residue must still withhold the marker.
+
+    This isolates the marker invariant from sweep success: the sweep repairs
+    nothing (repaired==0) yet the deferred DB read must keep the marker unwritten
+    so the DB pass retries next run. Writing it here would permanently seal the
+    pass after a transient DB failure on a clean archive (#175 deferred-marker).
+    """
+    media = _media_root(tmp_path)
+    # A clean chat dir with nothing corrupt: the sweep finds no work.
+    (media / "-100123").mkdir()
+
+    repaired = await repair_media_extensions(str(media), _ReadFailDB())
 
     assert repaired == 0
     assert not (media / "_shared" / REPAIR_MARKER).exists()
