@@ -1743,7 +1743,7 @@ class TelegramBackup:
                             raise
                         except TimeoutError:
                             logger.error(
-                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
+                                f"Download timed out after {timeout} seconds for message {message.id} (attempt {attempt + 1}/3)"
                             )
                             if attempt == 2:
                                 raise
@@ -1776,11 +1776,12 @@ class TelegramBackup:
                 if not os.path.lexists(file_path):
                     task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
-                    if os.path.exists(tmp_file_path):
-                        os.remove(tmp_file_path)
                     timeout = getattr(self.config, "download_timeout_seconds", 3600)
                     timeout_val = timeout if isinstance(timeout, int) and timeout > 0 else None
                     for attempt in range(3):
+                        # Clear any partial file from a prior attempt so each retry starts clean.
+                        if os.path.exists(tmp_file_path):
+                            os.remove(tmp_file_path)
                         try:
                             actual_path = await asyncio.wait_for(
                                 call_with_flood_retry(self.client.download_media, message, tmp_file_path),
@@ -1798,7 +1799,7 @@ class TelegramBackup:
                             raise
                         except TimeoutError:
                             logger.error(
-                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
+                                f"Download timed out after {timeout} seconds for message {message.id} (attempt {attempt + 1}/3)"
                             )
                             if attempt == 2:
                                 raise
