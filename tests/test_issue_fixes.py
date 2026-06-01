@@ -213,7 +213,8 @@ class TestRelativeDbPathResolution(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             url_path = manager.database_url.replace("sqlite+aiosqlite:///", "")
-            self.assertTrue(url_path.endswith("telegram_backup.db") and "backups" in url_path)
+            expected_path = os.path.abspath("/data/backups/telegram_backup.db")
+            self.assertEqual(url_path, expected_path)
 
     def test_relative_database_path_env_gets_resolved(self):
         """DATABASE_PATH=./my.db (relative) becomes an absolute path."""
@@ -237,7 +238,8 @@ class TestRelativeDbPathResolution(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             url_path = manager.database_url.replace("sqlite+aiosqlite:///", "")
-            self.assertTrue(url_path.endswith("my.db") and "custom" in url_path)
+            expected_path = os.path.abspath("/custom/path/my.db")
+            self.assertEqual(url_path, expected_path)
 
     def test_default_path_is_absolute(self):
         """Default path (no env vars set) produces an absolute path."""

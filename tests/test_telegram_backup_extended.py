@@ -1101,9 +1101,6 @@ class TestFillGapRange(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
-
-
-
 # ===========================================================================
 # _backup_forum_topics fallback / emoji paths (lines 1650-1661, 1692-1693,
 #   1704-1735)

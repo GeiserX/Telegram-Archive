@@ -701,7 +701,9 @@ class TestDownloadMedia:
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")):
+        with patch(
+            "src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")
+        ):
             result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()

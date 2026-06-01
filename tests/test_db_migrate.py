@@ -69,48 +69,61 @@ class TestMigrateSqliteToPostgresPathResolution:
     async def test_resolves_database_path_env(self):
         """DATABASE_PATH env var is used for SQLite path resolution."""
         env = {"DATABASE_PATH": "/nonexistent/from_env.db"}
+        expected_path = os.path.abspath("/nonexistent/from_env.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match=".*nonexistent.*from_env.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_database_dir_env(self):
         """DATABASE_DIR env var is used when DATABASE_PATH is not set."""
         env = {"DATABASE_DIR": "/nonexistent/dir"}
+        expected_path = os.path.abspath("/nonexistent/dir/telegram_backup.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match=".*nonexistent.*dir.*telegram_backup.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_db_path_env(self):
         """DB_PATH env var is used when DATABASE_PATH and DATABASE_DIR are not set."""
         env = {"DB_PATH": "/nonexistent/v3path.db"}
-        with patch.dict(os.environ, env, clear=True), pytest.raises(FileNotFoundError, match=".*nonexistent.*v3path.db"):
+        expected_path = os.path.abspath("/nonexistent/v3path.db")
+        with (
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises(FileNotFoundError) as exc_info,
+        ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_backup_path_env_as_fallback(self):
         """BACKUP_PATH env var is used as the last-resort fallback."""
         env = {"BACKUP_PATH": "/nonexistent/backups"}
+        expected_path = os.path.abspath("/nonexistent/backups/telegram_backup.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match=".*nonexistent.*backups.*telegram_backup.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_default_path_when_no_env_set(self):
         """Default path /data/backups is used when no env vars are set."""
+        expected_path = os.path.abspath("/data/backups/telegram_backup.db")
         with (
             patch.dict(os.environ, {}, clear=True),
             patch("os.path.exists", return_value=False),
-            pytest.raises(FileNotFoundError, match=".*data.*backups.*telegram_backup.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
 
 # ============================================================
