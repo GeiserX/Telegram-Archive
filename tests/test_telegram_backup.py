@@ -69,6 +69,7 @@ class TestTelegramBackupClass(unittest.TestCase):
             self.assertTrue(hasattr(TelegramBackup, method), f"TelegramBackup missing method: {method}")
 
 
+@unittest.skipIf(os.name == "nt", "Symlinks require administrator privileges on Windows")
 class TestCleanupExistingMedia(unittest.TestCase):
     """Test _cleanup_existing_media for SKIP_MEDIA_CHAT_IDS feature."""
 

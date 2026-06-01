@@ -4,6 +4,8 @@ import asyncio
 import os
 from unittest import mock
 
+import pytest
+
 from src.repair_media_extensions import (
     REPAIR_MARKER,
     _is_corrupt_basename,
@@ -153,6 +155,7 @@ async def test_repair_no_dedup_adopts_clean_when_content_matches(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_dedup_renames_blob_and_retargets_symlink(tmp_path):
     media = _media_root(tmp_path)
     shared = media / "_shared" / "ab"
@@ -178,6 +181,7 @@ async def test_repair_dedup_renames_blob_and_retargets_symlink(tmp_path):
     assert os.path.realpath(link) == str(clean_blob)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_dedup_relinks_when_clean_blob_already_present(tmp_path):
     media = _media_root(tmp_path)
     shared = media / "_shared" / "ab"
@@ -201,6 +205,7 @@ async def test_repair_dedup_relinks_when_clean_blob_already_present(tmp_path):
     assert clean_blob.read_bytes() == b"video"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_dedup_never_renames_blob_outside_shared(tmp_path):
     """A symlink pointing at an externally managed store must not be touched."""
     media = _media_root(tmp_path)
@@ -346,6 +351,7 @@ async def test_repair_writes_marker_when_only_permanent_noops(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_dedup_heals_sibling_symlinks_to_renamed_blob(tmp_path):
     """Two chats share one dedup'd blob. After the first link renames the blob,
     the sibling link (still pointing at the old corrupt name) must be retargeted
@@ -387,6 +393,7 @@ async def test_repair_dedup_heals_sibling_symlinks_to_renamed_blob(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_skips_symlink_when_basename_differs_from_clean_name(tmp_path):
     """A symlink whose basename doesn't match file_name is left untouched."""
     media = _media_root(tmp_path)
@@ -431,6 +438,7 @@ async def test_repair_defers_and_withholds_marker_on_replace_oserror(tmp_path):
     assert not (media / "_shared" / REPAIR_MARKER).exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_realpath_guard_blocks_symlinked_blob_dir(tmp_path):
     """A blob dir that is itself a symlink resolving outside _shared is rejected.
 
@@ -603,6 +611,7 @@ def test_iter_chat_dirs_raises_on_missing_root(tmp_path):
         _iter_chat_dirs(str(tmp_path / "nope"))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 def test_scan_chat_symlinks_returns_only_symlink_strings(tmp_path):
     """The helper returns string paths (not DirEntry) and skips real files, so the
     caller can mutate the directory after the scandir handle is closed."""
@@ -630,6 +639,7 @@ def test_sweep_defers_when_root_unreadable(tmp_path):
     assert (repaired, deferred) == (0, 1)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 def test_sweep_heals_orphan_link_with_no_db_row(tmp_path):
     """The #175 v7.11.4 residue: a dedup symlink whose media row is gone.
 
@@ -656,6 +666,7 @@ def test_sweep_heals_orphan_link_with_no_db_row(tmp_path):
     assert os.path.realpath(link) == str(clean_blob)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 def test_sweep_leaves_clean_links_untouched(tmp_path):
     media = _media_root(tmp_path)
     shared = media / "_shared" / "ab"
@@ -674,6 +685,7 @@ def test_sweep_leaves_clean_links_untouched(tmp_path):
     assert os.path.realpath(link) == str(clean_blob)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 def test_sweep_never_renames_blob_outside_shared(tmp_path):
     media = _media_root(tmp_path)
     external = tmp_path / "external_store"
@@ -708,6 +720,7 @@ def test_sweep_ignores_non_symlink_files_in_chat_dir(tmp_path):
     assert corrupt.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_end_to_end_heals_orphan_link_after_db_pass(tmp_path):
     """Full driver: an orphan dedup link (no DB row) is healed by the sweep,
     and the versioned marker is written so the pass is idempotent afterward."""
@@ -752,6 +765,7 @@ def test_sweep_defers_when_chat_dir_unreadable(tmp_path):
     assert (repaired, deferred) == (0, 1)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 def test_sweep_defers_on_per_entry_oserror(tmp_path):
     """A symlink whose repair raises OSError increments deferred, not repaired."""
     media = _media_root(tmp_path)
@@ -807,6 +821,7 @@ class _ReadFailDB:
         self.updates[media_id] = file_path
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires symlink privileges on Windows")
 async def test_repair_runs_sweep_even_when_db_read_fails(tmp_path):
     """A DB read failure must not skip the DB-independent orphan sweep.
 
