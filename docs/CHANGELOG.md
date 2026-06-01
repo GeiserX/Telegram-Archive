@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.12.0] - 2026-06-02
+
+### Added
+- **Configurable download timeout** — Media downloads are now wrapped in `asyncio.wait_for` with a `DOWNLOAD_TIMEOUT_SECONDS` budget (default `3600`, `0` disables), so a single stalled download can no longer hang a backup indefinitely.
+- **Tunable backoff for transient errors** — `BACKOFF_MIN_SECONDS` and `BACKOFF_MAX_SECONDS` control exponential backoff with jitter for FloodWait and transient network retries, and `FLOOD_WAIT_LOG_THRESHOLD` tunes how chatty FloodWait logging is.
+
+### Fixed
+- **Transient network errors no longer abort one-shot API calls** — `call_with_flood_retry` now retries `TimeoutError`/`ConnectionError`/`OSError`/`RPCError` with bounded exponential backoff, while still re-raising terminal errors (FloodWait, FileReferenceExpired, ChannelPrivate, ChatForbidden, UserBanned) immediately.
+- **Expired file references are refreshed mid-download** — Downloads that hit `FileReferenceExpiredError` now re-fetch the message and retry instead of failing the media.
+- **Concurrent symlink creation is race-safe** — Deduplicated media symlinks tolerate `EEXIST` from concurrent tasks instead of crashing.
+- **`upsert_user` and `insert_media` retry on locked DB** — Both now use `@retry_on_locked()` for resilience under concurrent SQLite access.
+- **Windows-friendly auth help** — `setup_auth` no longer calls `os.getuid()`/`os.getgid()` unconditionally.
+
+### Credits
+- Thanks to [@smbdspk](https://github.com/smbdspk) for the download-resilience work in [#180](https://github.com/GeiserX/Telegram-Archive/pull/180).
+
 ## [7.10.10] - 2026-05-24
 
 ### Fixed
