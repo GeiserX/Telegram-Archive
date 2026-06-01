@@ -132,14 +132,14 @@ class TestGetAvatarPaths(unittest.TestCase):
         entity = MagicMock(spec=User)
         entity.photo = None
         target, legacy = get_avatar_paths(self.temp_dir, entity, 100)
-        assert "/avatars/users/" in legacy
+        assert os.path.join("avatars", "users") in legacy
 
     def test_legacy_path_uses_correct_folder_for_channel(self):
         """Legacy path uses avatars/chats for non-User entities."""
         entity = MagicMock()
         entity.photo = None
         target, legacy = get_avatar_paths(self.temp_dir, entity, 200)
-        assert "/avatars/chats/" in legacy
+        assert os.path.join("avatars", "chats") in legacy
 
 
 if __name__ == "__main__":

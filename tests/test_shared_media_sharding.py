@@ -13,32 +13,39 @@ class TestGetSharedFilePath(unittest.TestCase):
     """Test get_shared_file_path utility."""
 
     def test_with_hash_returns_sharded_path(self):
-        result = get_shared_file_path("/data/_shared", "photo.jpg", "abcdef1234567890")
-        assert result == "/data/_shared/ab/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "photo.jpg", "abcdef1234567890")
+        assert result == os.path.join(shared_dir, "ab", "photo.jpg")
 
     def test_with_short_hash_returns_sharded_path(self):
-        result = get_shared_file_path("/data/_shared", "photo.jpg", "ff")
-        assert result == "/data/_shared/ff/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "photo.jpg", "ff")
+        assert result == os.path.join(shared_dir, "ff", "photo.jpg")
 
     def test_without_hash_returns_flat_path(self):
-        result = get_shared_file_path("/data/_shared", "photo.jpg", None)
-        assert result == "/data/_shared/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "photo.jpg", None)
+        assert result == os.path.join(shared_dir, "photo.jpg")
 
     def test_with_empty_hash_returns_flat_path(self):
-        result = get_shared_file_path("/data/_shared", "photo.jpg", "")
-        assert result == "/data/_shared/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "photo.jpg", "")
+        assert result == os.path.join(shared_dir, "photo.jpg")
 
     def test_with_single_char_hash_returns_flat_path(self):
-        result = get_shared_file_path("/data/_shared", "photo.jpg", "a")
-        assert result == "/data/_shared/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "photo.jpg", "a")
+        assert result == os.path.join(shared_dir, "photo.jpg")
 
     def test_strips_directory_from_filename(self):
-        result = get_shared_file_path("/data/_shared", "../../etc/passwd", "abcdef")
-        assert result == "/data/_shared/ab/passwd"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "../../etc/passwd", "abcdef")
+        assert result == os.path.join(shared_dir, "ab", "passwd")
 
     def test_strips_nested_path_from_filename(self):
-        result = get_shared_file_path("/data/_shared", "subdir/photo.jpg", "abcdef")
-        assert result == "/data/_shared/ab/photo.jpg"
+        shared_dir = os.path.normpath("/data/_shared")
+        result = get_shared_file_path(shared_dir, "subdir/photo.jpg", "abcdef")
+        assert result == os.path.join(shared_dir, "ab", "photo.jpg")
 
 
 class TestResolveSharedFilePath(unittest.TestCase):
@@ -98,6 +105,7 @@ class TestResolveSharedFilePath(unittest.TestCase):
         result = resolve_shared_file_path(self.shared_dir, "photo.jpg", None)
         assert result == filepath
 
+    @unittest.skipIf(os.name == "nt", "Symlinks require administrator privileges on Windows")
     def test_recognizes_symlinks_via_lexists(self):
         bucket_dir = os.path.join(self.shared_dir, "ab")
         os.makedirs(bucket_dir)
@@ -144,6 +152,7 @@ class TestMigrateSharedMedia(unittest.TestCase):
         sharded = os.path.join(self.shared_dir, expected_bucket, "photo.jpg")
         assert os.path.exists(sharded)
 
+    @unittest.skipIf(os.name == "nt", "Symlinks require administrator privileges on Windows")
     def test_updates_chat_symlinks(self):
         content = "media content"
         flat_file = self._create_file(os.path.join(self.shared_dir, "video.mp4"), content)
@@ -194,6 +203,7 @@ class TestMigrateSharedMedia(unittest.TestCase):
         assert count == 0
         assert os.path.exists(os.path.join(bucket_dir, "photo.jpg"))
 
+    @unittest.skipIf(os.name == "nt", "Symlinks require administrator privileges on Windows")
     def test_migrates_symlinks_with_reachable_targets(self):
         # Simulate git-annex: symlink whose target is readable
         content = "annex object data"
@@ -209,6 +219,7 @@ class TestMigrateSharedMedia(unittest.TestCase):
         sharded = os.path.join(self.shared_dir, expected_hash[:2], "annexed.jpg")
         assert os.path.islink(sharded)
 
+    @unittest.skipIf(os.name == "nt", "Symlinks require administrator privileges on Windows")
     def test_skips_symlinks_with_unreachable_targets(self):
         # Docker case: symlink target doesn't exist, hash fails → skipped
         link_path = os.path.join(self.shared_dir, "broken.jpg")

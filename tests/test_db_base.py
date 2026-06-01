@@ -63,7 +63,7 @@ class TestBuildDatabaseUrl:
         env = {"DATABASE_PATH": "/custom/path/my.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
-            assert "/custom/path/my.db" in manager.database_url
+            assert os.path.abspath("/custom/path/my.db") in manager.database_url
             assert "sqlite+aiosqlite" in manager.database_url
 
     def test_database_dir_env_builds_path(self):
@@ -71,21 +71,21 @@ class TestBuildDatabaseUrl:
         env = {"DATABASE_DIR": "/custom/dir"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
-            assert "/custom/dir/telegram_backup.db" in manager.database_url
+            assert os.path.abspath("/custom/dir/telegram_backup.db") in manager.database_url
 
     def test_db_path_env_used_as_fallback(self):
         """DB_PATH env var is used when DATABASE_PATH and DATABASE_DIR are not set."""
         env = {"DB_PATH": "/fallback/path.db"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
-            assert "/fallback/path.db" in manager.database_url
+            assert os.path.abspath("/fallback/path.db") in manager.database_url
 
     def test_backup_path_env_used_as_last_resort(self):
         """BACKUP_PATH env var is used for the default SQLite location."""
         env = {"BACKUP_PATH": "/data/mybackups"}
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
-            assert "/data/mybackups/telegram_backup.db" in manager.database_url
+            assert os.path.abspath("/data/mybackups/telegram_backup.db") in manager.database_url
 
     def test_password_with_special_chars_is_url_encoded(self):
         """PostgreSQL password with special characters is URL-encoded."""
@@ -565,7 +565,7 @@ class TestSafeUrlDatabaseDir:
         with patch.dict(os.environ, {"DATABASE_DIR": "/my/custom/dir"}, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             safe = manager._safe_url()
-            assert "/my/custom/dir/telegram_backup.db" in safe
+            assert os.path.abspath("/my/custom/dir/telegram_backup.db") in safe
 
 
 # ============================================================
