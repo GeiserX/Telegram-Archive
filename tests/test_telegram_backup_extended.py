@@ -1101,6 +1101,9 @@ class TestFillGapRange(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+
+
+
 # ===========================================================================
 # _backup_forum_topics fallback / emoji paths (lines 1650-1661, 1692-1693,
 #   1704-1735)
@@ -1396,7 +1399,10 @@ class TestEnsureProfilePhoto(unittest.TestCase):
         """
         target = os.path.join(self.temp_dir, "absent_target.jpg")
         avatar_path = os.path.join(self.temp_dir, "broken_symlink_avatar.jpg")
-        os.symlink(target, avatar_path)
+        try:
+            os.symlink(target, avatar_path)
+        except OSError as e:
+            self.skipTest(f"Symlinks not supported/permitted: {e}")
         original_target = os.readlink(avatar_path)
 
         # Confirm the dangling symlink scenario.

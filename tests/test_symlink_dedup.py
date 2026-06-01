@@ -19,6 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.telegram_backup import TelegramBackup
 
+import pytest
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Symlinks require administrator privileges on Windows")
+
 
 class TestDanglingSymlinkDetection(unittest.TestCase):
     """Verify os.path.exists vs os.path.lexists behavior with dangling symlinks."""

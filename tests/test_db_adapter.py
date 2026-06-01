@@ -1121,12 +1121,12 @@ class TestSyncStatusOperations:
 
 
 # ============================================================
-# Delete chat operations
+# Trailing gap recovery operations
 # ============================================================
 
 
 class TestDeleteChatOperations:
-    """Test delete_chat_and_related_data."""
+    """Test delete_chat_and_related_data and related cleanup operations."""
 
     @pytest.mark.asyncio
     async def test_delete_chat_issues_five_deletes(self):
@@ -1153,7 +1153,7 @@ class TestDeleteChatOperations:
         ):
             await adapter.delete_chat_and_related_data(100, media_base_path="/data/media")
 
-        mock_rmtree.assert_called_once_with("/data/media/100")
+        mock_rmtree.assert_called_once_with(os.path.join("/data/media", "100"))
 
     @pytest.mark.asyncio
     async def test_delete_chat_skips_files_when_no_media_path(self):

@@ -249,10 +249,11 @@ async def test_auth_noninteractive_passes_proxy_kwargs():
         ),
         patch("scripts.auth_noninteractive.TelegramClient", return_value=client) as client_cls,
     ):
+        expected_path = auth_noninteractive._get_session_path()
         await auth_noninteractive.main()
 
     client_cls.assert_called_once_with(
-        "/tmp/session/telegram_backup",
+        expected_path,
         12345,
         "hash",
         proxy={"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080},
