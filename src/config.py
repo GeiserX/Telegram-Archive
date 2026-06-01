@@ -128,10 +128,6 @@ class Config:
         # Default increased to 60s for better resilience with concurrent access (backup + web viewer).
         self.database_timeout = float(os.getenv("DATABASE_TIMEOUT", "60.0"))
 
-        # Backoff intervals for connection/timeout retries.
-        self.backoff_min = float(os.getenv("BACKOFF_MIN_SECONDS", "2.0"))
-        self.backoff_max = float(os.getenv("BACKOFF_MAX_SECONDS", "300.0"))
-
         # =====================================================================
         # CHAT FILTERING - Two Modes
         # =====================================================================
