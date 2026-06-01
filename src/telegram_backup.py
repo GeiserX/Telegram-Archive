@@ -58,6 +58,7 @@ def _get_int_env(name: str, default: int) -> int:
         logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
         return default
 
+
 def _get_float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:
@@ -169,9 +170,19 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
             )
             await asyncio.sleep(sleep_duration)
         except (TimeoutError, ConnectionError, OSError, RPCError) as exc:
-            # If it is a FloodWaitError or FileReferenceExpiredError, raise it to let the prior except block
-            # or the calling scope catch it specifically without wasting retries.
-            if isinstance(exc, (FloodWaitError, FileReferenceExpiredError)):
+            # If it is a FloodWaitError, FileReferenceExpiredError, or terminal RPC error,
+            # raise it to let the prior except block or the calling scope catch it specifically
+            # without wasting retries.
+            if isinstance(
+                exc,
+                (
+                    FloodWaitError,
+                    FileReferenceExpiredError,
+                    ChannelPrivateError,
+                    ChatForbiddenError,
+                    UserBannedInChannelError,
+                ),
+            ):
                 raise exc
 
             retries += 1
@@ -1715,7 +1726,7 @@ class TelegramBackup:
                     nonlocal message
                     timeout = getattr(self.config, "download_timeout_seconds", 3600)
                     timeout_val = timeout if isinstance(timeout, int) and timeout > 0 else None
-                    for _ in range(3):
+                    for attempt in range(3):
                         try:
                             return await asyncio.wait_for(
                                 call_with_flood_retry(self.client.download_media, message, tmp_path),
@@ -1732,9 +1743,10 @@ class TelegramBackup:
                             raise
                         except TimeoutError:
                             logger.error(
-                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id}"
+                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
                             )
-                            raise
+                            if attempt == 2:
+                                raise
                     raise FileReferenceExpiredError(request=None)
 
                 shared_file_path, content_hash = await download_and_shard_media(
@@ -1768,7 +1780,7 @@ class TelegramBackup:
                         os.remove(tmp_file_path)
                     timeout = getattr(self.config, "download_timeout_seconds", 3600)
                     timeout_val = timeout if isinstance(timeout, int) and timeout > 0 else None
-                    for _ in range(3):
+                    for attempt in range(3):
                         try:
                             actual_path = await asyncio.wait_for(
                                 call_with_flood_retry(self.client.download_media, message, tmp_file_path),
@@ -1786,9 +1798,10 @@ class TelegramBackup:
                             raise
                         except TimeoutError:
                             logger.error(
-                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id}"
+                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
                             )
-                            raise
+                            if attempt == 2:
+                                raise
                     else:
                         raise FileReferenceExpiredError(request=None)
                     file_path = finalize_atomic_download(

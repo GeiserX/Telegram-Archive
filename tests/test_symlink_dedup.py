@@ -17,9 +17,10 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from src.telegram_backup import TelegramBackup
 
-import pytest
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Symlinks require administrator privileges on Windows")
 
 

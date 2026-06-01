@@ -1356,6 +1356,3 @@ def _get_base_env(temp_dir: str) -> dict:
         "TELEGRAM_API_HASH": "abcdef",
         "TELEGRAM_PHONE": "+1234567890",
     }
-
-
-
