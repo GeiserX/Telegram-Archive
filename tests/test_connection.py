@@ -41,6 +41,37 @@ async def test_connection_call_with_flood_retry_aborts_excessive_wait():
     assert sleeps == []
 
 
+@pytest.mark.asyncio
+async def test_connection_call_with_flood_retry_respects_env():
+    """_call_with_flood_retry must respect BACKOFF_MIN_SECONDS and BACKOFF_MAX_SECONDS env vars."""
+    calls = {"n": 0}
+    sleeps = []
+
+    async def flaky_api():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise FloodWaitError(request=None, capture=1)
+        return "ok"
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with (
+        patch.object(connection, "BACKOFF_MIN_SECONDS", 15.0),
+        patch.object(connection, "BACKOFF_MAX_SECONDS", 45.0),
+        patch.object(connection.asyncio, "sleep", record_sleep),
+        patch("src.connection.random.uniform", return_value=1.0),
+    ):
+        result = await connection._call_with_flood_retry(flaky_api)
+
+    assert result == "ok"
+    assert calls["n"] == 3
+    # Expected: backoff = min(45.0, 15.0 * 2^(retry-1)), effective = max(e.seconds, backoff) + jitter
+    # retry 1: max(1, 15.0) + 1.0 = 16.0
+    # retry 2: max(1, 30.0) + 1.0 = 31.0
+    assert sleeps == [16.0, 31.0]
+
+
 class TestTelegramConnectionInit(unittest.TestCase):
     """Test TelegramConnection initialization."""
 

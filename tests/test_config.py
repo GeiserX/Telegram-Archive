@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -171,14 +172,14 @@ class TestDatabaseDir(unittest.TestCase):
         with patch("os.makedirs") as mock_makedirs, patch.dict(os.environ, env_vars, clear=True):
             config = Config()
             # Verify it picked up the default
-            self.assertTrue(config.database_path.startswith("/data/backups"))
+            self.assertTrue(config.database_path.startswith(os.path.abspath("/data/backups")))
 
     def test_database_dir_custom(self):
         """Can configure custom database directory."""
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": "/data/backups", "DATABASE_DIR": "/data/ssd"}
         with patch("os.makedirs") as mock_makedirs, patch.dict(os.environ, env_vars, clear=True):
             config = Config()
-            self.assertTrue(config.database_path.startswith("/data/ssd"))
+            self.assertTrue(config.database_path.startswith(os.path.abspath("/data/ssd")))
 
 
 class TestSkipMediaChatIds(unittest.TestCase):
@@ -1297,7 +1298,7 @@ class TestMainBlock(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            ["python3", "-m", "src.config"],
+            [sys.executable, "-m", "src.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -1316,7 +1317,7 @@ class TestMainBlock(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         result = subprocess.run(
-            ["python3", "-m", "src.config"],
+            [sys.executable, "-m", "src.config"],
             capture_output=True,
             text=True,
             env=env,
@@ -1347,5 +1348,11 @@ class TestProxyMissingAddr(unittest.TestCase):
             self.assertIn("TELEGRAM_PROXY_ADDR", str(ctx.exception))
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _get_base_env(temp_dir: str) -> dict:
+    return {
+        "CHAT_TYPES": "private",
+        "BACKUP_PATH": temp_dir,
+        "TELEGRAM_API_ID": "12345",
+        "TELEGRAM_API_HASH": "abcdef",
+        "TELEGRAM_PHONE": "+1234567890",
+    }

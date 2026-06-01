@@ -7,13 +7,16 @@ import asyncio
 import base64
 import logging
 import os
+import random
 from datetime import UTC, datetime
 
 from telethon import TelegramClient
 from telethon.errors import (
     ChannelPrivateError,
     ChatForbiddenError,
+    FileReferenceExpiredError,
     FloodWaitError,
+    RPCError,
     UserBannedInChannelError,
 )
 from telethon.tl.types import (
@@ -56,8 +59,22 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%.1f", name, raw, default)
+        return default
+
+
 MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
 MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
+BACKOFF_MIN_SECONDS = _get_float_env("BACKOFF_MIN_SECONDS", 2.0)
+BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 300.0)
+FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 
 
 def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
@@ -106,7 +123,8 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
 
 
 async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
-    """Retry a single async call on FloodWaitError with bounded sleep.
+    """Retry a single async call on FloodWaitError with bounded sleep and
+    general transient errors with configurable exponential backoff and jitter.
 
     Use this for one-shot Telegram API calls (``get_dialogs``, ``get_me``, etc.)
     that are not async iterators.  For ``iter_messages`` use
@@ -134,14 +152,64 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
                 )
                 raise
             wait_seconds = max(0, e.seconds)
+            # Exponential backoff: use at least the Telegram-required wait,
+            # but escalate on repeated hits so we don't hammer the server.
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            effective_wait = max(wait_seconds, backoff)
+            jitter = random.uniform(0.5, 2.0)
+            sleep_duration = effective_wait + jitter
             logger.warning(
-                "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
+                "FloodWait: sleeping %.2fs (wait=%ss, backoff=%.0fs, jitter=%.2fs) before retrying %s (retry=%d/%d)",
+                sleep_duration,
                 wait_seconds,
+                backoff,
+                jitter,
                 getattr(coro_fn, "__name__", coro_fn),
                 retries,
                 max_retries,
             )
-            await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
+            await asyncio.sleep(sleep_duration)
+        except (TimeoutError, ConnectionError, OSError, RPCError) as exc:
+            # If it is a FloodWaitError, FileReferenceExpiredError, or terminal RPC error,
+            # raise it to let the prior except block or the calling scope catch it specifically
+            # without wasting retries.
+            if isinstance(
+                exc,
+                (
+                    FloodWaitError,
+                    FileReferenceExpiredError,
+                    ChannelPrivateError,
+                    ChatForbiddenError,
+                    UserBannedInChannelError,
+                ),
+            ):
+                raise exc
+
+            retries += 1
+            if retries > max_retries:
+                logger.error(
+                    "Transient Error: exceeded %d retries on %s, giving up: %s",
+                    max_retries,
+                    getattr(coro_fn, "__name__", coro_fn),
+                    exc,
+                )
+                raise
+
+            # Exponential backoff: backoff = min(backoff_max, backoff_min * (2 ** (retries - 1)))
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            jitter = random.uniform(0.5, 1.5)
+            sleep_duration = backoff + jitter
+
+            logger.warning(
+                "Transient Error (%s): sleeping %.2fs before retrying %s (retry=%d/%d): %s",
+                exc.__class__.__name__,
+                sleep_duration,
+                getattr(coro_fn, "__name__", coro_fn),
+                retries,
+                max_retries,
+                exc,
+            )
+            await asyncio.sleep(sleep_duration)
 
 
 async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
@@ -168,10 +236,6 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     """
     if not kwargs.get("reverse", False):
         raise ValueError("iter_messages_with_flood_retry only supports reverse=True (ascending) iteration")
-    try:
-        log_threshold_seconds = int(os.getenv("FLOOD_WAIT_LOG_THRESHOLD", "10"))
-    except ValueError, TypeError:
-        log_threshold_seconds = 10
     resume_from = min_id
     retries = 0
     while True:
@@ -200,15 +264,24 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                 )
                 raise
             wait_seconds = max(0, e.seconds)
-            if e.seconds >= log_threshold_seconds:
+            # Exponential backoff: use at least the Telegram-required wait,
+            # but escalate on repeated hits so we don't hammer the server.
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            effective_wait = max(wait_seconds, backoff)
+            jitter = random.uniform(0.5, 2.0)
+            sleep_duration = effective_wait + jitter
+            if e.seconds >= FLOOD_WAIT_LOG_THRESHOLD or retries > 1:
                 logger.warning(
-                    "FloodWait: sleeping %ss before resuming (last_msg_id=%s, retry=%d/%d)",
+                    "FloodWait: sleeping %.2fs (wait=%ss, backoff=%.0fs, jitter=%.2fs) before resuming (last_msg_id=%s, retry=%d/%d)",
+                    sleep_duration,
                     wait_seconds,
+                    backoff,
+                    jitter,
                     resume_from,
                     retries,
                     MAX_FLOOD_RETRIES,
                 )
-            await asyncio.sleep(wait_seconds + 1)  # +1s buffer to avoid boundary re-trigger
+            await asyncio.sleep(sleep_duration)
 
 
 class TelegramBackup:
@@ -1650,7 +1723,31 @@ class TelegramBackup:
                 os.makedirs(shared_dir, exist_ok=True)
 
                 async def _download_fn(tmp_path):
-                    return await call_with_flood_retry(self.client.download_media, message, tmp_path)
+                    nonlocal message
+                    timeout = getattr(self.config, "download_timeout_seconds", 3600)
+                    timeout_val = timeout if isinstance(timeout, int) and timeout > 0 else None
+                    for attempt in range(3):
+                        try:
+                            return await asyncio.wait_for(
+                                call_with_flood_retry(self.client.download_media, message, tmp_path),
+                                timeout=timeout_val,
+                            )
+                        except FileReferenceExpiredError:
+                            logger.info(f"File reference expired for message {message.id}, refreshing...")
+                            fresh_messages = await call_with_flood_retry(
+                                self.client.get_messages, chat_id, ids=[message.id]
+                            )
+                            if fresh_messages and fresh_messages[0]:
+                                message = fresh_messages[0]
+                                continue
+                            raise
+                        except TimeoutError:
+                            logger.error(
+                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
+                            )
+                            if attempt == 2:
+                                raise
+                    raise FileReferenceExpiredError(request=None)
 
                 shared_file_path, content_hash = await download_and_shard_media(
                     db=self.db,
@@ -1681,7 +1778,32 @@ class TelegramBackup:
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
-                    actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
+                    timeout = getattr(self.config, "download_timeout_seconds", 3600)
+                    timeout_val = timeout if isinstance(timeout, int) and timeout > 0 else None
+                    for attempt in range(3):
+                        try:
+                            actual_path = await asyncio.wait_for(
+                                call_with_flood_retry(self.client.download_media, message, tmp_file_path),
+                                timeout=timeout_val,
+                            )
+                            break
+                        except FileReferenceExpiredError:
+                            logger.info(f"File reference expired for message {message.id}, refreshing...")
+                            fresh_messages = await call_with_flood_retry(
+                                self.client.get_messages, chat_id, ids=[message.id]
+                            )
+                            if fresh_messages and fresh_messages[0]:
+                                message = fresh_messages[0]
+                                continue
+                            raise
+                        except TimeoutError:
+                            logger.error(
+                                f"Download timed out after {self.config.download_timeout_seconds} seconds for message {message.id} (attempt {attempt + 1}/3)"
+                            )
+                            if attempt == 2:
+                                raise
+                    else:
+                        raise FileReferenceExpiredError(request=None)
                     file_path = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,

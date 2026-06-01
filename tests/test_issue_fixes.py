@@ -213,7 +213,8 @@ class TestRelativeDbPathResolution(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             url_path = manager.database_url.replace("sqlite+aiosqlite:///", "")
-            self.assertEqual(url_path, "/data/backups/telegram_backup.db")
+            expected_path = os.path.abspath("/data/backups/telegram_backup.db")
+            self.assertEqual(url_path, expected_path)
 
     def test_relative_database_path_env_gets_resolved(self):
         """DATABASE_PATH=./my.db (relative) becomes an absolute path."""
@@ -237,7 +238,8 @@ class TestRelativeDbPathResolution(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("os.makedirs"):
             manager = DatabaseManager()
             url_path = manager.database_url.replace("sqlite+aiosqlite:///", "")
-            self.assertEqual(url_path, "/custom/path/my.db")
+            expected_path = os.path.abspath("/custom/path/my.db")
+            self.assertEqual(url_path, expected_path)
 
     def test_default_path_is_absolute(self):
         """Default path (no env vars set) produces an absolute path."""
@@ -263,7 +265,7 @@ class TestRelativeDbPathResolution(unittest.TestCase):
                 os.path.isabs(url_path),
                 f"Expected absolute path in URL, got: {url_path}",
             )
-            self.assertTrue(url_path.endswith("/telegram_backup.db"))
+            self.assertTrue(url_path.endswith("telegram_backup.db"))
 
     def test_relative_backup_path_gets_resolved(self):
         """BACKUP_PATH=backups (relative) produces an absolute path."""
@@ -299,7 +301,7 @@ class TestDockerfileAssumptions(unittest.TestCase):
         # Check source files for hardcoded /app directory writes
         src_dir = pathlib.Path(__file__).parent.parent / "src"
         for py_file in (src_dir / "telegram_backup.py", src_dir / "listener.py"):
-            content = py_file.read_text()
+            content = py_file.read_text(encoding="utf-8")
             # Should not have APP_DIR or open("/app/...") patterns
             self.assertNotIn("APP_DIR", content)
             self.assertNotIn('"/app/', content)

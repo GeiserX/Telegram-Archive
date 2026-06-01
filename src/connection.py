@@ -14,6 +14,7 @@ Architecture:
 import asyncio
 import logging
 import os
+import random
 import shutil
 import sqlite3
 
@@ -36,8 +37,21 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%.1f", name, raw, default)
+        return default
+
+
 MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
 MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
+BACKOFF_MIN_SECONDS = _get_float_env("BACKOFF_MIN_SECONDS", 2.0)
+BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 300.0)
 
 
 async def _call_with_flood_retry(coro_fn, *args, **kwargs):
@@ -62,14 +76,22 @@ async def _call_with_flood_retry(coro_fn, *args, **kwargs):
                 )
                 raise
             wait_seconds = max(0, e.seconds)
+            # Exponential backoff: use at least the Telegram-required wait,
+            # but escalate on repeated hits so we don't hammer the server.
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            effective_wait = max(wait_seconds, backoff)
+            jitter = random.uniform(0.5, 2.0)
+            sleep_duration = effective_wait + jitter
             logger.warning(
-                "FloodWait: sleeping %ss before retrying %s (retry=%d/%d)",
+                "FloodWait: sleeping %.2fs (wait=%ss, backoff=%.0fs) before retrying %s (retry=%d/%d)",
+                sleep_duration,
                 wait_seconds,
+                backoff,
                 getattr(coro_fn, "__name__", coro_fn),
                 retries,
                 MAX_FLOOD_RETRIES,
             )
-            await asyncio.sleep(wait_seconds + 1)
+            await asyncio.sleep(sleep_duration)
 
 
 class TelegramConnection:

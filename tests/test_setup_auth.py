@@ -27,6 +27,7 @@ class TestPrintPermissionErrorHelp(unittest.TestCase):
         assert "Docker" in printed_text
         assert "userns=keep-id" in printed_text
 
+    @unittest.skipIf(os.name == "nt", "os.getuid/getgid not available on Windows")
     def test_includes_uid_and_gid(self):
         """Prints the current UID and GID for the docker --user suggestion."""
         with patch("builtins.print") as mock_print:

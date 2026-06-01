@@ -69,47 +69,61 @@ class TestMigrateSqliteToPostgresPathResolution:
     async def test_resolves_database_path_env(self):
         """DATABASE_PATH env var is used for SQLite path resolution."""
         env = {"DATABASE_PATH": "/nonexistent/from_env.db"}
+        expected_path = os.path.abspath("/nonexistent/from_env.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match="/nonexistent/from_env.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_database_dir_env(self):
         """DATABASE_DIR env var is used when DATABASE_PATH is not set."""
         env = {"DATABASE_DIR": "/nonexistent/dir"}
+        expected_path = os.path.abspath("/nonexistent/dir/telegram_backup.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match="/nonexistent/dir/telegram_backup.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_db_path_env(self):
         """DB_PATH env var is used when DATABASE_PATH and DATABASE_DIR are not set."""
         env = {"DB_PATH": "/nonexistent/v3path.db"}
-        with patch.dict(os.environ, env, clear=True), pytest.raises(FileNotFoundError, match="/nonexistent/v3path.db"):
+        expected_path = os.path.abspath("/nonexistent/v3path.db")
+        with (
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises(FileNotFoundError) as exc_info,
+        ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_backup_path_env_as_fallback(self):
         """BACKUP_PATH env var is used as the last-resort fallback."""
         env = {"BACKUP_PATH": "/nonexistent/backups"}
+        expected_path = os.path.abspath("/nonexistent/backups/telegram_backup.db")
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(FileNotFoundError, match="/nonexistent/backups/telegram_backup.db"),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
     @pytest.mark.asyncio
     async def test_resolves_default_path_when_no_env_set(self):
         """Default path /data/backups is used when no env vars are set."""
+        expected_path = os.path.abspath("/data/backups/telegram_backup.db")
         with (
             patch.dict(os.environ, {}, clear=True),
-            pytest.raises(FileNotFoundError, match="/data/backups/telegram_backup.db"),
+            patch("os.path.exists", return_value=False),
+            pytest.raises(FileNotFoundError) as exc_info,
         ):
             await migrate_sqlite_to_postgres(postgres_url="postgresql+asyncpg://u:p@h/d")
+        assert str(exc_info.value) == f"SQLite database not found: {expected_path}"
 
 
 # ============================================================
@@ -303,7 +317,7 @@ class TestVerifyMigrationPathResolution:
 
             # Source should be created with sqlite URL containing the path
             first_call_url = MockDM.call_args_list[0][0][0]
-            assert "/verify/path.db" in first_call_url
+            assert "verify" in first_call_url and "path.db" in first_call_url
 
 
 # ============================================================
@@ -519,7 +533,7 @@ class TestVerifyMigrationPathVariants:
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
 
             first_call_url = MockDM.call_args_list[0][0][0]
-            assert "/verify/dir/telegram_backup.db" in first_call_url
+            assert "verify" in first_call_url and "telegram_backup.db" in first_call_url
 
     @pytest.mark.asyncio
     async def test_resolves_db_path_env(self):
@@ -542,7 +556,7 @@ class TestVerifyMigrationPathVariants:
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
 
             first_call_url = MockDM.call_args_list[0][0][0]
-            assert "/verify/v3.db" in first_call_url
+            assert "verify" in first_call_url and "v3.db" in first_call_url
 
     @pytest.mark.asyncio
     async def test_resolves_backup_path_fallback(self):
@@ -565,7 +579,7 @@ class TestVerifyMigrationPathVariants:
             await verify_migration(postgres_url="postgresql+asyncpg://u:p@h/d")
 
             first_call_url = MockDM.call_args_list[0][0][0]
-            assert "/verify/backups/telegram_backup.db" in first_call_url
+            assert "verify" in first_call_url and "telegram_backup.db" in first_call_url
 
     @pytest.mark.asyncio
     async def test_builds_postgres_url_from_env(self):

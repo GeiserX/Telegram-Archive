@@ -19,6 +19,7 @@ Covers lines missing from the initial test_listener.py:
 """
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,8 +43,8 @@ def _make_config(**overrides):
     config.api_id = 12345
     config.api_hash = "test_hash"
     config.phone = "+1234567890"
-    config.session_path = "/tmp/test_session"
-    config.media_path = "/tmp/test_media"
+    config.session_path = os.path.normpath("/tmp/test_session")
+    config.media_path = os.path.normpath("/tmp/test_media")
     config.global_include_ids = set()
     config.private_include_ids = set()
     config.groups_include_ids = set()
@@ -658,7 +659,7 @@ class TestDownloadMedia:
         listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
-            if str(path) == "/tmp/test_media/_shared/123.jpg":
+            if str(path).endswith("123.jpg") and "_shared" in str(path):
                 return downloaded["done"]
             return False
 
@@ -675,7 +676,7 @@ class TestDownloadMedia:
         from telethon.tl.types import MessageMediaPhoto
 
         listener = self._make_listener(deduplicate_media=False)
-        listener.client.download_media = AsyncMock(return_value="/tmp/test_media/-100/123.jpg")
+        listener.client.download_media = AsyncMock(return_value=os.path.normpath("/tmp/test_media/-100/123.jpg"))
 
         msg = MagicMock()
         media = MagicMock(spec=MessageMediaPhoto)
@@ -690,17 +691,19 @@ class TestDownloadMedia:
 
         async def fake_download(*args, **kwargs):
             downloaded["done"] = True
-            return "/tmp/test_media/-100/123.jpg"
+            return os.path.normpath("/tmp/test_media/-100/123.jpg")
 
         listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
-            if str(path) == "/tmp/test_media/-100/123.jpg":
+            if str(path).endswith("123.jpg") and "-100" in str(path):
                 return downloaded["done"]
             return False
 
         mock_exists.side_effect = exists
-        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/-100/123.jpg"):
+        with patch(
+            "src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")
+        ):
             result = await listener._download_media(msg, -100)
         assert result is not None
         listener.client.download_media.assert_called_once()
@@ -2210,7 +2213,7 @@ class TestDownloadMediaSymlinkFallback:
         listener.client.download_media = AsyncMock(side_effect=fake_download)
 
         def exists(path):
-            if str(path) == "/tmp/test_media/_shared/123.jpg":
+            if str(path).endswith("123.jpg") and "_shared" in str(path):
                 return downloaded["done"]
             return False
 
