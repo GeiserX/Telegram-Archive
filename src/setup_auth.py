@@ -26,7 +26,9 @@ def _print_permission_error_help():
     print("  Ensure the data directory is owned by UID 1000:")
     print("  mkdir -p data && sudo chown -R 1000:1000 data")
     print("\nAlternatively, run the container with your host UID:")
-    print(f"  docker run --user {os.getuid()}:{os.getgid()} ...")
+    uid = os.getuid() if hasattr(os, "getuid") else 1000
+    gid = os.getgid() if hasattr(os, "getgid") else 1000
+    print(f"  docker run --user {uid}:{gid} ...")
     print("=" * 60)
 
 

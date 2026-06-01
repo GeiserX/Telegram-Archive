@@ -193,9 +193,14 @@ async def download_and_shard_media(
         content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
         try:
             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-            if os.path.lexists(file_path):
-                os.unlink(file_path)
-            os.symlink(rel_path, file_path)
+            try:
+                os.symlink(rel_path, file_path)
+            except FileExistsError:
+                pass
+            except OSError:
+                if os.path.lexists(file_path):
+                    os.unlink(file_path)
+                os.symlink(rel_path, file_path)
             logger.debug(f"Created symlink for deduplicated media: {file_name}")
         except OSError as e:
             logger.warning(f"Symlink not supported, using direct path: {e}")
@@ -235,12 +240,19 @@ async def download_and_shard_media(
     else:
         shared_file_path = tmp_shared_file_path
 
-    # Create symlink in chat directory
+    # Create symlink in chat directory (hardened for concurrent tasks)
     try:
         rel_path = os.path.relpath(shared_file_path, chat_media_dir)
-        if os.path.lexists(file_path):
-            os.unlink(file_path)
-        os.symlink(rel_path, file_path)
+        try:
+            os.symlink(rel_path, file_path)
+        except FileExistsError:
+            # Another concurrent task already created this symlink — benign
+            pass
+        except OSError:
+            # Retry after removing stale entry
+            if os.path.lexists(file_path):
+                os.unlink(file_path)
+            os.symlink(rel_path, file_path)
     except OSError as e:
         logger.warning(f"Symlink not supported, using direct path: {e}")
         import shutil
