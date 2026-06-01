@@ -458,6 +458,40 @@ class TestBackupSchedulerListener:
             assert scheduler._listener is None
             assert scheduler._listener_task is None
 
+    async def test_stop_listener_swallows_dead_task_exception(self):
+        """_stop_listener does not re-raise a dead task's stored exception.
+
+        Regression for the crash where a transient ConnectionError from
+        run_until_disconnected() became the listener task's stored exception;
+        awaiting that done task in _stop_listener re-raised it (only
+        CancelledError was caught), crashing run_forever -> main -> sys.exit(1)
+        -> container restart, instead of triggering the intended restart.
+        """
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.should_skip_topic = MagicMock(return_value=False)
+            scheduler = BackupScheduler(config)
+
+            # A task that has already finished with a ConnectionError.
+            loop = asyncio.get_event_loop()
+            dead_task = loop.create_future()
+            dead_task.set_exception(ConnectionError("Cannot send requests while disconnected"))
+
+            mock_listener = AsyncMock()
+            mock_listener.close = AsyncMock()
+
+            scheduler._listener_task = dead_task
+            scheduler._listener = mock_listener
+
+            # Must not raise — teardown should proceed cleanly.
+            await scheduler._stop_listener()
+
+            mock_listener.close.assert_called_once()
+            assert scheduler._listener is None
+            assert scheduler._listener_task is None
+
     async def test_stop_listener_when_no_listener_is_noop(self):
         """_stop_listener is safe when no listener is running."""
         with patch("src.scheduler.signal.signal"):
