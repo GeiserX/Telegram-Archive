@@ -191,18 +191,34 @@ def _iter_chat_dirs(media_path: str) -> list[str]:
     """Immediate sub-directories of ``media_path`` that hold chat media.
 
     Excludes ``_shared`` (the dedup blob store) and any non-directory entry.
+    Lets ``OSError`` propagate: a failure to scan the sweep root is transient
+    repairable work, so the caller must defer it (and withhold the marker)
+    rather than mistake an unreadable root for an empty one.
     """
     chat_dirs: list[str] = []
-    try:
-        with os.scandir(media_path) as it:
-            for entry in it:
-                if entry.name == "_shared":
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    chat_dirs.append(entry.path)
-    except OSError:
-        pass
+    with os.scandir(media_path) as it:
+        for entry in it:
+            if entry.name == "_shared":
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                chat_dirs.append(entry.path)
     return chat_dirs
+
+
+def _scan_chat_symlinks(chat_dir: str) -> list[str]:
+    """Symlink paths directly under ``chat_dir``.
+
+    Returns only string paths (not ``DirEntry`` objects) and closes the scandir
+    handle before returning, so the caller can mutate the directory (the repair
+    does ``unlink``/``symlink``) without iterating a live handle over a folder it
+    is changing. Collecting strings keeps memory bounded to the symlink count.
+    """
+    links: list[str] = []
+    with os.scandir(chat_dir) as it:
+        for entry in it:
+            if entry.is_symlink():
+                links.append(entry.path)
+    return links
 
 
 def _sweep_orphan_links_sync(media_path: str, shared_dir: str) -> tuple[int, int]:
@@ -224,17 +240,22 @@ def _sweep_orphan_links_sync(media_path: str, shared_dir: str) -> tuple[int, int
     repaired = 0
     deferred = 0
 
-    for chat_dir in _iter_chat_dirs(media_path):
+    try:
+        chat_dirs = _iter_chat_dirs(media_path)
+    except OSError:
+        # Could not enumerate chat dirs (transient root-scan failure). Defer so
+        # the marker is withheld and the whole sweep retries next run.
+        return 0, 1
+
+    for chat_dir in chat_dirs:
         try:
-            entries = list(os.scandir(chat_dir))
+            links = _scan_chat_symlinks(chat_dir)
         except OSError:
             deferred += 1
             continue
-        for entry in entries:
+        for link_path in links:
             try:
-                if not entry.is_symlink():
-                    continue
-                if _repair_symlink_blob(entry.path, shared_dir):
+                if _repair_symlink_blob(link_path, shared_dir):
                     repaired += 1
             except OSError:
                 deferred += 1
@@ -285,8 +306,12 @@ async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
                     deferred += 1
                     repaired -= 1
     except Exception as e:
-        logger.warning("Media repair aborted — could not read media records (%s)", type(e).__name__)
-        return repaired
+        # A DB read failure must NOT skip the filesystem sweep below: the sweep
+        # is DB-independent and is exactly what heals corrupt blobs whose media
+        # row is missing. Count the DB failure as deferred (so the marker is
+        # withheld and the next run retries the DB pass) and fall through.
+        logger.warning("Media repair: could not read media records, running sweep only (%s)", type(e).__name__)
+        deferred += 1
 
     # Filesystem-driven sweep for corrupt blobs whose media row is missing, so
     # the DB-driven pass above never reaches them (#175 residue reported by a
