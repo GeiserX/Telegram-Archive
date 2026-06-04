@@ -35,7 +35,7 @@ import logging
 import os
 
 from telethon import utils
-from telethon.errors import FileMigrateError, FloodWaitError
+from telethon.errors import FileMigrateError, FileReferenceExpiredError, FloodWaitError
 from telethon.network import MTProtoSender
 from telethon.tl import functions
 from telethon.tl.alltlobjects import LAYER
@@ -89,6 +89,10 @@ def supports_parallel_download(client) -> bool:
         return False
     if not hasattr(client, "_proxy"):
         return False
+    # ``os.pwrite`` is POSIX-only; on platforms without it (e.g. Windows) we
+    # degrade here at probe time rather than crashing mid-transfer.
+    if not hasattr(os, "pwrite"):
+        return False
     return hasattr(utils, "get_input_location")
 
 
@@ -131,12 +135,16 @@ def _pwrite_all(fd: int, data: bytes, offset: int) -> None:
 class ParallelDownloader:
     """Fetches one file at a time over a bounded pool of independent senders."""
 
-    def __init__(self, client, *, connections: int, part_size: int):
+    def __init__(self, client, *, connections: int, part_size: int, max_file_size: int | None = None):
         if not is_valid_part_size(part_size):
             raise ValueError(f"invalid part_size {part_size}; must be a 4 KiB multiple dividing 1 MiB, <= 512 KiB")
         self._client = client
         self._connections = max(1, int(connections))
         self._part_size = int(part_size)
+        # Defence-in-depth: the declared size comes from untrusted server
+        # metadata. A ceiling caps how many chunks (and how large a
+        # pre-allocation) one transfer can request before we fall back.
+        self._max_file_size = int(max_file_size) if max_file_size and max_file_size > 0 else None
 
     async def download_media(self, message, file) -> str:
         """Download ``message``'s media to path ``file`` and return ``file``.
@@ -161,6 +169,8 @@ class ParallelDownloader:
         file_size = _extract_file_size(message)
         if not file_size or file_size <= 0:
             raise ParallelDownloadUnavailable("unknown file size")
+        if self._max_file_size is not None and file_size > self._max_file_size:
+            raise ParallelDownloadUnavailable(f"declared file size {file_size} exceeds ceiling {self._max_file_size}")
 
         await self._download_location(location, dc_id, file_size, file)
         return file
@@ -198,7 +208,11 @@ class ParallelDownloader:
             _verify_coverage(written, file_size)
             os.fsync(fd)
         except BaseException:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                # Closing the fd must never mask the original chunk failure.
+                pass
             fd = -1
             try:
                 os.remove(dest_path)
@@ -222,6 +236,11 @@ class ParallelDownloader:
             except FloodWaitError:
                 # Must propagate unchanged so the caller's single flood budget
                 # (call_with_flood_retry) governs it — never a second backoff.
+                raise
+            except FileReferenceExpiredError:
+                # Propagate unchanged so the caller's file-reference refresh
+                # loop can re-resolve the message and retry, rather than
+                # silently degrading to single-stream with a stale reference.
                 raise
             except FileMigrateError as exc:
                 # The file actually lives on another DC; native download_media
@@ -281,8 +300,10 @@ class ParallelDownloader:
             raise
         except Exception as exc:  # noqa: BLE001
             await self._close_senders(senders)
-            if isinstance(exc, FloodWaitError):
-                # Surface flood so the caller's single budget governs it.
+            if isinstance(exc, (FloodWaitError, FileReferenceExpiredError)):
+                # Surface flood (single budget) and stale-reference (refresh
+                # loop) unchanged so the caller's existing handling governs
+                # them, rather than masking them as a generic fallback.
                 raise
             raise ParallelDownloadUnavailable(f"failed to establish parallel senders: {exc}") from exc
 

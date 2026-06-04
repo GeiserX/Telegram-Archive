@@ -321,6 +321,22 @@ async def test_parallel_download_single_chunk_file(tmp_path, patch_sender):
 
     await dl.download_media(_make_message(len(blob)), dest)
     assert _read(dest) == blob
+    # A single-chunk file needs exactly one sender (n = min(connections, offsets)).
+    assert len(client.created_senders) == 1
+
+
+async def test_parallel_download_part_aligned_file(tmp_path, patch_sender):
+    # Exactly 3 full parts with no remainder: the last chunk is a full part, so
+    # the per-chunk length check must accept ``min(part_size, file_size-offset)``
+    # for every chunk including the final one.
+    blob = os.urandom(524288 * 3)
+    client = FakeClient(blob)
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=4, part_size=524288)
+    dest = str(tmp_path / "aligned.bin")
+
+    await dl.download_media(_make_message(len(blob)), dest)
+    assert _read(dest) == blob
 
 
 async def test_parallel_download_rejects_non_path_destination(tmp_path, patch_sender):
@@ -337,6 +353,29 @@ async def test_parallel_download_unknown_size_refuses(tmp_path, patch_sender):
     dl = ParallelDownloader(client, connections=4, part_size=524288)
     with pytest.raises(ParallelDownloadUnavailable):
         await dl.download_media(_make_message(0), str(tmp_path / "x"))
+
+
+async def test_parallel_download_refuses_size_over_ceiling(tmp_path, patch_sender):
+    # The declared size comes from untrusted server metadata. A file larger than
+    # the configured ceiling must fall back rather than pre-allocate/chunk it.
+    blob = os.urandom(1024)
+    client = FakeClient(blob)
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=4, part_size=524288, max_file_size=500)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl.download_media(_make_message(1024), str(tmp_path / "big.bin"))
+    assert not os.path.exists(str(tmp_path / "big.bin"))
+
+
+async def test_parallel_download_allows_size_at_ceiling(tmp_path, patch_sender):
+    # A file exactly at the ceiling is still allowed (boundary is inclusive).
+    blob = os.urandom(500)
+    client = FakeClient(blob)
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=4, part_size=524288, max_file_size=500)
+    dest = str(tmp_path / "edge.bin")
+    await dl.download_media(_make_message(500), dest)
+    assert _read(dest) == blob
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +404,36 @@ async def test_file_reference_expired_propagates(tmp_path, patch_sender):
 
     with pytest.raises(FileReferenceExpiredError):
         await dl.download_media(_make_message(len(blob)), dest)
+    assert not os.path.exists(dest)
+
+
+async def test_file_reference_expired_mid_transfer_propagates(tmp_path, patch_sender):
+    # A stale reference can surface on a later chunk, not just the first one.
+    # It must still propagate unchanged (so the caller refreshes), cancel
+    # siblings, and remove the partial output.
+    blob = os.urandom(524288 * 4)
+    client = FakeClient(blob, fail_at_offset=524288 * 2, fail_exc=FileReferenceExpiredError(request=None))
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=4, part_size=524288)
+    dest = str(tmp_path / "video.mp4")
+
+    with pytest.raises(FileReferenceExpiredError):
+        await dl.download_media(_make_message(len(blob)), dest)
+    assert not os.path.exists(dest)
+    assert all(s.disconnected for s in client.created_senders)
+
+
+async def test_blob_shorter_than_declared_size_aborts(tmp_path, patch_sender):
+    # If the server returns fewer bytes than the declared size (so a tail chunk
+    # comes back empty/short), the guard must fire and the partial be removed.
+    declared = 524288 * 3
+    client = FakeClient(os.urandom(524288 * 2))  # blob is a full part short
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=2, part_size=524288)
+    dest = str(tmp_path / "truncated.bin")
+
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl.download_media(_make_message(declared), dest)
     assert not os.path.exists(dest)
 
 
@@ -569,6 +638,40 @@ async def test_foreign_dc_exports_auth_once(tmp_path, monkeypatch):
     # Auth exported exactly once even though 3 senders were created.
     assert len(client.export_calls) == 1
     assert len(client.created_senders) == 3
+    # The shared init request's query must be restored after the transient
+    # ImportAuthorizationRequest, so concurrent users never observe our mutation.
+    assert client._init_request.query is None
+
+
+async def test_foreign_dc_export_floodwait_propagates_and_restores_query(tmp_path, monkeypatch):
+    # A FloodWait raised by the auth export must surface unchanged (single
+    # budget), and the shared _init_request.query must still be restored.
+    blob = os.urandom(524288 * 2)
+
+    class _FloodOnExport(FakeClient):
+        async def __call__(self, request):
+            raise FloodWaitError(request=None)
+
+    client = _FloodOnExport(blob, home_dc=2)
+    monkeypatch.setattr(utils, "get_input_location", lambda m: (4, object()))
+
+    def _connect_sender_stub(self, dc_id, auth_key):
+        async def _inner():
+            s = client.make_sender()
+            s.dc_id = dc_id
+            s.connected = True
+            return s
+
+        return _inner()
+
+    monkeypatch.setattr(ParallelDownloader, "_connect_sender", _connect_sender_stub)
+    dl = ParallelDownloader(client, connections=3, part_size=524288)
+    with pytest.raises(FloodWaitError):
+        await dl.download_media(_make_message(len(blob)), str(tmp_path / "f.bin"))
+    # Even on the export failure the query must be restored (try/finally).
+    assert client._init_request.query is None
+    # All senders opened so far are cleaned up.
+    assert all(s.disconnected for s in client.created_senders)
 
 
 # --------------------------------------------------------------------------- #
@@ -651,3 +754,45 @@ async def test_fetch_media_bytes_propagates_floodwait(monkeypatch):
         await backup._fetch_media_bytes(_make_message(50 * 1024 * 1024), "/tmp/out", 50 * 1024 * 1024)
     # FloodWait must NOT be swallowed into a single-stream retry here.
     backup.client.download_media.assert_not_awaited()
+
+
+async def test_fetch_media_bytes_uses_parallel_when_enabled(monkeypatch):
+    # Happy path: gate passes -> ParallelDownloader is used and its path returned,
+    # and the single-stream client.download_media is NOT touched.
+    backup = _make_backup(enabled=True, min_mb=1)
+    backup.client.download_media = AsyncMock(return_value="/tmp/single")
+
+    calls = []
+
+    class _DL:
+        async def download_media(self, message, path):
+            calls.append(path)
+            return path
+
+    monkeypatch.setattr("src.telegram_backup.ParallelDownloader", lambda *a, **k: _DL())
+    result = await backup._fetch_media_bytes(_make_message(50 * 1024 * 1024), "/tmp/parallel", 50 * 1024 * 1024)
+    assert result == "/tmp/parallel"
+    assert calls == ["/tmp/parallel"]
+    backup.client.download_media.assert_not_awaited()
+
+
+async def test_fetch_media_bytes_reuses_cached_downloader(monkeypatch):
+    # The ParallelDownloader is built once and cached on the backup instance.
+    backup = _make_backup(enabled=True, min_mb=1)
+    backup.client.download_media = AsyncMock(return_value="/tmp/single")
+
+    build_count = {"n": 0}
+
+    class _DL:
+        async def download_media(self, message, path):
+            return path
+
+    def _factory(*a, **k):
+        build_count["n"] += 1
+        return _DL()
+
+    monkeypatch.setattr("src.telegram_backup.ParallelDownloader", _factory)
+    msg = _make_message(50 * 1024 * 1024)
+    await backup._fetch_media_bytes(msg, "/tmp/a", 50 * 1024 * 1024)
+    await backup._fetch_media_bytes(msg, "/tmp/b", 50 * 1024 * 1024)
+    assert build_count["n"] == 1

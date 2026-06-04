@@ -407,6 +407,10 @@ on disk, lifting that cap on fast links.
   and all photos stay single-stream; chunking overhead isn't worth it for them.
 - **Conservative by design.** `PARALLEL_DOWNLOAD_CONNECTIONS` is clamped to 2–8
   (default 4). Telegram throttles hard past ~20 total connections, so keep this low.
+  Higher values also raise the cost of a rate limit: a `FloodWait` on any one
+  connection cancels its siblings and restarts the whole file under the shared
+  retry budget, so under throttling a higher connection count can mean *slower*
+  overall throughput. If you see frequent flood waits, lower this back toward 4.
 - **FloodWait-aware.** Rate limits flow through the same retry budget as normal
   downloads — no separate backoff scheme.
 - **Verified reassembly.** Each chunk is written at its exact offset and the full
