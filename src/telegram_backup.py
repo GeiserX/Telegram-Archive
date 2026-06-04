@@ -44,6 +44,11 @@ from .message_utils import (
     resolve_shared_file_path,
     sanitize_media_filename,
 )
+from .parallel_download import (
+    ParallelDownloader,
+    ParallelDownloadUnavailable,
+    supports_parallel_download,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +308,11 @@ class TelegramBackup:
         self.client: TelegramClient | None = client
         self._owns_client = client is None  # Track if we created the client
         self._cleaned_media_chats: set[int] = set()  # Track chats already cleaned this session
+        # Lazily-built parallel downloader (issue #183). Stays None until the
+        # first large file when the feature is enabled; disabled for the rest of
+        # the run if the client lacks the required Telethon internals.
+        self._parallel_downloader: ParallelDownloader | None = None
+        self._parallel_download_disabled = False
 
         logger.info("TelegramBackup initialized")
 
@@ -1729,7 +1739,7 @@ class TelegramBackup:
                     for attempt in range(3):
                         try:
                             return await asyncio.wait_for(
-                                call_with_flood_retry(self.client.download_media, message, tmp_path),
+                                call_with_flood_retry(self._fetch_media_bytes, message, tmp_path, file_size),
                                 timeout=timeout_val,
                             )
                         except FileReferenceExpiredError:
@@ -1784,7 +1794,7 @@ class TelegramBackup:
                             os.remove(tmp_file_path)
                         try:
                             actual_path = await asyncio.wait_for(
-                                call_with_flood_retry(self.client.download_media, message, tmp_file_path),
+                                call_with_flood_retry(self._fetch_media_bytes, message, tmp_file_path, file_size),
                                 timeout=timeout_val,
                             )
                             break
@@ -1868,6 +1878,55 @@ class TelegramBackup:
                 "chat_id": chat_id,
                 "downloaded": False,
             }
+
+    def _should_parallelize(self, message, file_size: int) -> bool:
+        """Decide whether this file should use the parallel chunked path.
+
+        Gated by config (default OFF), a size threshold, and a one-time client
+        capability probe. Returns False for anything that should stay on the
+        proven single-stream ``download_media`` path.
+        """
+        # Strict ``is True`` (not truthiness): a real Config sets a bool, while a
+        # MagicMock config returns a truthy mock — this keeps the feature off in
+        # tests/callers that never opted in, and off by default in production.
+        if getattr(self.config, "parallel_download_enabled", False) is not True:
+            return False
+        if getattr(self, "_parallel_download_disabled", False):
+            return False
+        if file_size < self.config.get_parallel_download_min_size_bytes():
+            return False
+        if not supports_parallel_download(self.client):
+            # Probe once; if the installed Telethon lacks the internals we need,
+            # stop trying for the whole run instead of re-probing every file.
+            logger.warning("Parallel download unavailable (Telethon internals missing); using single-stream")
+            self._parallel_download_disabled = True
+            return False
+        return True
+
+    async def _fetch_media_bytes(self, message, tmp_path, file_size: int):
+        """Fetch a message's media to ``tmp_path`` (the bytes-fetch primitive).
+
+        Swaps only the transport: callers keep ``call_with_flood_retry``, the
+        timeout, the ``FileReferenceExpired`` refresh loop, and dedup/sharding.
+        Uses the parallel transferrer for large files when enabled, otherwise
+        the single-stream ``client.download_media``. A parallel attempt that
+        reports itself unavailable transparently falls back to single-stream for
+        that file; FloodWait and other real errors propagate unchanged so the
+        caller's single retry budget governs them.
+        """
+        if self._should_parallelize(message, file_size):
+            if self._parallel_downloader is None:
+                self._parallel_downloader = ParallelDownloader(
+                    self.client,
+                    connections=self.config.parallel_download_connections,
+                    part_size=self.config.get_parallel_download_part_size_bytes(),
+                    max_file_size=self.config.get_max_media_size_bytes(),
+                )
+            try:
+                return await self._parallel_downloader.download_media(message, tmp_path)
+            except ParallelDownloadUnavailable as exc:
+                logger.info("Parallel download not applicable (%s); falling back to single-stream", exc)
+        return await self.client.download_media(message, tmp_path)
 
     def _get_media_size(self, media) -> int:
         """Get estimated size of media object in bytes."""

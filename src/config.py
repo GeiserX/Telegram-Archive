@@ -116,6 +116,28 @@ class Config:
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
 
+        # =====================================================================
+        # PARALLEL CHUNKED DOWNLOADS (issue #183)
+        # =====================================================================
+        # Split a single large file into chunks fetched concurrently over
+        # several MTProto senders to one DC, then reassemble by exact offset.
+        # Default OFF: opening N senders looks aggressive to Telegram and
+        # multiplies FloodWait exposure, so this is opt-in and only kicks in
+        # above a size threshold. Small files and photos stay single-stream.
+        self.parallel_download_enabled = _parse_bool(os.getenv("PARALLEL_DOWNLOAD_ENABLED"), default=False)
+        # Only files at/above this size use the parallel path (smaller files
+        # gain nothing and pay pure overhead). Clamped to a sane floor.
+        self.parallel_download_min_size_mb = max(1, int(os.getenv("PARALLEL_DOWNLOAD_MIN_SIZE_MB", "20")))
+        # Concurrent senders per file. Hard-capped well under Telegram's ~20
+        # connection cliff to stay safe for an unattended, scheduled tool.
+        self.parallel_download_connections = max(2, min(8, int(os.getenv("PARALLEL_DOWNLOAD_CONNECTIONS", "4"))))
+        # Per-request chunk size in KiB. Must be a 4 KiB multiple that divides
+        # 1 MiB and is <= 512 KiB (Telegram getFile constraints); invalid values
+        # fall back to the 512 KiB maximum. Peak memory ~= connections * part.
+        self.parallel_download_part_size_kb = self._parse_part_size_kb(
+            os.getenv("PARALLEL_DOWNLOAD_PART_SIZE_KB", "512")
+        )
+
         # Batch processing configuration
         self.batch_size = int(os.getenv("BATCH_SIZE", "100"))
         # How often to checkpoint sync progress (every N batch inserts)
@@ -354,6 +376,14 @@ class Config:
             )
         if self.verify_media:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
+        if self.parallel_download_enabled:
+            logger.info(
+                "PARALLEL_DOWNLOAD enabled - files >=%dMB use %d senders, %dKB chunks (peak mem ~%dKB/file)",
+                self.parallel_download_min_size_mb,
+                self.parallel_download_connections,
+                self.parallel_download_part_size_kb,
+                self.parallel_download_connections * self.parallel_download_part_size_kb,
+            )
         if self.enable_listener:
             logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
             logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
@@ -385,6 +415,35 @@ class Config:
                 self.telegram_proxy["addr"],
                 self.telegram_proxy["port"],
             )
+
+    def _parse_part_size_kb(self, value: str | None) -> int:
+        """Parse PARALLEL_DOWNLOAD_PART_SIZE_KB, clamping to a valid getFile size.
+
+        Telegram requires the per-request limit to be a multiple of 4 KiB that
+        divides 1 MiB and is at most 512 KiB. An invalid or out-of-range value
+        is clamped to 512 KiB (the maximum, fewest requests) rather than raising,
+        so a misconfigured knob never aborts an unattended backup.
+        """
+        valid = (4, 8, 16, 32, 64, 128, 256, 512)
+        try:
+            kb = int(value) if value else 512
+        except ValueError:
+            kb = 512
+        if kb in valid:
+            return kb
+        # Snap down to the largest valid size not exceeding the request.
+        for candidate in reversed(valid):
+            if kb >= candidate:
+                return candidate
+        return valid[0]
+
+    def get_parallel_download_min_size_bytes(self) -> int:
+        """Minimum file size (bytes) that triggers the parallel download path."""
+        return self.parallel_download_min_size_mb * 1024 * 1024
+
+    def get_parallel_download_part_size_bytes(self) -> int:
+        """Per-request chunk size in bytes for parallel downloads."""
+        return self.parallel_download_part_size_kb * 1024
 
     def _parse_id_list(self, id_str: str) -> set:
         """Parse comma-separated ID string into a set of integers."""
