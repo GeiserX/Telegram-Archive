@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.13.0] - 2026-06-04
+
+### Added
+- **Per-file parallel chunked downloads** (opt-in, default OFF) — Large files can now be split into chunks fetched concurrently over several connections to the file's datacenter and reassembled on disk, lifting the ~10 MB/s single-stream throughput cap on fast links. Controlled by `PARALLEL_DOWNLOAD_ENABLED` (default `false`), `PARALLEL_DOWNLOAD_MIN_SIZE_MB` (default `20`), `PARALLEL_DOWNLOAD_CONNECTIONS` (clamped 2–8, default `4`), and `PARALLEL_DOWNLOAD_PART_SIZE_KB` (one of 4/8/16/32/64/128/256/512, default `512`). Photos and files below the size threshold always stay single-stream. Each chunk is written at its exact offset with full coverage verified before finalize; any chunk failure cancels the rest, removes the partial file, and falls back transparently to a single stream. FloodWait flows through the existing retry budget, and peak extra memory is bounded at roughly `CONNECTIONS × PART_SIZE_KB`. Applies to the scheduled backup path only. ([#183](https://github.com/GeiserX/Telegram-Archive/issues/183))
+
+### Credits
+- Thanks to [@smbdspk](https://github.com/smbdspk) for proposing per-file parallel downloads in [#183](https://github.com/GeiserX/Telegram-Archive/issues/183).
+
 ## [7.12.0] - 2026-06-02
 
 ### Added
