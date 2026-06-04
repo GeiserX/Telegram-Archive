@@ -116,6 +116,54 @@ def test_extract_file_size_from_photo_sizes():
     assert _extract_file_size(Msg()) == 9000
 
 
+def test_extract_file_size_from_progressive_photo_sizes():
+    class Progressive:
+        size = None
+        sizes = [10, 200, 3000]  # cumulative; total is the max
+
+    class Photo:
+        sizes = [Progressive()]
+
+    class Media:
+        document = None
+        photo = Photo()
+
+    class Msg:
+        media = Media()
+
+    assert _extract_file_size(Msg()) == 3000
+
+
+def test_extract_file_size_from_bare_media_size():
+    class Media:
+        document = None
+        photo = None
+        size = 777
+
+    class Msg:
+        media = Media()
+
+    assert _extract_file_size(Msg()) == 777
+
+
+def test_extract_file_size_returns_none_when_absent():
+    class Media:
+        document = None
+        photo = None
+        size = None
+
+    class Msg:
+        media = Media()
+
+    assert _extract_file_size(Msg()) is None
+
+
+def test_pwrite_all_raises_on_nonpositive_write(monkeypatch):
+    monkeypatch.setattr(os, "pwrite", lambda *a, **k: 0)
+    with pytest.raises(OSError):
+        _pwrite_all(0, b"data", 0)
+
+
 # --------------------------------------------------------------------------- #
 # Fake Telethon client / sender harness
 # --------------------------------------------------------------------------- #
@@ -372,6 +420,112 @@ def test_supports_parallel_download_false_when_get_input_location_gone(monkeypat
 async def test_invalid_part_size_rejected_at_construction():
     with pytest.raises(ValueError):
         ParallelDownloader(FakeClient(b"x"), connections=4, part_size=3000)
+
+
+async def test_download_media_refuses_when_client_incomplete(tmp_path, monkeypatch):
+    client = FakeClient(b"x" * 100)
+    monkeypatch.setattr("src.parallel_download.supports_parallel_download", lambda c: False)
+    dl = ParallelDownloader(client, connections=4, part_size=524288)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl.download_media(_make_message(100), str(tmp_path / "x.bin"))
+
+
+async def test_build_senders_closes_on_unavailable(monkeypatch):
+    client = FakeClient(b"x" * 100)
+    closed = []
+
+    def _connect(self, dc_id, auth_key):
+        async def _inner():
+            raise ParallelDownloadUnavailable("nope")
+
+        return _inner()
+
+    monkeypatch.setattr(ParallelDownloader, "_connect_sender", _connect)
+
+    async def _track_close(self, senders):
+        closed.append(senders)
+
+    monkeypatch.setattr(ParallelDownloader, "_close_senders", _track_close)
+    dl = ParallelDownloader(client, connections=2, part_size=524288)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl._build_senders(client.session.dc_id, 2)
+    assert closed  # cleanup ran on the ParallelDownloadUnavailable path
+
+
+async def test_close_senders_swallows_disconnect_errors():
+    dl = ParallelDownloader(FakeClient(b"x"), connections=4, part_size=524288)
+
+    class BadSender:
+        async def disconnect(self):
+            raise RuntimeError("boom")
+
+    # Must not raise even though disconnect() fails.
+    await dl._close_senders([BadSender(), BadSender()])
+
+
+async def test_download_media_falls_back_when_location_unresolvable(tmp_path, monkeypatch):
+    client = FakeClient(b"x" * 100)
+    monkeypatch.setattr(ParallelDownloader, "_connect_sender", lambda self, d, k: None)
+
+    def _boom(_message):
+        raise TypeError("not a downloadable message")
+
+    monkeypatch.setattr(utils, "get_input_location", _boom)
+    dl = ParallelDownloader(client, connections=4, part_size=524288)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl.download_media(_make_message(100), str(tmp_path / "x.bin"))
+
+
+async def test_build_senders_wraps_non_flood_errors(monkeypatch):
+    client = FakeClient(b"x" * 100)
+
+    def _boom(self, dc_id, auth_key):
+        async def _inner():
+            raise RuntimeError("connect failed")
+
+        return _inner()
+
+    monkeypatch.setattr(ParallelDownloader, "_connect_sender", _boom)
+    dl = ParallelDownloader(client, connections=2, part_size=524288)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl._build_senders(client.session.dc_id, 2)
+
+
+async def test_build_senders_propagates_floodwait(monkeypatch):
+    client = FakeClient(b"x" * 100)
+
+    def _flood(self, dc_id, auth_key):
+        async def _inner():
+            raise FloodWaitError(request=None)
+
+        return _inner()
+
+    monkeypatch.setattr(ParallelDownloader, "_connect_sender", _flood)
+    dl = ParallelDownloader(client, connections=2, part_size=524288)
+    # FloodWait must surface unchanged so the single budget governs it.
+    with pytest.raises(FloodWaitError):
+        await dl._build_senders(client.session.dc_id, 2)
+
+
+async def test_cleanup_tolerates_missing_partial_file(tmp_path, patch_sender, monkeypatch):
+    # A chunk failure triggers cleanup; if the partial file is already gone,
+    # os.remove's OSError must be swallowed and the original error re-raised.
+    blob = os.urandom(524288 * 2)
+    client = FakeClient(blob, short_at_offset=0)
+    patch_sender(client)
+    dl = ParallelDownloader(client, connections=2, part_size=524288)
+    dest = str(tmp_path / "video.mp4")
+
+    real_remove = os.remove
+
+    def _remove_then_vanish(path):
+        real_remove(path)
+        raise FileNotFoundError(path)  # simulate a concurrent unlink
+
+    monkeypatch.setattr(os, "remove", _remove_then_vanish)
+    with pytest.raises(ParallelDownloadUnavailable):
+        await dl.download_media(_make_message(len(blob)), dest)
+    assert not os.path.exists(dest)
 
 
 # --------------------------------------------------------------------------- #
