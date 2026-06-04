@@ -39,8 +39,13 @@ wheels/
 
 # Virtual environments
 venv/
+.venv
+.venv/
 ENV/
 env/
+
+# Local agent tooling state
+.omc/
 
 # IDE
 .vscode/

@@ -254,6 +254,10 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
 | `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
+| `PARALLEL_DOWNLOAD_ENABLED` | `false` | B | Fetch large files over several connections to lift the single-stream speed cap (see below) |
+| `PARALLEL_DOWNLOAD_MIN_SIZE_MB` | `20` | B | Only files at least this large use the parallel path (min 1) |
+| `PARALLEL_DOWNLOAD_CONNECTIONS` | `4` | B | Concurrent connections per file (clamped 2–8) |
+| `PARALLEL_DOWNLOAD_PART_SIZE_KB` | `512` | B | Chunk size per request; one of 4/8/16/32/64/128/256/512 |
 | `BATCH_SIZE` | `100` | B | Messages processed per database batch |
 | `CHECKPOINT_INTERVAL` | `1` | B | Save backup progress every N batch inserts (lower = safer resume after crash) |
 | `DATABASE_TIMEOUT` | `60.0` | B/V | Database operation timeout in seconds |
@@ -389,6 +393,37 @@ When the listener is enabled and `LISTEN_DELETIONS=true`, a sliding-window rate 
 3. When `MASS_OPERATION_THRESHOLD` is exceeded, remaining operations are blocked for that window
 
 **Example:** someone deletes 50 messages in 10 seconds with default settings (threshold=10, window=30s) — the first 10 are applied, remaining 40 are blocked. For **zero** deletions from your backup, set `LISTEN_DELETIONS=false`.
+
+### Parallel Downloads
+
+A single Telegram connection caps download throughput at roughly 10 MB/s. With
+`PARALLEL_DOWNLOAD_ENABLED=true`, large files are split into chunks fetched
+concurrently over several connections to the file's datacenter and reassembled
+on disk, lifting that cap on fast links.
+
+- **Default OFF.** Enable only if download speed is your bottleneck — most setups
+  are fine on a single stream.
+- **Large files only.** Files below `PARALLEL_DOWNLOAD_MIN_SIZE_MB` (default 20 MB)
+  and all photos stay single-stream; chunking overhead isn't worth it for them.
+- **Conservative by design.** `PARALLEL_DOWNLOAD_CONNECTIONS` is clamped to 2–8
+  (default 4). Telegram throttles hard past ~20 total connections, so keep this low.
+  Higher values also raise the cost of a rate limit: a `FloodWait` on any one
+  connection cancels its siblings and restarts the whole file under the shared
+  retry budget, so under throttling a higher connection count can mean *slower*
+  overall throughput. If you see frequent flood waits, lower this back toward 4.
+- **FloodWait-aware.** Rate limits flow through the same retry budget as normal
+  downloads — no separate backoff scheme.
+- **Verified reassembly.** Each chunk is written at its exact offset and the full
+  byte range is checked for complete, non-overlapping coverage before the file is
+  finalized. Any chunk failure cancels the rest, removes the partial file, and
+  falls back transparently to a single stream.
+- **Bounded memory.** Peak extra memory ≈ `CONNECTIONS × PART_SIZE_KB`
+  (e.g. 4 × 512 KB ≈ 2 MB), since each connection buffers one chunk in flight.
+
+`PARALLEL_DOWNLOAD_PART_SIZE_KB` must be one of 4/8/16/32/64/128/256/512 (a 4 KiB
+multiple that divides 1 MiB, per Telegram's `getFile` constraints); invalid values
+snap down to the nearest valid size. This feature applies to the **scheduled backup**
+path only, not the real-time listener.
 
 ### Database Configuration
 
