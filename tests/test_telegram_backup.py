@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 from telethon.tl.types import (
     Channel,
     Chat,
+    MessageActionChatEditTitle,
+    MessageActionPinMessage,
     MessageActionTopicCreate,
     MessageActionTopicEdit,
     MessageMediaContact,
@@ -23,7 +25,7 @@ from telethon.tl.types import (
     User,
 )
 
-from src.message_utils import extract_topic_id
+from src.message_utils import extract_topic_id, service_action_type
 from src.telegram_backup import TelegramBackup
 
 
@@ -744,6 +746,34 @@ class TestExtractTopicId(unittest.TestCase):
         self.assertIsNone(extract_topic_id(msg))
 
 
+class TestServiceActionType(unittest.TestCase):
+    """Test the shared service_action_type class-name normalizer."""
+
+    def test_topic_create(self):
+        self.assertEqual(service_action_type(MessageActionTopicCreate(title="x", icon_color=0)), "topic_create")
+
+    def test_topic_edit(self):
+        self.assertEqual(service_action_type(MessageActionTopicEdit(title="x")), "topic_edit")
+
+    def test_multi_word_chat_edit_title(self):
+        self.assertEqual(service_action_type(MessageActionChatEditTitle(title="x")), "chat_edit_title")
+
+    def test_no_argument_action(self):
+        self.assertEqual(service_action_type(MessageActionPinMessage()), "pin_message")
+
+    def test_acronym_run_splits_letter_by_letter(self):
+        """Documents the known cosmetic edge: consecutive capitals split.
+
+        No title-bearing action we consume hits this; the tag is a stable,
+        unparsed identifier, so the behavior is intentional and pinned here.
+        """
+
+        class MessageActionSetMessagesTTL:
+            pass
+
+        self.assertEqual(service_action_type(MessageActionSetMessagesTTL()), "set_messages_t_t_l")
+
+
 class TestExtractForwardFromId(unittest.TestCase):
     """Test _extract_forward_from_id for different Peer types."""
 
@@ -1264,6 +1294,24 @@ class TestProcessMessage(unittest.TestCase):
         result = self._run(self.backup._process_message(msg, 100))
         self.assertNotIn("service_type", result["raw_data"])
         self.assertNotIn("action_type", result["raw_data"])
+        self.assertNotIn("new_title", result["raw_data"])
+
+    def test_chat_edit_title_action_stored_in_raw_data(self):
+        """Non-topic action: a group rename stores a multi-word action_type."""
+        msg = self._make_message(12, text=None)
+        msg.action = MessageActionChatEditTitle(title="New Group Name")
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "chat_edit_title")
+        self.assertEqual(result["raw_data"]["new_title"], "New Group Name")
+
+    def test_pin_message_action_has_no_new_title(self):
+        """An action without a title stores action_type but no new_title."""
+        msg = self._make_message(13, text=None)
+        msg.action = MessageActionPinMessage()
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "pin_message")
         self.assertNotIn("new_title", result["raw_data"])
 
     def test_none_text_becomes_empty_string(self):

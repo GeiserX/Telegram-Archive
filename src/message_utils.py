@@ -5,6 +5,7 @@ import errno
 import hashlib
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -287,3 +288,28 @@ def extract_topic_id(message: object) -> int | None:
     if topic_id is None:
         topic_id = getattr(message.reply_to, "reply_to_msg_id", None)
     return topic_id
+
+
+def service_action_type(action: object) -> str:
+    """Normalize a Telethon ``MessageAction`` class name to a snake_case tag.
+
+    Used by the backup backfill path to label service messages in
+    ``raw_data.action_type`` (e.g. forum topic creations/renames).
+
+    Examples: ``MessageActionTopicCreate`` -> ``"topic_create"``,
+    ``MessageActionTopicEdit`` -> ``"topic_edit"``,
+    ``MessageActionChatEditTitle`` -> ``"chat_edit_title"``.
+
+    Note: consecutive capitals (acronyms) are split letter-by-letter, e.g.
+    ``MessageActionSetMessagesTTL`` -> ``"set_messages_t_t_l"``. None of the
+    title-bearing actions we care about are affected; the tag is only a stable,
+    deterministic identifier and is not parsed back, so this is cosmetic.
+
+    This vocabulary is intentionally distinct from the live listener's curated
+    event-derived set (``title_changed``, ``user_joined``, ...): the backfill
+    sees low-level ``MessageAction`` classes while the listener sees high-level
+    ``events.ChatAction`` flags. Only the ``raw_data`` *shape* is shared, not the
+    ``action_type`` *values*.
+    """
+    name = type(action).__name__.removeprefix("MessageAction")
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
