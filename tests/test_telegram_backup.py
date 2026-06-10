@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 from telethon.tl.types import (
     Channel,
     Chat,
+    MessageActionTopicCreate,
+    MessageActionTopicEdit,
     MessageMediaContact,
     MessageMediaDocument,
     MessageMediaGeo,
@@ -366,6 +368,9 @@ class TestBackupCheckpointing(unittest.TestCase):
         # topic-skip guard in _backup_dialog doesn't accidentally filter
         # every message via MagicMock truthiness.
         msg.reply_to = reply_to
+        # Explicitly None so the service-action capture in _process_message
+        # is not triggered by MagicMock truthiness.
+        msg.action = None
         return msg
 
     def test_checkpoint_after_every_batch(self):
@@ -1164,6 +1169,9 @@ class TestProcessMessage(unittest.TestCase):
         msg.media = None
         msg.reactions = None
         msg.post_author = None
+        # Explicitly None so the service-action capture in _process_message
+        # is not triggered by MagicMock truthiness.
+        msg.action = None
         return msg
 
     def test_basic_text_message(self):
@@ -1214,6 +1222,49 @@ class TestProcessMessage(unittest.TestCase):
         msg.post_author = "Editor Name"
         result = self._run(self.backup._process_message(msg, 100))
         self.assertEqual(result["raw_data"]["post_author"], "Editor Name")
+
+    def test_topic_create_action_stored_in_raw_data(self):
+        """Topic-create service action stores service metadata in raw_data."""
+        msg = self._make_message(8, text=None)
+        msg.action = MessageActionTopicCreate(title="Synthetic Topic", icon_color=0)
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "topic_create")
+        self.assertEqual(result["raw_data"]["new_title"], "Synthetic Topic")
+        # Topic creations are linkable: the topic id equals the service
+        # message id (forum_topics.id == messages.id).
+        self.assertEqual(result["id"], 8)
+
+    def test_topic_edit_action_stores_new_title(self):
+        """Topic rename stores the new title and stays linkable by topic id."""
+        msg = self._make_message(9, text=None)
+        msg.action = MessageActionTopicEdit(title="Renamed Topic")
+        msg.reply_to = MagicMock()
+        msg.reply_to.forum_topic = True
+        msg.reply_to.reply_to_top_id = 8
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "topic_edit")
+        self.assertEqual(result["raw_data"]["new_title"], "Renamed Topic")
+        # Topic edits are linkable through reply_to_top_id.
+        self.assertEqual(result["reply_to_top_id"], 8)
+
+    def test_topic_edit_without_title_has_no_new_title(self):
+        """Topic edits that do not rename (e.g. close) store no new_title."""
+        msg = self._make_message(10, text=None)
+        msg.action = MessageActionTopicEdit(closed=True)
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "topic_edit")
+        self.assertNotIn("new_title", result["raw_data"])
+
+    def test_regular_message_has_no_service_metadata(self):
+        """Regular messages carry no service metadata in raw_data."""
+        msg = self._make_message(11)
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertNotIn("service_type", result["raw_data"])
+        self.assertNotIn("action_type", result["raw_data"])
+        self.assertNotIn("new_title", result["raw_data"])
 
     def test_none_text_becomes_empty_string(self):
         """Message with None text stores empty string."""
