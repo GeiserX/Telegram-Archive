@@ -62,6 +62,9 @@ def _make_message(msg_id, *, reply_to=None, text="hello", media=None):
     msg.media = media
     msg.reactions = None
     msg.post_author = None
+    # Explicitly None so the service-action capture in _process_message
+    # is not triggered by MagicMock truthiness.
+    msg.action = None
     return msg
 
 
