@@ -8,7 +8,6 @@ import base64
 import logging
 import os
 import random
-import re
 from datetime import UTC, datetime
 
 from telethon import TelegramClient
@@ -44,6 +43,7 @@ from .message_utils import (
     finalize_atomic_download,
     resolve_shared_file_path,
     sanitize_media_filename,
+    service_action_type,
 )
 from .parallel_download import (
     ParallelDownloader,
@@ -288,17 +288,6 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     MAX_FLOOD_RETRIES,
                 )
             await asyncio.sleep(sleep_duration)
-
-
-def _service_action_type(action: object) -> str:
-    """Normalize a Telethon MessageAction class name to snake_case.
-
-    Examples: MessageActionTopicCreate -> "topic_create",
-    MessageActionTopicEdit -> "topic_edit",
-    MessageActionChatEditTitle -> "chat_edit_title".
-    """
-    name = type(action).__name__.removeprefix("MessageAction")
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
 class TelegramBackup:
@@ -1425,14 +1414,17 @@ class TelegramBackup:
         }
 
         # Preserve service-action metadata (e.g. forum topic creations and
-        # renames) so historical backfills keep parity with the listener's
-        # raw_data convention (service_type / action_type, since v6.0.0).
-        # Without this, service events are stored without their payload and
-        # the information is irrecoverable once the history is archived.
+        # renames) so historical backfills carry the same raw_data *shape* as
+        # the live listener (service_type / action_type / new_title). The
+        # action_type *vocabulary* differs by design: the backfill derives it
+        # from low-level MessageAction class names (chat_edit_title, ...) while
+        # the listener uses curated event names (title_changed, ...) — only the
+        # keys are shared, not the values. Without this, service events are
+        # stored without their payload and are irrecoverable once archived.
         action = getattr(message, "action", None)
         if action is not None:
             message_data["raw_data"]["service_type"] = "service"
-            message_data["raw_data"]["action_type"] = _service_action_type(action)
+            message_data["raw_data"]["action_type"] = service_action_type(action)
             action_title = getattr(action, "title", None)
             if action_title is not None:
                 message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
