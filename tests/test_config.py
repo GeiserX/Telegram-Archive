@@ -360,6 +360,33 @@ class TestTelegramProxyConfig(unittest.TestCase):
             self.assertEqual(config.get_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
             self.assertEqual(build_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
 
+    def test_proxy_rdns_false_alone_does_not_enable_proxy(self):
+        """Regression for #193: stock docker-compose injects
+        TELEGRAM_PROXY_RDNS=false. On its own (no host/port) this must NOT be
+        treated as a proxy request, so a default install with only API creds
+        does not raise "incomplete proxy configuration"."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_RDNS": "false",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertIsNone(config.telegram_proxy)
+            self.assertIsNone(build_telegram_proxy_from_env())
+            self.assertEqual(config.get_telegram_client_kwargs(), {"flood_sleep_threshold": 0})
+
+    def test_proxy_rdns_true_alone_does_not_enable_proxy(self):
+        """rdns is a modifier, not an enabler: rdns=true with no host/port
+        leaves the proxy disabled rather than raising for missing fields."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "TELEGRAM_PROXY_RDNS": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            self.assertIsNone(build_telegram_proxy_from_env())
+
     def test_proxy_parses_complete_socks5_config(self):
         """Complete SOCKS5 env vars produce a Telethon proxy dict."""
         env_vars = {
