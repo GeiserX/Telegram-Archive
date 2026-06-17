@@ -35,9 +35,15 @@ def build_telegram_proxy_from_env() -> dict | None:
     proxy_port = os.getenv("TELEGRAM_PROXY_PORT", "").strip()
     proxy_username = os.getenv("TELEGRAM_PROXY_USERNAME", "").strip()
     proxy_password = os.getenv("TELEGRAM_PROXY_PASSWORD", "").strip()
-    proxy_rdns = os.getenv("TELEGRAM_PROXY_RDNS")
+    proxy_rdns = os.getenv("TELEGRAM_PROXY_RDNS", "").strip()
 
-    has_proxy_config = any([proxy_type, proxy_addr, proxy_port, proxy_username, proxy_password, proxy_rdns])
+    # ``rdns`` is a modifier of an already-requested proxy, never an enabler on
+    # its own — so it is intentionally excluded from this presence gate. The
+    # stock docker-compose injects ``TELEGRAM_PROXY_RDNS=false`` by default; if
+    # it were part of the gate, that literal "false" string (truthy in Python)
+    # would make every default install think a proxy was half-configured and
+    # raise the "incomplete proxy configuration" error (issue #193).
+    has_proxy_config = any([proxy_type, proxy_addr, proxy_port, proxy_username, proxy_password])
     if not has_proxy_config:
         return None
 
