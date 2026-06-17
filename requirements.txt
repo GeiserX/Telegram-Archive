@@ -23,6 +23,6 @@ greenlet>=3.1.0
 # Web Push notifications (v5.0+)
 pywebpush>=2.3.0
 py-vapid>=1.9.4
-cryptography>=42.0.8
+cryptography>=48.0.1
 # HTML import parsing (v7.0+)
 beautifulsoup4>=4.12.0
