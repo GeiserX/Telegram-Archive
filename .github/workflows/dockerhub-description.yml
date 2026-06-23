@@ -8,7 +8,7 @@ on:
 
 jobs:
   update-description:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         repository:
