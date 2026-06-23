@@ -15,11 +15,7 @@ permissions:
 jobs:
   shellcheck:
     name: Check shell scripts
-    runs-on: [self-hosted, Linux, X64]
-    # Do not run untrusted fork PR code on the self-hosted runner.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
