@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.17.1] - 2026-06-25
+
+### Fixed
+- **Viewer image startup crash** — `Dockerfile.viewer` now bundles `src/message_utils.py`, which the viewer imports transitively via `src/db/adapter.py`. Without it the standalone viewer container failed to start with `ModuleNotFoundError: No module named 'src.message_utils'` (affected v7.16.0–v7.17.0). ([#201](https://github.com/GeiserX/Telegram-Archive/pull/201))
+
+### Changed
+- The viewer image now also rebuilds when `pyproject.toml`/`uv.lock`, `src/__init__.py`, `src/realtime.py`, or `src/message_utils.py` change, and the "Docker Publish Dev" workflow skips its build-and-push job for fork/Dependabot PRs (only same-repo PRs and manual runs publish the dev image).
+
+### Credits
+- Thanks to [@charys117](https://github.com/charys117) for the viewer-image hotfix in [#201](https://github.com/GeiserX/Telegram-Archive/pull/201).
+
 ## [7.17.0] - 2026-06-25
 
 ### Added
