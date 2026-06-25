@@ -112,6 +112,20 @@ if has_tables and not has_alembic:
         \"\"\")
         has_013_paths = cur.fetchone()[0]
 
+    # Check artifact from migration 014: messages soft-delete marker columns
+    cur.execute(\"\"\"
+        SELECT
+            EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'messages' AND column_name = 'is_deleted'
+            )
+            AND EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'messages' AND column_name = 'deleted_at'
+            );
+    \"\"\")
+    has_014_soft_delete = cur.fetchone()[0]
+
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"\"\"
         SELECT EXISTS (
@@ -218,7 +232,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_013_paths:
+    if has_014_soft_delete:
+        stamp_version = '014'
+    elif has_013_paths:
         stamp_version = '013'
     elif has_012_index:
         stamp_version = '012'
@@ -317,6 +333,11 @@ if has_tables and not has_alembic:
         cur.execute(\"SELECT EXISTS(SELECT 1 FROM media WHERE chat_id < 0 AND file_path LIKE '%/' || CAST(chat_id AS TEXT) || '/%' LIMIT 1)\")
         has_013_paths = cur.fetchone()[0]
 
+    # Check artifact from migration 014: messages soft-delete marker columns
+    cur.execute(\"PRAGMA table_info(messages)\")
+    msg_columns = {row[1] for row in cur.fetchall()}
+    has_014_soft_delete = {'is_deleted', 'deleted_at'}.issubset(msg_columns)
+
     # Check artifact from migration 012: idx_media_chat_type index
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_media_chat_type'\")
     has_012_index = cur.fetchone() is not None
@@ -358,8 +379,6 @@ if has_tables and not has_alembic:
     has_005_index = cur.fetchone() is not None
 
     # Check if is_pinned column exists (added in migration 004)
-    cur.execute(\"PRAGMA table_info(messages)\")
-    msg_columns = {row[1] for row in cur.fetchall()}
     has_is_pinned = 'is_pinned' in msg_columns
 
     # Check if push_subscriptions table exists (added in migration 003)
@@ -367,7 +386,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_013_paths:
+    if has_014_soft_delete:
+        stamp_version = '014'
+    elif has_013_paths:
         stamp_version = '013'
     elif has_012_index:
         stamp_version = '012'

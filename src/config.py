@@ -284,10 +284,15 @@ class Config:
         # LISTEN_EDITS: Apply text edits to backed up messages (safe, just updates text)
         self.listen_edits = os.getenv("LISTEN_EDITS", "true").lower() == "true"
 
-        # LISTEN_DELETIONS: Delete messages from backup when deleted on Telegram
-        # ⚠️ DEFAULT FALSE - Enabling defeats the purpose of having a backup!
-        # Only enable if you explicitly want to mirror Telegram exactly
+        # LISTEN_DELETIONS: Handle deletion events from Telegram.
+        # DEFAULT FALSE preserves archive data by ignoring deletion events.
         self.listen_deletions = _parse_bool(os.getenv("LISTEN_DELETIONS"), default=False)
+        # DELETION_MODE controls what happens when deletion handling is enabled:
+        # - hard: legacy mirror behavior; remove archived message records
+        # - soft: keep archived messages and mark them deleted
+        self.deletion_mode = os.getenv("DELETION_MODE", "hard").strip().lower()
+        if self.deletion_mode not in {"hard", "soft"}:
+            raise ValueError("DELETION_MODE must be either 'hard' or 'soft'")
 
         # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
         # When enabled, new messages are saved immediately instead of waiting for scheduled backup
@@ -394,7 +399,12 @@ class Config:
             logger.info("ENABLE_LISTENER enabled - will catch message edits/deletions in real-time")
             logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
             if self.listen_deletions:
-                logger.warning("  ⚠️ LISTEN_DELETIONS: true - Messages will be DELETED from backup!")
+                if self.deletion_mode == "soft":
+                    logger.warning("  LISTEN_DELETIONS: true, DELETION_MODE=soft - Messages will be marked deleted")
+                else:
+                    logger.warning(
+                        "  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!"
+                    )
             else:
                 logger.info("  LISTEN_DELETIONS: false (backup protected)")
             if self.listen_new_messages:

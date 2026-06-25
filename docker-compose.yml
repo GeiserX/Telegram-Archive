@@ -75,6 +75,7 @@ services:
       # Granular listener controls (only apply when ENABLE_LISTENER=true):
       # LISTEN_EDITS: ${LISTEN_EDITS:-true}
       # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-false}
+      DELETION_MODE: ${DELETION_MODE:-hard}
       # LISTEN_NEW_MESSAGES: ${LISTEN_NEW_MESSAGES:-true}
       # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-false}
       # LISTEN_CHAT_ACTIONS: ${LISTEN_CHAT_ACTIONS:-true}

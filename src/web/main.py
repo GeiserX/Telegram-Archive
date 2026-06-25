@@ -124,7 +124,13 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Initialize config
-config = Config()
+# Wrap construction so an invalid env value (e.g. a bad DELETION_MODE) surfaces a
+# clear message instead of an opaque ASGI import-time traceback / crash-loop.
+try:
+    config = Config()
+except ValueError as e:
+    logger.error(f"Configuration error: {e}")
+    raise
 
 # Global database adapter (initialized on startup)
 db: DatabaseAdapter | None = None
@@ -218,10 +224,26 @@ async def handle_realtime_notification(payload: dict):
 
     elif notification_type == "edit":
         await ws_manager.broadcast_to_chat(
-            chat_id, {"type": "edit", "message_id": data.get("message_id"), "new_text": data.get("new_text")}
+            chat_id,
+            {
+                "type": "edit",
+                "chat_id": chat_id,
+                "message_id": data.get("message_id"),
+                "new_text": data.get("new_text"),
+                "edit_date": data.get("edit_date"),
+            },
         )
     elif notification_type == "delete":
-        await ws_manager.broadcast_to_chat(chat_id, {"type": "delete", "message_id": data.get("message_id")})
+        await ws_manager.broadcast_to_chat(
+            chat_id,
+            {
+                "type": "delete",
+                "chat_id": chat_id,
+                "message_id": data.get("message_id"),
+                "deletion_mode": data.get("deletion_mode", "hard"),
+                "deleted_at": data.get("deleted_at"),
+            },
+        )
     elif notification_type == "pin":
         await ws_manager.broadcast_to_chat(
             chat_id,
@@ -2476,6 +2498,17 @@ async def broadcast_message_edit(chat_id: int, message_id: int, new_text: str, e
     )
 
 
-async def broadcast_message_delete(chat_id: int, message_id: int):
+async def broadcast_message_delete(
+    chat_id: int, message_id: int, deletion_mode: str = "hard", deleted_at: str | None = None
+) -> None:
     """Broadcast a message deletion to subscribed clients."""
-    await ws_manager.broadcast_to_chat(chat_id, {"type": "delete", "chat_id": chat_id, "message_id": message_id})
+    await ws_manager.broadcast_to_chat(
+        chat_id,
+        {
+            "type": "delete",
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "deletion_mode": deletion_mode,
+            "deleted_at": deleted_at,
+        },
+    )

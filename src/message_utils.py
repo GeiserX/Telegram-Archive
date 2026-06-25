@@ -6,8 +6,14 @@ import hashlib
 import logging
 import os
 import re
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
+
+
+def utcnow_naive() -> datetime:
+    """Return current UTC time without tzinfo, for naive DB datetime columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def sanitize_media_filename(name: str) -> str:

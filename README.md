@@ -285,7 +285,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | **Real-time Listener** | | | See [Real-time Listener](#real-time-listener) below |
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
 | `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
-| `LISTEN_DELETIONS` | `false` | B | Mirror deletions from Telegram. Opt-in only; enabling this can delete archived messages |
+| `LISTEN_DELETIONS` | `false` | B | Process deletion events from Telegram. Opt-in only |
+| `DELETION_MODE` | `hard` | B | When deletions are processed: `hard` removes archived messages (legacy), `soft` keeps messages and marks them deleted |
 | `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
@@ -374,15 +375,16 @@ The scheduled backup only captures new messages. To also track edits and deletio
 ```yaml
 ENABLE_LISTENER: "true"        # Master switch — required
 LISTEN_EDITS: "true"           # Track text edits (safe, default: true)
-LISTEN_DELETIONS: "false"      # Keep archive entries when Telegram messages are deleted
+LISTEN_DELETIONS: "false"      # Ignore Telegram deletions entirely
+DELETION_MODE: "hard"          # hard=legacy remove, soft=keep and show "deleted"
 LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 ```
 
 **How it works:** stays connected to Telegram between scheduled backups, captures changes as they happen, and automatically reconnects if disconnected.
 
-**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you explicitly want mirror behavior where Telegram deletions also remove archived messages.
+**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=hard`, deletions mirror Telegram and remove archived messages. Set `DELETION_MODE=soft` to keep the original archived message and show `deleted` in the message metadata. Soft-deleted messages are retained in the archive — they remain counted in chat statistics and continue to appear in search and exports, flagged as `deleted`.
 
-**Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow — only use for a one-time catch-up, then switch to the real-time listener.
+**Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow, and uses the same `DELETION_MODE` behavior for deleted messages.
 
 ### Mass Operation Protection
 
@@ -392,7 +394,7 @@ When the listener is enabled and `LISTEN_DELETIONS=true`, a sliding-window rate 
 2. A sliding window tracks operations per chat over `MASS_OPERATION_WINDOW_SECONDS`
 3. When `MASS_OPERATION_THRESHOLD` is exceeded, remaining operations are blocked for that window
 
-**Example:** someone deletes 50 messages in 10 seconds with default settings (threshold=10, window=30s) — the first 10 are applied, remaining 40 are blocked. For **zero** deletions from your backup, set `LISTEN_DELETIONS=false`.
+**Example:** someone deletes 50 messages in 10 seconds with default settings (threshold=10, window=30s) — the first 10 are applied according to `DELETION_MODE`, remaining 40 are blocked. For **zero** deletion handling, set `LISTEN_DELETIONS=false`.
 
 ### Parallel Downloads
 

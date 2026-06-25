@@ -41,6 +41,7 @@ from .message_utils import (
     extract_topic_id,
     finalize_atomic_download,
     sanitize_media_filename,
+    utcnow_naive,
 )
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import call_with_flood_retry
@@ -285,6 +286,7 @@ class TelegramListener:
         logger.info(f"  LISTEN_EDITS: {config.listen_edits}")
         if config.listen_deletions:
             logger.warning("  ⚠️ LISTEN_DELETIONS: true - Deletions will be processed (with protection)")
+            logger.info(f"  DELETION_MODE: {getattr(config, 'deletion_mode', 'hard')}")
         else:
             logger.info("  LISTEN_DELETIONS: false (backup fully protected)")
         if config.listen_new_messages:
@@ -422,6 +424,37 @@ class TelegramListener:
             await self._notifier.notify(nt, chat_id, data)
         except Exception as e:
             logger.debug(f"Failed to send notification: {e}")
+
+    def _get_deletion_mode(self) -> str:
+        """Return configured deletion mode, defaulting to legacy hard delete."""
+        mode = getattr(self.config, "deletion_mode", "hard")
+        return "soft" if mode == "soft" else "hard"
+
+    async def _apply_message_deletion(self, chat_id: int, message_id: int) -> None:
+        """Apply a Telegram deletion event according to DELETION_MODE."""
+        deletion_mode = self._get_deletion_mode()
+
+        if deletion_mode == "soft":
+            deleted_at = utcnow_naive()
+            await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at)
+            logger.debug(f"🗑️ Deletion marked: msg={message_id}")
+            await self._notify_update(
+                "delete",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "deletion_mode": "soft",
+                    "deleted_at": deleted_at.isoformat(),
+                },
+            )
+            return
+
+        await self.db.delete_message(chat_id, message_id)
+        logger.debug(f"🗑️ Deletion applied: msg={message_id}")
+        await self._notify_update(
+            "delete",
+            {"chat_id": chat_id, "message_id": message_id, "deletion_mode": "hard"},
+        )
 
     def _should_process_chat(self, chat_id: int) -> bool:
         """
@@ -771,14 +804,11 @@ class TelegramListener:
                                 self.stats["operations_discarded"] += 1
                                 continue
 
-                            await self.db.delete_message(resolved, msg_id)
+                            await self._apply_message_deletion(resolved, msg_id)
                             self.stats["deletions_applied"] += 1
-                            logger.debug(f"🗑️ Deletion applied (resolved chat): chat={resolved} msg={msg_id}")
-
-                            # Notify viewer
-                            await self._notify_update("delete", {"chat_id": resolved, "message_id": msg_id})
                         except Exception as e:
-                            logger.debug(f"Could not delete msg {msg_id}: {e}")
+                            self.stats["errors"] += 1
+                            logger.warning(f"Could not apply deletion for msg {msg_id}: {e}")
                         continue
 
                     if not self._should_process_chat(effective_chat_id):
@@ -792,12 +822,8 @@ class TelegramListener:
                         continue
 
                     # Apply the deletion immediately
-                    await self.db.delete_message(effective_chat_id, msg_id)
+                    await self._apply_message_deletion(effective_chat_id, msg_id)
                     self.stats["deletions_applied"] += 1
-                    logger.debug(f"🗑️ Deletion applied: chat={effective_chat_id} msg={msg_id}")
-
-                    # Notify viewer of the deletion
-                    await self._notify_update("delete", {"chat_id": effective_chat_id, "message_id": msg_id})
 
             except Exception as e:
                 self.stats["errors"] += 1
