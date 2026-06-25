@@ -8,7 +8,9 @@ on:
       - main
     paths:
       - 'Dockerfile.viewer'
-      - 'requirements-viewer.txt'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/__init__.py'
       - 'src/web/**'
       - 'src/config.py'
       - 'src/realtime.py'
