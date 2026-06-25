@@ -1188,6 +1188,7 @@
                                     <div
                                         class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
                                         <span v-if="msg.edit_date">edited</span>
+                                        <span v-if="msg.is_deleted">deleted</span>
                                         {{ formatTime(msg.date) }}
                                     </div>
                                 </div>
@@ -2239,8 +2240,13 @@
                             break
 
                         case 'edit':
+                            if (data.chat_id != null && selectedChat.value?.id !== data.chat_id) {
+                                break
+                            }
                             // Update message text in current view
-                            const editMsg = messages.value.find(m => m.id === data.message_id)
+                            const editMsg = messages.value.find(m =>
+                                m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
+                            )
                             if (editMsg) {
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
@@ -2248,10 +2254,25 @@
                             break
 
                         case 'delete':
-                            // Remove from current view
-                            const deleteIdx = messages.value.findIndex(m => m.id === data.message_id)
-                            if (deleteIdx !== -1) {
-                                messages.value.splice(deleteIdx, 1)
+                            if (data.chat_id != null && selectedChat.value?.id !== data.chat_id) {
+                                break
+                            }
+                            if (data.deletion_mode === 'soft') {
+                                const deleteMsg = messages.value.find(m =>
+                                    m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
+                                )
+                                if (deleteMsg) {
+                                    deleteMsg.is_deleted = 1
+                                    deleteMsg.deleted_at = data.deleted_at
+                                }
+                            } else {
+                                // Remove from current view
+                                const deleteIdx = messages.value.findIndex(m =>
+                                    m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
+                                )
+                                if (deleteIdx !== -1) {
+                                    messages.value.splice(deleteIdx, 1)
+                                }
                             }
                             break
 
@@ -3026,6 +3047,15 @@
 
                         // Find new messages (in server response but not in our view)
                         const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
+
+                        // Refresh soft-delete markers for messages already in view
+                        latestMessages.forEach(serverMsg => {
+                            const currentMsg = messages.value.find(m => m.id === serverMsg.id && m.chat_id === serverMsg.chat_id)
+                            if (currentMsg) {
+                                currentMsg.is_deleted = serverMsg.is_deleted
+                                currentMsg.deleted_at = serverMsg.deleted_at
+                            }
+                        })
 
                         // Find deleted messages - ONLY check messages that overlap with our fetch
                         // We fetched the latest 50/20 from server. Compare with our newest messages.

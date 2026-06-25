@@ -13,7 +13,7 @@ import logging
 import os
 import secrets
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
 
@@ -43,6 +43,11 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+def _utcnow_naive() -> datetime:
+    """Return current UTC time without tzinfo for DB columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def _strip_tz(dt: datetime | None) -> datetime | None:
     """Strip timezone info from datetime for PostgreSQL compatibility."""
     if dt is None:
@@ -50,6 +55,19 @@ def _strip_tz(dt: datetime | None) -> datetime | None:
     if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
+
+
+def _message_conflict_update_values(message_data: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    """Build update values for message upserts without undoing soft deletes."""
+    update_values = dict(values)
+
+    if not message_data.get("is_deleted"):
+        update_values.pop("is_deleted", None)
+        update_values.pop("deleted_at", None)
+    elif "deleted_at" not in message_data:
+        update_values.pop("deleted_at", None)
+
+    return update_values
 
 
 def retry_on_locked(
@@ -416,14 +434,17 @@ class DatabaseAdapter:
                 "edit_date": _strip_tz(message_data.get("edit_date")),
                 "raw_data": self._serialize_raw_data(message_data.get("raw_data", {})),
                 "is_outgoing": message_data.get("is_outgoing", 0),
+                "is_deleted": message_data.get("is_deleted", 0),
+                "deleted_at": _strip_tz(message_data.get("deleted_at")),
             }
+            update_values = _message_conflict_update_values(message_data, values)
 
             if self._is_sqlite:
                 stmt = sqlite_insert(Message).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=values)
+                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_values)
             else:
                 stmt = pg_insert(Message).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=values)
+                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_values)
 
             await session.execute(stmt)
             await session.commit()
@@ -453,14 +474,17 @@ class DatabaseAdapter:
                     "raw_data": self._serialize_raw_data(m.get("raw_data", {})),
                     "is_outgoing": m.get("is_outgoing", 0),
                     "is_pinned": m.get("is_pinned", 0),
+                    "is_deleted": m.get("is_deleted", 0),
+                    "deleted_at": _strip_tz(m.get("deleted_at")),
                 }
+                update_values = _message_conflict_update_values(m, values)
 
                 if self._is_sqlite:
                     stmt = sqlite_insert(Message).values(**values)
-                    stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=values)
+                    stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_values)
                 else:
                     stmt = pg_insert(Message).values(**values)
-                    stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=values)
+                    stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_values)
 
                 await session.execute(stmt)
 
@@ -505,7 +529,9 @@ class DatabaseAdapter:
     async def get_messages_sync_data(self, chat_id: int) -> dict[int, str | None]:
         """Get message IDs and their edit dates for sync checking."""
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Message.id, Message.edit_date).where(Message.chat_id == chat_id)
+            stmt = select(Message.id, Message.edit_date).where(
+                and_(Message.chat_id == chat_id, or_(Message.is_deleted == 0, Message.is_deleted.is_(None)))
+            )
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 
@@ -536,6 +562,23 @@ class DatabaseAdapter:
             await session.execute(delete(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)))
             await session.commit()
             logger.debug(f"Deleted message {message_id} from chat {chat_id}")
+
+    async def mark_message_deleted(
+        self, chat_id: int, message_id: int, deleted_at: datetime | None = None
+    ) -> None:
+        """Mark a message as deleted on Telegram while keeping archive content."""
+        deleted_at = _strip_tz(deleted_at) or _utcnow_naive()
+        async with self.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(Message)
+                .where(and_(Message.chat_id == chat_id, Message.id == message_id))
+                .values(
+                    is_deleted=1,
+                    deleted_at=func.coalesce(Message.deleted_at, deleted_at),
+                )
+            )
+            await session.commit()
+            logger.debug(f"Marked message {message_id} as deleted")
 
     async def resolve_message_chat_id(self, message_id: int) -> int | None:
         """
@@ -587,6 +630,13 @@ class DatabaseAdapter:
 
         v6.0.0: media_type, media_id, media_path removed - use media_items relationship.
         """
+        is_deleted = getattr(message, "is_deleted", 0)
+        if not isinstance(is_deleted, (bool, int)):
+            is_deleted = 0
+        deleted_at = getattr(message, "deleted_at", None)
+        if not isinstance(deleted_at, datetime):
+            deleted_at = None
+
         return {
             "id": message.id,
             "chat_id": message.chat_id,
@@ -602,6 +652,8 @@ class DatabaseAdapter:
             "created_at": message.created_at,
             "is_outgoing": message.is_outgoing,
             "is_pinned": message.is_pinned,
+            "is_deleted": int(is_deleted),
+            "deleted_at": deleted_at,
         }
 
     async def get_chat_stats(self, chat_id: int) -> dict[str, Any]:
