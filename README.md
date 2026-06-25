@@ -382,7 +382,7 @@ LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 
 **How it works:** stays connected to Telegram between scheduled backups, captures changes as they happen, and automatically reconnects if disconnected.
 
-**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=hard`, deletions mirror Telegram and remove archived messages. Set `DELETION_MODE=soft` to keep the original archived message and show `deleted` in the message metadata.
+**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=hard`, deletions mirror Telegram and remove archived messages. Set `DELETION_MODE=soft` to keep the original archived message and show `deleted` in the message metadata. Soft-deleted messages are retained in the archive — they remain counted in chat statistics and continue to appear in search and exports, flagged as `deleted`.
 
 **Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow, and uses the same `DELETION_MODE` behavior for deleted messages.
 

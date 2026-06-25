@@ -402,7 +402,9 @@ class Config:
                 if self.deletion_mode == "soft":
                     logger.warning("  LISTEN_DELETIONS: true, DELETION_MODE=soft - Messages will be marked deleted")
                 else:
-                    logger.warning("  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!")
+                    logger.warning(
+                        "  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!"
+                    )
             else:
                 logger.info("  LISTEN_DELETIONS: false (backup protected)")
             if self.listen_new_messages:

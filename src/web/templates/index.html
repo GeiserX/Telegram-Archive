@@ -1171,6 +1171,7 @@
 
                                     <!-- Text with clickable links (for albums, use caption from whichever message has it) -->
                                     <div class="whitespace-pre-wrap break-words message-text"
+                                        :class="{ 'opacity-50': msg.is_deleted }"
                                         v-html="linkifyText(getAlbumCaption(msg) || msg.text)"></div>
 
                                     <!-- Reactions -->
@@ -3042,16 +3043,19 @@
 
                         const latestMessages = await res.json()
                         const latestIds = new Set(latestMessages.map(m => m.id))
-                        // Re-read existing IDs right before mutation to avoid stale snapshots
-                        const existingIds = new Set(messages.value.map(m => m.id))
+                        // Re-read existing messages right before mutation to avoid stale snapshots.
+                        // Index by id once so the new-message filter and soft-delete refresh below
+                        // are O(latest) lookups instead of O(latest × inView) array scans per poll.
+                        const existingById = new Map(messages.value.map(m => [m.id, m]))
+                        const existingIds = new Set(existingById.keys())
 
                         // Find new messages (in server response but not in our view)
                         const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
 
                         // Refresh soft-delete markers for messages already in view
                         latestMessages.forEach(serverMsg => {
-                            const currentMsg = messages.value.find(m => m.id === serverMsg.id && m.chat_id === serverMsg.chat_id)
-                            if (currentMsg) {
+                            const currentMsg = existingById.get(serverMsg.id)
+                            if (currentMsg && currentMsg.chat_id === serverMsg.chat_id) {
                                 currentMsg.is_deleted = serverMsg.is_deleted
                                 currentMsg.deleted_at = serverMsg.deleted_at
                             }

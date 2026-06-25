@@ -16,7 +16,7 @@ import asyncio
 import logging
 import os
 from collections import deque
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -41,16 +41,12 @@ from .message_utils import (
     extract_topic_id,
     finalize_atomic_download,
     sanitize_media_filename,
+    utcnow_naive,
 )
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import call_with_flood_retry
 
 logger = logging.getLogger(__name__)
-
-
-def _utcnow_naive() -> datetime:
-    """Return current UTC time without tzinfo for DB columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class MassOperationProtector:
@@ -439,9 +435,9 @@ class TelegramListener:
         deletion_mode = self._get_deletion_mode()
 
         if deletion_mode == "soft":
-            deleted_at = _utcnow_naive()
+            deleted_at = utcnow_naive()
             await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at)
-            logger.debug(f"🗑️ Deletion marked: chat={chat_id} msg={message_id}")
+            logger.debug(f"🗑️ Deletion marked: msg={message_id}")
             await self._notify_update(
                 "delete",
                 {
@@ -454,7 +450,7 @@ class TelegramListener:
             return
 
         await self.db.delete_message(chat_id, message_id)
-        logger.debug(f"🗑️ Deletion applied: chat={chat_id} msg={message_id}")
+        logger.debug(f"🗑️ Deletion applied: msg={message_id}")
         await self._notify_update(
             "delete",
             {"chat_id": chat_id, "message_id": message_id, "deletion_mode": "hard"},
@@ -811,7 +807,8 @@ class TelegramListener:
                             await self._apply_message_deletion(resolved, msg_id)
                             self.stats["deletions_applied"] += 1
                         except Exception as e:
-                            logger.debug(f"Could not delete msg {msg_id}: {e}")
+                            self.stats["errors"] += 1
+                            logger.warning(f"Could not apply deletion for msg {msg_id}: {e}")
                         continue
 
                     if not self._should_process_chat(effective_chat_id):

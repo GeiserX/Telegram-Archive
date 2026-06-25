@@ -124,7 +124,13 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Initialize config
-config = Config()
+# Wrap construction so an invalid env value (e.g. a bad DELETION_MODE) surfaces a
+# clear message instead of an opaque ASGI import-time traceback / crash-loop.
+try:
+    config = Config()
+except ValueError as e:
+    logger.error(f"Configuration error: {e}")
+    raise
 
 # Global database adapter (initialized on startup)
 db: DatabaseAdapter | None = None

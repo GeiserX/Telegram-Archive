@@ -1267,9 +1267,9 @@ class TelegramBackup:
                     # Check for deletion
                     if remote_msg is None:
                         if getattr(self.config, "deletion_mode", "hard") == "soft":
-                            await self.db.mark_message_deleted(
-                                chat_id, msg_id, deleted_at=datetime.now(UTC).replace(tzinfo=None)
-                            )
+                            # mark_message_deleted defaults deleted_at to now(UTC); this path
+                            # doesn't broadcast, so no need to pass an explicit timestamp.
+                            await self.db.mark_message_deleted(chat_id, msg_id)
                         else:
                             await self.db.delete_message(chat_id, msg_id)
                         total_deleted += 1

@@ -630,6 +630,45 @@ class TestEventHandlers:
         listener.db.mark_message_deleted.assert_called_once()
         listener.db.delete_message.assert_not_called()
 
+    def test_on_message_deleted_soft_notify_payload(self, listener_with_handlers, full_config):
+        """Soft deletion emits a 'delete' notification carrying deletion_mode=soft and deleted_at."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        full_config.deletion_mode = "soft"
+        listener._notify_update = AsyncMock()
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener._notify_update.assert_called_once()
+        notif_type, payload = listener._notify_update.call_args.args
+        assert notif_type == "delete"
+        assert payload["deletion_mode"] == "soft"
+        assert payload["message_id"] == 10
+        assert payload["chat_id"] == -1001234567890
+        assert isinstance(payload["deleted_at"], str)  # ISO timestamp for the viewer
+
+    def test_on_message_deleted_hard_notify_payload(self, listener_with_handlers):
+        """Hard deletion emits a 'delete' notification with deletion_mode=hard and no deleted_at."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        listener._notify_update = AsyncMock()
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener._notify_update.assert_called_once()
+        notif_type, payload = listener._notify_update.call_args.args
+        assert notif_type == "delete"
+        assert payload["deletion_mode"] == "hard"
+        assert "deleted_at" not in payload
+
     def test_on_message_deleted_resolves_chat_when_chat_id_none(self, listener_with_handlers, mock_db):
         """Test delete handler resolves chat_id from DB when event has None chat_id."""
         listener, handlers = listener_with_handlers

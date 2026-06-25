@@ -13,7 +13,7 @@ import logging
 import os
 import secrets
 import shutil
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import wraps
 from typing import Any
 
@@ -21,6 +21,7 @@ from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from ..message_utils import utcnow_naive
 from .base import DatabaseManager
 from .models import (
     AppSettings,
@@ -41,11 +42,6 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _utcnow_naive() -> datetime:
-    """Return current UTC time without tzinfo for DB columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _strip_tz(dt: datetime | None) -> datetime | None:
@@ -529,6 +525,8 @@ class DatabaseAdapter:
     async def get_messages_sync_data(self, chat_id: int) -> dict[int, str | None]:
         """Get message IDs and their edit dates for sync checking."""
         async with self.db_manager.async_session_factory() as session:
+            # Exclude soft-deleted rows so sync doesn't re-check them. The is_(None) arm is
+            # defensive (is_deleted is NOT NULL with server_default 0) and mirrors is_archived.
             stmt = select(Message.id, Message.edit_date).where(
                 and_(Message.chat_id == chat_id, or_(Message.is_deleted == 0, Message.is_deleted.is_(None)))
             )
@@ -549,6 +547,7 @@ class DatabaseAdapter:
             row = result.first()
             return row[0] if row else None
 
+    @retry_on_locked()
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         """Delete a specific message and its media."""
         async with self.db_manager.async_session_factory() as session:
@@ -563,13 +562,12 @@ class DatabaseAdapter:
             await session.commit()
             logger.debug(f"Deleted message {message_id} from chat {chat_id}")
 
-    async def mark_message_deleted(
-        self, chat_id: int, message_id: int, deleted_at: datetime | None = None
-    ) -> None:
+    @retry_on_locked()
+    async def mark_message_deleted(self, chat_id: int, message_id: int, deleted_at: datetime | None = None) -> None:
         """Mark a message as deleted on Telegram while keeping archive content."""
-        deleted_at = _strip_tz(deleted_at) or _utcnow_naive()
+        deleted_at = _strip_tz(deleted_at) or utcnow_naive()
         async with self.db_manager.async_session_factory() as session:
-            await session.execute(
+            result = await session.execute(
                 update(Message)
                 .where(and_(Message.chat_id == chat_id, Message.id == message_id))
                 .values(
@@ -578,7 +576,10 @@ class DatabaseAdapter:
                 )
             )
             await session.commit()
-            logger.debug(f"Marked message {message_id} as deleted")
+            if result.rowcount:
+                logger.debug(f"Marked message {message_id} as deleted")
+            else:
+                logger.debug(f"Soft-delete no-op: message {message_id} not in archive")
 
     async def resolve_message_chat_id(self, message_id: int) -> int | None:
         """
@@ -631,7 +632,7 @@ class DatabaseAdapter:
         v6.0.0: media_type, media_id, media_path removed - use media_items relationship.
         """
         is_deleted = getattr(message, "is_deleted", 0)
-        if not isinstance(is_deleted, (bool, int)):
+        if not isinstance(is_deleted, int):
             is_deleted = 0
         deleted_at = getattr(message, "deleted_at", None)
         if not isinstance(deleted_at, datetime):

@@ -344,6 +344,18 @@ class TestMessageToDict:
         assert result["is_deleted"] == 1
         assert result["deleted_at"] == datetime(2025, 6, 2)
 
+    def test_coerces_non_int_is_deleted_and_non_datetime_deleted_at(self):
+        """Defensive guards coerce a non-int is_deleted to 0 and a non-datetime deleted_at to None."""
+        adapter = self._make_adapter()
+        msg = MagicMock()
+        msg.is_deleted = "not-an-int"
+        msg.deleted_at = "not-a-datetime"
+
+        result = adapter._message_to_dict(msg)
+
+        assert result["is_deleted"] == 0
+        assert result["deleted_at"] is None
+
     def test_handles_none_text(self):
         """Message with None text is handled correctly."""
         adapter = self._make_adapter()

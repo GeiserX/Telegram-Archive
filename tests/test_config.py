@@ -1001,6 +1001,17 @@ class TestListenerLogging(unittest.TestCase):
         with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError):
             Config()
 
+    def test_deletion_mode_normalizes_case_and_whitespace(self):
+        """DELETION_MODE is stripped and lower-cased before validation."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "DELETION_MODE": "  Soft  ",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.deletion_mode, "soft")
+
     def test_listener_enabled_without_deletions(self):
         """ENABLE_LISTENER=true with LISTEN_DELETIONS=false covers protected path."""
         env_vars = {
