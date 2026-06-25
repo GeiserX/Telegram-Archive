@@ -3390,3 +3390,29 @@ class TestCalculateAndStoreStatisticsStorage:
             assert stats["total_size_mb"] == 3.0
         finally:
             await db_manager.close()
+
+    @pytest.mark.asyncio
+    async def test_missing_storage_path_falls_back_to_db_sum_not_zero(self, tmp_path):
+        """An unmounted/missing storage path (du==0) with media present falls back to the DB SUM, not a spurious 0."""
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_unmounted.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        try:
+            await adapter.insert_media(
+                {
+                    "id": "media_x",
+                    "type": "photo",
+                    "file_size": 4 * 1024 * 1024,  # 4 MiB recorded in DB
+                    "downloaded": True,
+                }
+            )
+            missing = tmp_path / "does_not_exist"  # never created → compute_directory_size returns 0
+
+            stats = await adapter.calculate_and_store_statistics(storage_path=str(missing))
+
+            # du is 0 but media exists → use the DB snapshot (4 MiB), not a spurious 0.
+            assert stats["total_size_mb"] == 4.0
+        finally:
+            await db_manager.close()

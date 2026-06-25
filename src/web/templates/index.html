@@ -529,7 +529,7 @@
                                 <template v-if="statsData && statsData.backup_in_progress">A backup is currently running — topics appear once it finishes.</template>
                                 <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
                             </span>
-                            <button @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, { id: null, title: 'All messages' })"
+                            <button @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, { id: 'all', title: 'All messages' })"
                                 class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-blue-600 text-white transition">
                                 View all messages
                             </button>
@@ -2784,8 +2784,8 @@
                 const formatFileSize = (bytes) => {
                     if (!bytes) return ''
                     if (bytes < 1024) return bytes + ' B'
-                    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-                    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+                    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB'
+                    return (bytes / (1024 * 1024)).toFixed(1) + ' MiB'
                 }
 
                 const loadMessagesAroundId = async (messageId) => {
@@ -3044,7 +3044,8 @@
                         // v6.2.12: Include topic_id filter when viewing a forum topic
                         let refreshUrl = `/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`
                         const nav = currentNav.value
-                        if (nav.type === 'chat' && nav.topicId) {
+                        // 'all' is the synthetic "view all messages" entry — no topic filter.
+                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
                             refreshUrl += `&topic_id=${nav.topicId}`
                         }
                         const res = await fetch(refreshUrl, {
@@ -3127,7 +3128,7 @@
 
                         // v6.2.0: Add topic_id filter if viewing a topic
                         const nav = currentNav.value
-                        if (nav.type === 'chat' && nav.topicId) {
+                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
                             url += `&topic_id=${nav.topicId}`
                         }
 
@@ -3156,7 +3157,7 @@
                             url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                             // Also pass topic_id for search within a topic
-                            if (nav.type === 'chat' && nav.topicId) {
+                            if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
                                 url += `&topic_id=${nav.topicId}`
                             }
                         }

@@ -681,9 +681,11 @@ class TelegramBackup:
                 entity = dialog.entity
                 if isinstance(entity, Channel) and getattr(entity, "forum", False):
                     chat_id = self._get_marked_id(entity)
-                    chat_name = self._get_chat_name(entity)
-                    logger.info(f"  → Fetching topics for forum: {chat_name}")
-                    await self._backup_forum_topics(chat_id, entity)
+                    try:
+                        await self._backup_forum_topics(chat_id, entity)
+                    except Exception as e:
+                        # Don't let a topic-fetch failure abort folders/stats below.
+                        logger.warning(f"End-of-run forum-topic fetch failed (will retry next run): {e}")
 
             # v6.2.0: Backup user's chat folders
             logger.info("Backing up chat folders...")
@@ -1005,7 +1007,8 @@ class TelegramBackup:
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
         # shows the topic list immediately, before the slow media backfill (issue #200).
-        if getattr(entity, "forum", False):
+        # Same forum-detection guard as the end-of-run backstop loop in backup_all.
+        if isinstance(entity, Channel) and getattr(entity, "forum", False):
             try:
                 await self._backup_forum_topics(chat_id, entity)
             except Exception as e:
@@ -2166,6 +2169,9 @@ class TelegramBackup:
             # Note: In Telethon 1.42+, this is in messages, not channels
             from telethon.tl.functions.messages import GetForumTopicsRequest
 
+            # Defined before the try so a partial result survives a mid-pagination failure.
+            topics_count = 0
+
             try:
                 input_channel = await self.client.get_input_entity(entity)
                 # offset_date must be a proper date object, not int 0
@@ -2176,7 +2182,6 @@ class TelegramBackup:
                 # abort the fetch (issue #200). Telethon invokes a request via
                 # ``self.client(request)``, so pass self.client as the func and
                 # the request object as its sole positional argument.
-                topics_count = 0
                 seen_count = 0  # every topic the server returned (pre-skip), for pagination
                 offset_date = dt(1970, 1, 1)
                 offset_id = 0
@@ -2247,16 +2252,20 @@ class TelegramBackup:
                             "date": getattr(topic, "date", None),
                         }
                         if self.config.should_skip_topic(chat_id, topic.id):
-                            logger.debug(f"  → Skipping excluded topic {topic.id}")
+                            logger.debug("  → Skipping excluded topic")
                             continue
                         await self.db.upsert_forum_topic(topic_data)
                         topics_count += 1
 
-                    # Advance offsets from the LAST topic of this page.
+                    # Advance offsets from the LAST topic of this page. offset_topic is
+                    # the load-bearing cursor (always advances monotonically); anchor the
+                    # message-based offsets on the last topic that actually has a
+                    # top_message, since a trailing forumTopicDeleted carries only an id.
                     last_topic = page_topics[-1]
                     offset_topic = last_topic.id
-                    offset_id = getattr(last_topic, "top_message", 0) or 0
-                    offset_date = msg_dates.get(offset_id) or getattr(last_topic, "date", None) or offset_date
+                    anchor = next((t for t in reversed(page_topics) if getattr(t, "top_message", 0)), last_topic)
+                    offset_id = getattr(anchor, "top_message", 0) or 0
+                    offset_date = msg_dates.get(offset_id) or getattr(anchor, "date", None) or offset_date
 
                     # Stop once we've seen every topic the server reported.
                     # seen_count is pre-skip so it matches result.count even when
@@ -2264,10 +2273,25 @@ class TelegramBackup:
                     if total_count and seen_count >= total_count:
                         break
 
+                if total_count and seen_count < total_count:
+                    logger.warning(
+                        f"  → Forum topic pagination hit the {max_pages}-page cap; "
+                        f"fetched {seen_count} of {total_count} topics"
+                    )
                 logger.info(f"  → Backed up {topics_count} forum topics via API")
                 return topics_count
 
             except Exception as e:
+                # If earlier pages already succeeded, keep them rather than falling
+                # through to per-topic message inference (which issues many more API
+                # calls — bad right after a FloodWait). The end-of-run backstop / next
+                # run continues from here.
+                if topics_count > 0:
+                    logger.warning(
+                        f"GetForumTopicsRequest failed mid-pagination ({e.__class__.__name__}: {e}); "
+                        f"keeping {topics_count} topics fetched so far"
+                    )
+                    return topics_count
                 logger.warning(
                     f"GetForumTopicsRequest failed ({e.__class__.__name__}: {e}), falling back to message inference"
                 )
@@ -2295,7 +2319,7 @@ class TelegramBackup:
             topics_count = 0
             for topic_id in topic_ids:
                 if self.config.should_skip_topic(chat_id, topic_id):
-                    logger.debug(f"  → Skipping excluded topic {topic_id}")
+                    logger.debug("  → Skipping excluded topic")
                     continue
                 # Try to get the topic's first message for metadata
                 try:

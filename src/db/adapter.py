@@ -1186,9 +1186,13 @@ class DatabaseAdapter:
 
         When ``storage_path`` is given, total media size reflects actual on-disk
         usage (``du`` semantics) via ``compute_directory_size`` so the figure
-        tracks real disk consumption. Otherwise it falls back to the DB snapshot
+        tracks real disk consumption. The filesystem walk is a blocking scan, so
+        it runs off the event loop (``asyncio.to_thread``) and outside the DB
+        session. If the path is missing/unmounted (``du`` is 0 while media rows
+        exist), or no path is given, it falls back to the DB snapshot
         ``SUM(media.file_size WHERE downloaded=1)``.
         """
+        import asyncio
         import json
         from datetime import datetime
 
@@ -1207,14 +1211,11 @@ class DatabaseAdapter:
             media_count = await session.execute(select(func.count(Media.id)).where(Media.downloaded == 1))
             media_count = media_count.scalar() or 0
 
-            # Total media size: actual on-disk usage when a storage path is given,
-            # else the DB snapshot of downloaded media sizes.
-            if storage_path:
-                total_size = compute_directory_size(storage_path)
-            else:
-                total_size = (
-                    await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
-                ).scalar() or 0
+            # DB snapshot of downloaded media sizes — the fallback when on-disk
+            # usage is unavailable (e.g. the backup volume is not mounted yet).
+            db_total_size = (
+                await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
+            ).scalar() or 0
 
             # Per-chat statistics
             chat_stats_query = select(Message.chat_id, func.count(Message.id).label("message_count")).group_by(
@@ -1223,15 +1224,27 @@ class DatabaseAdapter:
             chat_stats_result = await session.execute(chat_stats_query)
             per_chat_stats = {row.chat_id: row.message_count for row in chat_stats_result}
 
-            stats = {
-                "chats": int(chat_count),
-                "messages": int(msg_count),
-                "media_files": int(media_count),
-                "total_size_mb": float(round(total_size / (1024 * 1024), 2)),
-                "per_chat_message_counts": {int(k): int(v) for k, v in per_chat_stats.items()},
-            }
+        # Total media size: prefer actual on-disk usage. Run the blocking walk off
+        # the event loop and after the session is closed so it never stalls other
+        # requests or pins a DB connection.
+        if storage_path is not None:
+            total_size = await asyncio.to_thread(compute_directory_size, storage_path)
+            if total_size == 0 and media_count > 0:
+                # Path missing/unmounted: don't cache a spurious 0 over the last good value.
+                logger.warning("On-disk storage size is 0 while media exists; using DB snapshot for storage stat")
+                total_size = db_total_size
+        else:
+            total_size = db_total_size
 
-            logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
+        stats = {
+            "chats": int(chat_count),
+            "messages": int(msg_count),
+            "media_files": int(media_count),
+            "total_size_mb": float(round(total_size / (1024 * 1024), 2)),
+            "per_chat_message_counts": {int(k): int(v) for k, v in per_chat_stats.items()},
+        }
+
+        logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
 
         # Store in metadata
         await self.set_metadata("cached_stats", json.dumps(stats))
