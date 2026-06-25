@@ -309,7 +309,7 @@ async def stats_calculation_scheduler():
 
             # Run stats calculation
             logger.info("Running scheduled stats calculation...")
-            await db.calculate_and_store_statistics()
+            await db.calculate_and_store_statistics(storage_path=config.backup_path)
             logger.info("Stats calculation completed")
 
         except asyncio.CancelledError:
@@ -338,7 +338,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if not stats_calculated_at:
         logger.info("No cached stats found, running initial calculation...")
         try:
-            await db.calculate_and_store_statistics()
+            await db.calculate_and_store_statistics(storage_path=config.backup_path)
         except Exception as e:
             logger.warning(f"Initial stats calculation failed: {e}")
 
@@ -1660,6 +1660,10 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         stats["listener_active"] = bool(listener_active_since)
         stats["listener_active_since"] = listener_active_since if listener_active_since else None
 
+        # Check if a backup is currently in progress (written by backup engine)
+        backup_in_progress = await db.get_metadata("backup_in_progress")
+        stats["backup_in_progress"] = backup_in_progress == "1"
+
         # Notifications config
         stats["push_notifications"] = config.push_notifications  # off, basic, full
         stats["push_enabled"] = push_manager is not None and push_manager.is_enabled
@@ -1679,7 +1683,7 @@ async def get_stats(user: UserContext = Depends(require_auth)):
 async def refresh_stats(user: UserContext = Depends(require_master)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
-        stats = await db.calculate_and_store_statistics()
+        stats = await db.calculate_and_store_statistics(storage_path=config.backup_path)
         stats["timezone"] = config.viewer_timezone
         return stats
     except Exception as e:

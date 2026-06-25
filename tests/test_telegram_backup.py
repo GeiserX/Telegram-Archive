@@ -1644,6 +1644,8 @@ class TestBackupForumTopics(unittest.TestCase):
 
         result_obj = MagicMock()
         result_obj.topics = topics
+        result_obj.count = 2  # total topics -> pagination stops after this page
+        result_obj.messages = []
 
         # client(...) is an async callable -- AsyncMock handles this directly
         self.backup.client = AsyncMock()
@@ -1662,6 +1664,8 @@ class TestBackupForumTopics(unittest.TestCase):
 
         result_obj = MagicMock()
         result_obj.topics = topics
+        result_obj.count = 2  # total topics -> pagination stops after this page
+        result_obj.messages = []
 
         self.backup.client = AsyncMock()
         self.backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
@@ -1679,6 +1683,8 @@ class TestBackupForumTopics(unittest.TestCase):
         topic = self._make_topic(7, "Important", closed=True, pinned=True, hidden=False)
         result_obj = MagicMock()
         result_obj.topics = [topic]
+        result_obj.count = 1  # total topics -> pagination stops after this page
+        result_obj.messages = []
 
         self.backup.client = AsyncMock()
         self.backup.client.get_input_entity = AsyncMock(return_value=MagicMock())

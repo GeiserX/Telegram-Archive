@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.17.0] - 2026-06-25
+
+### Added
+- **Forum topics appear immediately** — Topic lists for forum/Topics-mode groups are now fetched up front, at the start of each chat's backup, instead of only at the end of a full run. Large, media-heavy forums no longer show "0 topics" while their media is still downloading; topics show up within seconds and message counts fill in as the backup progresses. ([#200](https://github.com/GeiserX/Telegram-Archive/issues/200))
+- **"Backup in progress" indicator** — The Backup Statistics panel shows a live indicator while a backup run is active, so it's clear when the figures are still being collected rather than final.
+- **"View all messages" for forums without topics** — When a forum group has no topics recorded yet, the viewer now offers a direct link to browse the chat's messages instead of a dead-end "No topics found".
+
+### Changed
+- **Storage statistic reflects actual disk usage** — The "Storage" figure is now measured from on-disk files (`du`-style, counting deduplicated `_shared` blobs once) rather than summing recorded media sizes, so it matches real disk consumption. Sizes are labeled with correct binary units (GiB/MiB/TiB).
+- Forum-topic fetching now paginates beyond 100 topics and retries on FloodWait, so large forums are captured fully.
+
+### Fixed
+- Forum/Topics-mode groups showing "0 topics" in the web viewer during long, media-heavy backups. ([#200](https://github.com/GeiserX/Telegram-Archive/issues/200))
+
+### Credits
+- Thanks to [@1235789gzy1](https://github.com/1235789gzy1) for reporting the forum-topic display and storage-statistic issues in [#200](https://github.com/GeiserX/Telegram-Archive/issues/200).
+
 ## [7.16.0] - 2026-06-25
 
 ### Added
