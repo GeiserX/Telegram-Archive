@@ -481,6 +481,41 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertEqual(data["messages"], 100)
         self.assertNotIn("media_files", data)
 
+    async def test_backup_in_progress_true_when_metadata_is_one(self):
+        """get_stats sets backup_in_progress=True when metadata key is '1'."""
+        self.mock_db.get_cached_statistics = AsyncMock(return_value={})
+        # get_metadata is called multiple times; route key order is:
+        # listener_active_since first, then backup_in_progress
+        self.mock_db.get_metadata = AsyncMock(side_effect=lambda key: "1" if key == "backup_in_progress" else None)
+        async with self._client() as client:
+            resp = await client.get("/api/stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("backup_in_progress", data)
+        self.assertTrue(data["backup_in_progress"])
+
+    async def test_backup_in_progress_false_when_metadata_is_zero(self):
+        """get_stats sets backup_in_progress=False when metadata key is '0'."""
+        self.mock_db.get_cached_statistics = AsyncMock(return_value={})
+        self.mock_db.get_metadata = AsyncMock(side_effect=lambda key: "0" if key == "backup_in_progress" else None)
+        async with self._client() as client:
+            resp = await client.get("/api/stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("backup_in_progress", data)
+        self.assertFalse(data["backup_in_progress"])
+
+    async def test_backup_in_progress_false_when_metadata_is_none(self):
+        """get_stats sets backup_in_progress=False when metadata key is absent (None)."""
+        self.mock_db.get_cached_statistics = AsyncMock(return_value={})
+        self.mock_db.get_metadata = AsyncMock(return_value=None)
+        async with self._client() as client:
+            resp = await client.get("/api/stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("backup_in_progress", data)
+        self.assertFalse(data["backup_in_progress"])
+
 
 # ============================================================================
 # Stats refresh API

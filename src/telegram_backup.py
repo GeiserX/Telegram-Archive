@@ -436,6 +436,11 @@ class TelegramBackup:
             last_backup_time = datetime.utcnow().isoformat() + "Z"
             await self.db.set_metadata("last_backup_time", last_backup_time)
 
+            # Mark a backup as in progress so the viewer can show a "backing up"
+            # indicator and treat partial stats as expected (issue #200). Cleared
+            # in the finally block below, even if the backup raises.
+            await self.db.set_metadata("backup_in_progress", "1")
+
             # Whitelist mode: skip expensive get_dialogs() and fetch only the
             # specified chats directly.  For accounts with many dialogs the full
             # dialog fetch can hang indefinitely (see #95).
@@ -666,16 +671,21 @@ class TelegramBackup:
             else:
                 logger.info("No additional archived dialogs to back up")
 
-            # v6.2.0: Backup forum topics for forum-enabled chats
+            # v6.2.0: Backup forum topics for forum-enabled chats.
+            # Idempotent backstop to the early per-dialog fetch in _backup_dialog
+            # (issue #200): re-runs after messages exist so the message-inference
+            # fallback can fill in any topics the API path missed.
             logger.info("Checking for forum topics...")
             all_backed_up_dialogs = list(filtered_dialogs) + list(archived_to_backup)
             for dialog in all_backed_up_dialogs:
                 entity = dialog.entity
                 if isinstance(entity, Channel) and getattr(entity, "forum", False):
                     chat_id = self._get_marked_id(entity)
-                    chat_name = self._get_chat_name(entity)
-                    logger.info(f"  → Fetching topics for forum: {chat_name}")
-                    await self._backup_forum_topics(chat_id, entity)
+                    try:
+                        await self._backup_forum_topics(chat_id, entity)
+                    except Exception as e:
+                        # Don't let a topic-fetch failure abort folders/stats below.
+                        logger.warning(f"End-of-run forum-topic fetch failed (will retry next run): {e}")
 
             # v6.2.0: Backup user's chat folders
             logger.info("Backing up chat folders...")
@@ -683,7 +693,7 @@ class TelegramBackup:
 
             # Calculate and cache statistics (also updates metadata for the viewer)
             duration = (datetime.now() - start_time).total_seconds()
-            stats = await self.db.calculate_and_store_statistics()
+            stats = await self.db.calculate_and_store_statistics(storage_path=self.config.backup_path)
 
             # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
 
@@ -707,6 +717,13 @@ class TelegramBackup:
         except Exception as e:
             logger.error(f"Backup failed: {e}", exc_info=True)
             raise
+        finally:
+            # Always clear the in-progress flag, even on failure, so the viewer
+            # doesn't show a stuck "backing up" indicator after a crash (#200).
+            try:
+                await self.db.set_metadata("backup_in_progress", "0")
+            except Exception as e:
+                logger.warning(f"Failed to clear backup_in_progress flag: {e}")
 
     async def _get_dialogs(self, archived: bool = False) -> list:
         """
@@ -987,6 +1004,15 @@ class TelegramBackup:
         # Save chat information
         chat_data = self._extract_chat_data(entity, is_archived=is_archived)
         await self.db.upsert_chat(chat_data)
+
+        # Fetch forum topics early (cheap, message-independent API call) so the viewer
+        # shows the topic list immediately, before the slow media backfill (issue #200).
+        # Same forum-detection guard as the end-of-run backstop loop in backup_all.
+        if isinstance(entity, Channel) and getattr(entity, "forum", False):
+            try:
+                await self._backup_forum_topics(chat_id, entity)
+            except Exception as e:
+                logger.warning(f"Early forum-topic fetch failed for chat (will retry at end of run): {e}")
 
         # Clean up existing media if this chat is in the skip list (once per session)
         if (
@@ -2143,59 +2169,129 @@ class TelegramBackup:
             # Note: In Telethon 1.42+, this is in messages, not channels
             from telethon.tl.functions.messages import GetForumTopicsRequest
 
+            # Defined before the try so a partial result survives a mid-pagination failure.
+            topics_count = 0
+
             try:
                 input_channel = await self.client.get_input_entity(entity)
                 # offset_date must be a proper date object, not int 0
                 from datetime import datetime as dt
 
-                result = await self.client(
-                    GetForumTopicsRequest(
-                        peer=input_channel, offset_date=dt(1970, 1, 1), offset_id=0, offset_topic=0, limit=100
+                # Paginate through all topics. Each page is wrapped in
+                # call_with_flood_retry so a FloodWait on a large forum doesn't
+                # abort the fetch (issue #200). Telethon invokes a request via
+                # ``self.client(request)``, so pass self.client as the func and
+                # the request object as its sole positional argument.
+                seen_count = 0  # every topic the server returned (pre-skip), for pagination
+                offset_date = dt(1970, 1, 1)
+                offset_id = 0
+                offset_topic = 0
+                total_count = None
+                max_pages = 50  # defensive cap to avoid an unbounded loop
+                for _ in range(max_pages):
+                    result = await call_with_flood_retry(
+                        self.client,
+                        GetForumTopicsRequest(
+                            peer=input_channel,
+                            offset_date=offset_date,
+                            offset_id=offset_id,
+                            offset_topic=offset_topic,
+                            limit=100,
+                        ),
                     )
-                )
 
-                # Resolve custom emoji IDs to unicode emojis
-                emoji_map = {}
-                emoji_ids = [t.icon_emoji_id for t in result.topics if getattr(t, "icon_emoji_id", None)]
-                if emoji_ids:
-                    try:
-                        from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
+                    if total_count is None:
+                        raw_count = getattr(result, "count", 0)
+                        total_count = raw_count if isinstance(raw_count, int) else 0
 
-                        docs = await self.client(GetCustomEmojiDocumentsRequest(document_id=emoji_ids))
-                        for doc in docs:
-                            for attr in doc.attributes:
-                                if hasattr(attr, "alt") and attr.alt:
-                                    emoji_map[doc.id] = attr.alt
-                                    break
-                        logger.info(f"  → Resolved {len(emoji_map)} topic emojis")
-                    except Exception as e:
-                        logger.warning(f"  → Could not resolve topic emojis: {e}")
+                    page_topics = result.topics
+                    if not page_topics:
+                        break
+                    seen_count += len(page_topics)
 
-                topics_count = 0
-                for topic in result.topics:
-                    emoji_id = getattr(topic, "icon_emoji_id", None)
-                    topic_data = {
-                        "id": topic.id,
-                        "chat_id": chat_id,
-                        "title": topic.title,
-                        "icon_color": getattr(topic, "icon_color", None),
-                        "icon_emoji_id": emoji_id,
-                        "icon_emoji": emoji_map.get(emoji_id) if emoji_id else None,
-                        "is_closed": 1 if getattr(topic, "closed", False) else 0,
-                        "is_pinned": 1 if getattr(topic, "pinned", False) else 0,
-                        "is_hidden": 1 if getattr(topic, "hidden", False) else 0,
-                        "date": getattr(topic, "date", None),
-                    }
-                    if self.config.should_skip_topic(chat_id, topic.id):
-                        logger.debug(f"  → Skipping excluded topic {topic.id}")
-                        continue
-                    await self.db.upsert_forum_topic(topic_data)
-                    topics_count += 1
+                    # Build a message-id → date map for this page so we can
+                    # advance offset_date from the last topic's top message.
+                    msg_dates = {m.id: m.date for m in getattr(result, "messages", []) if getattr(m, "date", None)}
 
+                    # Resolve custom emoji IDs to unicode emojis for this page
+                    emoji_map = {}
+                    emoji_ids = [t.icon_emoji_id for t in page_topics if getattr(t, "icon_emoji_id", None)]
+                    if emoji_ids:
+                        try:
+                            from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
+
+                            docs = await call_with_flood_retry(
+                                self.client, GetCustomEmojiDocumentsRequest(document_id=emoji_ids)
+                            )
+                            for doc in docs:
+                                for attr in doc.attributes:
+                                    if hasattr(attr, "alt") and attr.alt:
+                                        emoji_map[doc.id] = attr.alt
+                                        break
+                            logger.info(f"  → Resolved {len(emoji_map)} topic emojis")
+                        except Exception as e:
+                            logger.warning(f"  → Could not resolve topic emojis: {e}")
+
+                    for topic in page_topics:
+                        # Deleted topics (forumTopicDeleted) only carry an id, no
+                        # title — skip them so we don't store empty placeholders.
+                        topic_title = getattr(topic, "title", None)
+                        if not topic_title:
+                            continue
+                        emoji_id = getattr(topic, "icon_emoji_id", None)
+                        topic_data = {
+                            "id": topic.id,
+                            "chat_id": chat_id,
+                            "title": topic_title,
+                            "icon_color": getattr(topic, "icon_color", None),
+                            "icon_emoji_id": emoji_id,
+                            "icon_emoji": emoji_map.get(emoji_id) if emoji_id else None,
+                            "is_closed": 1 if getattr(topic, "closed", False) else 0,
+                            "is_pinned": 1 if getattr(topic, "pinned", False) else 0,
+                            "is_hidden": 1 if getattr(topic, "hidden", False) else 0,
+                            "date": getattr(topic, "date", None),
+                        }
+                        if self.config.should_skip_topic(chat_id, topic.id):
+                            logger.debug("  → Skipping excluded topic")
+                            continue
+                        await self.db.upsert_forum_topic(topic_data)
+                        topics_count += 1
+
+                    # Advance offsets from the LAST topic of this page. offset_topic is
+                    # the load-bearing cursor (always advances monotonically); anchor the
+                    # message-based offsets on the last topic that actually has a
+                    # top_message, since a trailing forumTopicDeleted carries only an id.
+                    last_topic = page_topics[-1]
+                    offset_topic = last_topic.id
+                    anchor = next((t for t in reversed(page_topics) if getattr(t, "top_message", 0)), last_topic)
+                    offset_id = getattr(anchor, "top_message", 0) or 0
+                    offset_date = msg_dates.get(offset_id) or getattr(anchor, "date", None) or offset_date
+
+                    # Stop once we've seen every topic the server reported.
+                    # seen_count is pre-skip so it matches result.count even when
+                    # some topics are excluded or deleted.
+                    if total_count and seen_count >= total_count:
+                        break
+
+                if total_count and seen_count < total_count:
+                    logger.warning(
+                        f"  → Forum topic pagination hit the {max_pages}-page cap; "
+                        f"fetched {seen_count} of {total_count} topics"
+                    )
                 logger.info(f"  → Backed up {topics_count} forum topics via API")
                 return topics_count
 
             except Exception as e:
+                # If earlier pages already succeeded, keep them rather than falling
+                # through to per-topic message inference (which issues many more API
+                # calls — bad right after a FloodWait). The end-of-run backstop / next
+                # run continues from here.
+                if topics_count > 0:
+                    logger.warning(
+                        f"GetForumTopicsRequest failed mid-pagination ({e.__class__.__name__}: {e}); "
+                        f"keeping {topics_count} topics fetched so far"
+                    )
+                    return topics_count
                 logger.warning(
                     f"GetForumTopicsRequest failed ({e.__class__.__name__}: {e}), falling back to message inference"
                 )
@@ -2223,7 +2319,7 @@ class TelegramBackup:
             topics_count = 0
             for topic_id in topic_ids:
                 if self.config.should_skip_topic(chat_id, topic_id):
-                    logger.debug(f"  → Skipping excluded topic {topic_id}")
+                    logger.debug("  → Skipping excluded topic")
                     continue
                 # Try to get the topic's first message for metadata
                 try:
@@ -2369,7 +2465,7 @@ async def run_fill_gaps(config: Config, client: TelegramClient | None = None, ch
         # doesn't show stale totals until the next scheduled recalculation
         if summary["total_recovered"] > 0:
             try:
-                await backup.db.calculate_and_store_statistics()
+                await backup.db.calculate_and_store_statistics(storage_path=config.backup_path)
                 logger.info("Stats recalculated after gap-fill recovery")
             except Exception as e:
                 logger.warning(f"Failed to recalculate stats after gap-fill: {e}")

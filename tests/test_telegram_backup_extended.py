@@ -2457,5 +2457,351 @@ class TestMainEntryPointLine1882(unittest.TestCase):
         mock_run.assert_called_once()
 
 
+# ===========================================================================
+# Issue #200: early forum-topic fetch, topic pagination, deleted-topic guard,
+# and the backup_in_progress flag.
+# ===========================================================================
+
+
+class TestBackupDialogEarlyForumFetch(unittest.TestCase):
+    """_backup_dialog should fetch forum topics up front, before the message loop."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.backup = _make_backup()
+        self.backup.config.batch_size = 100
+        self.backup.config.checkpoint_interval = 1
+        self.backup.config.skip_media_chat_ids = set()
+        self.backup.config.skip_media_delete_existing = False
+        self.backup.config.sync_deletions_edits = False
+        self.backup.config.media_path = os.path.join(self.temp_dir, "media")
+        self.backup.db.get_last_message_id = AsyncMock(return_value=0)
+        self.backup._get_marked_id = MagicMock(return_value=-100123)
+        self.backup._extract_chat_data = MagicMock(return_value={"id": -100123})
+        self.backup._ensure_profile_photo = AsyncMock()
+        self.backup._sync_pinned_messages = AsyncMock()
+        self.backup._backup_forum_topics = AsyncMock(return_value=3)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _empty_iter(self):
+        async def fake_iter(*args, **kwargs):
+            return
+            yield  # noqa: RET503
+
+        return fake_iter
+
+    def _make_dialog(self, forum):
+        d = MagicMock()
+        d.entity = MagicMock()
+        d.entity.__class__ = Channel  # real forum entities are Channels; satisfies isinstance(entity, Channel)
+        d.entity.forum = forum
+        return d
+
+    def test_forum_dialog_fetches_topics_before_message_loop(self):
+        """A forum entity triggers the early _backup_forum_topics call even with 0 messages."""
+        self.backup.client.iter_messages = self._empty_iter()
+        dialog = self._make_dialog(forum=True)
+
+        result = _run(self.backup._backup_dialog(dialog))
+
+        # 0 new messages, but the early forum-topic fetch must still have happened,
+        # called with the marked chat_id and the dialog's entity.
+        self.assertEqual(result, 0)
+        self.backup._backup_forum_topics.assert_awaited_once_with(-100123, dialog.entity)
+
+    def test_non_forum_dialog_does_not_fetch_topics(self):
+        """A non-forum entity must not trigger the early forum-topic fetch."""
+        self.backup.client.iter_messages = self._empty_iter()
+
+        _run(self.backup._backup_dialog(self._make_dialog(forum=False)))
+
+        self.backup._backup_forum_topics.assert_not_awaited()
+
+    def test_early_forum_fetch_failure_does_not_abort_dialog(self):
+        """An exception in the early forum fetch is swallowed so the dialog still completes."""
+        self.backup._backup_forum_topics = AsyncMock(side_effect=Exception("topic fetch boom"))
+        self.backup.client.iter_messages = self._empty_iter()
+
+        result = _run(self.backup._backup_dialog(self._make_dialog(forum=True)))
+
+        self.assertEqual(result, 0)
+        self.backup._backup_forum_topics.assert_awaited_once()
+
+
+class TestBackupForumTopicsPagination(unittest.TestCase):
+    """_backup_forum_topics paginates through every page until result.count is met."""
+
+    def _make_topic(self, topic_id):
+        topic = MagicMock()
+        topic.id = topic_id
+        topic.title = f"Topic {topic_id}"
+        topic.icon_color = 0
+        topic.icon_emoji_id = None
+        topic.closed = False
+        topic.pinned = False
+        topic.hidden = False
+        topic.top_message = topic_id * 10
+        topic.date = datetime(2024, 1, 1)
+        return topic
+
+    def test_paginates_across_two_pages(self):
+        """count=150 split as 100+50 fetches both pages and stores all 150 topics."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        page1 = MagicMock()
+        page1.count = 150
+        page1.topics = [self._make_topic(i) for i in range(1, 101)]
+        page1.messages = []
+
+        page2 = MagicMock()
+        page2.count = 150
+        page2.topics = [self._make_topic(i) for i in range(101, 151)]
+        page2.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            return page1 if len(calls) == 1 else page2
+
+        backup.client.side_effect = fake_call
+
+        entity = MagicMock()
+        count = _run(backup._backup_forum_topics(-100123, entity))
+
+        self.assertEqual(count, 150)
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 150)
+        # Exactly two GetForumTopicsRequest pages were fetched (no emoji calls).
+        self.assertEqual(len(calls), 2)
+        # Offsets must have advanced: the second request differs from the first.
+        self.assertEqual(calls[0].offset_topic, 0)
+        self.assertEqual(calls[1].offset_topic, 100)  # last topic id of page 1
+        self.assertEqual(calls[1].offset_id, 1000)  # page-1 last topic.top_message
+
+    def test_stops_when_page_returns_no_topics(self):
+        """A page with zero topics terminates pagination even if count is larger."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        page1 = MagicMock()
+        page1.count = 999  # claims more than will ever be returned
+        page1.topics = [self._make_topic(1), self._make_topic(2)]
+        page1.messages = []
+
+        empty = MagicMock()
+        empty.count = 999
+        empty.topics = []
+        empty.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            return page1 if len(calls) == 1 else empty
+
+        backup.client.side_effect = fake_call
+
+        entity = MagicMock()
+        count = _run(backup._backup_forum_topics(-100123, entity))
+
+        self.assertEqual(count, 2)
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 2)
+        self.assertEqual(len(calls), 2)  # page1 then the empty page that stops the loop
+
+    def test_offset_date_advances_from_top_message_date(self):
+        """The next page's offset_date comes from the last topic's top_message date (via messages map)."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        msg_date = datetime(2024, 6, 15, 12, 0)
+        msg = MagicMock()
+        msg.id = 1000  # == _make_topic(100).top_message
+        msg.date = msg_date
+
+        page1 = MagicMock()
+        page1.count = 150
+        page1.topics = [self._make_topic(i) for i in range(1, 101)]  # last is id=100, top_message=1000
+        page1.messages = [msg]
+
+        page2 = MagicMock()
+        page2.count = 150
+        page2.topics = [self._make_topic(i) for i in range(101, 151)]
+        page2.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            return page1 if len(calls) == 1 else page2
+
+        backup.client.side_effect = fake_call
+        _run(backup._backup_forum_topics(-100123, MagicMock()))
+
+        self.assertEqual(calls[1].offset_id, 1000)
+        self.assertEqual(calls[1].offset_date, msg_date)  # from the message, not the topic's own date
+
+    def test_terminates_when_all_seen_with_skipped_topics(self):
+        """seen_count is pre-skip, so it meets result.count even when topics are excluded — no extra page."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+        backup.config.should_skip_topic = MagicMock(side_effect=lambda chat_id, tid: tid == 2)
+
+        page1 = MagicMock()
+        page1.count = 3
+        page1.topics = [self._make_topic(1), self._make_topic(2), self._make_topic(3)]
+        page1.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            return page1  # a second fetch would loop on the same page — it must not happen
+
+        backup.client.side_effect = fake_call
+        count = _run(backup._backup_forum_topics(-100123, MagicMock()))
+
+        self.assertEqual(len(calls), 1)  # all 3 seen on page 1 → terminate, despite 1 skipped
+        self.assertEqual(count, 2)  # topic id 2 excluded
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 2)
+
+    def test_count_none_terminates_via_empty_page(self):
+        """A missing/None result.count is coerced safely; the empty-page break still stops the loop."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        page1 = MagicMock()
+        page1.count = None
+        page1.topics = [self._make_topic(1), self._make_topic(2)]
+        page1.messages = []
+
+        empty = MagicMock()
+        empty.count = None
+        empty.topics = []
+        empty.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            return page1 if len(calls) == 1 else empty
+
+        backup.client.side_effect = fake_call
+        count = _run(backup._backup_forum_topics(-100123, MagicMock()))
+
+        self.assertEqual(count, 2)
+        self.assertEqual(len(calls), 2)
+
+    def test_partial_result_kept_on_midpagination_failure(self):
+        """If a later page raises after earlier pages stored topics, keep the partial result (no inference)."""
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        page1 = MagicMock()
+        page1.count = 150
+        page1.topics = [self._make_topic(1), self._make_topic(2)]
+        page1.messages = []
+
+        calls = []
+
+        async def fake_call(req):
+            calls.append(req)
+            if len(calls) == 1:
+                return page1
+            raise RuntimeError("network blip mid-pagination")
+
+        backup.client.side_effect = fake_call
+        count = _run(backup._backup_forum_topics(-100123, MagicMock()))
+
+        self.assertEqual(count, 2)  # page-1 topics kept
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 2)
+        backup.client.get_messages.assert_not_called()  # inference fallback never ran
+
+
+class TestBackupForumTopicsDeletedGuard(unittest.TestCase):
+    """_backup_forum_topics skips forumTopicDeleted objects that lack a title."""
+
+    def test_deleted_topic_without_title_is_skipped(self):
+        backup = _make_backup()
+        backup.client = AsyncMock()
+        backup.client.get_input_entity = AsyncMock(return_value=MagicMock())
+
+        good = MagicMock()
+        good.id = 1
+        good.title = "General"
+        good.icon_color = 0
+        good.icon_emoji_id = None
+        good.closed = False
+        good.pinned = False
+        good.hidden = False
+        good.top_message = 10
+        good.date = datetime(2024, 1, 1)
+
+        # forumTopicDeleted only carries an id -- no title attribute at all.
+        deleted = MagicMock(spec=["id", "top_message"])
+        deleted.id = 2
+        deleted.top_message = 20
+
+        result_obj = MagicMock()
+        result_obj.count = 2
+        result_obj.topics = [good, deleted]
+        result_obj.messages = []
+        backup.client.return_value = result_obj
+
+        entity = MagicMock()
+        count = _run(backup._backup_forum_topics(-100123, entity))
+
+        # Only the titled topic is stored; the deleted one is skipped.
+        self.assertEqual(count, 1)
+        self.assertEqual(backup.db.upsert_forum_topic.await_count, 1)
+        stored = backup.db.upsert_forum_topic.call_args[0][0]
+        self.assertEqual(stored["id"], 1)
+        self.assertEqual(stored["title"], "General")
+
+
+class TestBackupAllInProgressFlag(unittest.TestCase):
+    """backup_all sets backup_in_progress=1 then clears it to 0, even on failure."""
+
+    def _make_backup_for_flag(self):
+        backup = _make_backup()
+        backup.config.phone = "+10000000000"
+        backup.config.whitelist_mode = False
+        backup.config.backup_path = "/data/backups"
+        backup.config.verify_media = False
+        backup.db.set_metadata = AsyncMock()
+        backup.db.backfill_is_outgoing = AsyncMock()
+        backup.client.start = AsyncMock()
+        me = MagicMock()
+        me.id = 12345
+        me.first_name = "Tester"
+        backup.client.get_me = AsyncMock(return_value=me)
+        return backup
+
+    def test_flag_set_and_cleared_on_failure(self):
+        """If a step after the flag is set raises, the finally still clears it to 0."""
+        backup = self._make_backup_for_flag()
+        # Force a failure right after the in-progress flag is set.
+        backup._get_dialogs = AsyncMock(side_effect=RuntimeError("dialog fetch failed"))
+
+        with self.assertRaises(RuntimeError):
+            _run(backup.backup_all())
+
+        calls = [c.args for c in backup.db.set_metadata.call_args_list]
+        self.assertIn(("backup_in_progress", "1"), calls)
+        self.assertIn(("backup_in_progress", "0"), calls)
+        # The clear must come after the set.
+        set_idx = calls.index(("backup_in_progress", "1"))
+        clear_idx = calls.index(("backup_in_progress", "0"))
+        self.assertLess(set_idx, clear_idx)
+
+
 if __name__ == "__main__":
     unittest.main()
