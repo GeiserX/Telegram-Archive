@@ -20,6 +20,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/__init__.py ./src/
 COPY src/config.py ./src/
 COPY src/realtime.py ./src/
+COPY src/message_utils.py ./src/
 COPY src/db/ ./src/db/
 COPY src/web/ ./src/web/
 

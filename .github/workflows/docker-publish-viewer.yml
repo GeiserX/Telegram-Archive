@@ -11,6 +11,8 @@ on:
       - 'requirements-viewer.txt'
       - 'src/web/**'
       - 'src/config.py'
+      - 'src/realtime.py'
+      - 'src/message_utils.py'
       - 'src/db/**'
       - '.github/workflows/docker-publish-viewer.yml'
   workflow_dispatch:
