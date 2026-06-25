@@ -29,6 +29,7 @@ jobs:
   build-and-push-dev:
     runs-on: ubuntu-latest
     # Only run for PRs from the same repo (not forks/dependabot) or workflow_dispatch
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       packages: write
