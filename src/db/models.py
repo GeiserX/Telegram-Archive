@@ -84,6 +84,8 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
     is_outgoing: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
     is_pinned: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 - whether this message is pinned
+    is_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 0 or 1 - deleted on Telegram
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships
     chat: Mapped[Chat] = relationship("Chat", back_populates="messages")

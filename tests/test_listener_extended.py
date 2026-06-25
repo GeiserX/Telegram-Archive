@@ -54,6 +54,7 @@ def _make_config(**overrides):
     config.chat_ids = set()
     config.listen_edits = True
     config.listen_deletions = True
+    config.deletion_mode = "hard"
     config.listen_new_messages = True
     config.listen_new_messages_media = True
     config.listen_chat_actions = True
@@ -76,6 +77,7 @@ def _make_db():
     db.get_all_chats = AsyncMock(return_value=[])
     db.update_message_text = AsyncMock()
     db.delete_message = AsyncMock()
+    db.mark_message_deleted = AsyncMock()
     db.resolve_message_chat_id = AsyncMock(return_value=None)
     db.upsert_chat = AsyncMock()
     db.upsert_user = AsyncMock()

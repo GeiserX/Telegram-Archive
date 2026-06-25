@@ -962,6 +962,7 @@ class TestListenerLogging(unittest.TestCase):
             config = Config()
             self.assertTrue(config.enable_listener)
             self.assertFalse(config.listen_deletions)
+            self.assertEqual(config.deletion_mode, "hard")
 
     def test_listener_enabled_with_deletions(self):
         """ENABLE_LISTENER=true with LISTEN_DELETIONS=true covers deletion warning path."""
@@ -975,6 +976,41 @@ class TestListenerLogging(unittest.TestCase):
             config = Config()
             self.assertTrue(config.enable_listener)
             self.assertTrue(config.listen_deletions)
+            self.assertEqual(config.deletion_mode, "hard")
+
+    def test_deletion_mode_soft(self):
+        """DELETION_MODE=soft marks deleted messages instead of hard deleting them."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "ENABLE_LISTENER": "true",
+            "LISTEN_DELETIONS": "true",
+            "DELETION_MODE": "soft",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.deletion_mode, "soft")
+
+    def test_deletion_mode_invalid_raises(self):
+        """DELETION_MODE only accepts soft or hard."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "DELETION_MODE": "archive",
+        }
+        with patch.dict(os.environ, env_vars, clear=True), self.assertRaises(ValueError):
+            Config()
+
+    def test_deletion_mode_normalizes_case_and_whitespace(self):
+        """DELETION_MODE is stripped and lower-cased before validation."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "DELETION_MODE": "  Soft  ",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.deletion_mode, "soft")
 
     def test_listener_enabled_without_deletions(self):
         """ENABLE_LISTENER=true with LISTEN_DELETIONS=false covers protected path."""

@@ -249,6 +249,7 @@ class TestEventHandlers:
         config.chat_ids = set()
         config.listen_edits = True
         config.listen_deletions = True
+        config.deletion_mode = "hard"
         config.listen_new_messages = True
         config.listen_new_messages_media = False
         config.listen_chat_actions = False
@@ -266,6 +267,7 @@ class TestEventHandlers:
         db.get_all_chats = AsyncMock(return_value=[])
         db.update_message_text = AsyncMock()
         db.delete_message = AsyncMock()
+        db.mark_message_deleted = AsyncMock()
         db.resolve_message_chat_id = AsyncMock(return_value=None)
         db.upsert_chat = AsyncMock()
         db.upsert_user = AsyncMock()
@@ -611,6 +613,61 @@ class TestEventHandlers:
         assert listener.stats["deletions_received"] == 2
         assert listener.stats["deletions_applied"] == 2
         assert listener.db.delete_message.call_count == 2
+        listener.db.mark_message_deleted.assert_not_called()
+
+    def test_on_message_deleted_soft_marks_deletion(self, listener_with_handlers, full_config):
+        """DELETION_MODE=soft marks messages deleted instead of removing them."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        full_config.deletion_mode = "soft"
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener.db.mark_message_deleted.assert_called_once()
+        listener.db.delete_message.assert_not_called()
+
+    def test_on_message_deleted_soft_notify_payload(self, listener_with_handlers, full_config):
+        """Soft deletion emits a 'delete' notification carrying deletion_mode=soft and deleted_at."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        full_config.deletion_mode = "soft"
+        listener._notify_update = AsyncMock()
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener._notify_update.assert_called_once()
+        notif_type, payload = listener._notify_update.call_args.args
+        assert notif_type == "delete"
+        assert payload["deletion_mode"] == "soft"
+        assert payload["message_id"] == 10
+        assert payload["chat_id"] == -1001234567890
+        assert isinstance(payload["deleted_at"], str)  # ISO timestamp for the viewer
+
+    def test_on_message_deleted_hard_notify_payload(self, listener_with_handlers):
+        """Hard deletion emits a 'delete' notification with deletion_mode=hard and no deleted_at."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        listener._notify_update = AsyncMock()
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener._notify_update.assert_called_once()
+        notif_type, payload = listener._notify_update.call_args.args
+        assert notif_type == "delete"
+        assert payload["deletion_mode"] == "hard"
+        assert "deleted_at" not in payload
 
     def test_on_message_deleted_resolves_chat_when_chat_id_none(self, listener_with_handlers, mock_db):
         """Test delete handler resolves chat_id from DB when event has None chat_id."""

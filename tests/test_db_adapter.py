@@ -325,6 +325,8 @@ class TestMessageToDict:
         msg.created_at = datetime(2025, 6, 1)
         msg.is_outgoing = 1
         msg.is_pinned = 0
+        msg.is_deleted = 1
+        msg.deleted_at = datetime(2025, 6, 2)
 
         result = adapter._message_to_dict(msg)
 
@@ -339,6 +341,20 @@ class TestMessageToDict:
         assert result["edit_date"] is None
         assert result["is_outgoing"] == 1
         assert result["is_pinned"] == 0
+        assert result["is_deleted"] == 1
+        assert result["deleted_at"] == datetime(2025, 6, 2)
+
+    def test_coerces_non_int_is_deleted_and_non_datetime_deleted_at(self):
+        """Defensive guards coerce a non-int is_deleted to 0 and a non-datetime deleted_at to None."""
+        adapter = self._make_adapter()
+        msg = MagicMock()
+        msg.is_deleted = "not-an-int"
+        msg.deleted_at = "not-a-datetime"
+
+        result = adapter._message_to_dict(msg)
+
+        assert result["is_deleted"] == 0
+        assert result["deleted_at"] is None
 
     def test_handles_none_text(self):
         """Message with None text is handled correctly."""
@@ -941,6 +957,17 @@ class TestMessageOperations:
         adapter = DatabaseAdapter(db_manager)
 
         await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mark_message_deleted_executes_and_commits(self):
+        """mark_message_deleted stores a soft-delete marker."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        await adapter.mark_message_deleted(100, 42, datetime(2025, 6, 1))
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()

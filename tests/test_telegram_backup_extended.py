@@ -37,6 +37,7 @@ def _make_backup(**overrides):
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.config = overrides.get("config", MagicMock())
     backup.config.should_skip_topic = MagicMock(return_value=False)
+    backup.config.deletion_mode = "hard"
     backup.db = overrides.get("db", AsyncMock())
     backup.client = overrides.get("client", AsyncMock())
     backup._owns_client = overrides.get("_owns_client", True)
@@ -796,6 +797,18 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         _run(self.backup._sync_deletions_and_edits(100, entity))
 
         self.backup.db.delete_message.assert_awaited_once_with(100, 1)
+
+    def test_deleted_message_soft_marked(self):
+        """DELETION_MODE=soft marks deleted messages instead of hard deleting."""
+        self.backup.config.deletion_mode = "soft"
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: None})
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        entity = MagicMock()
+
+        _run(self.backup._sync_deletions_and_edits(100, entity))
+
+        self.backup.db.mark_message_deleted.assert_awaited_once()
+        self.backup.db.delete_message.assert_not_awaited()
 
     def test_edited_message_updated_in_db(self):
         """Remote message with different edit_date triggers update."""
