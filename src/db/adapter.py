@@ -21,7 +21,7 @@ from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from ..message_utils import utcnow_naive
+from ..message_utils import compute_directory_size, utcnow_naive
 from .base import DatabaseManager
 from .models import (
     AppSettings,
@@ -1181,8 +1181,14 @@ class DatabaseAdapter:
 
         return result
 
-    async def calculate_and_store_statistics(self) -> dict[str, Any]:
-        """Calculate statistics and store in metadata (expensive, run daily)."""
+    async def calculate_and_store_statistics(self, storage_path: str | None = None) -> dict[str, Any]:
+        """Calculate statistics and store in metadata (expensive, run daily).
+
+        When ``storage_path`` is given, total media size reflects actual on-disk
+        usage (``du`` semantics) via ``compute_directory_size`` so the figure
+        tracks real disk consumption. Otherwise it falls back to the DB snapshot
+        ``SUM(media.file_size WHERE downloaded=1)``.
+        """
         import json
         from datetime import datetime
 
@@ -1201,9 +1207,14 @@ class DatabaseAdapter:
             media_count = await session.execute(select(func.count(Media.id)).where(Media.downloaded == 1))
             media_count = media_count.scalar() or 0
 
-            # Total media size
-            total_size = await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
-            total_size = total_size.scalar() or 0
+            # Total media size: actual on-disk usage when a storage path is given,
+            # else the DB snapshot of downloaded media sizes.
+            if storage_path:
+                total_size = compute_directory_size(storage_path)
+            else:
+                total_size = (
+                    await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
+                ).scalar() or 0
 
             # Per-chat statistics
             chat_stats_query = select(Message.chat_id, func.count(Message.id).label("message_count")).group_by(

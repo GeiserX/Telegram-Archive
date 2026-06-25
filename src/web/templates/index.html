@@ -370,8 +370,9 @@
                                         <div class="flex justify-between"><span>📬 Messages:</span><span class="text-white">{{ formatNumber(statsData.messages) }}</span></div>
                                         <div class="flex justify-between"><span>🖼️ Media files:</span><span class="text-white">{{ formatNumber(statsData.media_files) }}</span></div>
                                         <div class="flex justify-between"><span>💾 Storage:</span><span class="text-white">{{ formatSize(statsData.total_size_mb) }}</span></div>
-                                        <div class="pt-2 mt-2 border-t border-gray-700 text-[10px] opacity-70">
-                                            {{ formatStatsTime(statsData.stats_calculated_at) }}
+                                        <div class="pt-2 mt-2 border-t border-gray-700 text-[10px] opacity-70 flex items-center justify-between gap-2">
+                                            <span>{{ formatStatsTime(statsData.stats_calculated_at) }}</span>
+                                            <span v-if="statsData && statsData.backup_in_progress" class="text-blue-400 opacity-100 shrink-0">● Backup in progress…</span>
                                         </div>
                                         <!-- Footer -->
                                         <div class="pt-3 mt-3 border-t border-gray-700 text-center">
@@ -522,8 +523,16 @@
                         </div>
 
                         <!-- Topic list -->
-                        <div v-else-if="topics.length === 0" class="flex flex-col items-center justify-center py-12 text-tg-muted">
-                            <span class="text-sm">No topics found</span>
+                        <div v-else-if="topics.length === 0" class="flex flex-col items-center justify-center py-12 px-4 text-tg-muted text-center gap-3">
+                            <span class="text-sm">No topics backed up yet</span>
+                            <span class="text-xs">
+                                <template v-if="statsData && statsData.backup_in_progress">A backup is currently running — topics appear once it finishes.</template>
+                                <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
+                            </span>
+                            <button @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, { id: null, title: 'All messages' })"
+                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-blue-600 text-white transition">
+                                View all messages
+                            </button>
                         </div>
                         <div v-else v-for="topic in topics" :key="topic.id"
                             @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, topic)"
@@ -1952,7 +1961,8 @@
                     messages: 0,
                     media_files: 0,
                     total_size_mb: 0,
-                    stats_calculated_at: null
+                    stats_calculated_at: null,
+                    backup_in_progress: false
                 })
                 const statsPopupOpen = ref(false)
                 const showStatsUI = ref(true)  // Can be disabled via SHOW_STATS=false
@@ -1972,7 +1982,8 @@
                                 messages: stats.messages || 0,
                                 media_files: stats.media_files || 0,
                                 total_size_mb: stats.total_size_mb || 0,
-                                stats_calculated_at: stats.stats_calculated_at
+                                stats_calculated_at: stats.stats_calculated_at,
+                                backup_in_progress: stats.backup_in_progress || false
                             }
 
                             // Show/hide stats UI based on config
@@ -2032,14 +2043,14 @@
 
                 // Format size in MB to appropriate unit (MB, GB, TB)
                 const formatSize = (sizeMB) => {
-                    if (!sizeMB || sizeMB === 0) return '0 MB'
+                    if (!sizeMB || sizeMB === 0) return '0 MiB'
                     if (sizeMB >= 1024 * 1024) {
-                        return (sizeMB / (1024 * 1024)).toFixed(2) + ' TB'
+                        return (sizeMB / (1024 * 1024)).toFixed(2) + ' TiB'
                     }
                     if (sizeMB >= 1024) {
-                        return (sizeMB / 1024).toFixed(1) + ' GB'
+                        return (sizeMB / 1024).toFixed(1) + ' GiB'
                     }
-                    return sizeMB.toFixed(0) + ' MB'
+                    return sizeMB.toFixed(0) + ' MiB'
                 }
 
                 // Mark initialization complete (called after WS connects and notifications init)

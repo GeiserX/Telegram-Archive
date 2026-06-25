@@ -3284,3 +3284,109 @@ class TestIterMediaPathsForRepair:
             assert batches == []
         finally:
             await db_manager.close()
+
+
+# ============================================================
+# compute_directory_size (du-based on-disk usage)
+# ============================================================
+
+
+class TestComputeDirectorySize:
+    """Test the compute_directory_size helper used for du-based storage stats."""
+
+    def test_sums_regular_files_and_ignores_symlinks(self, tmp_path):
+        """Total equals the two real files; a symlink to one is not double-counted."""
+        from src.message_utils import compute_directory_size
+
+        nested = tmp_path / "a" / "b"
+        nested.mkdir(parents=True)
+
+        big = nested / "big.bin"
+        big.write_bytes(b"x" * 1000)
+        small = tmp_path / "small.bin"
+        small.write_bytes(b"y" * 24)
+
+        # A symlink in another subdir pointing at an already-counted file.
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        os.symlink(big, link_dir / "big_link.bin")
+
+        assert compute_directory_size(str(tmp_path)) == 1024
+
+    def test_missing_path_returns_zero(self, tmp_path):
+        """A path that does not exist returns 0."""
+        from src.message_utils import compute_directory_size
+
+        assert compute_directory_size(str(tmp_path / "does_not_exist")) == 0
+
+    def test_empty_and_falsy_path_returns_zero(self, tmp_path):
+        """An empty directory and a falsy path both return 0."""
+        from src.message_utils import compute_directory_size
+
+        assert compute_directory_size(str(tmp_path)) == 0
+        assert compute_directory_size("") == 0
+
+
+# ============================================================
+# calculate_and_store_statistics — du-based storage
+# ============================================================
+
+
+class TestCalculateAndStoreStatisticsStorage:
+    """calculate_and_store_statistics reports on-disk size when given a storage path."""
+
+    @pytest.mark.asyncio
+    async def test_storage_path_uses_disk_size_not_db_file_size(self, tmp_path):
+        """With storage_path, total_size_mb reflects real disk usage, not the DB file_size."""
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_du.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        try:
+            # DB row claims a huge file_size, but disk holds only a tiny file.
+            await adapter.insert_media(
+                {
+                    "id": "media_bogus",
+                    "type": "photo",
+                    "file_size": 5 * 1024 * 1024 * 1024,  # 5 GiB (bogus, DB-only)
+                    "downloaded": True,
+                }
+            )
+
+            storage_dir = tmp_path / "storage"
+            (storage_dir / "chat").mkdir(parents=True)
+            (storage_dir / "chat" / "real.bin").write_bytes(b"z" * (2 * 1024 * 1024))  # 2 MiB on disk
+
+            stats = await adapter.calculate_and_store_statistics(storage_path=str(storage_dir))
+
+            # du-based: 2 MiB, NOT the 5 GiB DB file_size.
+            assert stats["total_size_mb"] == 2.0
+            cached = json.loads(await adapter.get_metadata("cached_stats"))
+            assert cached["total_size_mb"] == 2.0
+        finally:
+            await db_manager.close()
+
+    @pytest.mark.asyncio
+    async def test_without_storage_path_falls_back_to_db_sum(self, tmp_path):
+        """Without storage_path, total_size_mb is derived from the DB SUM(file_size)."""
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_sum.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        try:
+            await adapter.insert_media(
+                {
+                    "id": "media_db",
+                    "type": "photo",
+                    "file_size": 3 * 1024 * 1024,  # 3 MiB
+                    "downloaded": True,
+                }
+            )
+
+            stats = await adapter.calculate_and_store_statistics()
+
+            assert stats["total_size_mb"] == 3.0
+        finally:
+            await db_manager.close()
