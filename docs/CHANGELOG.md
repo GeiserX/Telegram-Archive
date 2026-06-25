@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.16.0] - 2026-06-25
+
+### Added
+- **Soft deletion mode** — New `DELETION_MODE` (`hard` | `soft`, default `hard`) controls how Telegram deletions are handled, both for the real-time listener (`LISTEN_DELETIONS=true`) and the batch sync (`SYNC_DELETIONS_EDITS=true`). `hard` keeps the legacy behavior (remove the archived message); `soft` keeps the original message and marks it deleted, showing a `deleted` label in the viewer (and `edited deleted` for an edited-then-deleted message). Soft-deleted messages are retained in the archive — they stay counted in statistics and remain searchable. Adds `messages.is_deleted` / `messages.deleted_at` via Alembic migration `014`; reprocessing, gap-fill, and retries preserve the soft-delete marker, and the deletion write retries on a locked database. ([#199](https://github.com/GeiserX/Telegram-Archive/pull/199))
+
+### Credits
+- Thanks to [@charys117](https://github.com/charys117) for contributing soft-deletion mode in [#199](https://github.com/GeiserX/Telegram-Archive/pull/199).
+
 ## [7.13.0] - 2026-06-04
 
 ### Added
