@@ -81,6 +81,25 @@ MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 BACKOFF_MIN_SECONDS = _get_float_env("BACKOFF_MIN_SECONDS", 2.0)
 BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 300.0)
 FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
+LOCATION_NOT_AVAILABLE = "LOCATION_NOT_AVAILABLE"
+MEDIA_REFRESH_RPC_MESSAGES = frozenset({LOCATION_NOT_AVAILABLE})
+
+
+def _rpc_error_matches(exc: Exception, messages: frozenset[str] | set[str]) -> bool:
+    if not isinstance(exc, RPCError):
+        return False
+
+    normalized = {message.upper() for message in messages}
+    rpc_message = getattr(exc, "message", None)
+    if isinstance(rpc_message, str) and rpc_message.upper() in normalized:
+        return True
+
+    error_text = str(exc).upper()
+    return any(message in error_text for message in normalized)
+
+
+def _is_location_not_available_error(exc: Exception) -> bool:
+    return _rpc_error_matches(exc, MEDIA_REFRESH_RPC_MESSAGES)
 
 
 def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
@@ -128,7 +147,13 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         pass
 
 
-async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, **kwargs):
+async def call_with_flood_retry(
+    coro_fn,
+    *args,
+    max_retries=MAX_FLOOD_RETRIES,
+    non_retryable_rpc_messages: frozenset[str] | set[str] | None = None,
+    **kwargs,
+):
     """Retry a single async call on FloodWaitError with bounded sleep and
     general transient errors with configurable exponential backoff and jitter.
 
@@ -189,6 +214,8 @@ async def call_with_flood_retry(coro_fn, *args, max_retries=MAX_FLOOD_RETRIES, *
                     UserBannedInChannelError,
                 ),
             ):
+                raise exc
+            if non_retryable_rpc_messages and _rpc_error_matches(exc, non_retryable_rpc_messages):
                 raise exc
 
             retries += 1
@@ -1704,6 +1731,12 @@ class TelegramBackup:
         except Exception as e:
             logger.error(f"Error cleaning up existing media for chat {chat_id}: {e}", exc_info=True)
 
+    async def _refresh_message_for_media(self, chat_id: int, message: Message) -> Message | None:
+        fresh_messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=[message.id])
+        if fresh_messages and fresh_messages[0]:
+            return fresh_messages[0]
+        return None
+
     async def _process_media(self, message: Message, chat_id: int) -> dict | None:
         """
         Process and download media from a message.
@@ -1787,16 +1820,37 @@ class TelegramBackup:
                     for attempt in range(3):
                         try:
                             return await asyncio.wait_for(
-                                call_with_flood_retry(self._fetch_media_bytes, message, tmp_path, file_size),
+                                call_with_flood_retry(
+                                    self._fetch_media_bytes,
+                                    message,
+                                    tmp_path,
+                                    file_size,
+                                    non_retryable_rpc_messages=MEDIA_REFRESH_RPC_MESSAGES,
+                                ),
                                 timeout=timeout_val,
                             )
                         except FileReferenceExpiredError:
                             logger.info(f"File reference expired for message {message.id}, refreshing...")
-                            fresh_messages = await call_with_flood_retry(
-                                self.client.get_messages, chat_id, ids=[message.id]
+                            fresh_message = await self._refresh_message_for_media(chat_id, message)
+                            if fresh_message:
+                                message = fresh_message
+                                continue
+                            raise
+                        except RPCError as e:
+                            if not _is_location_not_available_error(e):
+                                raise
+                            logger.info(
+                                "Media location unavailable for chat %s message %s; refreshing before retry "
+                                "(attempt %d/3)",
+                                chat_id,
+                                message.id,
+                                attempt + 1,
                             )
-                            if fresh_messages and fresh_messages[0]:
-                                message = fresh_messages[0]
+                            if attempt == 2:
+                                raise
+                            fresh_message = await self._refresh_message_for_media(chat_id, message)
+                            if fresh_message:
+                                message = fresh_message
                                 continue
                             raise
                         except TimeoutError:
@@ -1842,17 +1896,38 @@ class TelegramBackup:
                             os.remove(tmp_file_path)
                         try:
                             actual_path = await asyncio.wait_for(
-                                call_with_flood_retry(self._fetch_media_bytes, message, tmp_file_path, file_size),
+                                call_with_flood_retry(
+                                    self._fetch_media_bytes,
+                                    message,
+                                    tmp_file_path,
+                                    file_size,
+                                    non_retryable_rpc_messages=MEDIA_REFRESH_RPC_MESSAGES,
+                                ),
                                 timeout=timeout_val,
                             )
                             break
                         except FileReferenceExpiredError:
                             logger.info(f"File reference expired for message {message.id}, refreshing...")
-                            fresh_messages = await call_with_flood_retry(
-                                self.client.get_messages, chat_id, ids=[message.id]
+                            fresh_message = await self._refresh_message_for_media(chat_id, message)
+                            if fresh_message:
+                                message = fresh_message
+                                continue
+                            raise
+                        except RPCError as e:
+                            if not _is_location_not_available_error(e):
+                                raise
+                            logger.info(
+                                "Media location unavailable for chat %s message %s; refreshing before retry "
+                                "(attempt %d/3)",
+                                chat_id,
+                                message.id,
+                                attempt + 1,
                             )
-                            if fresh_messages and fresh_messages[0]:
-                                message = fresh_messages[0]
+                            if attempt == 2:
+                                raise
+                            fresh_message = await self._refresh_message_for_media(chat_id, message)
+                            if fresh_message:
+                                message = fresh_message
                                 continue
                             raise
                         except TimeoutError:

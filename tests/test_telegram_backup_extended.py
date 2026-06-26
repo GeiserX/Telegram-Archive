@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from telethon.errors import ChannelPrivateError, ChatForbiddenError
+from telethon.errors import BadRequestError, ChannelPrivateError, ChatForbiddenError
 from telethon.tl.types import (
     Channel,
     MessageMediaDocument,
@@ -1541,6 +1541,20 @@ class TestProcessMedia(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def _make_photo_message(self, msg_id):
+        msg = _make_message(msg_id)
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 999
+        media.mime_type = "image/jpeg"
+        msg.media = media
+        return msg
+
+    def _setup_photo_download(self):
+        self.backup._get_media_type = MagicMock(return_value="photo")
+        self.backup._get_media_size = MagicMock(return_value=100)
+        self.backup._get_media_filename = MagicMock(return_value="test.jpg")
+
     def test_document_with_dimensions_and_duration(self):
         """Document with width, height, and duration stores metadata."""
         msg = _make_message(1)
@@ -1620,6 +1634,58 @@ class TestProcessMedia(unittest.TestCase):
         result = _run(self.backup._process_media(msg, 100))
 
         self.assertFalse(result["downloaded"])
+
+    def test_location_not_available_refreshes_message_before_direct_retry(self):
+        """LOCATION_NOT_AVAILABLE refreshes the message before direct-download retry."""
+        stale_msg = self._make_photo_message(5)
+        fresh_msg = self._make_photo_message(5)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[5])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
+
+    def test_location_not_available_refreshes_message_before_dedup_retry(self):
+        """LOCATION_NOT_AVAILABLE refreshes the message before shared-store retry."""
+        self.backup.config.deduplicate_media = True
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
+        stale_msg = self._make_photo_message(6)
+        fresh_msg = self._make_photo_message(6)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[6])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
 
 
 # ===========================================================================
