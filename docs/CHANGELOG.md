@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.17.2] - 2026-06-28
+
+### Fixed
+- **Media downloads recover from transient "location unavailable" errors** — Telegram sometimes reports a media file's storage location as temporarily unavailable (`LOCATION_NOT_AVAILABLE`, or `LOCATION_INVALID`, on `upload.GetFile`). The backup now re-fetches the message for a fresh file reference/location and retries with exponential backoff; if the file is still unavailable after a few attempts, the item is left for the next scheduled run rather than failing outright. Telethon surfaces these as a generic `BadRequestError` (the code is preserved on the exception), so they previously fell through to a plain retry that could not recover a stale reference. The message-refresh call and per-download timeout were also hardened so they can no longer cancel a Telegram rate-limit (FloodWait) wait. ([#203](https://github.com/GeiserX/Telegram-Archive/pull/203), [#204](https://github.com/GeiserX/Telegram-Archive/issues/204))
+
+### Credits
+- Thanks to [@charys117](https://github.com/charys117) for reporting the production `LOCATION_NOT_AVAILABLE` failures — with detailed Telethon error-mapping evidence — and contributing the fix in [#203](https://github.com/GeiserX/Telegram-Archive/pull/203).
+
 ## [7.17.1] - 2026-06-25
 
 ### Fixed
