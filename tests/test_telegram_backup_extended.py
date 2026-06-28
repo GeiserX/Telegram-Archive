@@ -8,7 +8,15 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from telethon.errors import ChannelPrivateError, ChatForbiddenError
+from telethon.errors import (
+    BadRequestError,
+    ChannelPrivateError,
+    ChatForbiddenError,
+    FileReferenceExpiredError,
+    FloodWaitError,
+    LocationInvalidError,
+    rpc_message_to_error,
+)
 from telethon.tl.types import (
     Channel,
     MessageMediaDocument,
@@ -16,6 +24,8 @@ from telethon.tl.types import (
     User,
 )
 
+from src import telegram_backup
+from src.media_errors import is_media_location_error
 from src.telegram_backup import TelegramBackup, run_backup, run_fill_gaps
 
 # ---------------------------------------------------------------------------
@@ -1524,6 +1534,152 @@ class TestGetMediaSize(unittest.TestCase):
 
 
 # ===========================================================================
+# Media refresh error helpers
+# ===========================================================================
+
+
+class TestMediaRefreshErrorHelpers(unittest.TestCase):
+    """Classification + refresh helpers used to recover transient media errors."""
+
+    def test_is_media_location_error_ignores_non_rpc_errors(self):
+        """Non-RPC exceptions are never treated as media-location errors."""
+        self.assertFalse(is_media_location_error(ValueError("LOCATION_NOT_AVAILABLE")))
+
+    def test_is_media_location_error_matches_message_case_insensitively(self):
+        """LOCATION_NOT_AVAILABLE is matched via the generic BadRequestError .message (any case)."""
+        self.assertTrue(is_media_location_error(BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)))
+        self.assertTrue(is_media_location_error(BadRequestError(MagicMock(), "location_not_available", 400)))
+
+    def test_is_media_location_error_matches_location_invalid_by_type(self):
+        """LOCATION_INVALID has a generated class whose .message is 'BAD_REQUEST', so match by type."""
+        exc = LocationInvalidError(request=None)
+        self.assertEqual(getattr(exc, "message", None), "BAD_REQUEST")  # documents why type-matching is needed
+        self.assertTrue(is_media_location_error(exc))
+
+    def test_is_media_location_error_rejects_other_rpc_errors(self):
+        """Unrelated RPC errors (e.g. MEDIA_EMPTY) are not refreshable."""
+        self.assertFalse(is_media_location_error(BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)))
+
+    def test_is_media_location_error_matches_real_wire_conversion(self):
+        """A LOCATION_NOT_AVAILABLE built the way Telethon really builds it off the wire is matched.
+
+        Exercises the actual rpc_message_to_error fallback (unknown 400 code ->
+        generic BadRequestError with .message preserved) instead of a hand-built mock,
+        so the test can't pass while production behaves differently.
+        """
+
+        class _WireError:
+            error_message = "LOCATION_NOT_AVAILABLE"
+            error_code = 400
+
+        exc = rpc_message_to_error(_WireError(), "GetFileRequest")
+        self.assertIsInstance(exc, BadRequestError)
+        self.assertEqual(exc.message, "LOCATION_NOT_AVAILABLE")
+        self.assertTrue(is_media_location_error(exc))
+
+    def test_call_with_flood_retry_non_retryable_predicate_reraises_immediately(self):
+        """A non_retryable predicate makes call_with_flood_retry re-raise on the first hit."""
+        attempts = 0
+
+        async def fail_with_location_not_available():
+            nonlocal attempts
+            attempts += 1
+            raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+
+        with self.assertRaises(BadRequestError):
+            _run(
+                telegram_backup.call_with_flood_retry(
+                    fail_with_location_not_available,
+                    max_retries=5,
+                    non_retryable=is_media_location_error,
+                )
+            )
+
+        self.assertEqual(attempts, 1)
+
+    def test_call_with_flood_retry_still_retries_errors_outside_predicate(self):
+        """Errors the predicate rejects keep using the normal transient backoff path."""
+        attempts = 0
+
+        async def fail_then_succeed():
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)
+            return "ok"
+
+        with patch("src.telegram_backup.asyncio.sleep", new=AsyncMock()):
+            result = _run(
+                telegram_backup.call_with_flood_retry(
+                    fail_then_succeed,
+                    max_retries=5,
+                    non_retryable=is_media_location_error,
+                )
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(attempts, 3)
+
+    def test_refresh_message_for_media_returns_none_when_missing(self):
+        """A deleted/unavailable message ([None]) yields no refreshed reference."""
+        backup = _make_backup()
+        message = _make_message(11)
+        backup.client.get_messages = AsyncMock(return_value=[None])
+
+        result = _run(backup._refresh_message_for_media(100, message))
+
+        self.assertIsNone(result)
+        backup.client.get_messages.assert_awaited_once_with(100, ids=[11])
+
+    def test_refresh_message_for_media_returns_none_on_empty_list(self):
+        """An empty get_messages result is handled without IndexError."""
+        backup = _make_backup()
+        backup.client.get_messages = AsyncMock(return_value=[])
+
+        self.assertIsNone(_run(backup._refresh_message_for_media(100, _make_message(11))))
+
+    def test_refresh_message_for_media_swallows_floodwait(self):
+        """A FloodWait (or any error) during refresh is swallowed (-> None), never propagated."""
+        backup = _make_backup()
+        with patch(
+            "src.telegram_backup.call_with_flood_retry",
+            AsyncMock(side_effect=FloodWaitError(request=MagicMock())),
+        ):
+            # Best-effort refresh: must return None rather than raising.
+            self.assertIsNone(_run(backup._refresh_message_for_media(100, _make_message(11))))
+
+    def test_media_retry_backoff_seconds_grows_and_is_bounded(self):
+        """Backoff grows with the attempt and stays under the configured ceiling (+jitter)."""
+        # Pin the jitter so the comparison is deterministic (never flakes).
+        with patch("src.telegram_backup.random.uniform", return_value=0.5):
+            self.assertGreater(
+                telegram_backup._media_retry_backoff_seconds(1),
+                telegram_backup._media_retry_backoff_seconds(0),
+            )
+            big = telegram_backup._media_retry_backoff_seconds(100)
+            self.assertLessEqual(big, telegram_backup.BACKOFF_MAX_SECONDS + 1.5)
+
+    def test_is_non_retryable_media_op(self):
+        """Location errors and per-operation timeouts bypass call_with_flood_retry's retries."""
+        self.assertTrue(
+            telegram_backup._is_non_retryable_media_op(BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400))
+        )
+        self.assertTrue(telegram_backup._is_non_retryable_media_op(TimeoutError()))
+        self.assertFalse(telegram_backup._is_non_retryable_media_op(BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)))
+
+    def test_fetch_media_bytes_bounded_times_out_only_the_operation(self):
+        """The per-operation timeout bounds a slow download and raises TimeoutError."""
+        backup = _make_backup()
+
+        async def slow_fetch(message, path, size):
+            await asyncio.sleep(1)
+
+        backup._fetch_media_bytes = AsyncMock(side_effect=slow_fetch)
+        with self.assertRaises(TimeoutError):
+            _run(backup._fetch_media_bytes_bounded(_make_message(1), "/tmp/unused", 100, 0.01))
+
+
+# ===========================================================================
 # _process_media (lines 1420-1427, 1433-1435)
 # ===========================================================================
 
@@ -1537,9 +1693,28 @@ class TestProcessMedia(unittest.TestCase):
         self.backup.config.media_path = os.path.join(self.temp_dir, "media")
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.config.deduplicate_media = False
+        # Neutralize the real backoff sleep so multi-attempt retry tests stay fast;
+        # `mock_backoff` lets tests assert backoff was (or wasn't) applied.
+        self._backoff_patcher = patch("src.telegram_backup._media_retry_backoff_seconds", return_value=0)
+        self.mock_backoff = self._backoff_patcher.start()
+        self.addCleanup(self._backoff_patcher.stop)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _make_photo_message(self, msg_id):
+        msg = _make_message(msg_id)
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 999
+        media.mime_type = "image/jpeg"
+        msg.media = media
+        return msg
+
+    def _setup_photo_download(self):
+        self.backup._get_media_type = MagicMock(return_value="photo")
+        self.backup._get_media_size = MagicMock(return_value=100)
+        self.backup._get_media_filename = MagicMock(return_value="test.jpg")
 
     def test_document_with_dimensions_and_duration(self):
         """Document with width, height, and duration stores metadata."""
@@ -1620,6 +1795,399 @@ class TestProcessMedia(unittest.TestCase):
         result = _run(self.backup._process_media(msg, 100))
 
         self.assertFalse(result["downloaded"])
+
+    def test_location_not_available_refreshes_message_before_direct_retry(self):
+        """LOCATION_NOT_AVAILABLE refreshes the message before direct-download retry."""
+        stale_msg = self._make_photo_message(5)
+        fresh_msg = self._make_photo_message(5)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[5])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
+
+    def test_location_not_available_refreshes_message_before_dedup_retry(self):
+        """LOCATION_NOT_AVAILABLE refreshes the message before shared-store retry."""
+        self.backup.config.deduplicate_media = True
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
+        stale_msg = self._make_photo_message(6)
+        fresh_msg = self._make_photo_message(6)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[6])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
+
+    def test_file_reference_expired_refreshes_message_before_direct_retry(self):
+        """FileReferenceExpiredError keeps the existing refresh behavior for direct downloads."""
+        stale_msg = self._make_photo_message(7)
+        fresh_msg = self._make_photo_message(7)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise FileReferenceExpiredError(request=MagicMock())
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[7])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
+
+    def test_file_reference_expired_refreshes_message_before_dedup_retry(self):
+        """FileReferenceExpiredError keeps the existing refresh behavior for dedup downloads."""
+        self.backup.config.deduplicate_media = True
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
+        stale_msg = self._make_photo_message(8)
+        fresh_msg = self._make_photo_message(8)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        download_messages = []
+
+        async def fake_download(message, path):
+            download_messages.append(message)
+            if len(download_messages) == 1:
+                raise FileReferenceExpiredError(request=MagicMock())
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.backup.client.get_messages.assert_awaited_once_with(100, ids=[8])
+        self.assertEqual(download_messages, [stale_msg, fresh_msg])
+
+    def test_non_location_rpc_error_does_not_refresh_message(self):
+        """Non-refreshable RPC errors still fail without fetching a fresh message."""
+        msg = self._make_photo_message(9)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock()
+
+        with patch(
+            "src.telegram_backup.call_with_flood_retry",
+            AsyncMock(side_effect=BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)),
+        ):
+            result = _run(self.backup._process_media(msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.backup.client.get_messages.assert_not_awaited()
+
+    def test_non_location_rpc_error_dedup_does_not_refresh_message(self):
+        """Non-refreshable RPC errors fail without refresh in the dedup path too."""
+        self.backup.config.deduplicate_media = True
+        msg = self._make_photo_message(14)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock()
+
+        with patch(
+            "src.telegram_backup.call_with_flood_retry",
+            AsyncMock(side_effect=BadRequestError(MagicMock(), "MEDIA_EMPTY", 400)),
+        ):
+            result = _run(self.backup._process_media(msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.backup.client.get_messages.assert_not_awaited()
+
+    def test_location_not_available_fails_when_refresh_returns_no_message(self):
+        """A persistent location error fails clean; refresh is still attempted each non-final try.
+
+        Unlike the original code (which gave up after a single attempt when refresh
+        returned nothing), a location error is transient, so we keep retrying with
+        backoff — the item is simply left for the next backup run.
+        """
+        msg = self._make_photo_message(10)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup.client.download_media = AsyncMock(
+            side_effect=BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+        )
+
+        result = _run(self.backup._process_media(msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        # Refresh attempted on attempts 0 and 1 (not the final attempt).
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+        self.backup.client.get_messages.assert_awaited_with(100, ids=[10])
+
+    def test_file_reference_expired_direct_fails_when_refresh_returns_no_message(self):
+        """A direct FileReferenceExpiredError fails clean when refresh can't find the message."""
+        msg = self._make_photo_message(15)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup.client.download_media = AsyncMock(side_effect=FileReferenceExpiredError(request=MagicMock()))
+
+        result = _run(self.backup._process_media(msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+        self.backup.client.get_messages.assert_awaited_with(100, ids=[15])
+
+    def test_file_reference_expired_dedup_fails_when_refresh_returns_no_message(self):
+        """A dedup FileReferenceExpiredError fails clean when refresh can't find the message."""
+        self.backup.config.deduplicate_media = True
+        msg = self._make_photo_message(16)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup.client.download_media = AsyncMock(side_effect=FileReferenceExpiredError(request=MagicMock()))
+
+        result = _run(self.backup._process_media(msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+        self.backup.client.get_messages.assert_awaited_with(100, ids=[16])
+
+    def test_location_not_available_final_direct_attempt_fails_without_refresh(self):
+        """The final LOCATION_NOT_AVAILABLE attempt raises without a third refresh."""
+        stale_msg = self._make_photo_message(12)
+        fresh_msg_1 = self._make_photo_message(12)
+        fresh_msg_2 = self._make_photo_message(12)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(side_effect=[[fresh_msg_1], [fresh_msg_2]])
+
+        download_messages = []
+
+        async def fake_download(message, _path):
+            download_messages.append(message)
+            raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+        self.assertEqual(download_messages, [stale_msg, fresh_msg_1, fresh_msg_2])
+
+    def test_location_not_available_final_dedup_attempt_fails_without_refresh(self):
+        """The dedup path also stops refreshing after the final retry."""
+        self.backup.config.deduplicate_media = True
+        self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
+        stale_msg = self._make_photo_message(13)
+        fresh_msg_1 = self._make_photo_message(13)
+        fresh_msg_2 = self._make_photo_message(13)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(side_effect=[[fresh_msg_1], [fresh_msg_2]])
+
+        download_messages = []
+
+        async def fake_download(message, _path):
+            download_messages.append(message)
+            raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+        self.assertEqual(download_messages, [stale_msg, fresh_msg_1, fresh_msg_2])
+
+    def test_location_not_available_applies_backoff_between_retries(self):
+        """A transient location error backs off before retrying (not a sleepless hammer)."""
+        stale_msg = self._make_photo_message(20)
+        fresh_msg = self._make_photo_message(20)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        downloads = []
+
+        async def fake_download(message, path):
+            downloads.append(message)
+            if len(downloads) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.mock_backoff.assert_called()  # backoff applied before the retry
+
+    def test_file_reference_expired_retry_skips_backoff(self):
+        """An expired reference is fixed by the refresh itself, so it retries without backoff."""
+        stale_msg = self._make_photo_message(21)
+        fresh_msg = self._make_photo_message(21)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        downloads = []
+
+        async def fake_download(message, path):
+            downloads.append(message)
+            if len(downloads) == 1:
+                raise FileReferenceExpiredError(request=MagicMock())
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.mock_backoff.assert_not_called()
+
+    def test_location_not_available_succeeds_on_third_attempt_uses_latest_message(self):
+        """Two failures then success: the retry must use the most recently refreshed message."""
+        stale_msg = self._make_photo_message(22)
+        fresh_msg_1 = self._make_photo_message(22)
+        fresh_msg_2 = self._make_photo_message(22)
+        self._setup_photo_download()
+        self.backup.client.get_messages = AsyncMock(side_effect=[[fresh_msg_1], [fresh_msg_2]])
+
+        downloads = []
+
+        async def fake_download(message, path):
+            downloads.append(message)
+            if len(downloads) < 3:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"photo")
+            return path
+
+        self.backup.client.download_media = AsyncMock(side_effect=fake_download)
+
+        result = _run(self.backup._process_media(stale_msg, 100))
+
+        self.assertTrue(result["downloaded"])
+        self.assertEqual(downloads, [stale_msg, fresh_msg_1, fresh_msg_2])
+        self.assertEqual(self.backup.client.get_messages.await_count, 2)
+
+    def test_download_media_to_path_raises_original_error_after_exhaustion(self):
+        """On exhaustion the original error propagates (not a synthetic one) and no .part is left."""
+        msg = self._make_photo_message(23)
+        self.backup._should_parallelize = MagicMock(return_value=False)
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup.client.download_media = AsyncMock(
+            side_effect=BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+        )
+        tmp_path = os.path.join(self.temp_dir, "exhaust.part")
+
+        with self.assertRaises(BadRequestError) as ctx:
+            _run(self.backup._download_media_to_path(msg, tmp_path, 100, 100))
+
+        self.assertEqual(ctx.exception.message, "LOCATION_NOT_AVAILABLE")
+        self.assertFalse(os.path.exists(tmp_path))  # partial cleaned up on failure
+
+    def test_download_media_to_path_recovers_regardless_of_transport(self):
+        """Refresh+retry is driven at the _fetch_media_bytes seam, so it covers any transport."""
+        msg = self._make_photo_message(24)
+        fresh_msg = self._make_photo_message(24)
+        self.backup.client.get_messages = AsyncMock(return_value=[fresh_msg])
+
+        fetched = []
+
+        async def fake_fetch(message, path, size):
+            fetched.append(message)
+            if len(fetched) == 1:
+                raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+            with open(path, "wb") as f:
+                f.write(b"x")
+            return path
+
+        self.backup._fetch_media_bytes = AsyncMock(side_effect=fake_fetch)
+        tmp_path = os.path.join(self.temp_dir, "transport.part")
+
+        result = _run(self.backup._download_media_to_path(msg, tmp_path, 100, 100))
+
+        self.assertEqual(result, tmp_path)
+        self.assertEqual(fetched, [msg, fresh_msg])
+
+    def test_download_media_to_path_retries_then_succeeds_after_timeout(self):
+        """A per-operation timeout is retried by the outer loop, then succeeds."""
+        msg = self._make_photo_message(25)
+        calls = []
+
+        async def fake_fetch(message, path, size):
+            calls.append(message)
+            if len(calls) == 1:
+                raise TimeoutError()
+            with open(path, "wb") as f:
+                f.write(b"x")
+            return path
+
+        self.backup._fetch_media_bytes = AsyncMock(side_effect=fake_fetch)
+        tmp_path = os.path.join(self.temp_dir, "timeout_ok.part")
+
+        result = _run(self.backup._download_media_to_path(msg, tmp_path, 100, 100))
+
+        self.assertEqual(result, tmp_path)
+        self.assertEqual(len(calls), 2)
+
+    def test_download_media_to_path_gives_up_after_persistent_timeout(self):
+        """Persistent per-operation timeouts exhaust attempts and raise TimeoutError."""
+        msg = self._make_photo_message(26)
+        self.backup._fetch_media_bytes = AsyncMock(side_effect=TimeoutError())
+        tmp_path = os.path.join(self.temp_dir, "timeout_fail.part")
+
+        with self.assertRaises(TimeoutError):
+            _run(self.backup._download_media_to_path(msg, tmp_path, 100, 100))
+
+        self.assertEqual(self.backup._fetch_media_bytes.await_count, 3)
+
+    def test_download_media_to_path_cleans_partial_on_failure(self):
+        """A partial .part written before a failure is removed (no orphan left behind)."""
+        msg = self._make_photo_message(27)
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+
+        async def fake_fetch(message, path, size):
+            with open(path, "wb") as f:
+                f.write(b"partial")
+            raise BadRequestError(MagicMock(), "LOCATION_NOT_AVAILABLE", 400)
+
+        self.backup._fetch_media_bytes = AsyncMock(side_effect=fake_fetch)
+        tmp_path = os.path.join(self.temp_dir, "cleanup.part")
+
+        with self.assertRaises(BadRequestError):
+            _run(self.backup._download_media_to_path(msg, tmp_path, 100, 100))
+
+        self.assertFalse(os.path.exists(tmp_path))
 
 
 # ===========================================================================

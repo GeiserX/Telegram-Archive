@@ -246,6 +246,11 @@ class ParallelDownloader:
                 # The file actually lives on another DC; native download_media
                 # handles migration, so bail out to single-stream for this file.
                 raise ParallelDownloadUnavailable(f"file migrated to DC {exc.new_dc}") from exc
+            # Any other RPCError (incl. LOCATION_NOT_AVAILABLE / LOCATION_INVALID
+            # from upload.GetFile) intentionally propagates unchanged so the
+            # caller's refresh + retry loop can handle it. Do NOT add a broad
+            # `except Exception -> ParallelDownloadUnavailable` here: it would
+            # mask those as a stale single-stream fallback (see is_media_location_error).
             data = result.bytes
             if not data:
                 # Empty response before EOF would leave a gap; coverage check
