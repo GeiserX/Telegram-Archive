@@ -1650,12 +1650,14 @@ class TestMediaRefreshErrorHelpers(unittest.TestCase):
 
     def test_media_retry_backoff_seconds_grows_and_is_bounded(self):
         """Backoff grows with the attempt and stays under the configured ceiling (+jitter)."""
-        self.assertGreater(
-            telegram_backup._media_retry_backoff_seconds(1),
-            telegram_backup._media_retry_backoff_seconds(0),
-        )
-        big = telegram_backup._media_retry_backoff_seconds(100)
-        self.assertLessEqual(big, telegram_backup.BACKOFF_MAX_SECONDS + 1.5)
+        # Pin the jitter so the comparison is deterministic (never flakes).
+        with patch("src.telegram_backup.random.uniform", return_value=0.5):
+            self.assertGreater(
+                telegram_backup._media_retry_backoff_seconds(1),
+                telegram_backup._media_retry_backoff_seconds(0),
+            )
+            big = telegram_backup._media_retry_backoff_seconds(100)
+            self.assertLessEqual(big, telegram_backup.BACKOFF_MAX_SECONDS + 1.5)
 
     def test_is_non_retryable_media_op(self):
         """Location errors and per-operation timeouts bypass call_with_flood_retry's retries."""
