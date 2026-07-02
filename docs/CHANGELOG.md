@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.18.0] - 2026-07-02
+
+### Added
+- **Message edit history** — Edited messages now preserve their previous text versions in a new `message_versions` table (Alembic migration `015`). The viewer shows a clickable `edited(n)` marker that opens a lazy-loaded "Versions" drawer (Escape to close, screen-reader friendly), message lists include a `version_count` field, and a new authenticated endpoint `GET /api/chats/{chat_id}/messages/{message_id}/versions` serves the retained versions (newest first, up to 500). Version capture is idempotent (content-addressed by a change hash), race-safe, and best-effort — a history write can never break the archival of the message itself. Soft-deleted messages keep their history; hard deletes remove it. ([#206](https://github.com/GeiserX/Telegram-Archive/pull/206))
+- Chat exports (`GET /api/chats/{chat_id}/export` and the `export` CLI) now include the preserved `message_versions`, streamed entry-by-entry so large edit histories don't inflate memory.
+
+### Changed
+- **⚠️ Breaking Change**: the `GET /api/chats/{chat_id}/export` response is now a JSON **object** — `{"chat": {id, type, title, username}, "messages": [...], "message_versions": [...]}` — instead of a top-level array of messages. Consumers that parsed the old array should read the `messages` key. The in-app "Download" button is unaffected.
+- Message re-scans (backup, gap-fill, import) only replace archived text when the incoming copy carries an equal-or-newer `edit_date`, so older imports can no longer clobber newer edits; fully unchanged messages are skipped without any database write, keeping full re-backups fast on large archives.
+- The Docker Publish workflow also rebuilds the backup image when `scripts/`, `pyproject.toml`, or `uv.lock` change, so entrypoint/migration-stamping changes always ship.
+
+### Fixed
+- Deletion/edit sync no longer treats every previously-edited message as changed on every pass (a timezone-aware vs naive comparison bug), removing spurious update round-trips.
+- Re-backups no longer reset a message's pinned flag when the source data doesn't include pinning info.
+- Real-time edit broadcasts fire only when the archive actually accepted the edit, so the viewer can't briefly display text the archive rejected as stale, and listener statistics distinguish applied edits from no-ops.
+
+### Upgrade / rollback note
+- Migration `015` runs automatically on first start. **Rolling back** to a ≤7.17.2 image after that requires stamping the database back first (`alembic downgrade 014` inside the running 7.18.0 container) — an older image does not know revision `015` and will refuse to start.
+
+### Credits
+- Thanks to [@charys117](https://github.com/charys117) for designing and contributing message edit-history preservation in [#206](https://github.com/GeiserX/Telegram-Archive/pull/206) — including the migration hygiene, the lazy viewer drawer, and pre-deployment validation on a live instance.
+
 ## [7.17.2] - 2026-06-28
 
 ### Fixed
