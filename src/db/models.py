@@ -22,6 +22,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from ..message_utils import utcnow_naive
+
 
 class Base(DeclarativeBase):
     """Base class for all models."""
@@ -98,6 +100,7 @@ class Message(Base):
     )
     reactions: Mapped[list[Reaction]] = relationship("Reaction", back_populates="message", lazy="dynamic")
     media_items: Mapped[list[Media]] = relationship("Media", back_populates="message", lazy="selectin")
+    versions: Mapped[list[MessageVersion]] = relationship("MessageVersion", back_populates="message", lazy="dynamic")
 
     __table_args__ = (
         Index("idx_messages_chat_id", "chat_id"),
@@ -111,6 +114,43 @@ class Message(Base):
         Index("idx_messages_reply_to", "chat_id", "reply_to_msg_id"),
         # v6.2.0: Index for topic message lookups in forum chats
         Index("idx_messages_topic", "chat_id", "reply_to_top_id"),
+    )
+
+
+class MessageVersion(Base):
+    """Historical text versions for edited messages."""
+
+    __tablename__ = "message_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    change_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+
+    message: Mapped[Message] = relationship(
+        "Message",
+        back_populates="versions",
+        primaryjoin="and_(MessageVersion.message_id==Message.id, MessageVersion.chat_id==Message.chat_id)",
+        foreign_keys="[MessageVersion.message_id, MessageVersion.chat_id]",
+    )
+
+    __table_args__ = (
+        # NOTE: the CASCADE is inert on SQLite (PRAGMA foreign_keys is off by
+        # default) — the explicit MessageVersion deletes in delete_message and
+        # delete_chat_and_related_data are the load-bearing cleanup. Keep them
+        # in sync with any future message-deletion path.
+        ForeignKeyConstraint(
+            ["message_id", "chat_id"],
+            ["messages.id", "messages.chat_id"],
+            name="fk_message_versions_message",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("change_hash", name="uq_message_versions_change_hash"),
+        Index("idx_message_versions_message_date", "chat_id", "message_id", "date"),
+        Index("idx_message_versions_message_captured", "chat_id", "message_id", "captured_at"),
     )
 
 

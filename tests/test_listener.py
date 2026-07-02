@@ -44,7 +44,7 @@ class TestTelegramListener:
         """Create a mock database adapter."""
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[{"id": -1001234567890}, {"id": 123456789}, {"id": -987654321}])
-        db.update_message_text = AsyncMock()
+        db.update_message_text = AsyncMock(return_value="applied")
         db.delete_message = AsyncMock()
         db.resolve_message_chat_id = AsyncMock(return_value=-1001234567890)
         db.close = AsyncMock()
@@ -265,7 +265,7 @@ class TestEventHandlers:
     def mock_db(self):
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[])
-        db.update_message_text = AsyncMock()
+        db.update_message_text = AsyncMock(return_value="applied")
         db.delete_message = AsyncMock()
         db.mark_message_deleted = AsyncMock()
         db.resolve_message_chat_id = AsyncMock(return_value=None)
@@ -752,7 +752,7 @@ class TestStatsTracking:
     def mock_db(self):
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[])
-        db.update_message_text = AsyncMock()
+        db.update_message_text = AsyncMock(return_value="applied")
         db.delete_message = AsyncMock()
         db.resolve_message_chat_id = AsyncMock(return_value=None)
         db.upsert_chat = AsyncMock()
@@ -985,7 +985,7 @@ class TestListenerEventHandling:
     def mock_db(self):
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[])
-        db.update_message_text = AsyncMock()
+        db.update_message_text = AsyncMock(return_value="applied")
         db.delete_message = AsyncMock()
         db.close = AsyncMock()
         return db

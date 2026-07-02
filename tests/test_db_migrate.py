@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -283,7 +284,24 @@ class TestMigrateTable:
         # Records should be expunged from source and merged into target
         assert mock_src_session.expunge.call_count == 2
         assert mock_tgt_session.merge.await_count == 2
-        mock_tgt_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_source_table_missing(self):
+        """Missing legacy source tables are treated as empty."""
+        from src.db.models import MessageVersion
+
+        mock_source, mock_session = _make_mock_manager()
+        mock_target, _ = _make_mock_manager()
+        mock_session.execute.side_effect = OperationalError(
+            "SELECT count(*) FROM message_versions",
+            {},
+            Exception("no such table: message_versions"),
+        )
+
+        result = await _migrate_table(mock_source, mock_target, MessageVersion, batch_size=100)
+
+        assert result == 0
+        mock_session.rollback.assert_awaited_once()
 
 
 # ============================================================
@@ -385,6 +403,39 @@ class TestVerifyMigrationFlow:
             assert counts["sqlite"] == 100
             assert counts["postgres"] == 50
             assert counts["match"] is False
+
+    @pytest.mark.asyncio
+    async def test_source_missing_table_counts_as_zero(self):
+        """verify_migration treats a missing legacy source table as 0 records."""
+        from src.db.models import MessageVersion
+
+        mock_src_session = AsyncMock()
+        mock_src_session.execute.side_effect = OperationalError(
+            "SELECT count(*) FROM message_versions",
+            {},
+            Exception("no such table: message_versions"),
+        )
+
+        mock_tgt_session = AsyncMock()
+        mock_tgt_result = MagicMock()
+        mock_tgt_result.scalar.return_value = 0
+        mock_tgt_session.execute.return_value = mock_tgt_result
+
+        mock_source, _ = _make_mock_manager(session_mock=mock_src_session)
+        mock_target, _ = _make_mock_manager(session_mock=mock_tgt_session)
+
+        with (
+            patch("src.db.migrate.MIGRATION_MODELS", [MessageVersion]),
+            patch("src.db.migrate.DatabaseManager") as MockDM,
+        ):
+            MockDM.side_effect = [mock_source, mock_target]
+            result = await verify_migration(
+                sqlite_path="/fake/path.db",
+                postgres_url="postgresql+asyncpg://u:p@h/d",
+            )
+
+        assert result["message_versions"] == {"sqlite": 0, "postgres": 0, "match": True}
+        mock_src_session.rollback.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_closes_connections_after_verification(self):

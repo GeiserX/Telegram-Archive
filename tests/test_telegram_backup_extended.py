@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.errors import (
@@ -822,7 +822,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
 
     def test_edited_message_updated_in_db(self):
         """Remote message with different edit_date triggers update."""
-        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: "2024-01-01 00:00:00"})
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 1, 1)})
         remote_msg = MagicMock()
         remote_msg.edit_date = datetime(2024, 6, 15)
         remote_msg.message = "updated text"
@@ -832,6 +832,23 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         _run(self.backup._sync_deletions_and_edits(100, entity))
 
         self.backup.db.update_message_text.assert_awaited_once()
+
+    def test_same_edit_date_aware_vs_naive_not_updated(self):
+        """A tz-aware remote edit_date equal to the archived naive one is a no-op.
+
+        Regression: the old string comparison ("...+00:00" vs naive) treated every
+        previously-edited message as changed on every sync pass.
+        """
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 6, 15, 12, 0)})
+        remote_msg = MagicMock()
+        remote_msg.edit_date = datetime(2024, 6, 15, 12, 0, tzinfo=UTC)
+        remote_msg.message = "same text"
+        self.backup.client.get_messages = AsyncMock(return_value=[remote_msg])
+        entity = MagicMock()
+
+        _run(self.backup._sync_deletions_and_edits(100, entity))
+
+        self.backup.db.update_message_text.assert_not_awaited()
 
     def test_unedited_message_not_updated(self):
         """Message with no edit_date does not trigger update."""

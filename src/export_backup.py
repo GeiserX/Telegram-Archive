@@ -67,6 +67,7 @@ class BackupExporter:
 
         # Get messages
         messages = await self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
+        message_versions = await self.db.get_message_versions_by_date_range(chat_id, start_dt, end_dt)
 
         # Get chats
         chats = await self.db.get_all_chats()
@@ -76,9 +77,14 @@ class BackupExporter:
         export_data = {
             "export_date": datetime.now().isoformat(),
             "filters": {"chat_id": chat_id, "start_date": start_date, "end_date": end_date},
-            "statistics": {"total_messages": len(messages), "total_chats": len(chats_dict)},
+            "statistics": {
+                "total_messages": len(messages),
+                "total_chats": len(chats_dict),
+                "total_message_versions": len(message_versions),
+            },
             "chats": chats,
             "messages": messages,
+            "message_versions": message_versions,
         }
 
         # Write to file

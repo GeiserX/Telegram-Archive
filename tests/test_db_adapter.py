@@ -874,14 +874,14 @@ class TestMessageOperations:
 
     @pytest.mark.asyncio
     async def test_delete_message_deletes_media_reactions_and_message(self):
-        """delete_message issues three deletes and one commit."""
+        """delete_message issues deletes for versions, media, reactions, message and commits."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
         await adapter.delete_message(chat_id=100, message_id=42)
 
-        # 3 deletes: media, reactions, message
-        assert mock_session.execute.await_count == 3
+        # 4 deletes: versions, media, reactions, message
+        assert mock_session.execute.await_count == 4
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -955,10 +955,22 @@ class TestMessageOperations:
         """update_message_text issues an update and commits."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
+        existing = MagicMock()
+        existing.id = 42
+        existing.chat_id = 100
+        existing.date = datetime(2025, 5, 1)
+        existing.text = "original"
+        existing.edit_date = None
+        select_result = MagicMock()
+        select_result.scalar_one_or_none.return_value = existing
+        mock_session.execute.side_effect = [MagicMock(), select_result, MagicMock(), MagicMock()]
+        # _record_message_version runs inside a SAVEPOINT (session.begin_nested)
+        mock_session.begin_nested = MagicMock(return_value=AsyncMock())
 
-        await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
+        outcome = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
 
-        mock_session.execute.assert_awaited_once()
+        assert outcome == "applied"
+        assert mock_session.execute.await_count == 4
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1156,15 +1168,15 @@ class TestDeleteChatOperations:
     """Test delete_chat_and_related_data and related cleanup operations."""
 
     @pytest.mark.asyncio
-    async def test_delete_chat_issues_five_deletes(self):
-        """delete_chat_and_related_data deletes media, reactions, messages, sync, and chat."""
+    async def test_delete_chat_issues_six_deletes(self):
+        """delete_chat_and_related_data deletes versions, media, reactions, messages, sync, and chat."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
         await adapter.delete_chat_and_related_data(100)
 
-        # 5 deletes: media, reactions, messages, sync_status, chat
-        assert mock_session.execute.await_count == 5
+        # 6 deletes: versions, media, reactions, messages, sync_status, chat
+        assert mock_session.execute.await_count == 6
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -2172,11 +2184,14 @@ class TestGetMessagesPaginated:
         mock_result = MagicMock()
         mock_result.__iter__ = MagicMock(return_value=iter([row]))
 
-        # Second execute call returns the reply text
+        version_count_result = MagicMock()
+        version_count_result.__iter__ = MagicMock(return_value=iter([]))
+
+        # Third execute call returns the reply text
         reply_result = MagicMock()
         reply_result.scalar_one_or_none.return_value = "Original message text"
 
-        mock_session.execute.side_effect = [mock_result, reply_result]
+        mock_session.execute.side_effect = [mock_result, version_count_result, reply_result]
         adapter.get_reactions = AsyncMock(return_value=[])
 
         result = await adapter.get_messages_paginated(chat_id=100)

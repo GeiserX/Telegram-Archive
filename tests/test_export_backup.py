@@ -52,6 +52,11 @@ async def test_export_to_json_writes_correct_structure():
                 {"id": 2, "text": "world", "date": "2024-01-02"},
             ]
         )
+        mock_db.get_message_versions_by_date_range = AsyncMock(
+            return_value=[
+                {"id": 1, "chat_id": -100123, "message_id": 1, "text": "helo", "date": "2024-01-01"},
+            ]
+        )
         mock_db.get_all_chats = AsyncMock(
             return_value=[
                 {"id": -100123, "type": "group", "title": "Test Group"},
@@ -70,7 +75,9 @@ async def test_export_to_json_writes_correct_structure():
         assert "export_date" in data
         assert data["statistics"]["total_messages"] == 2
         assert data["statistics"]["total_chats"] == 1
+        assert data["statistics"]["total_message_versions"] == 1
         assert len(data["messages"]) == 2
+        assert len(data["message_versions"]) == 1
         assert len(data["chats"]) == 1
         assert data["filters"]["chat_id"] is None
         assert data["filters"]["start_date"] is None
@@ -86,6 +93,7 @@ async def test_export_to_json_with_date_filters():
     try:
         mock_db = AsyncMock()
         mock_db.get_messages_by_date_range = AsyncMock(return_value=[])
+        mock_db.get_message_versions_by_date_range = AsyncMock(return_value=[])
         mock_db.get_all_chats = AsyncMock(return_value=[])
 
         exporter = BackupExporter(mock_db)
@@ -98,6 +106,9 @@ async def test_export_to_json_with_date_filters():
         assert call_args[0][0] == 123
         assert call_args[0][1] == datetime(2024, 1, 1)
         assert call_args[0][2] == datetime(2024, 6, 30)
+        mock_db.get_message_versions_by_date_range.assert_awaited_once_with(
+            123, datetime(2024, 1, 1), datetime(2024, 6, 30)
+        )
 
         with open(output_file, encoding="utf-8") as f:
             data = json.load(f)
@@ -115,6 +126,7 @@ async def test_export_to_json_creates_parent_directories():
     try:
         mock_db = AsyncMock()
         mock_db.get_messages_by_date_range = AsyncMock(return_value=[])
+        mock_db.get_message_versions_by_date_range = AsyncMock(return_value=[])
         mock_db.get_all_chats = AsyncMock(return_value=[])
 
         exporter = BackupExporter(mock_db)
