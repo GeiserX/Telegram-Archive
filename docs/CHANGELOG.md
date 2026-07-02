@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.18.1] - 2026-07-02
+
+### Fixed
+- Re-release of 7.18.0: its Docker images were never published due to a release-packaging error (a stripped trailing newline failed the lint gate in the image builds). No code changes — 7.18.1 is the first shipped build of the 7.18.0 feature set below.
+
 ## [7.18.0] - 2026-07-02
 
 ### Added
