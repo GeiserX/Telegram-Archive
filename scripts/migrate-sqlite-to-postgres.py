@@ -46,7 +46,7 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.db.migrate import migrate_sqlite_to_postgres, verify_migration
+from src.db.migrate import MIGRATION_MODELS, _count_model_records, migrate_sqlite_to_postgres, verify_migration
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -137,21 +137,16 @@ async def run_migration(sqlite_path: str, postgres_url: str, batch_size: int, dr
     if dry_run:
         logger.info("\n[DRY RUN] Would migrate the following tables:")
         # Just show what would be migrated
-        from sqlalchemy import func, select
-
         from src.db.base import DatabaseManager
-        from src.db.models import Chat, Media, Message, Metadata, Reaction, SyncStatus, User
 
         sqlite_url = f"sqlite+aiosqlite:///{sqlite_path}"
         source = DatabaseManager(sqlite_url)
         await source.init()
 
-        models = [User, Chat, Message, Media, Reaction, SyncStatus, Metadata]
         try:
-            for model in models:
+            for model in MIGRATION_MODELS:
                 async with source.get_session() as session:
-                    result = await session.execute(select(func.count()).select_from(model))
-                    count = result.scalar() or 0
+                    count = await _count_model_records(session, model, missing_table_is_zero=True)
                     logger.info(f"  - {model.__tablename__}: {count:,} records")
         finally:
             await source.close()

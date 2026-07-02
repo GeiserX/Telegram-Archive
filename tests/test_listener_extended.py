@@ -75,7 +75,7 @@ def _make_db():
     """Build a fully-populated mock DatabaseAdapter."""
     db = AsyncMock()
     db.get_all_chats = AsyncMock(return_value=[])
-    db.update_message_text = AsyncMock()
+    db.update_message_text = AsyncMock(return_value="applied")
     db.delete_message = AsyncMock()
     db.mark_message_deleted = AsyncMock()
     db.resolve_message_chat_id = AsyncMock(return_value=None)

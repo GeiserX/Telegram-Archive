@@ -40,6 +40,14 @@ def _mock_db():
     db.get_chat_count = AsyncMock(return_value=0)
     db.get_chat_by_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
+    db.get_message_versions = AsyncMock(return_value=[])
+    db.get_message_versions_by_date_range = AsyncMock(return_value=[])
+
+    async def _no_versions(*args, **kwargs):
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+    db.iter_message_versions_for_export = _no_versions
     db.get_pinned_messages = AsyncMock(return_value=[])
     db.get_all_folders = AsyncMock(return_value=[])
     db.get_forum_topics = AsyncMock(return_value=[])
@@ -341,6 +349,72 @@ class TestMessagesEndpoint(_WebTestBase):
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages")
         self.assertEqual(resp.status_code, 503)
+
+
+@_skip_unless_web
+class TestMessageVersionsEndpoint(_WebTestBase):
+    """Test /api/chats/{chat_id}/messages/{message_id}/versions endpoint."""
+
+    async def test_returns_message_versions(self):
+        """get_message_versions returns previous versions for an accessible chat."""
+        self.mock_db.get_message_versions = AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "chat_id": 123,
+                    "message_id": 42,
+                    "text": "old",
+                    "date": "2026-06-26T10:00:00",
+                }
+            ]
+        )
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/123/messages/42/versions?limit=25")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()[0]["text"], "old")
+        self.mock_db.get_message_versions.assert_awaited_once_with(chat_id=123, message_id=42, limit=25)
+
+    async def test_denies_access_to_restricted_chat(self):
+        """get_message_versions returns 403 when user cannot access the chat."""
+        web_main.AUTH_ENABLED = True
+        token = "restricted-message-versions"
+        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/999/messages/42/versions", cookies={"viewer_auth": token})
+
+        self.assertEqual(resp.status_code, 403)
+        self.mock_db.get_message_versions.assert_not_awaited()
+
+    async def test_requires_auth_when_auth_enabled(self):
+        """get_message_versions returns 401 for unauthenticated requests."""
+        web_main.AUTH_ENABLED = True
+        web_main.ALLOW_ANONYMOUS_VIEWER = False
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/123/messages/42/versions")
+
+        self.assertEqual(resp.status_code, 401)
+
+    async def test_db_connection_error_returns_503(self):
+        """get_message_versions returns 503 on DB connection errors."""
+        self.mock_db.get_message_versions = AsyncMock(side_effect=OSError("conn refused"))
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/123/messages/42/versions")
+
+        self.assertEqual(resp.status_code, 503)
+
+    async def test_generic_error_returns_500(self):
+        """get_message_versions returns 500 on non-connection errors."""
+        self.mock_db.get_message_versions = AsyncMock(side_effect=ValueError("boom"))
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/123/messages/42/versions")
+
+        self.assertEqual(resp.status_code, 500)
 
 
 # ============================================================================
