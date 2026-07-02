@@ -9,6 +9,8 @@ import os
 from urllib.parse import quote_plus
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base import DatabaseManager
 from .models import (
@@ -20,6 +22,7 @@ from .models import (
     ForumTopic,
     Media,
     Message,
+    MessageVersion,
     Metadata,
     PushSubscription,
     Reaction,
@@ -37,6 +40,7 @@ MIGRATION_MODELS = [
     User,
     Chat,
     Message,
+    MessageVersion,
     Media,
     Reaction,
     SyncStatus,
@@ -51,6 +55,36 @@ MIGRATION_MODELS = [
     ViewerToken,
     AppSettings,
 ]
+
+
+def _is_missing_table_error(exc: Exception, table_name: str) -> bool:
+    """Return True only for the anchored dialect messages for a missing table.
+
+    Deliberately strict: loose containment (any "does not exist" plus the table
+    name appearing anywhere, including in the echoed SQL statement) could
+    classify real errors — schema drift, dropped connections — as "table
+    missing" and silently report 0 records during migration verification.
+    """
+    message = str(exc).lower()
+    table = table_name.lower()
+    return (
+        f"no such table: {table}" in message  # SQLite / aiosqlite
+        or f'relation "{table}" does not exist' in message  # PostgreSQL / asyncpg
+    )
+
+
+async def _count_model_records(session: AsyncSession, model: type[Base], missing_table_is_zero: bool = False) -> int:
+    """Count records for a model, optionally treating missing legacy tables as empty."""
+    table_name = model.__tablename__
+    try:
+        result = await session.execute(select(func.count()).select_from(model))
+    except SQLAlchemyError as exc:
+        if missing_table_is_zero and _is_missing_table_error(exc, table_name):
+            await session.rollback()
+            logger.info(f"  {table_name}: source table missing; treating as 0 records")
+            return 0
+        raise
+    return result.scalar() or 0
 
 
 async def migrate_sqlite_to_postgres(
@@ -140,8 +174,7 @@ async def _migrate_table(source: DatabaseManager, target: DatabaseManager, model
 
     async with source.get_session() as src_session:
         # Get total count
-        count_result = await src_session.execute(select(func.count()).select_from(model))
-        total_records = count_result.scalar() or 0
+        total_records = await _count_model_records(src_session, model, missing_table_is_zero=True)
 
         if total_records == 0:
             logger.info(f"  {table_name}: 0 records (empty)")
@@ -222,12 +255,10 @@ async def verify_migration(sqlite_path: str = None, postgres_url: str = None) ->
             table_name = model.__tablename__
 
             async with source.get_session() as session:
-                result = await session.execute(select(func.count()).select_from(model))
-                sqlite_count = result.scalar() or 0
+                sqlite_count = await _count_model_records(session, model, missing_table_is_zero=True)
 
             async with target.get_session() as session:
-                result = await session.execute(select(func.count()).select_from(model))
-                postgres_count = result.scalar() or 0
+                postgres_count = await _count_model_records(session, model)
 
             results[table_name] = {
                 "sqlite": sqlite_count,

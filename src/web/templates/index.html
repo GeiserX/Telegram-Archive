@@ -1197,9 +1197,20 @@
                                     <!-- Metadata -->
                                     <div
                                         class="text-[10px] opacity-60 text-right mt-1 flex justify-end items-center gap-1">
-                                        <span v-if="msg.edit_date">edited</span>
-                                        <span v-if="msg.is_deleted">deleted</span>
-                                        {{ formatTime(msg.date) }}
+                                        <span v-if="msg.is_deleted" class="order-1" :title="formatMetadataTimestampTitle('Deleted', msg.deleted_at)">deleted</span>
+                                        <button v-if="Number(msg.version_count) > 0"
+                                            type="button"
+                                            @click.stop="toggleMessageVersions(msg)"
+                                            class="order-2 hover:text-blue-300 transition-colors"
+                                            :class="{ 'text-blue-300': isVersionsPanelOpenFor(msg) }"
+                                            :aria-expanded="isVersionsPanelOpenFor(msg)"
+                                            :title="formatMetadataTimestampTitle('Edited', msg.edit_date)">
+                                            edited({{ msg.version_count }})
+                                        </button>
+                                        <span v-else-if="msg.edit_date"
+                                            class="order-2"
+                                            :title="formatMetadataTimestampTitle('Edited', msg.edit_date)">edited</span>
+                                        <span class="order-3">{{ formatTime(msg.date) }}</span>
                                     </div>
                                 </div>
                             </div>
@@ -1270,6 +1281,70 @@
                     </button>
                 </div>
             </div>
+        </div>
+
+        <!-- Message Versions Drawer -->
+        <div v-if="versionsMessage"
+            class="fixed inset-0 z-50 bg-black/70 flex justify-end"
+            @click.self="closeVersionsPanel">
+            <aside role="dialog" aria-modal="true" aria-label="Message versions" class="h-full w-full sm:max-w-lg bg-tg-sidebar border-l border-gray-700 shadow-2xl flex flex-col">
+                <header class="shrink-0 border-b border-gray-700 px-4 py-3">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-white">Versions</h3>
+                            <div class="mt-1 text-xs text-tg-muted truncate">
+                                {{ formatDateFull(versionsMessage.date) }} {{ formatTime(versionsMessage.date) }}
+                            </div>
+                        </div>
+                        <button ref="versionsCloseBtn" @click="closeVersionsPanel"
+                            class="text-gray-400 hover:text-white transition p-1"
+                            title="Close">
+                            <i class="fa-solid fa-xmark text-lg"></i>
+                        </button>
+                    </div>
+                </header>
+
+                <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <div v-if="isMessageVersionsLoading(versionsMessage)" role="status" aria-live="polite" class="flex items-center gap-2 text-sm text-tg-muted">
+                        <div class="loading-spinner"></div>
+                        <span>Loading versions...</span>
+                    </div>
+
+                    <div v-else-if="getMessageVersionsError(versionsMessage)"
+                        class="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                        <div class="mb-3">{{ getMessageVersionsError(versionsMessage) }}</div>
+                        <button @click="reloadMessageVersions(versionsMessage)"
+                            class="inline-flex items-center gap-2 rounded bg-red-500/20 px-3 py-1.5 text-xs text-red-100 hover:bg-red-500/30">
+                            <i class="fa-solid fa-rotate-right"></i>
+                            <span>Retry</span>
+                        </button>
+                    </div>
+
+                    <div v-else-if="getMessageVersions(versionsMessage).length === 0"
+                        class="rounded-md border border-white/10 bg-black/20 p-4 text-sm text-tg-muted">
+                        No previous versions retained
+                    </div>
+
+                    <div v-else class="space-y-3">
+                        <div class="flex items-center justify-between gap-3 text-xs text-tg-muted">
+                            <span>{{ getMessageVersions(versionsMessage).length }} previous versions</span>
+                            <span v-if="getMessageVersions(versionsMessage).length === 100">Showing the latest 100</span>
+                        </div>
+
+                        <article v-for="(entry, idx) in getMessageVersions(versionsMessage)"
+                            :key="`${entry.message_id || versionsMessage.id}:${entry.date || idx}:${idx}`"
+                            class="rounded-md border border-white/10 bg-black/20 p-3">
+                            <div class="mb-3 text-xs text-tg-muted">
+                                as of {{ formatMessageVersionDate(entry.date) }}
+                            </div>
+
+                            <div class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-gray-950/60 p-2 text-sm text-gray-100">
+                                {{ entry.text || '' }}
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </aside>
         </div>
 
         <!-- Lightbox Modal for Images -->
@@ -1527,6 +1602,12 @@
             setup() {
                 const chats = ref([])
                 const messages = ref([])
+                const messageVersionsByMessage = ref({})
+                const versionsMessage = ref(null)
+                const messageVersionsLoading = ref({})
+                const messageVersionsErrors = ref({})
+                const messageVersionsRequestSeq = ref({})
+                const versionsCloseBtn = ref(null)
                 const selectedChat = ref(null)
                 const searchQuery = ref('')
                 const messageSearchQuery = ref('')
@@ -2260,8 +2341,16 @@
                                 m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
                             )
                             if (editMsg) {
+                                const previousText = editMsg.text
                                 editMsg.text = data.new_text
                                 editMsg.edit_date = data.edit_date
+                                if (previousText !== data.new_text) {
+                                    editMsg.version_count = (Number(editMsg.version_count) || 0) + 1
+                                }
+                                clearMessageVersionsCache(editMsg)
+                                if (isVersionsPanelOpenFor(editMsg)) {
+                                    loadMessageVersions(editMsg)
+                                }
                             }
                             break
 
@@ -3438,6 +3527,118 @@
                     return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
                 }
 
+                const formatMetadataTimestampTitle = (label, dateStr) => {
+                    if (!dateStr) return label
+                    return `${label} ${formatDateFull(dateStr)} ${formatTime(dateStr)}`
+                }
+
+                const formatMessageVersionDate = (dateStr) => {
+                    if (!dateStr) return ''
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('MMM D, HH:mm')
+                }
+
+                const messageVersionsKey = (msg) => {
+                    const chatId = msg.chat_id ?? selectedChat.value?.id
+                    return `${chatId}:${msg.id}`
+                }
+
+                const setMessageVersionsRecord = (recordRef, key, value) => {
+                    recordRef.value = { ...recordRef.value, [key]: value }
+                }
+
+                const clearMessageVersionsRecord = (recordRef, key) => {
+                    const next = { ...recordRef.value }
+                    delete next[key]
+                    recordRef.value = next
+                }
+
+                const getMessageVersions = (msg) => {
+                    return messageVersionsByMessage.value[messageVersionsKey(msg)] || []
+                }
+                const isMessageVersionsLoading = (msg) => !!messageVersionsLoading.value[messageVersionsKey(msg)]
+                const getMessageVersionsError = (msg) => messageVersionsErrors.value[messageVersionsKey(msg)] || ''
+                const isVersionsPanelOpenFor = (msg) => {
+                    return !!versionsMessage.value && messageVersionsKey(versionsMessage.value) === messageVersionsKey(msg)
+                }
+
+                const clearMessageVersionsCache = (msg) => {
+                    const key = messageVersionsKey(msg)
+                    clearMessageVersionsRecord(messageVersionsByMessage, key)
+                    clearMessageVersionsRecord(messageVersionsErrors, key)
+                }
+
+                const loadMessageVersions = async (msg) => {
+                    const chatId = msg.chat_id ?? selectedChat.value?.id
+                    if (!chatId || msg.id == null) return
+
+                    const key = messageVersionsKey(msg)
+                    const requestSeq = (messageVersionsRequestSeq.value[key] || 0) + 1
+                    setMessageVersionsRecord(messageVersionsRequestSeq, key, requestSeq)
+                    setMessageVersionsRecord(messageVersionsLoading, key, true)
+                    clearMessageVersionsRecord(messageVersionsErrors, key)
+
+                    try {
+                        const res = await fetch(`/api/chats/${chatId}/messages/${msg.id}/versions?limit=100`, {
+                            credentials: 'include'
+                        })
+                        if (!res.ok) {
+                            if (res.status === 401) {
+                                isAuthenticated.value = false
+                                return
+                            }
+                            if (res.status === 503) {
+                                if (messageVersionsRequestSeq.value[key] !== requestSeq) return
+                                setMessageVersionsRecord(messageVersionsErrors, key, 'Database temporarily unavailable')
+                                return
+                            }
+                            throw new Error('Failed to load message versions')
+                        }
+                        const versions = await res.json()
+                        if (messageVersionsRequestSeq.value[key] !== requestSeq) return
+                        setMessageVersionsRecord(messageVersionsByMessage, key, versions)
+                    } catch (e) {
+                        if (messageVersionsRequestSeq.value[key] !== requestSeq) return
+                        console.error('Failed to load message versions:', e)
+                        setMessageVersionsRecord(messageVersionsErrors, key, 'Failed to load message versions')
+                    } finally {
+                        if (messageVersionsRequestSeq.value[key] === requestSeq) {
+                            setMessageVersionsRecord(messageVersionsLoading, key, false)
+                        }
+                    }
+                }
+
+                const toggleMessageVersions = async (msg) => {
+                    const key = messageVersionsKey(msg)
+                    if (versionsMessage.value && messageVersionsKey(versionsMessage.value) === key) {
+                        closeVersionsPanel()
+                        return
+                    }
+
+                    versionsMessage.value = msg
+                    document.addEventListener('keydown', handleVersionsKeydown)
+                    nextTick(() => versionsCloseBtn.value?.focus())
+                    if (!messageVersionsByMessage.value[key] && !messageVersionsLoading.value[key]) {
+                        await loadMessageVersions(msg)
+                    }
+                }
+
+                const closeVersionsPanel = () => {
+                    versionsMessage.value = null
+                    document.removeEventListener('keydown', handleVersionsKeydown)
+                }
+
+                const reloadMessageVersions = async (msg) => {
+                    const key = messageVersionsKey(msg)
+                    clearMessageVersionsRecord(messageVersionsByMessage, key)
+                    clearMessageVersionsRecord(messageVersionsErrors, key)
+                    await loadMessageVersions(msg)
+                }
+
+                const handleVersionsKeydown = (e) => {
+                    if (!versionsMessage.value) return
+                    if (e.key === 'Escape') closeVersionsPanel()
+                }
+
                 const formatReactionEmoji = (emoji) => {
                     // Handle custom emojis (stored as custom_documentId)
                     if (emoji && emoji.startsWith('custom_')) {
@@ -4016,6 +4217,8 @@
                     filteredChats,
                     selectedChat,
                     messages,
+                    versionsMessage,
+                    versionsCloseBtn,
                     sortedMessages,
                     searchQuery,
                     messageSearchQuery,
@@ -4066,6 +4269,15 @@
                     formatDate,
                     formatDateFull,
                     formatTime,
+                    formatMetadataTimestampTitle,
+                    getMessageVersions,
+                    isMessageVersionsLoading,
+                    getMessageVersionsError,
+                    isVersionsPanelOpenFor,
+                    toggleMessageVersions,
+                    closeVersionsPanel,
+                    reloadMessageVersions,
+                    formatMessageVersionDate,
                     formatLastBackupTime,
                     formatReactionEmoji,
                     getMediaUrl,
