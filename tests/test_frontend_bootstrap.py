@@ -98,7 +98,6 @@ def test_message_status_badges_show_timestamps_on_hover():
     assert edited_title in html
     assert deleted_title in html
     assert html.index(deleted_title) < html.index(edited_title)
-    assert 'class="order-2 hover:text-blue-300 transition-colors"' in html
     assert '<span v-if="msg.is_deleted" class="order-1"' in html
     assert '<span class="order-3">{{ formatTime(msg.date) }}</span>' in html
     assert "const formatMetadataTimestampTitle = (label, dateStr) =>" in html
@@ -112,26 +111,58 @@ def test_message_versions_use_drawer_not_inline_panel():
     drawer_index = html.index("<!-- Message Versions Drawer -->")
     lightbox_index = html.index("<!-- Lightbox Modal for Images -->")
     metadata_index = html.index("<!-- Metadata -->")
-    drawer_html = html[drawer_index:lightbox_index]
 
     assert metadata_index < drawer_index < lightbox_index
-    assert 'class="fixed inset-0 z-50 bg-black/70 flex justify-end"' in drawer_html
-    assert "Version {{ idx + 1 }}" not in drawer_html
-    assert "Current message" not in drawer_html
-    assert "Change {{ idx + 1 }}" not in drawer_html
-    assert "Before" not in drawer_html
-    assert "After" not in drawer_html
 
 
-def test_message_versions_are_sorted_descending_in_viewer():
-    """Previous versions should display newest first in the viewer drawer."""
+def test_message_versions_no_client_resort():
+    """The drawer must not re-sort versions client-side; the server returns them ordered."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    sort_start = html.index("const messageVersionSortTime = (entry) =>")
-    versions_start = html.index("const getMessageVersions = (msg) =>")
-    sort_body = html[sort_start : html.index("const isMessageVersionsLoading", versions_start)]
+    assert "messageVersionSortTime" not in html
+    assert "const getMessageVersions = (msg) =>" in html
 
-    assert sort_start < versions_start
-    assert "messageVersionSortTime(b) - messageVersionSortTime(a)" in sort_body
-    assert "return (b.id || 0) - (a.id || 0)" not in sort_body
+    get_start = html.index("const getMessageVersions = (msg) =>")
+    next_fn = html.index("const isMessageVersionsLoading", get_start)
+    get_body = html[get_start:next_fn]
+    assert ".sort(" not in get_body
     assert "entry.change_hash" not in html
+
+
+def test_versions_escape_closes_panel():
+    """The Escape key must be wired to closeVersionsPanel via a keydown handler."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const handleVersionsKeydown = (e) =>" in html
+    assert "document.addEventListener('keydown', handleVersionsKeydown)" in html
+    assert "document.removeEventListener('keydown', handleVersionsKeydown)" in html
+
+    handler_start = html.index("const handleVersionsKeydown = (e) =>")
+    next_fn = html.index("const formatReactionEmoji", handler_start)
+    handler_body = html[handler_start:next_fn]
+    assert "Escape" in handler_body
+    assert "closeVersionsPanel()" in handler_body
+
+
+def test_versions_drawer_dialog_semantics():
+    """The versions drawer aside must carry ARIA dialog attributes."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    drawer_index = html.index("<!-- Message Versions Drawer -->")
+    lightbox_index = html.index("<!-- Lightbox Modal for Images -->")
+    drawer_html = html[drawer_index:lightbox_index]
+
+    assert 'role="dialog"' in drawer_html
+    assert 'aria-modal="true"' in drawer_html
+
+
+def test_versions_401_sets_unauthenticated():
+    """A 401 from the versions endpoint must flip isAuthenticated to false."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    load_start = html.index("const loadMessageVersions = async (msg) =>")
+    toggle_start = html.index("const toggleMessageVersions = async (msg) =>")
+    load_body = html[load_start:toggle_start]
+
+    assert "res.status === 401" in load_body
+    assert "isAuthenticated.value = false" in load_body

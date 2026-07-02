@@ -65,6 +65,12 @@ def _mock_db():
     db.get_chat_stats = AsyncMock(return_value={})
     db.find_message_by_date_with_joins = AsyncMock(return_value=None)
     db.get_message_versions_by_date_range = AsyncMock(return_value=[])
+
+    async def _no_versions(*args, **kwargs):
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+    db.iter_message_versions_for_export = _no_versions
     db.get_all_viewer_accounts = AsyncMock(return_value=[])
     db.get_viewer_by_username = AsyncMock(return_value=None)
     db.get_viewer_account = AsyncMock(return_value=None)
@@ -871,16 +877,11 @@ class TestExportEndpoint(_WebTestBase):
                 "description": "private description",
             }
         )
-        self.mock_db.get_message_versions_by_date_range = AsyncMock(
-            return_value=[
-                {
-                    "message_id": 2,
-                    "chat_id": 42,
-                    "text": "old",
-                    "date": "2025-01-01",
-                }
-            ]
-        )
+
+        async def fake_versions(chat_id):
+            yield {"message_id": 2, "chat_id": 42, "text": "old", "date": "2025-01-01"}
+
+        self.mock_db.iter_message_versions_for_export = fake_versions
 
         async def fake_export(chat_id):
             yield {"id": 1, "text": "hello", "date": "2025-01-01"}
@@ -901,7 +902,7 @@ class TestExportEndpoint(_WebTestBase):
         self.assertEqual(len(data["messages"]), 2)
         self.assertEqual(data["messages"][0]["text"], "hello")
         self.assertEqual(len(data["message_versions"]), 1)
-        self.mock_db.get_message_versions_by_date_range.assert_awaited_once_with(chat_id=42)
+        self.assertEqual(data["message_versions"][0]["text"], "old")
 
     async def test_export_handles_db_error(self):
         """export_chat returns 500 on db error."""

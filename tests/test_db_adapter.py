@@ -791,7 +791,6 @@ class TestMessageOperations:
         """insert_message on SQLite executes an upsert and commits."""
         db_manager, mock_session = _make_mock_db_manager(is_sqlite=True)
         adapter = DatabaseAdapter(db_manager)
-        mock_session.get.return_value = None
 
         msg_data = {
             "id": 1,
@@ -809,7 +808,6 @@ class TestMessageOperations:
         """insert_message on PostgreSQL executes an upsert and commits."""
         db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
         adapter = DatabaseAdapter(db_manager)
-        mock_session.get.return_value = None
 
         msg_data = {
             "id": 2,
@@ -838,7 +836,6 @@ class TestMessageOperations:
         """insert_messages_batch processes each message and commits once."""
         db_manager, mock_session = _make_mock_db_manager(is_sqlite=True)
         adapter = DatabaseAdapter(db_manager)
-        mock_session.get.return_value = None
 
         messages = [
             {"id": 1, "chat_id": 100, "date": datetime(2025, 1, 1), "text": "msg1"},
@@ -967,9 +964,12 @@ class TestMessageOperations:
         select_result = MagicMock()
         select_result.scalar_one_or_none.return_value = existing
         mock_session.execute.side_effect = [MagicMock(), select_result, MagicMock(), MagicMock()]
+        # _record_message_version runs inside a SAVEPOINT (session.begin_nested)
+        mock_session.begin_nested = MagicMock(return_value=AsyncMock())
 
-        await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
+        outcome = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
 
+        assert outcome == "applied"
         assert mock_session.execute.await_count == 4
         mock_session.commit.assert_awaited_once()
 

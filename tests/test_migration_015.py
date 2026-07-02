@@ -112,4 +112,12 @@ def test_upgrade_noop_when_table_already_exists():
         )
 
         _run(conn, migration.upgrade)
-        assert "message_versions" in sa.inspect(conn).get_table_names()
+        inspector = sa.inspect(conn)
+        assert "message_versions" in inspector.get_table_names()
+
+        # The partial state (table pre-created WITHOUT the named indexes, e.g. a
+        # half-applied migration) is the riskiest real-world case: upgrade() must
+        # add the missing indexes instead of just tolerating the table.
+        indexes = {idx["name"] for idx in inspector.get_indexes("message_versions")}
+        assert "idx_message_versions_message_date" in indexes
+        assert "idx_message_versions_message_captured" in indexes

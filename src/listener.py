@@ -268,6 +268,7 @@ class TelegramListener:
         self.stats = {
             "edits_received": 0,
             "edits_applied": 0,
+            "edits_skipped": 0,  # No-op edits (already current / not archived)
             "deletions_received": 0,
             "deletions_applied": 0,
             "deletions_skipped": 0,  # Skipped due to LISTEN_DELETIONS=false
@@ -735,16 +736,22 @@ class TelegramListener:
                     self.stats["operations_discarded"] += 1
                     return
 
-                # Apply the edit immediately
-                await self.db.update_message_text(
+                # Apply the edit immediately; count and broadcast only when the
+                # archive actually changed, so stats stay honest and the viewer
+                # never displays text the archive rejected as stale.
+                outcome = await self.db.update_message_text(
                     chat_id=chat_id,
                     message_id=message.id,
                     new_text=new_text,
                     edit_date=edit_date,
-                    source="listener_edit",
                 )
+                if outcome != "applied":
+                    self.stats["edits_skipped"] += 1
+                    logger.debug("📝 Edit skipped (%s)", outcome)
+                    return
+
                 self.stats["edits_applied"] += 1
-                logger.debug(f"📝 Edit applied: chat={chat_id} msg={message.id}")
+                logger.debug("📝 Edit applied")
 
                 # Notify viewer of the update
                 await self._notify_update(
@@ -922,7 +929,7 @@ class TelegramListener:
                     media_type = self._get_media_type(message.media)
 
                 # Insert the message FIRST (required for FK constraint on media table)
-                await self.db.insert_message(message_data, source="listener_new")
+                await self.db.insert_message(message_data)
                 self.stats["new_messages_saved"] += 1
 
                 # v6.0.0: Handle media - create Media record AFTER message exists
@@ -1081,8 +1088,8 @@ class TelegramListener:
                                 },
                                 "is_outgoing": 0,
                             }
-                            await self.db.insert_message(message_data, source="listener_service")
-                            logger.info(f"📌 Service message saved: {service_text}")
+                            await self.db.insert_message(message_data)
+                            logger.info("📌 Service message saved")
                     except Exception as e:
                         logger.warning(f"Failed to save service message: {e}")
 
@@ -1262,6 +1269,7 @@ class TelegramListener:
             logger.info("   📝 Edits:")
             logger.info(f"      Received: {self.stats['edits_received']}")
             logger.info(f"      Applied:  {self.stats['edits_applied']}")
+            logger.info(f"      Skipped:  {self.stats['edits_skipped']}")
             logger.info("")
             logger.info("   🗑️ Deletions:")
             logger.info(f"      Received: {self.stats['deletions_received']}")

@@ -82,6 +82,12 @@ def _message_version_hash(
     text: str | None,
     date: datetime,
 ) -> str:
+    # FROZEN CONTRACT: this exact encoding (key set, sort_keys, separators,
+    # microsecond timespec) IS the dedup identity for message_versions rows via
+    # the unique change_hash column. Changing any detail silently re-admits
+    # duplicates of already-stored versions. Known accepted limit: repeated
+    # no-edit_date edits that oscillate back to the same text reuse the same
+    # fallback date and dedup into one row.
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -234,6 +240,14 @@ class DatabaseAdapter:
         text: str | None,
         date: datetime,
     ) -> bool:
+        """Best-effort capture of a superseded text into message_versions.
+
+        Versioning is plain text only — formatting/entity-only edits produce the
+        same text and are intentionally not versioned. Runs inside a SAVEPOINT so
+        an unexpected failure here can never poison the transaction or abort the
+        message upsert/batch it belongs to (the expected duplicate case is already
+        silenced by ON CONFLICT DO NOTHING on change_hash).
+        """
         date = _strip_tz(date)
         if date is None:
             return False
@@ -252,13 +266,32 @@ class DatabaseAdapter:
             "change_hash": change_hash,
             "captured_at": utcnow_naive(),
         }
-        result = await session.execute(self._insert_message_version_stmt(values))
+        try:
+            async with session.begin_nested():
+                result = await session.execute(self._insert_message_version_stmt(values))
+        except Exception as e:
+            logger.warning("Could not record a message version (%s); message update continues", type(e).__name__)
+            return False
         return bool(result.rowcount)
 
     def _message_version_date(self, message: Message) -> datetime:
         return _strip_tz(message.edit_date) or _strip_tz(message.date)
 
     def _should_apply_upsert_text(self, existing: Message, values: dict[str, Any]) -> bool:
+        """Decide whether a re-scanned/imported message may replace archived text.
+
+        Truth table (upsert sources: backup re-scan, gap-fill, import):
+        - same text            -> apply only to bump edit_date, and only when strictly
+                                  newer (``>`` via _newer_edit_date) so identical
+                                  replays are perfect no-ops (reaction-only edits).
+        - empty -> non-empty   -> always fill (late hydration), even without an
+                                  edit_date; caller preserves the existing edit_date.
+        - differing text, no incoming edit_date -> refuse: an upsert source with no
+                                  edit evidence must never clobber archived text.
+        - differing text, incoming edit_date >= archived (or archived None) -> apply.
+          ``>=`` (not ``>``) is deliberate: listener and backup can deliver the same
+          edit with equal timestamps but the text seen later is the fresher fetch.
+        """
         new_text = values.get("text")
         new_edit_date = _strip_tz(values.get("edit_date"))
         old_text = existing.text
@@ -277,6 +310,13 @@ class DatabaseAdapter:
         return False
 
     def _should_apply_edit_text(self, existing: Message, new_text: str, edit_date: datetime | None) -> bool:
+        """Decide whether a live edit event (listener/sync) may replace archived text.
+
+        Differs from the upsert policy on the no-edit_date case: a live event with
+        ``edit_date=None`` is applied only when the archived row was never edited —
+        an already-edited row is never rolled over on date-less evidence (rare
+        bot-API edits may hit this; conservative by design, covered by tests).
+        """
         old_edit_date = _strip_tz(existing.edit_date)
         edit_date = _strip_tz(edit_date)
 
@@ -302,52 +342,90 @@ class DatabaseAdapter:
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
+    async def _load_message_snapshot(self, session, chat_id: int, message_id: int) -> Message | None:
+        """Plain lock-free read, used only for the fast-path no-change check."""
+        stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+        result = await session.execute(stmt.execution_options(populate_existing=True))
+        return result.scalar_one_or_none()
+
+    def _pending_update_values(
+        self, existing: Message, message_data: dict[str, Any], values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Columns an upsert would actually change on ``existing`` (may be empty).
+
+        Applies the text/edit_date gating policy, then drops every key whose value
+        already matches the row, so re-scanning an unchanged message performs no
+        write at all. Deliberate scope note: when text is withheld (older or
+        no-evidence source), the remaining metadata (raw_data, reply_to_*, sender,
+        …) still refreshes from the incoming payload — non-text fields stay
+        last-writer-wins exactly as before versioning existed.
+        """
+        update_values = _message_conflict_update_values(message_data, values)
+        if self._should_apply_upsert_text(existing, values):
+            if values.get("edit_date") is None and existing.edit_date is not None:
+                # Text change arrived without edit evidence (e.g. late hydration):
+                # keep the existing edit_date rather than nulling it.
+                update_values.pop("edit_date", None)
+        else:
+            update_values.pop("text", None)
+            update_values.pop("edit_date", None)
+
+        changed = {}
+        for key, value in update_values.items():
+            if key in ("id", "chat_id"):
+                continue
+            if getattr(existing, key) != value:
+                changed[key] = value
+        return changed
+
     async def _apply_existing_message_update(
         self,
         session,
         message_data: dict[str, Any],
         values: dict[str, Any],
-        source: str,
     ) -> None:
-        existing = await self._load_message_for_update(session, values["chat_id"], values["id"])
-        if existing is None:
+        # Fast path: a lock-free read to detect the common re-scan case of a fully
+        # unchanged message, so full re-backups don't pay the write lock + extra
+        # statements per row. The definitive decision is re-made under the lock
+        # below; skipping here is safe because a concurrent writer that changes the
+        # row after our snapshot has, by definition, applied data at least as new
+        # as ours.
+        snapshot = await self._load_message_snapshot(session, values["chat_id"], values["id"])
+        if snapshot is None:
+            logger.debug("Upsert no-op: message row vanished during conflict resolution")
+            return
+        if not self._pending_update_values(snapshot, message_data, values):
             return
 
-        update_values = _message_conflict_update_values(message_data, values)
-        apply_text = self._should_apply_upsert_text(existing, values)
-        new_edit_date = values.get("edit_date")
-        if apply_text and new_edit_date is None and existing.edit_date is not None:
-            update_values.pop("edit_date", None)
-            new_edit_date = existing.edit_date
+        existing = await self._load_message_for_update(session, values["chat_id"], values["id"])
+        if existing is None:
+            logger.debug("Upsert no-op: message row vanished during conflict resolution")
+            return
 
-        if apply_text:
-            if existing.text != values.get("text"):
-                await self._record_message_version(
-                    session=session,
-                    chat_id=existing.chat_id,
-                    message_id=existing.id,
-                    text=existing.text,
-                    date=self._message_version_date(existing),
-                )
-            else:
-                update_values.pop("text", None)
-        else:
-            update_values.pop("text", None)
-            update_values.pop("edit_date", None)
-
+        update_values = self._pending_update_values(existing, message_data, values)
+        if not update_values:
+            return
+        if "text" in update_values:
+            await self._record_message_version(
+                session=session,
+                chat_id=existing.chat_id,
+                message_id=existing.id,
+                text=existing.text,
+                date=self._message_version_date(existing),
+            )
         await session.execute(
             update(Message)
             .where(and_(Message.chat_id == values["chat_id"], Message.id == values["id"]))
             .values(**update_values)
         )
 
-    async def _insert_or_update_message(self, session, message_data: dict[str, Any], source: str) -> None:
+    async def _insert_or_update_message(self, session, message_data: dict[str, Any]) -> None:
         values = self._message_values(message_data)
         result = await session.execute(self._insert_message_stmt(values))
         if result.rowcount:
             return
 
-        await self._apply_existing_message_update(session, message_data, values, source)
+        await self._apply_existing_message_update(session, message_data, values)
 
     # ========== Metadata Operations ==========
 
@@ -599,17 +677,18 @@ class DatabaseAdapter:
 
     # ========== Message Operations ==========
 
-    async def insert_message(self, message_data: dict[str, Any], source: str = "upsert") -> None:
+    @retry_on_locked()
+    async def insert_message(self, message_data: dict[str, Any]) -> None:
         """Insert a message record.
 
         v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
         """
         async with self.db_manager.async_session_factory() as session:
-            await self._insert_or_update_message(session, message_data, source)
+            await self._insert_or_update_message(session, message_data)
             await session.commit()
 
     @retry_on_locked()
-    async def insert_messages_batch(self, messages_data: list[dict[str, Any]], source: str = "upsert") -> None:
+    async def insert_messages_batch(self, messages_data: list[dict[str, Any]]) -> None:
         """Insert multiple message records in a single transaction.
 
         v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
@@ -619,7 +698,7 @@ class DatabaseAdapter:
 
         async with self.db_manager.async_session_factory() as session:
             for m in messages_data:
-                await self._insert_or_update_message(session, m, source)
+                await self._insert_or_update_message(session, m)
 
             await session.commit()
 
@@ -742,20 +821,27 @@ class DatabaseAdapter:
                 logger.warning(f"Message {message_id} found in {len(chat_ids)} chats, skipping ambiguous deletion")
             return None
 
+    @retry_on_locked()
     async def update_message_text(
-        self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None, source: str = "edit"
-    ) -> None:
-        """Update a message's text and edit_date."""
+        self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None
+    ) -> str:
+        """Update a message's text and edit_date.
+
+        Returns the outcome so callers can keep honest counters and only
+        broadcast edits that actually changed the archive:
+        ``"applied"`` | ``"noop"`` (already current / older evidence) |
+        ``"not_found"`` (message not archived).
+        """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
             message = await self._load_message_for_update(session, chat_id, message_id)
             if message is None:
                 logger.debug("Edit no-op: message not found in archive")
-                return
+                return "not_found"
 
             if not self._should_apply_edit_text(message, new_text, edit_date):
                 logger.debug("Edit no-op: message already current")
-                return
+                return "noop"
 
             if message.text != new_text:
                 await self._record_message_version(
@@ -772,6 +858,7 @@ class DatabaseAdapter:
             )
             await session.commit()
             logger.debug("Updated archived message text")
+            return "applied"
 
     async def backfill_is_outgoing(self, owner_id: int) -> None:
         """Backfill is_outgoing flag for messages sent by the owner."""
@@ -838,6 +925,34 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return [self._message_version_to_dict(row) for row in result.scalars()]
 
+    def _message_versions_query(
+        self,
+        chat_id: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ):
+        # No join to messages: versions already carry (chat_id, message_id), and
+        # referential integrity is owned by the explicit deletes in
+        # delete_message / delete_chat_and_related_data.
+        stmt = select(MessageVersion)
+
+        conditions = []
+        if chat_id is not None:
+            conditions.append(MessageVersion.chat_id == chat_id)
+        if start_date:
+            conditions.append(MessageVersion.date >= start_date)
+        if end_date:
+            conditions.append(MessageVersion.date <= end_date)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        return stmt.order_by(
+            MessageVersion.chat_id.asc(),
+            MessageVersion.message_id.asc(),
+            MessageVersion.date.asc(),
+            MessageVersion.id.asc(),
+        )
+
     async def get_message_versions_by_date_range(
         self,
         chat_id: int | None = None,
@@ -846,29 +961,19 @@ class DatabaseAdapter:
     ) -> list[dict[str, Any]]:
         """Get previous message versions by version date/chat filter."""
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(MessageVersion).join(
-                Message,
-                and_(MessageVersion.message_id == Message.id, MessageVersion.chat_id == Message.chat_id),
-            )
-
-            conditions = []
-            if chat_id:
-                conditions.append(MessageVersion.chat_id == chat_id)
-            if start_date:
-                conditions.append(MessageVersion.date >= start_date)
-            if end_date:
-                conditions.append(MessageVersion.date <= end_date)
-            if conditions:
-                stmt = stmt.where(and_(*conditions))
-
-            stmt = stmt.order_by(
-                MessageVersion.chat_id.asc(),
-                MessageVersion.message_id.asc(),
-                MessageVersion.date.asc(),
-                MessageVersion.id.asc(),
-            )
-            result = await session.execute(stmt)
+            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date))
             return [self._message_version_to_dict(row) for row in result.scalars()]
+
+    async def iter_message_versions_for_export(self, chat_id: int):
+        """Stream a chat's message versions one by one (async generator).
+
+        Mirrors get_messages_for_export so the export endpoint never
+        materializes an entire edit history in memory.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.stream(self._message_versions_query(chat_id))
+            async for row in result.scalars():
+                yield self._message_version_to_dict(row)
 
     async def get_chat_stats(self, chat_id: int) -> dict[str, Any]:
         """Get statistics for a specific chat (message count, media count, total size).

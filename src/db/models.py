@@ -22,6 +22,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from ..message_utils import utcnow_naive
+
 
 class Base(DeclarativeBase):
     """Base class for all models."""
@@ -126,7 +128,7 @@ class MessageVersion(Base):
     text: Mapped[str | None] = mapped_column(Text)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     change_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     message: Mapped[Message] = relationship(
         "Message",
@@ -136,6 +138,10 @@ class MessageVersion(Base):
     )
 
     __table_args__ = (
+        # NOTE: the CASCADE is inert on SQLite (PRAGMA foreign_keys is off by
+        # default) — the explicit MessageVersion deletes in delete_message and
+        # delete_chat_and_related_data are the load-bearing cleanup. Keep them
+        # in sync with any future message-deletion path.
         ForeignKeyConstraint(
             ["message_id", "chat_id"],
             ["messages.id", "messages.chat_id"],

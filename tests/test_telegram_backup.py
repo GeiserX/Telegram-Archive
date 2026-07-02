@@ -485,7 +485,7 @@ class TestBackupCheckpointing(unittest.TestCase):
         finally:
             loop.close()
 
-        backup.db.insert_messages_batch.assert_awaited_once_with(batch, source="backup_upsert")
+        backup.db.insert_messages_batch.assert_awaited_once_with(batch)
         backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
         backup.db.insert_reactions.assert_awaited_once()
 

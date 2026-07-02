@@ -42,6 +42,12 @@ def _mock_db():
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_message_versions = AsyncMock(return_value=[])
     db.get_message_versions_by_date_range = AsyncMock(return_value=[])
+
+    async def _no_versions(*args, **kwargs):
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+    db.iter_message_versions_for_export = _no_versions
     db.get_pinned_messages = AsyncMock(return_value=[])
     db.get_all_folders = AsyncMock(return_value=[])
     db.get_forum_topics = AsyncMock(return_value=[])
@@ -400,6 +406,15 @@ class TestMessageVersionsEndpoint(_WebTestBase):
             resp = await client.get("/api/chats/123/messages/42/versions")
 
         self.assertEqual(resp.status_code, 503)
+
+    async def test_generic_error_returns_500(self):
+        """get_message_versions returns 500 on non-connection errors."""
+        self.mock_db.get_message_versions = AsyncMock(side_effect=ValueError("boom"))
+
+        async with self._client() as client:
+            resp = await client.get("/api/chats/123/messages/42/versions")
+
+        self.assertEqual(resp.status_code, 500)
 
 
 # ============================================================================

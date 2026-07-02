@@ -753,7 +753,7 @@ class TelegramImporter:
         media: list[dict[str, Any]],
     ) -> None:
         """Flush a batch of messages and media to the database."""
-        await self.db.insert_messages_batch(messages, source="import")
+        await self.db.insert_messages_batch(messages)
 
         for m in media:
             source = m.pop("_source")

@@ -60,6 +60,8 @@ async def test_insert_message_upsert_preserves_soft_delete_marker(sqlite_adapter
     )
 
     message = await _get_message(sqlite_adapter, 1, 100)
+    # Re-processing without edit evidence (no edit_date) must NOT overwrite
+    # archived text — upserts only replace text with a newer/equal edit_date.
     assert message.text == "original"
     assert message.is_deleted == 1
     assert message.deleted_at == deleted_at
@@ -93,6 +95,7 @@ async def test_insert_messages_batch_upsert_preserves_soft_delete_marker(sqlite_
     )
 
     message = await _get_message(sqlite_adapter, 2, 100)
+    # Same invariant as above for the batch path: no edit evidence, no overwrite.
     assert message.text == "original"
     assert message.is_deleted == 1
     assert message.deleted_at == deleted_at
@@ -210,7 +213,7 @@ async def test_update_message_text_records_previous_version(sqlite_adapter):
     )
 
     edit_date = datetime(2026, 6, 26, 9, 5)
-    await sqlite_adapter.update_message_text(300, 20, "edited", edit_date, source="listener_edit")
+    await sqlite_adapter.update_message_text(300, 20, "edited", edit_date)
 
     message = await _get_message(sqlite_adapter, 20, 300)
     versions = await _get_versions(sqlite_adapter, 20, 300)
@@ -228,8 +231,8 @@ async def test_update_message_text_is_idempotent(sqlite_adapter):
         {"id": 21, "chat_id": 300, "date": datetime(2026, 6, 26, 10, 0), "text": "original"}
     )
 
-    await sqlite_adapter.update_message_text(300, 21, "edited", edit_date, source="listener_edit")
-    await sqlite_adapter.update_message_text(300, 21, "edited", edit_date, source="sync_edit")
+    await sqlite_adapter.update_message_text(300, 21, "edited", edit_date)
+    await sqlite_adapter.update_message_text(300, 21, "edited", edit_date)
 
     versions = await _get_versions(sqlite_adapter, 21, 300)
     assert len(versions) == 1
@@ -243,7 +246,7 @@ async def test_update_message_text_same_text_updates_edit_date_without_version(s
     )
 
     reaction_edit_date = datetime(2026, 6, 26, 10, 15)
-    await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date, source="sync_edit")
+    await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date)
 
     message = await _get_message(sqlite_adapter, 28, 300)
     versions = await _get_versions(sqlite_adapter, 28, 300)
@@ -266,7 +269,7 @@ async def test_update_message_text_older_edit_date_does_not_roll_back(sqlite_ada
         }
     )
 
-    await sqlite_adapter.update_message_text(300, 27, "older", old_edit_date, source="listener_edit")
+    await sqlite_adapter.update_message_text(300, 27, "older", old_edit_date)
 
     message = await _get_message(sqlite_adapter, 27, 300)
     versions = await _get_versions(sqlite_adapter, 27, 300)
@@ -281,7 +284,7 @@ async def test_text_only_edit_records_previous_version(sqlite_adapter):
         {"id": 22, "chat_id": 300, "date": datetime(2026, 6, 26, 11, 0), "text": "caption"}
     )
 
-    await sqlite_adapter.update_message_text(300, 22, "caption edited", None, source="listener_edit")
+    await sqlite_adapter.update_message_text(300, 22, "caption edited", None)
 
     message = await _get_message(sqlite_adapter, 22, 300)
     versions = await _get_versions(sqlite_adapter, 22, 300)
@@ -307,7 +310,6 @@ async def test_upsert_with_newer_edit_date_records_previous_version(sqlite_adapt
             "text": "edited via backup",
             "edit_date": edit_date,
         },
-        source="backup_upsert",
     )
 
     message = await _get_message(sqlite_adapter, 23, 300)
@@ -340,7 +342,6 @@ async def test_upsert_with_same_edit_date_records_previous_version(sqlite_adapte
             "text": "edited via backup",
             "edit_date": edit_date,
         },
-        source="backup_upsert",
     )
 
     message = await _get_message(sqlite_adapter, 33, 300)
@@ -374,7 +375,6 @@ async def test_upsert_with_same_aware_edit_date_records_previous_version(sqlite_
             "text": "edited via backup",
             "edit_date": aware_edit_date,
         },
-        source="backup_upsert",
     )
 
     message = await _get_message(sqlite_adapter, 34, 300)
@@ -406,8 +406,8 @@ async def test_repeated_upsert_with_same_edit_date_is_idempotent(sqlite_adapter)
         }
     )
 
-    await sqlite_adapter.insert_message(edited_message, source="backup_upsert")
-    await sqlite_adapter.insert_message(edited_message, source="backup_upsert")
+    await sqlite_adapter.insert_message(edited_message)
+    await sqlite_adapter.insert_message(edited_message)
 
     message = await _get_message(sqlite_adapter, 35, 300)
     versions = await _get_versions(sqlite_adapter, 35, 300)
@@ -433,7 +433,6 @@ async def test_upsert_same_text_updates_edit_date_without_version(sqlite_adapter
             "text": "original",
             "edit_date": reaction_edit_date,
         },
-        source="backup_upsert",
     )
 
     message = await _get_message(sqlite_adapter, 29, 300)
@@ -465,7 +464,6 @@ async def test_upsert_with_older_edit_date_does_not_roll_back(sqlite_adapter):
             "text": "old import text",
             "edit_date": old_edit_date,
         },
-        source="import",
     )
 
     message = await _get_message(sqlite_adapter, 24, 300)
@@ -490,7 +488,6 @@ async def test_concurrent_upserts_keep_newest_edit_date(sqlite_adapter):
                 "text": text,
                 "edit_date": edit_date,
             },
-            source="backup_upsert",
         )
 
     newer = datetime(2026, 6, 26, 15, 30)
@@ -522,7 +519,6 @@ async def test_upsert_filling_empty_text_preserves_existing_edit_date(sqlite_ada
             "date": datetime(2026, 6, 26, 13, 40),
             "text": "filled text",
         },
-        source="backup_upsert",
     )
 
     message = await _get_message(sqlite_adapter, 26, 300)
@@ -537,8 +533,8 @@ async def test_upsert_filling_empty_text_preserves_existing_edit_date(sqlite_ada
 @pytest.mark.asyncio
 async def test_get_message_versions_returns_dicts(sqlite_adapter):
     await sqlite_adapter.insert_message({"id": 25, "chat_id": 300, "date": datetime(2026, 6, 26, 14, 0), "text": "v1"})
-    await sqlite_adapter.update_message_text(300, 25, "v2", datetime(2026, 6, 26, 14, 5), source="sync_edit")
-    await sqlite_adapter.update_message_text(300, 25, "v3", datetime(2026, 6, 26, 14, 10), source="sync_edit")
+    await sqlite_adapter.update_message_text(300, 25, "v2", datetime(2026, 6, 26, 14, 5))
+    await sqlite_adapter.update_message_text(300, 25, "v3", datetime(2026, 6, 26, 14, 10))
 
     versions = await sqlite_adapter.get_message_versions(300, 25)
     assert len(versions) == 2
@@ -566,9 +562,9 @@ async def test_get_messages_paginated_includes_version_counts(sqlite_adapter):
     await sqlite_adapter.insert_message(
         {"id": 42, "chat_id": 300, "date": datetime(2026, 6, 26, 15, 2), "text": "text-only"}
     )
-    await sqlite_adapter.update_message_text(300, 40, "v2", datetime(2026, 6, 26, 15, 5), source="sync_edit")
-    await sqlite_adapter.update_message_text(300, 40, "v3", datetime(2026, 6, 26, 15, 10), source="sync_edit")
-    await sqlite_adapter.update_message_text(300, 42, "text-only edited", None, source="listener_edit")
+    await sqlite_adapter.update_message_text(300, 40, "v2", datetime(2026, 6, 26, 15, 5))
+    await sqlite_adapter.update_message_text(300, 40, "v3", datetime(2026, 6, 26, 15, 10))
+    await sqlite_adapter.update_message_text(300, 42, "text-only edited", None)
 
     messages = await sqlite_adapter.get_messages_paginated(300, limit=10)
     counts = {message["id"]: message["version_count"] for message in messages}
@@ -591,3 +587,100 @@ async def test_get_message_versions_by_date_range_filters_version_dates(sqlite_a
     )
 
     assert [row["message_id"] for row in versions] == [31]
+
+
+@pytest.mark.asyncio
+async def test_update_message_text_reports_outcome(sqlite_adapter):
+    await sqlite_adapter.insert_message(
+        {"id": 50, "chat_id": 300, "date": datetime(2026, 6, 26, 9, 0), "text": "original"}
+    )
+
+    applied = await sqlite_adapter.update_message_text(300, 50, "edited", datetime(2026, 6, 26, 9, 5))
+    noop = await sqlite_adapter.update_message_text(300, 50, "edited", datetime(2026, 6, 26, 9, 5))
+    missing = await sqlite_adapter.update_message_text(300, 999, "x", datetime(2026, 6, 26, 9, 5))
+
+    assert applied == "applied"
+    assert noop == "noop"
+    assert missing == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_upsert_preserves_is_pinned_when_absent(sqlite_adapter):
+    """Re-backups without pinning data must not reset the pinned flag.
+
+    Regression guard for the _message_conflict_update_values pop: the old
+    unconditional upsert reset is_pinned to 0 on every re-scan.
+    """
+    await sqlite_adapter.insert_message(
+        {"id": 51, "chat_id": 300, "date": datetime(2026, 6, 26, 10, 0), "text": "pin me", "is_pinned": 1}
+    )
+
+    await sqlite_adapter.insert_message(
+        {"id": 51, "chat_id": 300, "date": datetime(2026, 6, 26, 10, 0), "text": "pin me"}
+    )
+
+    message = await _get_message(sqlite_adapter, 51, 300)
+    assert message.is_pinned == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_different_text_without_any_edit_date_is_refused(sqlite_adapter):
+    """Documented conservative case: differing text with NO edit evidence on either
+    side is not applied and records no version (an upsert source must prove
+    freshness via edit_date before replacing archived text)."""
+    await sqlite_adapter.insert_message(
+        {"id": 52, "chat_id": 300, "date": datetime(2026, 6, 26, 11, 0), "text": "archived"}
+    )
+
+    await sqlite_adapter.insert_message(
+        {"id": 52, "chat_id": 300, "date": datetime(2026, 6, 26, 11, 0), "text": "import text"}
+    )
+
+    message = await _get_message(sqlite_adapter, 52, 300)
+    versions = await _get_versions(sqlite_adapter, 52, 300)
+    assert message.text == "archived"
+    assert versions == []
+
+
+@pytest.mark.asyncio
+async def test_version_record_failure_does_not_abort_message_update(sqlite_adapter, monkeypatch):
+    """A poisoned version insert is contained by its SAVEPOINT: the text update
+    still lands, the failure only costs the history entry."""
+    await sqlite_adapter.insert_message(
+        {"id": 53, "chat_id": 300, "date": datetime(2026, 6, 26, 12, 0), "text": "original"}
+    )
+
+    def _broken_stmt(values):
+        raise RuntimeError("simulated version-insert failure")
+
+    monkeypatch.setattr(sqlite_adapter, "_insert_message_version_stmt", _broken_stmt)
+
+    outcome = await sqlite_adapter.update_message_text(300, 53, "edited", datetime(2026, 6, 26, 12, 5))
+
+    message = await _get_message(sqlite_adapter, 53, 300)
+    versions = await _get_versions(sqlite_adapter, 53, 300)
+    assert outcome == "applied"
+    assert message.text == "edited"
+    assert versions == []
+
+
+@pytest.mark.asyncio
+async def test_unchanged_reupsert_is_a_semantic_noop(sqlite_adapter):
+    """Re-scanning an identical message changes nothing and records nothing
+    (the fast path returns before taking the write lock)."""
+    data = {
+        "id": 54,
+        "chat_id": 300,
+        "date": datetime(2026, 6, 26, 13, 0),
+        "text": "stable",
+        "edit_date": datetime(2026, 6, 26, 13, 5),
+    }
+    await sqlite_adapter.insert_message(data)
+
+    await sqlite_adapter.insert_message(dict(data))
+
+    message = await _get_message(sqlite_adapter, 54, 300)
+    versions = await _get_versions(sqlite_adapter, 54, 300)
+    assert message.text == "stable"
+    assert message.edit_date == datetime(2026, 6, 26, 13, 5)
+    assert versions == []

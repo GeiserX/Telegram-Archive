@@ -58,13 +58,18 @@ MIGRATION_MODELS = [
 
 
 def _is_missing_table_error(exc: Exception, table_name: str) -> bool:
-    """Return True for dialect-specific missing-table errors."""
+    """Return True only for the anchored dialect messages for a missing table.
+
+    Deliberately strict: loose containment (any "does not exist" plus the table
+    name appearing anywhere, including in the echoed SQL statement) could
+    classify real errors — schema drift, dropped connections — as "table
+    missing" and silently report 0 records during migration verification.
+    """
     message = str(exc).lower()
     table = table_name.lower()
     return (
-        ("no such table" in message and table in message)
-        or ("undefinedtable" in message and table in message)
-        or ("does not exist" in message and table in message)
+        f"no such table: {table}" in message  # SQLite / aiosqlite
+        or f'relation "{table}" does not exist' in message  # PostgreSQL / asyncpg
     )
 
 
