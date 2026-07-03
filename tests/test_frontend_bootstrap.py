@@ -15,6 +15,20 @@ def test_media_gallery_refs_are_initialized_before_watcher():
     assert state_index < watcher_index
 
 
+def test_media_gallery_close_reconnects_message_observer():
+    """Closing the gallery rebuilds message DOM and must reconnect infinite scroll."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    watcher_start = html.index("watch(showMediaGallery")
+    watcher_body = html[watcher_start : html.index("const filteredChats = computed", watcher_start)]
+
+    assert "watch(showMediaGallery, async (val) =>" in watcher_body
+    assert "} else {" in watcher_body
+    assert "await nextTick()" in watcher_body
+    assert "setupMessagesScrollObserver()" in watcher_body
+    assert watcher_body.index("await nextTick()") < watcher_body.rindex("setupMessagesScrollObserver()")
+
+
 def test_message_versions_are_loaded_only_from_click_handler():
     """Viewer message versions should be fetched lazily from the edited button."""
     html = INDEX_HTML.read_text(encoding="utf-8")
@@ -167,3 +181,197 @@ def test_versions_401_sets_unauthenticated():
 
     assert "res.status === 401" in load_body
     assert "isAuthenticated.value = false" in load_body
+
+
+def test_realtime_display_uses_api_message_order():
+    """Local viewer ordering should match the API's date DESC, id DESC cursor contract."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    helper_start = html.index("const messageSortTime = (msg) =>")
+    helper_body = html[helper_start : html.index("// v6.2.0: Find the topics nav entry", helper_start)]
+    sorted_start = html.index("const sortedMessages = computed(() =>")
+    sorted_body = html[sorted_start : html.index("// Group consecutive messages", sorted_start)]
+
+    assert "moment.utc(msg.date)" in helper_body
+    assert "sortTimeCache" in helper_body
+    assert "messageSortTime(b) - messageSortTime(a)" in helper_body
+    assert "(Number(b?.id) || 0) - (Number(a?.id) || 0)" in helper_body
+    assert "return sortedLoadedMessages()" in sorted_body
+
+
+def test_history_cursor_is_not_advanced_by_realtime_refresh():
+    """Realtime/latest polling rows must not reset the older-history pagination cursor."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    helper_start = html.index("let oldestMessageCursor = null")
+    helper_body = html[helper_start : html.index("// v6.2.0: Find the topics nav entry", helper_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    load_start = html.index("const loadMessages = async () =>")
+    refresh_body = html[refresh_start:load_start]
+    load_body = html[load_start : html.index("const searchMessages = async () =>", load_start)]
+
+    assert "const updateOldestMessageCursor = (loadedMessages) =>" in helper_body
+    assert "const cursor = oldestMessageCursor || messageCursor(oldestMessageFrom(messages.value))" in load_body
+    assert "before_date=${encodeURIComponent(cursor.date)}" in load_body
+    assert "before_id=${cursor.id}" in load_body
+    assert "updateOldestMessageCursor(newMessages)" in load_body
+    assert "updateOldestMessageCursor" not in refresh_body
+    assert "reduce((oldest, msg)" not in load_body
+    assert "if (chatVersion !== myVersion || messageSearchQuery.value) return" in refresh_body
+    assert load_body.count("chatVersion !== myVersion") >= 2
+
+
+def test_jump_to_message_resets_history_pagination():
+    """Replacing the message window should rebuild history pagination from that window."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+
+    assert "const myVersion = ++chatVersion" in jump_body
+    assert "loading.value = true" in jump_body
+    assert "messages.value = data.messages || data" in jump_body
+    assert "resetMessagePagination()" in jump_body
+    assert "setupMessagesScrollObserver()" in jump_body
+    assert jump_body.index("messages.value = data.messages || data") < jump_body.index("resetMessagePagination()")
+    assert jump_body.index("resetMessagePagination()") < jump_body.index("setupMessagesScrollObserver()")
+
+
+def test_realtime_polling_skips_search_results():
+    """Latest-message polling should not mix unfiltered rows into search results."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    search_start = html.index("const searchMessages = async () =>")
+    search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
+
+    assert "if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return" in refresh_body
+    assert "chatVersion++" in search_body
+    # The version bump makes an invalidated in-flight load skip its own loading=false
+    # (finally sees a version mismatch), so search must reset the gate itself or a
+    # second fast keystroke finds loading stuck true and bails.
+    assert "loading.value = false" in search_body
+    assert search_body.index("chatVersion++") < search_body.index("loading.value = false")
+    assert search_body.index("loading.value = false") < search_body.index("await loadMessages()")
+
+
+def test_realtime_rows_are_filtered_deduped_and_stick_to_bottom():
+    """Realtime rows should match the active topic, canonicalize through polling, and keep latest view visible."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("case 'new_message':")
+    ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "messageBelongsToCurrentTopic(data.message)" in ws_body
+    assert "isNearMessageBottom(messagesContainer.value)" in ws_body
+    assert "upsertMessages([data.message], { updateExisting: false })" in ws_body
+    assert ws_body.index("const shouldStickToBottom") < ws_body.index("upsertMessages([data.message]")
+    assert "upsertMessages(latestMessages)" in refresh_body
+    assert "const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)" in refresh_body
+    assert "return !!container && container.scrollTop > -STICK_TO_BOTTOM_PX" in html
+    assert "messages.value.push(data.message)" not in ws_body
+    assert "messages.value.push(...newMessages)" not in refresh_body
+
+
+def test_pagination_reset_called_at_all_entry_points():
+    """Every view-switching entry point must reset history pagination before loading."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    topic_start = html.index("const selectTopic = async (chat, topic) =>")
+    topic_body = html[topic_start : html.index("const activeTab = computed", topic_start)]
+    chat_start = html.index("const selectChat = async (chat) =>")
+    chat_body = html[chat_start : html.index("const startMessageRefresh = () =>", chat_start)]
+    search_start = html.index("const searchMessages = async () =>")
+    search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
+
+    assert "resetMessagePagination()" in topic_body
+    assert "resetMessagePagination()" in chat_body
+    assert "resetMessagePagination()" in search_body
+
+
+def test_topic_filter_mirrors_backend_default():
+    """The viewer's topic filter must mirror the backend's General-topic coalesce default."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    belongs_start = html.index("const messageBelongsToCurrentTopic = (msg) =>")
+    belongs_body = html[belongs_start : html.index("const upsertMessages", belongs_start)]
+
+    assert "reply_to_top_id ?? GENERAL_TOPIC_ID" in belongs_body
+    assert "const GENERAL_TOPIC_ID = 1" in html
+
+
+def test_load_messages_handles_auth_expiry():
+    """A 401 from the messages endpoint must surface the login screen, and history retries must be capped."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    load_start = html.index("const loadMessages = async () =>")
+    load_body = html[load_start : html.index("const searchMessages = async () =>", load_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "res.status === 401" in load_body
+    assert "isAuthenticated.value = false" in load_body
+    assert "loadFailureStreak" in load_body
+    assert "res.status === 401" in refresh_body
+    assert "isAuthenticated.value = false" in refresh_body
+
+
+def test_poll_deletion_pass_is_range_bounded():
+    """Polling must not treat rows outside the server's returned window as deleted."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "const serverOldest = oldestMessageFrom(latestMessages)" in refresh_body
+    assert "compareMessagesDesc(m, serverOldest) <= 0" in refresh_body
+
+
+def test_gallery_close_restores_reading_position_and_focus():
+    """A plain gallery close must return the user to their scroll position and focus."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    watcher_start = html.index("watch(showMediaGallery")
+    watcher_body = html[watcher_start : html.index("const filteredChats = computed", watcher_start)]
+    jump_start = html.index("const jumpToMessage = async (item) =>")
+    jump_body = html[jump_start : html.index("const downloadMedia = (item) =>", jump_start)]
+
+    assert "let galleryReturnState = null" in html
+    assert "scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0" in watcher_body
+    assert "document.activeElement instanceof HTMLElement" in watcher_body
+    assert "returnState.focusElement.isConnected" in watcher_body
+    # Programmatic exits reposition the view themselves and must not restore.
+    assert "galleryReturnState = null" in jump_body
+    # Restore happens after the observer reconnect, inside the same guarded block.
+    assert watcher_body.index("setupMessagesScrollObserver()") < watcher_body.index(
+        "returnState.chatId === (selectedChat.value?.id ?? null)"
+    )
+
+
+def test_unseen_message_badge_tracks_background_arrivals():
+    """Messages arriving while scrolled up must surface a count on the jump button."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("case 'new_message':")
+    ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    scroll_start = html.index("const handleScroll = (e) =>")
+    scroll_body = html[scroll_start : html.index("const loadMoreMessages = () =>", scroll_start)]
+
+    assert "unseenMessageCount.value += 1" in ws_body
+    assert "unseenMessageCount.value += newMessages.length" in refresh_body
+    # Cleared when the user is back near the bottom, on view entry, and on manual jump.
+    assert "unseenMessageCount.value = 0" in scroll_body
+    reset_start = html.index("const resetMessagePagination = () =>")
+    reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
+    assert "unseenMessageCount.value = 0" in reset_body
+    latest_start = html.index("const scrollToLatest = () =>")
+    latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
+    assert "unseenMessageCount.value = 0" in latest_body
+    # Button shows for the badge even before the distance threshold, with an aria-label.
+    assert 'v-if="showScrollToBottom || unseenMessageCount > 0"' in html
+    assert "' new message(s) — scroll to latest'" in html

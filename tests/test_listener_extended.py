@@ -1748,6 +1748,92 @@ class TestOnNewMessageAdvanced:
         call_args = notifier.notify.call_args
         assert call_args[0][0] == NotificationType.NEW_MESSAGE
 
+        # No sender / no media -- enriched fields are all None (mirrors an absent DB join)
+        ws_message = call_args[0][2]["message"]
+        assert ws_message["first_name"] is None
+        assert ws_message["last_name"] is None
+        assert ws_message["username"] is None
+        assert ws_message["media"] is None
+
+    async def test_notifier_payload_enriched_with_sender_and_media(self):
+        """WS notify payload mirrors the API row shape: flat sender fields + nested media dict.
+
+        Covers the gap where new_message rows rendered bare in the viewer until the next
+        poll -- the payload should carry the same first_name/last_name/username + media
+        fields that get_messages_paginated returns.
+        """
+        from telethon.tl.types import MessageMediaPhoto, User
+
+        from src.realtime import NotificationType
+
+        listener, handlers, db, config = _make_listener_with_handlers(
+            listen_new_messages_media=True,
+        )
+        handler = handlers[events.NewMessage]
+
+        notifier = AsyncMock()
+        listener._notifier = notifier
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/photo.jpg", "photo.jpg", "abc123hash"))
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 42
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1)
+        msg.text = "Look at this"
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = MagicMock(spec=MessageMediaPhoto)
+
+        sender = MagicMock(spec=User)
+        sender.id = 111
+        sender.username = "testuser"
+        sender.first_name = "Test"
+        sender.last_name = "User"
+        sender.phone = "+1234"
+        sender.bot = False
+        msg.sender = sender
+        event.message = msg
+        event.get_chat = AsyncMock(return_value=MagicMock())
+
+        await handler(event)
+
+        notifier.notify.assert_called_once()
+        call_args = notifier.notify.call_args
+        assert call_args[0][0] == NotificationType.NEW_MESSAGE
+        ws_message = call_args[0][2]["message"]
+
+        # Flat sender fields mirror the API row (src/db/adapter.py get_messages_paginated)
+        assert ws_message["first_name"] == "Test"
+        assert ws_message["last_name"] == "User"
+        assert ws_message["username"] == "testuser"
+
+        # Nested media dict mirrors the insert_media call exactly (same id/type/file_path/
+        # file_name; the unset fields insert_media defaults to None via .get() also stay None)
+        media_data = db.insert_media.call_args[0][0]
+        assert ws_message["media"] == {
+            "id": media_data["id"],
+            "type": media_data["type"],
+            "file_path": media_data["file_path"],
+            "file_name": media_data["file_name"],
+            "file_size": None,
+            "mime_type": None,
+            "width": None,
+            "height": None,
+            "duration": None,
+        }
+
+        # message_data passed to db.insert_message is untouched -- DB path unchanged
+        db_message_data = db.insert_message.call_args[0][0]
+        assert "first_name" not in db_message_data
+        assert "last_name" not in db_message_data
+        assert "username" not in db_message_data
+        assert "media" not in db_message_data
+
     async def test_long_text_preview_truncated(self):
         """Messages with text > 50 chars are truncated for logging (no assertion on log, just no crash)."""
         listener, handlers, db, config = _make_listener_with_handlers()
