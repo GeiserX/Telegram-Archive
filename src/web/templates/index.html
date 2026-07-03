@@ -1811,11 +1811,22 @@
                             added.push(newMsg)
                         } else if (updateExisting) {
                             // Field-level in-place merge: only write fields that actually changed,
-                            // so Vue bindings on untouched fields never re-evaluate.
+                            // so Vue bindings on untouched fields never re-evaluate. Object/list
+                            // fields (media, raw_data, reactions) arrive as fresh instances every
+                            // poll, so compare those structurally — rows come from res.json()
+                            // (plain JSON, stable key order per shape), making stringify reliable.
                             for (const field of Object.keys(newMsg)) {
-                                if (existingMsg[field] !== newMsg[field]) {
-                                    existingMsg[field] = newMsg[field]
-                                }
+                                // date is invariant (edits change edit_date) and its sort key is
+                                // cached by row object — never rewrite it (the WS and API paths
+                                // serialize the same instant with different tz markers).
+                                if (field === 'date') continue
+                                const oldValue = existingMsg[field]
+                                const newValue = newMsg[field]
+                                if (oldValue === newValue) continue
+                                if (oldValue !== null && newValue !== null &&
+                                    typeof oldValue === 'object' && typeof newValue === 'object' &&
+                                    JSON.stringify(oldValue) === JSON.stringify(newValue)) continue
+                                existingMsg[field] = newValue
                             }
                         }
                     }
@@ -3488,6 +3499,10 @@
                     // Invalidate in-flight polls/loads: their post-await guards check chatVersion,
                     // so bumping it here keeps unfiltered rows out of fresh search results.
                     chatVersion++
+                    // Reset the gate like selectChat/selectTopic do: an invalidated in-flight
+                    // load skips its own loading=false (version mismatch in finally), so without
+                    // this a second fast keystroke would find loading stuck true and bail.
+                    loading.value = false
                     messages.value = []
                     resetMessagePagination()
                     await loadMessages()

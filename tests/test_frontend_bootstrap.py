@@ -248,6 +248,12 @@ def test_realtime_polling_skips_search_results():
 
     assert "if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return" in refresh_body
     assert "chatVersion++" in search_body
+    # The version bump makes an invalidated in-flight load skip its own loading=false
+    # (finally sees a version mismatch), so search must reset the gate itself or a
+    # second fast keystroke finds loading stuck true and bails.
+    assert "loading.value = false" in search_body
+    assert search_body.index("chatVersion++") < search_body.index("loading.value = false")
+    assert search_body.index("loading.value = false") < search_body.index("await loadMessages()")
 
 
 def test_realtime_rows_are_filtered_deduped_and_stick_to_bottom():
@@ -310,6 +316,7 @@ def test_load_messages_handles_auth_expiry():
     assert "isAuthenticated.value = false" in load_body
     assert "loadFailureStreak" in load_body
     assert "res.status === 401" in refresh_body
+    assert "isAuthenticated.value = false" in refresh_body
 
 
 def test_poll_deletion_pass_is_range_bounded():
