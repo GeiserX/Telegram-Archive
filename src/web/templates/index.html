@@ -2972,6 +2972,7 @@
                         messages.value = data.messages || data
                         resetMessagePagination()
                         await nextTick()
+                        setupMessagesScrollObserver()
                         const el = document.querySelector(`[data-msg-id="${messageId}"]`)
                         if (el) {
                             el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -2981,10 +2982,13 @@
                     }
                 }
 
-                watch(showMediaGallery, (val) => {
+                watch(showMediaGallery, async (val) => {
                     if (val) {
                         loadMediaGallery()
                         loadMediaCounts()
+                    } else {
+                        await nextTick()
+                        setupMessagesScrollObserver()
                     }
                 })
 

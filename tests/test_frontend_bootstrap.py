@@ -15,6 +15,20 @@ def test_media_gallery_refs_are_initialized_before_watcher():
     assert state_index < watcher_index
 
 
+def test_media_gallery_close_reconnects_message_observer():
+    """Closing the gallery rebuilds message DOM and must reconnect infinite scroll."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    watcher_start = html.index("watch(showMediaGallery")
+    watcher_body = html[watcher_start : html.index("const filteredChats = computed", watcher_start)]
+
+    assert "watch(showMediaGallery, async (val) =>" in watcher_body
+    assert "} else {" in watcher_body
+    assert "await nextTick()" in watcher_body
+    assert "setupMessagesScrollObserver()" in watcher_body
+    assert watcher_body.index("await nextTick()") < watcher_body.rindex("setupMessagesScrollObserver()")
+
+
 def test_message_versions_are_loaded_only_from_click_handler():
     """Viewer message versions should be fetched lazily from the edited button."""
     html = INDEX_HTML.read_text(encoding="utf-8")
@@ -213,7 +227,9 @@ def test_jump_to_message_resets_history_pagination():
 
     assert "messages.value = data.messages || data" in jump_body
     assert "resetMessagePagination()" in jump_body
+    assert "setupMessagesScrollObserver()" in jump_body
     assert jump_body.index("messages.value = data.messages || data") < jump_body.index("resetMessagePagination()")
+    assert jump_body.index("resetMessagePagination()") < jump_body.index("setupMessagesScrollObserver()")
 
 
 def test_realtime_polling_skips_search_results():
