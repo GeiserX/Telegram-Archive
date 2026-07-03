@@ -1237,13 +1237,18 @@
                     </div>
 
                     <!-- Scroll to Bottom Button -->
-                    <button v-if="showScrollToBottom"
+                    <button v-if="showScrollToBottom || unseenMessageCount > 0"
                         @click="scrollToLatest"
-                        class="scroll-to-bottom-btn"
+                        class="scroll-to-bottom-btn relative"
+                        :aria-label="unseenMessageCount > 0 ? unseenMessageCount + ' new message(s) — scroll to latest' : 'Scroll to latest messages'"
                         title="Scroll to latest messages">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
                         </svg>
+                        <span v-if="unseenMessageCount > 0" aria-hidden="true"
+                            class="absolute -top-1.5 -right-1.5 bg-blue-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
+                            {{ unseenMessageCount > 99 ? '99+' : unseenMessageCount }}
+                        </span>
                     </button>
                     </div>
                     </template>
@@ -1641,6 +1646,10 @@
                 const selectedDate = ref(null)
                 let flatpickrInstance = null
                 const showScrollToBottom = ref(false)
+                // Messages that arrived (WS/poll) while the user was scrolled up reading
+                // history — shown as a badge on the jump-to-latest button; cleared when the
+                // user returns near the bottom or switches view.
+                const unseenMessageCount = ref(0)
 
                 // WebSocket and Notifications (v5.0)
                 const notificationsEnabled = ref(false)
@@ -1775,6 +1784,9 @@
                     hasMore.value = true
                     oldestMessageCursor = null
                     loadFailureStreak = 0
+                    // View-entry chokepoint: every message-list swap goes through here, so the
+                    // unseen-badge from the previous view resets alongside pagination.
+                    unseenMessageCount.value = 0
                 }
 
                 // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
@@ -2127,6 +2139,7 @@
                     pinnedMessages.value = []
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false
+                    galleryReturnState = null  // topic switch repositions the view itself
                     showMediaGallery.value = false
                     await loadMessages()
                     if (chatVersion !== myVersion) return
@@ -2481,8 +2494,12 @@
                                 // insert-only: a bare realtime row (no user/media joins, text truncated
                                 // by the notifier) must never overwrite an already-loaded joined row;
                                 // the next poll tick canonicalizes it via upsertMessages(latestMessages).
-                                if (upsertMessages([data.message], { updateExisting: false }) > 0 && shouldStickToBottom) {
-                                    nextTick(() => scrollToBottom())
+                                if (upsertMessages([data.message], { updateExisting: false }) > 0) {
+                                    if (shouldStickToBottom) {
+                                        nextTick(() => scrollToBottom())
+                                    } else {
+                                        unseenMessageCount.value += 1
+                                    }
                                 }
                             }
                             // Show notification
@@ -3006,6 +3023,7 @@
                 }
 
                 const jumpToMessage = async (item) => {
+                    galleryReturnState = null  // the jump repositions the view itself
                     showMediaGallery.value = false
                     await loadMessagesAroundId(item.message_id)
                 }
@@ -3071,17 +3089,39 @@
                     }
                 }
 
+                // Snapshot taken when the gallery opens so a plain close can put the user
+                // back where they were: the v-if remount resets scrollTop to 0 (= bottom in
+                // col-reverse) and drops keyboard focus to <body>. jumpToMessage and
+                // selectChat clear it because they reposition the view themselves.
+                let galleryReturnState = null
+
                 watch(showMediaGallery, async (val) => {
                     if (val) {
+                        galleryReturnState = {
+                            chatId: selectedChat.value?.id ?? null,
+                            scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0,
+                            focusElement: document.activeElement instanceof HTMLElement ? document.activeElement : null
+                        }
                         loadMediaGallery()
                         loadMediaCounts()
                     } else {
+                        const returnState = galleryReturnState
+                        galleryReturnState = null
                         // Vue does not await async watchers — contain any rejection locally.
                         // The module-level messagesScrollObserver binding makes concurrent
                         // reconnects (this watcher + loadMessagesAroundId) converge safely.
                         try {
                             await nextTick()
                             setupMessagesScrollObserver()
+                            // Restore reading position + focus for a plain close in the same chat.
+                            if (returnState && returnState.chatId === (selectedChat.value?.id ?? null)) {
+                                if (messagesContainer.value) {
+                                    messagesContainer.value.scrollTop = returnState.scrollTop
+                                }
+                                if (returnState.focusElement && returnState.focusElement.isConnected) {
+                                    returnState.focusElement.focus()
+                                }
+                            }
                         } catch (e) {
                             console.warn('[Messages] Failed to reconnect scroll observer', e)
                         }
@@ -3276,6 +3316,7 @@
                     pinnedMessages.value = []  // Reset pinned messages when changing chat
                     currentPinnedIndex.value = 0
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
+                    galleryReturnState = null  // chat switch repositions the view itself
                     showMediaGallery.value = false  // Exit media gallery when changing chat
                     await loadMessages()
                     if (chatVersion !== myVersion) return  // Another chat was selected, abort
@@ -3391,6 +3432,8 @@
                             await nextTick()
                             if (shouldStickToBottom) {
                                 scrollToBottom()
+                            } else {
+                                unseenMessageCount.value += newMessages.length
                             }
                         }
                     } catch (e) {
@@ -3515,6 +3558,10 @@
                     // With flex-col-reverse: scrollTop is NEGATIVE when scrolled up from bottom
                     // scrollTop=0 is at bottom (newest), scrollTop=-1000 means scrolled up 1000px
                     showScrollToBottom.value = scrollTop < -SHOW_JUMP_BUTTON_PX
+                    // Back near the bottom = the unseen messages are now on screen.
+                    if (scrollTop > -STICK_TO_BOTTOM_PX) {
+                        unseenMessageCount.value = 0
+                    }
                 }
 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
@@ -3561,6 +3608,7 @@
                 const scrollToLatest = () => {
                     scrollToBottom(true)
                     showScrollToBottom.value = false
+                    unseenMessageCount.value = 0
                 }
 
                 const isOwnMessage = (msg) => {
@@ -4600,6 +4648,7 @@
                     jumpToDate,
                     // Scroll to bottom
                     showScrollToBottom,
+                    unseenMessageCount,
                     scrollToLatest,
                     // Message pagination
                     hasMore,

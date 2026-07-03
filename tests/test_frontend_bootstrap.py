@@ -328,3 +328,50 @@ def test_poll_deletion_pass_is_range_bounded():
 
     assert "const serverOldest = oldestMessageFrom(latestMessages)" in refresh_body
     assert "compareMessagesDesc(m, serverOldest) <= 0" in refresh_body
+
+
+def test_gallery_close_restores_reading_position_and_focus():
+    """A plain gallery close must return the user to their scroll position and focus."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    watcher_start = html.index("watch(showMediaGallery")
+    watcher_body = html[watcher_start : html.index("const filteredChats = computed", watcher_start)]
+    jump_start = html.index("const jumpToMessage = async (item) =>")
+    jump_body = html[jump_start : html.index("const downloadMedia = (item) =>", jump_start)]
+
+    assert "let galleryReturnState = null" in html
+    assert "scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0" in watcher_body
+    assert "document.activeElement instanceof HTMLElement" in watcher_body
+    assert "returnState.focusElement.isConnected" in watcher_body
+    # Programmatic exits reposition the view themselves and must not restore.
+    assert "galleryReturnState = null" in jump_body
+    # Restore happens after the observer reconnect, inside the same guarded block.
+    assert watcher_body.index("setupMessagesScrollObserver()") < watcher_body.index(
+        "returnState.chatId === (selectedChat.value?.id ?? null)"
+    )
+
+
+def test_unseen_message_badge_tracks_background_arrivals():
+    """Messages arriving while scrolled up must surface a count on the jump button."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("case 'new_message':")
+    ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    scroll_start = html.index("const handleScroll = (e) =>")
+    scroll_body = html[scroll_start : html.index("const loadMoreMessages = () =>", scroll_start)]
+
+    assert "unseenMessageCount.value += 1" in ws_body
+    assert "unseenMessageCount.value += newMessages.length" in refresh_body
+    # Cleared when the user is back near the bottom, on view entry, and on manual jump.
+    assert "unseenMessageCount.value = 0" in scroll_body
+    reset_start = html.index("const resetMessagePagination = () =>")
+    reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
+    assert "unseenMessageCount.value = 0" in reset_body
+    latest_start = html.index("const scrollToLatest = () =>")
+    latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
+    assert "unseenMessageCount.value = 0" in latest_body
+    # Button shows for the badge even before the distance threshold, with an aria-label.
+    assert 'v-if="showScrollToBottom || unseenMessageCount > 0"' in html
+    assert "' new message(s) — scroll to latest'" in html
