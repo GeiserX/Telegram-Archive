@@ -1686,6 +1686,89 @@
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
 
+                const messageSortTime = (msg) => {
+                    const parsed = moment.utc(msg?.date)
+                    return parsed.isValid() ? parsed.valueOf() : 0
+                }
+
+                const compareMessagesDesc = (a, b) => {
+                    const timeDiff = messageSortTime(b) - messageSortTime(a)
+                    if (timeDiff !== 0) return timeDiff
+                    return (Number(b?.id) || 0) - (Number(a?.id) || 0)
+                }
+
+                const sortedLoadedMessages = () => [...messages.value].sort(compareMessagesDesc)
+                let oldestMessageCursor = null
+
+                const messageIdKey = (msg) => msg?.id == null ? null : String(msg.id)
+                const sameMessageId = (left, right) => left != null && right != null && String(left) === String(right)
+
+                const messageCursor = (msg) => {
+                    if (!msg?.date) return null
+                    const parsedDate = moment.utc(msg.date)
+                    const id = Number(msg.id)
+                    if (!parsedDate.isValid() || !Number.isFinite(id)) return null
+                    return { date: msg.date, id, time: parsedDate.valueOf() }
+                }
+
+                const oldestMessageFrom = (messageList) => {
+                    if (!Array.isArray(messageList) || messageList.length === 0) return null
+                    const orderedMessages = [...messageList].sort(compareMessagesDesc)
+                    return orderedMessages[orderedMessages.length - 1] || null
+                }
+
+                const updateOldestMessageCursor = (loadedMessages) => {
+                    const nextCursor = messageCursor(oldestMessageFrom(loadedMessages))
+                    if (!nextCursor) return
+                    if (!oldestMessageCursor || nextCursor.time < oldestMessageCursor.time ||
+                        (nextCursor.time === oldestMessageCursor.time && nextCursor.id < oldestMessageCursor.id)) {
+                        oldestMessageCursor = nextCursor
+                    }
+                }
+
+                const resetMessagePagination = () => {
+                    page.value = 0
+                    hasMore.value = true
+                    oldestMessageCursor = null
+                }
+
+                const currentTopicId = () => {
+                    const nav = currentNav.value
+                    if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
+                        return Number(nav.topicId)
+                    }
+                    return null
+                }
+
+                const messageBelongsToCurrentTopic = (msg) => {
+                    const topicId = currentTopicId()
+                    if (topicId == null) return true
+                    return Number(msg?.reply_to_top_id ?? 1) === topicId
+                }
+
+                const upsertMessages = (incomingMessages) => {
+                    if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) return 0
+                    const existingById = new Map()
+                    for (const existingMsg of messages.value) {
+                        const key = messageIdKey(existingMsg)
+                        if (key != null) existingById.set(key, existingMsg)
+                    }
+                    let addedCount = 0
+                    for (const newMsg of incomingMessages) {
+                        const key = messageIdKey(newMsg)
+                        if (key != null) {
+                            if (!existingById.has(key)) addedCount++
+                            existingById.set(key, newMsg)
+                        }
+                    }
+                    messages.value = Array.from(existingById.values())
+                    return addedCount
+                }
+
+                const isNearMessageBottom = (container) => {
+                    return !!container && container.scrollTop > -200
+                }
+
                 // v6.2.0: Find the topics nav entry for sidebar display
                 // When viewing a topic's messages (currentNav.type === 'chat' with topicId),
                 // the sidebar should still show the topics list, not fall back to chat list
@@ -1965,8 +2048,7 @@
                     navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
                     selectedChat.value = chat
                     messages.value = []
-                    page.value = 0
-                    hasMore.value = true
+                    resetMessagePagination()
                     messageSearchQuery.value = ''
                     chatStats.value = null
                     pinnedMessages.value = []
@@ -2320,10 +2402,13 @@
                 const handleWebSocketMessage = (data) => {
                     switch (data.type) {
                         case 'new_message':
-                            // Add to messages if we're viewing that chat (deduplicate by ID)
-                            if (selectedChat.value?.id === data.chat_id && data.message?.id != null) {
-                                if (!messages.value.some(m => m.id === data.message.id)) {
-                                    messages.value.push(data.message)
+                            // Add to messages if we're viewing that chat/topic (deduplicate by ID)
+                            if (selectedChat.value?.id === data.chat_id && data.message?.id != null && messageBelongsToCurrentTopic(data.message)) {
+                                if (!messages.value.some(m => sameMessageId(m.id, data.message.id))) {
+                                    const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
+                                    if (upsertMessages([data.message]) > 0 && shouldStickToBottom) {
+                                        nextTick(() => scrollToBottom(true))
+                                    }
                                 }
                             }
                             // Show notification
@@ -2885,6 +2970,7 @@
                     if (res.ok) {
                         const data = await res.json()
                         messages.value = data.messages || data
+                        resetMessagePagination()
                         await nextTick()
                         const el = document.querySelector(`[data-msg-id="${messageId}"]`)
                         if (el) {
@@ -2919,9 +3005,7 @@
                     }
                     // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
                     // This gives instant "scroll to bottom" experience on mobile
-                    return [...messages.value].sort((a, b) =>
-                        new Date(b.date).getTime() - new Date(a.date).getTime()
-                    )
+                    return sortedLoadedMessages()
                 })
 
                 // Group consecutive messages that belong to an album (same grouped_id)
@@ -3084,8 +3168,7 @@
 
                     selectedChat.value = chat
                     messages.value = []
-                    page.value = 0
-                    hasMore.value = true
+                    resetMessagePagination()
                     messageSearchQuery.value = ''
                     chatStats.value = null  // Reset stats when changing chat
                     pinnedMessages.value = []  // Reset pinned messages when changing chat
@@ -3124,7 +3207,7 @@
                 // Check for new messages and deletions
                 let isRefreshing = false
                 const checkForNewMessages = async () => {
-                    if (!selectedChat.value || isRefreshing) return
+                    if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return
 
                     isRefreshing = true
                     const myVersion = chatVersion
@@ -3143,19 +3226,19 @@
                         if (!res.ok || chatVersion !== myVersion) return
 
                         const latestMessages = await res.json()
-                        const latestIds = new Set(latestMessages.map(m => m.id))
+                        const latestIds = new Set(latestMessages.map(messageIdKey).filter(Boolean))
                         // Re-read existing messages right before mutation to avoid stale snapshots.
                         // Index by id once so the new-message filter and soft-delete refresh below
                         // are O(latest) lookups instead of O(latest × inView) array scans per poll.
-                        const existingById = new Map(messages.value.map(m => [m.id, m]))
+                        const existingById = new Map(messages.value.map(m => [messageIdKey(m), m]).filter(([key]) => key != null))
                         const existingIds = new Set(existingById.keys())
 
                         // Find new messages (in server response but not in our view)
-                        const newMessages = latestMessages.filter(m => !existingIds.has(m.id))
+                        const newMessages = latestMessages.filter(m => !existingIds.has(messageIdKey(m)))
 
                         // Refresh soft-delete markers for messages already in view
                         latestMessages.forEach(serverMsg => {
-                            const currentMsg = existingById.get(serverMsg.id)
+                            const currentMsg = existingById.get(messageIdKey(serverMsg))
                             if (currentMsg && currentMsg.chat_id === serverMsg.chat_id) {
                                 currentMsg.is_deleted = serverMsg.is_deleted
                                 currentMsg.deleted_at = serverMsg.deleted_at
@@ -3165,38 +3248,34 @@
                         // Find deleted messages - ONLY check messages that overlap with our fetch
                         // We fetched the latest 50/20 from server. Compare with our newest messages.
                         // Sort our messages by date descending to get the newest ones
-                        const sortedByDate = [...messages.value].sort((a, b) =>
-                            new Date(b.date) - new Date(a.date)
-                        )
+                        const sortedByDate = sortedLoadedMessages()
                         // Get our newest messages (same count as server returned)
                         const ourNewestMessages = sortedByDate.slice(0, latestMessages.length)
 
                         // Only messages that SHOULD be in the latest fetch but aren't = deleted
                         // A message is deleted if: it's in our newest messages AND not in server's latest
                         const deletedIds = ourNewestMessages
-                            .filter(m => !latestIds.has(m.id))
-                            .map(m => m.id)
+                            .filter(m => !latestIds.has(messageIdKey(m)))
+                            .map(messageIdKey)
 
                         // Remove deleted messages
                         if (deletedIds.length > 0) {
                             const deletedSet = new Set(deletedIds)
-                            messages.value = messages.value.filter(m => !deletedSet.has(m.id))
+                            messages.value = messages.value.filter(m => !deletedSet.has(messageIdKey(m)))
                             console.log(`[Auto-refresh] Removed ${deletedIds.length} deleted message(s)`)
                         }
 
+                        const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
+                        upsertMessages(latestMessages)
+
                         // Add new messages
                         if (newMessages.length > 0) {
-                            messages.value.push(...newMessages)
                             console.log(`[Auto-refresh] Added ${newMessages.length} new message(s)`)
 
                             // Scroll to bottom if user is near bottom
                             await nextTick()
-                            const container = messagesContainer.value
-                            if (container) {
-                                const isNearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 200
-                                if (isNearBottom) {
-                                    scrollToBottom()
-                                }
+                            if (shouldStickToBottom) {
+                                scrollToBottom(true)
                             }
                         }
                     } catch (e) {
@@ -3223,19 +3302,14 @@
 
                         // Use cursor-based pagination (faster) instead of offset
                         // For initial load or search, don't use cursor
-                        // For subsequent loads, use the oldest message's date as cursor
+                        // For subsequent loads, use the last history-page boundary.
                         if (messages.value.length > 0 && !messageSearchQuery.value) {
-                            // Find the oldest message (messages are sorted newest first)
-                            const oldestMsg = messages.value.reduce((oldest, msg) => {
-                                const msgDate = new Date(msg.date)
-                                const oldestDate = new Date(oldest.date)
-                                return msgDate < oldestDate ? msg : oldest
-                            }, messages.value[0])
+                            const cursor = oldestMessageCursor || messageCursor(oldestMessageFrom(messages.value))
 
-                            if (oldestMsg?.date) {
-                                url += `&before_date=${encodeURIComponent(oldestMsg.date)}`
-                                if (oldestMsg.id) {
-                                    url += `&before_id=${oldestMsg.id}`
+                            if (cursor?.date) {
+                                url += `&before_date=${encodeURIComponent(cursor.date)}`
+                                if (cursor.id != null) {
+                                    url += `&before_id=${cursor.id}`
                                 }
                             }
                         }
@@ -3256,6 +3330,9 @@
                         })
                         // Discard result if chat changed while we were fetching
                         if (chatVersion !== myVersion) return
+                        if (!res.ok) {
+                            throw new Error(`Message fetch failed: ${res.status}`)
+                        }
 
                         const newMessages = await res.json()
 
@@ -3263,14 +3340,12 @@
                             hasMore.value = false
                         }
 
-                        // Merge new messages, preferring complete messages from pagination over
-                        // incomplete jumpToDate messages (which lack user info, reactions, etc.)
-                        const existingById = new Map(messages.value.map(m => [m.id, m]))
-                        for (const newMsg of newMessages) {
-                            // Prefer new messages (from pagination with joins) over existing ones
-                            existingById.set(newMsg.id, newMsg)
+                        if (!messageSearchQuery.value) {
+                            updateOldestMessageCursor(newMessages)
                         }
-                        messages.value = Array.from(existingById.values())
+
+                        // Prefer messages from pagination with joins over temporary realtime rows.
+                        upsertMessages(newMessages)
                         page.value++  // Still increment for search pagination
                     } catch (e) {
                         console.error("Failed to load messages", e)
@@ -3289,8 +3364,7 @@
 
                 const searchMessages = async () => {
                     messages.value = []
-                    page.value = 0
-                    hasMore.value = true
+                    resetMessagePagination()
                     await loadMessages()
                 }
 

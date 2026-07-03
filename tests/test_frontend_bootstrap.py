@@ -167,3 +167,79 @@ def test_versions_401_sets_unauthenticated():
 
     assert "res.status === 401" in load_body
     assert "isAuthenticated.value = false" in load_body
+
+
+def test_realtime_display_uses_api_message_order():
+    """Local viewer ordering should match the API's date DESC, id DESC cursor contract."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    helper_start = html.index("const messageSortTime = (msg) =>")
+    helper_body = html[helper_start : html.index("// v6.2.0: Find the topics nav entry", helper_start)]
+    sorted_start = html.index("const sortedMessages = computed(() =>")
+    sorted_body = html[sorted_start : html.index("// Group consecutive messages", sorted_start)]
+
+    assert "moment.utc(msg?.date)" in helper_body
+    assert "messageSortTime(b) - messageSortTime(a)" in helper_body
+    assert "(Number(b?.id) || 0) - (Number(a?.id) || 0)" in helper_body
+    assert "return sortedLoadedMessages()" in sorted_body
+
+
+def test_history_cursor_is_not_advanced_by_realtime_refresh():
+    """Realtime/latest polling rows must not reset the older-history pagination cursor."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    helper_start = html.index("let oldestMessageCursor = null")
+    helper_body = html[helper_start : html.index("// v6.2.0: Find the topics nav entry", helper_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    load_start = html.index("const loadMessages = async () =>")
+    refresh_body = html[refresh_start:load_start]
+    load_body = html[load_start : html.index("const searchMessages = async () =>", load_start)]
+
+    assert "const updateOldestMessageCursor = (loadedMessages) =>" in helper_body
+    assert "const cursor = oldestMessageCursor || messageCursor(oldestMessageFrom(messages.value))" in load_body
+    assert "before_date=${encodeURIComponent(cursor.date)}" in load_body
+    assert "before_id=${cursor.id}" in load_body
+    assert "updateOldestMessageCursor(newMessages)" in load_body
+    assert "updateOldestMessageCursor" not in refresh_body
+    assert "reduce((oldest, msg)" not in load_body
+
+
+def test_jump_to_message_resets_history_pagination():
+    """Replacing the message window should rebuild history pagination from that window."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+
+    assert "messages.value = data.messages || data" in jump_body
+    assert "resetMessagePagination()" in jump_body
+    assert jump_body.index("messages.value = data.messages || data") < jump_body.index("resetMessagePagination()")
+
+
+def test_realtime_polling_skips_search_results():
+    """Latest-message polling should not mix unfiltered rows into search results."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return" in refresh_body
+
+
+def test_realtime_rows_are_filtered_deduped_and_stick_to_bottom():
+    """Realtime rows should match the active topic, canonicalize through polling, and keep latest view visible."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("case 'new_message':")
+    ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "messageBelongsToCurrentTopic(data.message)" in ws_body
+    assert "sameMessageId(m.id, data.message.id)" in ws_body
+    assert "upsertMessages([data.message])" in ws_body
+    assert "upsertMessages(latestMessages)" in refresh_body
+    assert "const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)" in refresh_body
+    assert "return !!container && container.scrollTop > -200" in html
+    assert "messages.value.push(data.message)" not in ws_body
+    assert "messages.value.push(...newMessages)" not in refresh_body
