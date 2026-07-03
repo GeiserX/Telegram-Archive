@@ -1686,9 +1686,38 @@
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
 
+                // Contract mirror — keep in sync with src/db/adapter.py get_messages_paginated:
+                // ORDER BY date DESC, id DESC; cursor (date < before_date OR (date = before_date AND id < before_id));
+                // topic filter coalesce(reply_to_top_id, GENERAL_TOPIC_ID). Telegram forums use topic id 1 for General.
+                const GENERAL_TOPIC_ID = 1
+                // flex-col-reverse geometry: scrollTop === 0 is the bottom, NEGATIVE when scrolled up.
+                const STICK_TO_BOTTOM_PX = 200   // auto-stick when within this of the bottom
+                const SHOW_JUMP_BUTTON_PX = 200  // show jump-to-latest beyond it (complementary — no dead band)
+
+                // Parse each row's date once (moment.utc, ~14x the cost of Date parsing) and cache
+                // by row object: the comparator runs O(n log n) times per sort, and sorts run on
+                // every poll tick. Row dates are immutable, so the cache never needs invalidation.
+                // moment.utc (NOT new Date): unmarked ISO strings must parse as UTC to agree with
+                // the day-separator grouping; new Date() would use browser-local time (ECMA-262).
+                const sortTimeCache = new WeakMap()
                 const messageSortTime = (msg) => {
-                    const parsed = moment.utc(msg?.date)
-                    return parsed.isValid() ? parsed.valueOf() : 0
+                    if (!msg || typeof msg !== 'object') return 0
+                    let cached = sortTimeCache.get(msg)
+                    if (cached === undefined) {
+                        if (!msg.date) {
+                            cached = 0
+                        } else {
+                            const parsed = moment.utc(msg.date)
+                            if (parsed.isValid()) {
+                                cached = parsed.valueOf()
+                            } else {
+                                console.warn('[Messages] Unparseable message date; sorting to oldest')
+                                cached = 0
+                            }
+                        }
+                        sortTimeCache.set(msg, cached)
+                    }
+                    return cached
                 }
 
                 const compareMessagesDesc = (a, b) => {
@@ -1698,10 +1727,14 @@
                 }
 
                 const sortedLoadedMessages = () => [...messages.value].sort(compareMessagesDesc)
+                // Pagination state: page/hasMore (refs, rendered) + oldestMessageCursor/loadFailureStreak
+                // (plain lets, never rendered). They move together: ONLY resetMessagePagination() may
+                // reset them; ONLY updateOldestMessageCursor() may advance the cursor (history pages,
+                // monotonically older).
                 let oldestMessageCursor = null
+                let loadFailureStreak = 0
 
                 const messageIdKey = (msg) => msg?.id == null ? null : String(msg.id)
-                const sameMessageId = (left, right) => left != null && right != null && String(left) === String(right)
 
                 const messageCursor = (msg) => {
                     if (!msg?.date) return null
@@ -1711,15 +1744,26 @@
                     return { date: msg.date, id, time: parsedDate.valueOf() }
                 }
 
+                // Single-pass min by the shared comparator. Rows without a usable cursor
+                // (invalid/missing date or non-finite id) are skipped so a malformed row can
+                // never jam the pagination boundary: it would win the "oldest" slot, yield a
+                // null cursor, and stall "load older" into refetching the first page forever.
                 const oldestMessageFrom = (messageList) => {
-                    if (!Array.isArray(messageList) || messageList.length === 0) return null
-                    const orderedMessages = [...messageList].sort(compareMessagesDesc)
-                    return orderedMessages[orderedMessages.length - 1] || null
+                    if (!Array.isArray(messageList)) return null
+                    let oldest = null
+                    for (const msg of messageList) {
+                        if (!messageCursor(msg)) continue
+                        if (oldest === null || compareMessagesDesc(msg, oldest) > 0) oldest = msg
+                    }
+                    return oldest
                 }
 
                 const updateOldestMessageCursor = (loadedMessages) => {
                     const nextCursor = messageCursor(oldestMessageFrom(loadedMessages))
                     if (!nextCursor) return
+                    // Monotonic (older-only): real history pages are older by construction; this
+                    // guard only matters for the jump-window/initial-load edges where a newer
+                    // window could otherwise rewind the boundary.
                     if (!oldestMessageCursor || nextCursor.time < oldestMessageCursor.time ||
                         (nextCursor.time === oldestMessageCursor.time && nextCursor.id < oldestMessageCursor.id)) {
                         oldestMessageCursor = nextCursor
@@ -1730,43 +1774,61 @@
                     page.value = 0
                     hasMore.value = true
                     oldestMessageCursor = null
+                    loadFailureStreak = 0
                 }
 
-                const currentTopicId = () => {
-                    const nav = currentNav.value
-                    if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
-                        return Number(nav.topicId)
-                    }
-                    return null
-                }
-
+                // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
+                // Non-forum chats never set nav.topicId, so the filter is bypassed (returns true).
                 const messageBelongsToCurrentTopic = (msg) => {
-                    const topicId = currentTopicId()
-                    if (topicId == null) return true
-                    return Number(msg?.reply_to_top_id ?? 1) === topicId
+                    const nav = currentNav.value
+                    if (nav.type !== 'chat' || !nav.topicId || nav.topicId === 'all') return true
+                    return Number(msg?.reply_to_top_id ?? GENERAL_TOPIC_ID) === Number(nav.topicId)
                 }
 
-                const upsertMessages = (incomingMessages) => {
-                    if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) return 0
+                // In-place merge keyed by message id. Preserves row object identity so long-lived
+                // refs (versions drawer, lightbox) and the id-keyed v-for stay attached, and never
+                // reassigns messages.value wholesale — an idle poll tick that changes nothing
+                // triggers no re-sort and no re-render. updateExisting: false = insert-only (WS
+                // path: a bare realtime row must never overwrite an already-loaded joined row).
+                const upsertMessages = (incomingMessages, { updateExisting = true } = {}) => {
+                    if (!Array.isArray(incomingMessages)) {
+                        if (incomingMessages != null) console.warn('[Messages] upsertMessages ignored non-array input')
+                        return 0
+                    }
+                    if (incomingMessages.length === 0) return 0
                     const existingById = new Map()
                     for (const existingMsg of messages.value) {
                         const key = messageIdKey(existingMsg)
                         if (key != null) existingById.set(key, existingMsg)
                     }
-                    let addedCount = 0
+                    const added = []
                     for (const newMsg of incomingMessages) {
                         const key = messageIdKey(newMsg)
-                        if (key != null) {
-                            if (!existingById.has(key)) addedCount++
+                        if (key == null) continue
+                        const existingMsg = existingById.get(key)
+                        if (existingMsg === undefined) {
                             existingById.set(key, newMsg)
+                            added.push(newMsg)
+                        } else if (updateExisting) {
+                            // Field-level in-place merge: only write fields that actually changed,
+                            // so Vue bindings on untouched fields never re-evaluate.
+                            for (const field of Object.keys(newMsg)) {
+                                if (existingMsg[field] !== newMsg[field]) {
+                                    existingMsg[field] = newMsg[field]
+                                }
+                            }
                         }
                     }
-                    messages.value = Array.from(existingById.values())
-                    return addedCount
+                    if (added.length > 0) {
+                        // Raw array order is irrelevant (sortedMessages re-sorts; v-for is keyed
+                        // by msg.id), so appending is enough.
+                        messages.value.push(...added)
+                    }
+                    return added.length
                 }
 
                 const isNearMessageBottom = (container) => {
-                    return !!container && container.scrollTop > -200
+                    return !!container && container.scrollTop > -STICK_TO_BOTTOM_PX
                 }
 
                 // v6.2.0: Find the topics nav entry for sidebar display
@@ -2404,11 +2466,12 @@
                         case 'new_message':
                             // Add to messages if we're viewing that chat/topic (deduplicate by ID)
                             if (selectedChat.value?.id === data.chat_id && data.message?.id != null && messageBelongsToCurrentTopic(data.message)) {
-                                if (!messages.value.some(m => sameMessageId(m.id, data.message.id))) {
-                                    const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
-                                    if (upsertMessages([data.message]) > 0 && shouldStickToBottom) {
-                                        nextTick(() => scrollToBottom(true))
-                                    }
+                                const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
+                                // insert-only: a bare realtime row (no user/media joins, text truncated
+                                // by the notifier) must never overwrite an already-loaded joined row;
+                                // the next poll tick canonicalizes it via upsertMessages(latestMessages).
+                                if (upsertMessages([data.message], { updateExisting: false }) > 0 && shouldStickToBottom) {
+                                    nextTick(() => scrollToBottom())
                                 }
                             }
                             // Show notification
@@ -2964,20 +3027,35 @@
 
                 const loadMessagesAroundId = async (messageId) => {
                     if (!selectedChat.value) return
-                    const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=50`, {
-                        credentials: 'include'
-                    })
-                    if (res.ok) {
-                        const data = await res.json()
-                        messages.value = data.messages || data
-                        resetMessagePagination()
-                        await nextTick()
-                        setupMessagesScrollObserver()
-                        const el = document.querySelector(`[data-msg-id="${messageId}"]`)
-                        if (el) {
-                            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                            el.classList.add('bg-yellow-500/10')
-                            setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                    // Same stale-response idiom as selectChat/selectTopic: bump chatVersion so
+                    // in-flight polls/loads for the previous view discard themselves, and re-check
+                    // after every await so a stale jump can never overwrite another view's pane or
+                    // wipe its pagination state. loading also gates concurrent sentinel loads.
+                    const myVersion = ++chatVersion
+                    loading.value = true
+                    try {
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=50`, {
+                            credentials: 'include'
+                        })
+                        if (chatVersion !== myVersion) return
+                        if (res.ok) {
+                            const data = await res.json()
+                            if (chatVersion !== myVersion) return
+                            messages.value = data.messages || data
+                            resetMessagePagination()
+                            await nextTick()
+                            if (chatVersion !== myVersion) return
+                            setupMessagesScrollObserver()
+                            const el = document.querySelector(`[data-msg-id="${messageId}"]`)
+                            if (el) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                el.classList.add('bg-yellow-500/10')
+                                setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                            }
+                        }
+                    } finally {
+                        if (chatVersion === myVersion) {
+                            loading.value = false
                         }
                     }
                 }
@@ -2987,8 +3065,15 @@
                         loadMediaGallery()
                         loadMediaCounts()
                     } else {
-                        await nextTick()
-                        setupMessagesScrollObserver()
+                        // Vue does not await async watchers — contain any rejection locally.
+                        // The module-level messagesScrollObserver binding makes concurrent
+                        // reconnects (this watcher + loadMessagesAroundId) converge safely.
+                        try {
+                            await nextTick()
+                            setupMessagesScrollObserver()
+                        } catch (e) {
+                            console.warn('[Messages] Failed to reconnect scroll observer', e)
+                        }
                     }
                 })
 
@@ -3008,7 +3093,9 @@
                         return pinnedMessages.value
                     }
                     // Sort messages by date (newest first) - flex-col-reverse displays them chronologically
-                    // This gives instant "scroll to bottom" experience on mobile
+                    // This gives instant "scroll to bottom" experience on mobile.
+                    // The message v-for is keyed by msg.id, so in-place row merges from
+                    // upsertMessages patch bindings without re-rendering the list.
                     return sortedLoadedMessages()
                 })
 
@@ -3227,27 +3314,30 @@
                         const res = await fetch(refreshUrl, {
                             credentials: 'include'
                         })
+                        if (res.status === 401) {
+                            // Session expired: surface the login screen instead of silently
+                            // no-op polling forever.
+                            isAuthenticated.value = false
+                            return
+                        }
                         if (!res.ok || chatVersion !== myVersion) return
 
                         const latestMessages = await res.json()
+                        // Re-check after the SECOND await: the body parse can resolve after a
+                        // chat/topic switch or after a search started mid-flight, and everything
+                        // below mutates the live view.
+                        if (chatVersion !== myVersion || messageSearchQuery.value) return
+
+                        // NOTE: keep everything from here to the mutations synchronous (no await)
+                        // — it must operate on one consistent messages.value snapshot.
                         const latestIds = new Set(latestMessages.map(messageIdKey).filter(Boolean))
-                        // Re-read existing messages right before mutation to avoid stale snapshots.
-                        // Index by id once so the new-message filter and soft-delete refresh below
-                        // are O(latest) lookups instead of O(latest × inView) array scans per poll.
-                        const existingById = new Map(messages.value.map(m => [messageIdKey(m), m]).filter(([key]) => key != null))
-                        const existingIds = new Set(existingById.keys())
+                        const existingIds = new Set(messages.value.map(messageIdKey).filter(k => k != null))
 
                         // Find new messages (in server response but not in our view)
                         const newMessages = latestMessages.filter(m => !existingIds.has(messageIdKey(m)))
 
-                        // Refresh soft-delete markers for messages already in view
-                        latestMessages.forEach(serverMsg => {
-                            const currentMsg = existingById.get(messageIdKey(serverMsg))
-                            if (currentMsg && currentMsg.chat_id === serverMsg.chat_id) {
-                                currentMsg.is_deleted = serverMsg.is_deleted
-                                currentMsg.deleted_at = serverMsg.deleted_at
-                            }
-                        })
+                        // (soft-delete markers are refreshed by upsertMessages(latestMessages)
+                        // below, which merges is_deleted/deleted_at in place on existing rows)
 
                         // Find deleted messages - ONLY check messages that overlap with our fetch
                         // We fetched the latest 50/20 from server. Compare with our newest messages.
@@ -3256,9 +3346,16 @@
                         // Get our newest messages (same count as server returned)
                         const ourNewestMessages = sortedByDate.slice(0, latestMessages.length)
 
-                        // Only messages that SHOULD be in the latest fetch but aren't = deleted
-                        // A message is deleted if: it's in our newest messages AND not in server's latest
-                        const deletedIds = ourNewestMessages
+                        // Only rows within the server's returned window are deletion candidates:
+                        // rows older than the oldest row the server sent are outside the poll's
+                        // visibility (a jump-to-message history window, or rows displaced when
+                        // new arrivals shifted the latest-50 window) and must NOT be treated as
+                        // deleted. Without this bound, jumping into old history got the whole
+                        // window wiped on the next tick, and every burst of k new messages
+                        // falsely deleted the k oldest of our newest rows.
+                        const serverOldest = oldestMessageFrom(latestMessages)
+                        const deletedIds = serverOldest === null ? [] : ourNewestMessages
+                            .filter(m => compareMessagesDesc(m, serverOldest) <= 0)
                             .filter(m => !latestIds.has(messageIdKey(m)))
                             .map(messageIdKey)
 
@@ -3276,10 +3373,13 @@
                         if (newMessages.length > 0) {
                             console.log(`[Auto-refresh] Added ${newMessages.length} new message(s)`)
 
-                            // Scroll to bottom if user is near bottom
+                            // Scroll to bottom if user is near bottom. Default (non-immediate)
+                            // scrollToBottom: it re-snaps via rAF + timeouts and primes iOS
+                            // touch scrolling — lazy-loaded media can grow row heights after
+                            // the first snap.
                             await nextTick()
                             if (shouldStickToBottom) {
-                                scrollToBottom(true)
+                                scrollToBottom()
                             }
                         }
                     } catch (e) {
@@ -3335,10 +3435,28 @@
                         // Discard result if chat changed while we were fetching
                         if (chatVersion !== myVersion) return
                         if (!res.ok) {
+                            if (res.status === 401) {
+                                // Session expired: surface the login screen instead of retry-looping.
+                                isAuthenticated.value = false
+                                return
+                            }
+                            // The sentinel remounts when loading flips back and re-fires while
+                            // visible; without a cap a persistent 5xx becomes a tight retry loop.
+                            loadFailureStreak++
+                            if (loadFailureStreak >= 3) {
+                                hasMore.value = false
+                                console.warn('[Messages] Pagination paused after repeated fetch failures; reopen the chat to retry')
+                            }
                             throw new Error(`Message fetch failed: ${res.status}`)
                         }
+                        loadFailureStreak = 0
 
                         const newMessages = await res.json()
+                        // Re-check after the SECOND await (res.json): a chat/topic switch or a new
+                        // search while the body was parsing must discard this result — a stale
+                        // write here could seed oldestMessageCursor from the wrong view and
+                        // permanently wedge "load older" (the cursor only ever moves older).
+                        if (chatVersion !== myVersion) return
 
                         if (newMessages.length < limit) {
                             hasMore.value = false
@@ -3367,6 +3485,9 @@
                 }
 
                 const searchMessages = async () => {
+                    // Invalidate in-flight polls/loads: their post-await guards check chatVersion,
+                    // so bumping it here keeps unfiltered rows out of fresh search results.
+                    chatVersion++
                     messages.value = []
                     resetMessagePagination()
                     await loadMessages()
@@ -3378,7 +3499,7 @@
                     // Show/hide scroll to bottom button
                     // With flex-col-reverse: scrollTop is NEGATIVE when scrolled up from bottom
                     // scrollTop=0 is at bottom (newest), scrollTop=-1000 means scrolled up 1000px
-                    showScrollToBottom.value = scrollTop < -300
+                    showScrollToBottom.value = scrollTop < -SHOW_JUMP_BUTTON_PX
                 }
 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)

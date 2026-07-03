@@ -192,7 +192,8 @@ def test_realtime_display_uses_api_message_order():
     sorted_start = html.index("const sortedMessages = computed(() =>")
     sorted_body = html[sorted_start : html.index("// Group consecutive messages", sorted_start)]
 
-    assert "moment.utc(msg?.date)" in helper_body
+    assert "moment.utc(msg.date)" in helper_body
+    assert "sortTimeCache" in helper_body
     assert "messageSortTime(b) - messageSortTime(a)" in helper_body
     assert "(Number(b?.id) || 0) - (Number(a?.id) || 0)" in helper_body
     assert "return sortedLoadedMessages()" in sorted_body
@@ -216,6 +217,8 @@ def test_history_cursor_is_not_advanced_by_realtime_refresh():
     assert "updateOldestMessageCursor(newMessages)" in load_body
     assert "updateOldestMessageCursor" not in refresh_body
     assert "reduce((oldest, msg)" not in load_body
+    assert "if (chatVersion !== myVersion || messageSearchQuery.value) return" in refresh_body
+    assert load_body.count("chatVersion !== myVersion") >= 2
 
 
 def test_jump_to_message_resets_history_pagination():
@@ -225,6 +228,8 @@ def test_jump_to_message_resets_history_pagination():
     jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
 
+    assert "const myVersion = ++chatVersion" in jump_body
+    assert "loading.value = true" in jump_body
     assert "messages.value = data.messages || data" in jump_body
     assert "resetMessagePagination()" in jump_body
     assert "setupMessagesScrollObserver()" in jump_body
@@ -238,8 +243,11 @@ def test_realtime_polling_skips_search_results():
 
     refresh_start = html.index("const checkForNewMessages = async () =>")
     refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    search_start = html.index("const searchMessages = async () =>")
+    search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
 
     assert "if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return" in refresh_body
+    assert "chatVersion++" in search_body
 
 
 def test_realtime_rows_are_filtered_deduped_and_stick_to_bottom():
@@ -252,10 +260,64 @@ def test_realtime_rows_are_filtered_deduped_and_stick_to_bottom():
     refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
 
     assert "messageBelongsToCurrentTopic(data.message)" in ws_body
-    assert "sameMessageId(m.id, data.message.id)" in ws_body
-    assert "upsertMessages([data.message])" in ws_body
+    assert "isNearMessageBottom(messagesContainer.value)" in ws_body
+    assert "upsertMessages([data.message], { updateExisting: false })" in ws_body
+    assert ws_body.index("const shouldStickToBottom") < ws_body.index("upsertMessages([data.message]")
     assert "upsertMessages(latestMessages)" in refresh_body
     assert "const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)" in refresh_body
-    assert "return !!container && container.scrollTop > -200" in html
+    assert "return !!container && container.scrollTop > -STICK_TO_BOTTOM_PX" in html
     assert "messages.value.push(data.message)" not in ws_body
     assert "messages.value.push(...newMessages)" not in refresh_body
+
+
+def test_pagination_reset_called_at_all_entry_points():
+    """Every view-switching entry point must reset history pagination before loading."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    topic_start = html.index("const selectTopic = async (chat, topic) =>")
+    topic_body = html[topic_start : html.index("const activeTab = computed", topic_start)]
+    chat_start = html.index("const selectChat = async (chat) =>")
+    chat_body = html[chat_start : html.index("const startMessageRefresh = () =>", chat_start)]
+    search_start = html.index("const searchMessages = async () =>")
+    search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
+
+    assert "resetMessagePagination()" in topic_body
+    assert "resetMessagePagination()" in chat_body
+    assert "resetMessagePagination()" in search_body
+
+
+def test_topic_filter_mirrors_backend_default():
+    """The viewer's topic filter must mirror the backend's General-topic coalesce default."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    belongs_start = html.index("const messageBelongsToCurrentTopic = (msg) =>")
+    belongs_body = html[belongs_start : html.index("const upsertMessages", belongs_start)]
+
+    assert "reply_to_top_id ?? GENERAL_TOPIC_ID" in belongs_body
+    assert "const GENERAL_TOPIC_ID = 1" in html
+
+
+def test_load_messages_handles_auth_expiry():
+    """A 401 from the messages endpoint must surface the login screen, and history retries must be capped."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    load_start = html.index("const loadMessages = async () =>")
+    load_body = html[load_start : html.index("const searchMessages = async () =>", load_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "res.status === 401" in load_body
+    assert "isAuthenticated.value = false" in load_body
+    assert "loadFailureStreak" in load_body
+    assert "res.status === 401" in refresh_body
+
+
+def test_poll_deletion_pass_is_range_bounded():
+    """Polling must not treat rows outside the server's returned window as deleted."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+
+    assert "const serverOldest = oldestMessageFrom(latestMessages)" in refresh_body
+    assert "compareMessagesDesc(m, serverOldest) <= 0" in refresh_body
