@@ -893,6 +893,9 @@ class TelegramListener:
                     await self.db.upsert_chat(chat_data)
 
                 # Save sender information if available
+                # sender_user is kept for the WS notify payload below (mirrors the API row's
+                # flat first_name/last_name/username fields).
+                sender_user = None
                 if message.sender and isinstance(message.sender, User):
                     user_data = {
                         "id": message.sender.id,
@@ -903,6 +906,7 @@ class TelegramListener:
                         "is_bot": message.sender.bot,
                     }
                     await self.db.upsert_user(user_data)
+                    sender_user = user_data
 
                 message_data = {
                     "id": message.id,
@@ -933,6 +937,9 @@ class TelegramListener:
                 self.stats["new_messages_saved"] += 1
 
                 # v6.0.0: Handle media - create Media record AFTER message exists
+                # ws_media mirrors the API row's nested media dict for the WS notify payload
+                # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
+                ws_media = None
                 if media_type:
                     # Download media immediately if enabled
                     if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
@@ -956,12 +963,36 @@ class TelegramListener:
                                     }
                                 )
                                 logger.debug(f"📎 Downloaded media: {media_path}")
+                                # Mirror the DB row: insert_media leaves file_size/mime_type/width/
+                                # height/duration as None in this path (not passed above), so the
+                                # WS row matches what the next poll will return.
+                                ws_media = {
+                                    "id": media_id,
+                                    "type": media_type,
+                                    "file_path": media_path,
+                                    "file_name": media_file_name,
+                                    "file_size": None,
+                                    "mime_type": None,
+                                    "width": None,
+                                    "height": None,
+                                    "duration": None,
+                                }
                         except Exception as e:
                             logger.warning(f"Failed to download media for message {message.id}: {e}")
 
-                # Send real-time notification
+                # Send real-time notification (enriched to mirror the API row shape so the
+                # viewer can render sender name + media immediately instead of a bare row
+                # until the next poll: flat user fields + nested media dict). message_data
+                # itself is left untouched since it was already passed to db.insert_message.
                 if self._notifier:
-                    await self._notifier.notify(NotificationType.NEW_MESSAGE, chat_id, {"message": message_data})
+                    ws_message = {
+                        **message_data,
+                        "first_name": sender_user["first_name"] if sender_user else None,
+                        "last_name": sender_user["last_name"] if sender_user else None,
+                        "username": sender_user["username"] if sender_user else None,
+                        "media": ws_media,
+                    }
+                    await self._notifier.notify(NotificationType.NEW_MESSAGE, chat_id, {"message": ws_message})
 
                 # Log the new message (truncate text for logging)
                 text_preview = (message.text or "")[:50]

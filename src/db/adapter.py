@@ -1675,6 +1675,7 @@ class DatabaseAdapter:
 
             # v6.2.0: Filter by forum topic. NULL reply_to_top_id == General (id=1),
             # matching the coalesce in get_forum_topics counts.
+            # Mirrored by messageBelongsToCurrentTopic in the viewer (GENERAL_TOPIC_ID).
             if topic_id is not None:
                 stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
@@ -1683,6 +1684,7 @@ class DatabaseAdapter:
                 stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
 
             # Cursor-based pagination (preferred - O(1) performance)
+            # Mirrored by the viewer (src/web/templates/index.html: compareMessagesDesc/messageCursor) — keep in sync.
             if before_date is not None:
                 # Use composite cursor: (date, id) for deterministic ordering
                 # Messages with same date are ordered by id DESC
