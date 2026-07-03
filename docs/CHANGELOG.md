@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.19.0] - 2026-07-04
+
+### Added
+- **Unseen-message badge** — When new messages arrive while you're scrolled up reading history, the jump-to-latest button now appears with a count badge (screen-reader labelled) instead of messages arriving silently off-screen. The count clears when you return near the bottom, jump manually, or switch views. ([#207](https://github.com/GeiserX/Telegram-Archive/pull/207))
+- **Instant realtime rendering** — WebSocket-delivered messages now carry the sender's name and the downloaded media info, so they render fully immediately instead of appearing as a bare text bubble for up to a poll interval.
+- **Gallery remembers your place** — Closing the shared-media gallery returns you to the exact scroll position and keyboard focus you had, instead of dropping you at the newest message with focus reset.
+
+### Fixed
+- **Realtime display stability** — Message ordering now matches the server contract exactly (`date` then `id`, parsed as UTC), fixing same-second messages rendering out of order and a latent local-timezone sort inconsistency near midnight/DST; realtime and polled rows are deduplicated by a type-safe key; WebSocket rows are filtered to the forum topic being viewed; and auto-scroll on arrival only happens when you're already near the bottom — with the full re-snap cascade for lazily-loading media. ([#207](https://github.com/GeiserX/Telegram-Archive/pull/207))
+- **"Load older" pagination can no longer be corrupted** — The history cursor is now advanced only by real history page loads (monotonically older), so realtime arrivals, polling, jump-to-message windows, and media-gallery visits no longer break infinite scroll; the scroll observer is reconnected after the gallery unmounts and after jump-to-message rebuilds the list.
+- **Jumping into old history no longer snaps back** — The poll's deletion detection is bounded to the window the server actually returned, fixing the jumped-to view being wiped (and the user yanked to the latest messages) within seconds, plus older loaded rows being falsely removed whenever a burst of new messages arrived.
+- **Cross-view race conditions** — Fast chat/topic switching, typing in search, and jump-to-message can no longer splice another view's rows into the current one, wedge pagination for the session, or stall search with a stuck loading gate; all fetch paths now re-validate the active view after every await.
+- **Expired sessions surface the login screen** — A 401 during scrolling or background polling now flips the viewer to the login page instead of silently retry-looping forever; repeated pagination failures pause infinite scroll with a console note instead of hammering a failing endpoint.
+- **Idle efficiency** — Background polling on a quiet chat no longer re-sorts and re-renders the loaded history every 3 seconds: per-row sort keys are parsed once and cached, and poll merges write in place only when a field actually changed (measured: ~60ms of main-thread work per tick at 5,000 loaded messages down to ~0).
+
+### Credits
+- Thanks to [@charys117](https://github.com/charys117) for diagnosing and fixing the realtime display, history-cursor, and gallery-observer bugs in [#207](https://github.com/GeiserX/Telegram-Archive/pull/207) — the third quality contribution in a row, including fork-side image build validation before submission.
+
 ## [7.18.1] - 2026-07-02
 
 ### Fixed
