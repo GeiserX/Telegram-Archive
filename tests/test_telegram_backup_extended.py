@@ -49,6 +49,9 @@ def _make_backup(**overrides):
     backup.config.should_skip_topic = MagicMock(return_value=False)
     backup.config.deletion_mode = "hard"
     backup.db = overrides.get("db", AsyncMock())
+    # Folder resolution reads the archived-chat snapshot; default to empty so
+    # tests that exercise _backup_folders get an iterable, not a bare AsyncMock.
+    backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
     backup.client = overrides.get("client", AsyncMock())
     backup._owns_client = overrides.get("_owns_client", True)
     backup._cleaned_media_chats = set()
@@ -1218,6 +1221,33 @@ class TestBackupForumTopicsFallback(unittest.TestCase):
 # ===========================================================================
 
 
+_FOLDER_FLAGS = (
+    "contacts",
+    "non_contacts",
+    "groups",
+    "broadcasts",
+    "bots",
+    "exclude_muted",
+    "exclude_read",
+    "exclude_archived",
+)
+
+
+def _make_filter(**over):
+    """Build a DialogFilter-like mock with safe defaults for every field the
+    resolver reads (peer lists empty, all flags off), overridable per test."""
+    f = MagicMock()
+    f.id = over.get("id", 1)
+    f.title = over.get("title", "Folder")
+    f.emoticon = over.get("emoticon")
+    f.pinned_peers = over.get("pinned_peers", [])
+    f.include_peers = over.get("include_peers", [])
+    f.exclude_peers = over.get("exclude_peers", [])
+    for flag in _FOLDER_FLAGS:
+        setattr(f, flag, over.get(flag, False))
+    return f
+
+
 class TestBackupFolders(unittest.TestCase):
     """Test _backup_folders chat folder sync."""
 
@@ -1227,12 +1257,7 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_backs_up_folders_with_peers(self):
         """Folders with include_peers are synced."""
-        folder = MagicMock()
-        folder.id = 1
-        folder.title = "Work"
-        folder.emoticon = None
-        peer = MagicMock()
-        folder.include_peers = [peer]
+        folder = _make_filter(id=1, title="Work", include_peers=[MagicMock()])
 
         self.backup.client = AsyncMock(return_value=[folder])
 
@@ -1244,13 +1269,9 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_folder_with_text_with_entities_title(self):
         """Folder title that has .text attribute is extracted."""
-        folder = MagicMock()
-        folder.id = 2
         title_obj = MagicMock()
         title_obj.text = "Personal"
-        folder.title = title_obj
-        folder.emoticon = "star"
-        folder.include_peers = []
+        folder = _make_filter(id=2, title=title_obj, emoticon="star")
 
         self.backup.client = AsyncMock(return_value=[folder])
 
@@ -1262,11 +1283,7 @@ class TestBackupFolders(unittest.TestCase):
     def test_skips_filters_without_id_or_title(self):
         """Filters without id/title attributes (default All) are skipped."""
         default_filter = MagicMock(spec=[])  # no id or title
-        real_folder = MagicMock()
-        real_folder.id = 3
-        real_folder.title = "Archived"
-        real_folder.emoticon = None
-        real_folder.include_peers = []
+        real_folder = _make_filter(id=3, title="Archived")
 
         self.backup.client = AsyncMock(return_value=[default_filter, real_folder])
 
@@ -1282,16 +1299,69 @@ class TestBackupFolders(unittest.TestCase):
 
         self.assertEqual(result, 0)
 
+    def test_pinned_peers_are_included(self):
+        """pinned_peers resolve into folder membership, not just include_peers."""
+        folder = _make_filter(id=10, title="Pinned", pinned_peers=[MagicMock()])
+        self.backup._get_marked_id = MagicMock(return_value=777)
+        self.backup.client = AsyncMock(return_value=[folder])
+
+        _run(self.backup._backup_folders())
+
+        call_args = self.backup.db.sync_folder_members.call_args[0]
+        self.assertIn(777, call_args[1])
+
+    def test_exclude_peers_removes_flag_match(self):
+        """A groups folder resolves group chats minus its exclude_peers."""
+        folder = _make_filter(id=11, title="Groups", groups=True, exclude_peers=[MagicMock()])
+        # exclude peer resolves to -2002; groups in the archive are -2001 and -2002.
+        self.backup._get_marked_id = MagicMock(return_value=-2002)
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(
+            return_value=[
+                {"id": -2001, "type": "group", "is_bot": False, "is_archived": False},
+                {"id": -2002, "type": "group", "is_bot": False, "is_archived": False},
+            ]
+        )
+        self.backup.client = AsyncMock(return_value=[folder])
+
+        _run(self.backup._backup_folders())
+
+        synced = self.backup.db.sync_folder_members.call_args[0][1]
+        self.assertIn(-2001, synced)
+        self.assertNotIn(-2002, synced)
+
+    def test_contacts_flag_fetches_contacts_and_resolves(self):
+        """A contacts folder pulls the contact list and matches contact privates."""
+        folder = _make_filter(id=12, title="People", contacts=True)
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(
+            return_value=[
+                {"id": 501, "type": "private", "is_bot": False, "is_archived": False},
+                {"id": 502, "type": "private", "is_bot": False, "is_archived": False},
+            ]
+        )
+        self.backup._get_contact_ids = AsyncMock(return_value={501})
+        self.backup.client = AsyncMock(return_value=[folder])
+
+        _run(self.backup._backup_folders())
+
+        self.backup._get_contact_ids.assert_awaited_once()
+        synced = self.backup.db.sync_folder_members.call_args[0][1]
+        self.assertEqual(set(synced), {501})
+
+    def test_no_contact_fetch_without_contact_flags(self):
+        """Contacts are not fetched for folders that don't use contact flags."""
+        folder = _make_filter(id=13, title="Groups", groups=True)
+        self.backup._get_contact_ids = AsyncMock(return_value=set())
+        self.backup.client = AsyncMock(return_value=[folder])
+
+        _run(self.backup._backup_folders())
+
+        self.backup._get_contact_ids.assert_not_awaited()
+
     def test_peer_resolution_fallback_user_id(self):
         """Peer with user_id fallback when get_marked_id raises."""
-        folder = MagicMock()
-        folder.id = 4
-        folder.title = "Friends"
-        folder.emoticon = None
-
         peer = MagicMock()
         peer.user_id = 42
-        folder.include_peers = [peer]
+        folder = _make_filter(id=4, title="Friends", include_peers=[peer])
 
         def fail_on_peer(p):
             if p is peer:
@@ -1308,15 +1378,9 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_peer_resolution_fallback_chat_id(self):
         """Peer with chat_id fallback when get_marked_id raises."""
-        folder = MagicMock()
-        folder.id = 5
-        folder.title = "Groups"
-        folder.emoticon = None
-
         peer = MagicMock(spec=["chat_id"])
         peer.chat_id = 999
-        del peer.user_id  # Ensure user_id path not taken
-        folder.include_peers = [peer]
+        folder = _make_filter(id=5, title="Groups", include_peers=[peer])
 
         self.backup._get_marked_id = MagicMock(side_effect=Exception("fail"))
         self.backup.client = AsyncMock(return_value=[folder])
@@ -1328,14 +1392,9 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_peer_resolution_fallback_channel_id(self):
         """Peer with channel_id fallback when get_marked_id raises."""
-        folder = MagicMock()
-        folder.id = 6
-        folder.title = "Channels"
-        folder.emoticon = None
-
         peer = MagicMock(spec=["channel_id"])
         peer.channel_id = 555
-        folder.include_peers = [peer]
+        folder = _make_filter(id=6, title="Channels", include_peers=[peer])
 
         self.backup._get_marked_id = MagicMock(side_effect=Exception("fail"))
         self.backup.client = AsyncMock(return_value=[folder])
@@ -1347,11 +1406,7 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_result_has_filters_attribute(self):
         """Handles result object with .filters attribute."""
-        folder = MagicMock()
-        folder.id = 7
-        folder.title = "Test"
-        folder.emoticon = None
-        folder.include_peers = []
+        folder = _make_filter(id=7, title="Test")
 
         result_obj = MagicMock()
         result_obj.filters = [folder]

@@ -2288,6 +2288,34 @@ class DatabaseAdapter:
                 )
             return folders
 
+    async def get_chats_for_folder_resolution(self) -> list[dict[str, Any]]:
+        """Return every archived chat with the facts needed to evaluate a folder's
+        category flags: id, type, whether it is a bot, and archived state.
+
+        Bot-ness is only meaningful for private chats and is read from the users
+        table (chats store bots as type ``private``). The join is on ``User.id ==
+        Chat.id`` — a private chat's id is the positive user id, while group and
+        channel ids are negative/marked and can never collide with a user id, so
+        they always resolve to ``is_bot = 0``.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(
+                Chat.id,
+                Chat.type,
+                Chat.is_archived,
+                func.coalesce(User.is_bot, 0).label("is_bot"),
+            ).outerjoin(User, User.id == Chat.id)
+            result = await session.execute(stmt)
+            return [
+                {
+                    "id": row.id,
+                    "type": row.type,
+                    "is_bot": bool(row.is_bot),
+                    "is_archived": bool(row.is_archived),
+                }
+                for row in result
+            ]
+
     @retry_on_locked()
     async def cleanup_stale_folders(self, active_folder_ids: list[int]) -> None:
         """Remove folders that no longer exist in Telegram."""
