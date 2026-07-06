@@ -2602,6 +2602,35 @@ class TestGetAllFolders:
         assert result == []
 
 
+class TestGetChatsForFolderResolution:
+    """Test get_chats_for_folder_resolution (folder flag evaluation source)."""
+
+    @pytest.mark.asyncio
+    async def test_maps_rows_to_resolution_dicts(self):
+        """Rows are mapped to id/type/is_bot/is_archived with bools coerced."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        def _row(cid, ctype, is_archived, is_bot):
+            row = MagicMock()
+            row.id = cid
+            row.type = ctype
+            row.is_archived = is_archived
+            row.is_bot = is_bot
+            return row
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([_row(500, "private", 0, 1), _row(-100, "group", 1, 0)]))
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_chats_for_folder_resolution()
+
+        assert result == [
+            {"id": 500, "type": "private", "is_bot": True, "is_archived": False},
+            {"id": -100, "type": "group", "is_bot": False, "is_archived": True},
+        ]
+
+
 # ============================================================
 # Viewer account: get, get_by_username, get_all, update — lines 1735-1765
 # ============================================================
