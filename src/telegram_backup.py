@@ -23,6 +23,7 @@ from telethon.errors import (
 from telethon.tl.types import (
     Channel,
     Chat,
+    InputPeerSelf,
     Message,
     MessageMediaContact,
     MessageMediaDocument,
@@ -37,6 +38,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
     compute_file_hash,
@@ -2465,9 +2467,82 @@ class TelegramBackup:
             logger.warning(f"  → Failed to infer forum topics: {e}")
             return 0
 
+    def _resolve_peer_ids(self, peers, own_id: int | None = None) -> set[int]:
+        """Resolve a DialogFilter peer list (InputPeer objects) to marked chat ids.
+
+        ``own_id`` maps ``InputPeerSelf`` (how a pinned Saved Messages chat is
+        stored) to the account's own user id, which get_peer_id cannot resolve.
+        """
+        ids: set[int] = set()
+        for peer in peers or []:
+            if own_id is not None and isinstance(peer, InputPeerSelf):
+                ids.add(own_id)
+                continue
+            try:
+                ids.add(self._get_marked_id(peer))
+            except Exception:
+                # Some peers might not be resolvable via get_peer_id; fall back to
+                # the raw id fields with the standard marked-id conventions.
+                if hasattr(peer, "user_id"):
+                    ids.add(peer.user_id)
+                elif hasattr(peer, "chat_id"):
+                    ids.add(-peer.chat_id)
+                elif hasattr(peer, "channel_id"):
+                    ids.add(-1000000000000 - peer.channel_id)
+        return ids
+
+    def _folder_rules_from_filter(self, f, own_id: int | None = None) -> FolderRules:
+        """Build resolver rules from a DialogFilter / DialogFilterChatlist.
+
+        Chatlist (shareable) folders carry no flags or exclude_peers; getattr
+        defaults keep them as a pure pinned+include allowlist.
+        """
+        return FolderRules(
+            pinned_ids=frozenset(self._resolve_peer_ids(getattr(f, "pinned_peers", []), own_id)),
+            include_ids=frozenset(self._resolve_peer_ids(getattr(f, "include_peers", []), own_id)),
+            exclude_ids=frozenset(self._resolve_peer_ids(getattr(f, "exclude_peers", []), own_id)),
+            contacts=bool(getattr(f, "contacts", False)),
+            non_contacts=bool(getattr(f, "non_contacts", False)),
+            groups=bool(getattr(f, "groups", False)),
+            broadcasts=bool(getattr(f, "broadcasts", False)),
+            bots=bool(getattr(f, "bots", False)),
+            exclude_muted=bool(getattr(f, "exclude_muted", False)),
+            exclude_read=bool(getattr(f, "exclude_read", False)),
+            exclude_archived=bool(getattr(f, "exclude_archived", False)),
+        )
+
+    async def _get_contact_ids(self) -> set[int]:
+        """Fetch the account's contact user ids (for contacts/non_contacts flags).
+
+        Returns an empty set on failure — folders relying on those flags simply
+        fall back to their explicit peers rather than aborting the backup.
+        """
+        try:
+            from telethon.tl.functions.contacts import GetContactsRequest
+
+            result = await call_with_flood_retry(self.client, GetContactsRequest(hash=0))
+            return {u.id for u in getattr(result, "users", [])}
+        except Exception as e:
+            logger.warning(f"Could not fetch contacts for folder resolution: {e}")
+            return set()
+
+    async def _get_own_id(self) -> int | None:
+        """Return the account's own user id (for resolving self/Saved Messages)."""
+        try:
+            me = await call_with_flood_retry(self.client.get_me)
+            return me.id if me is not None else None
+        except Exception as e:
+            logger.warning(f"Could not resolve own id for folder resolution: {e}")
+            return None
+
     async def _backup_folders(self) -> int:
         """
         Fetch and store user's Telegram chat folders (dialog filters).
+
+        Resolves each folder's FULL effective membership against the chats we've
+        archived — explicit pinned/include peers minus exclude peers, plus the
+        category flags (contacts/non_contacts/groups/broadcasts/bots), not only
+        include_peers — so folders defined by pins or flags aren't left empty.
 
         Returns:
             Number of folders backed up
@@ -2479,6 +2554,13 @@ class TelegramBackup:
 
             # result might be a list directly or have a .filters attribute
             filters = result.filters if hasattr(result, "filters") else result
+
+            # The archived-chat snapshot and contacts are fetched at most once per
+            # run, lazily, and reused across folders — an account with only the
+            # default "All" filter pays for neither.
+            resolution_chats: list[FolderChat] | None = None
+            contact_ids: set[int] | None = None
+            own_id = await self._get_own_id()
 
             folder_count = 0
             active_folder_ids = []
@@ -2505,27 +2587,26 @@ class TelegramBackup:
                 }
                 await self.db.upsert_chat_folder(folder_data)
 
-                # Resolve include_peers to chat IDs
-                chat_ids = []
-                include_peers = getattr(f, "include_peers", []) or []
-                for peer in include_peers:
-                    try:
-                        chat_id = self._get_marked_id(peer)
-                        chat_ids.append(chat_id)
-                    except Exception:
-                        # Some peers might not be resolvable
-                        if hasattr(peer, "user_id"):
-                            chat_ids.append(peer.user_id)
-                        elif hasattr(peer, "chat_id"):
-                            chat_ids.append(-peer.chat_id)
-                        elif hasattr(peer, "channel_id"):
-                            chat_ids.append(-1000000000000 - peer.channel_id)
+                if resolution_chats is None:
+                    resolution_chats = [
+                        FolderChat(id=r["id"], type=r["type"], is_bot=r["is_bot"], is_archived=r["is_archived"])
+                        for r in await self.db.get_chats_for_folder_resolution()
+                    ]
 
-                if chat_ids:
-                    await self.db.sync_folder_members(folder_id, chat_ids)
+                rules = self._folder_rules_from_filter(f, own_id)
+                if (rules.contacts or rules.non_contacts) and contact_ids is None:
+                    contact_ids = await self._get_contact_ids()
+                    # Saved Messages (self) counts as a contact, matching Telegram.
+                    if own_id is not None:
+                        contact_ids.add(own_id)
+
+                member_ids = resolve_folder_member_ids(rules, resolution_chats, contact_ids or set())
+                # Always sync (even to an empty set) so a folder that lost all its
+                # archived chats is emptied rather than keeping stale members.
+                await self.db.sync_folder_members(folder_id, list(member_ids))
 
                 folder_count += 1
-                logger.debug(f"  → Folder '{title}' (ID: {folder_id}): {len(chat_ids)} chats")
+                logger.debug(f"  → Folder '{title}' (ID: {folder_id}): {len(member_ids)} chats")
 
             # Remove folders that no longer exist
             await self.db.cleanup_stale_folders(active_folder_ids)
