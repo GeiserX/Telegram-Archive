@@ -2246,6 +2246,14 @@ class DatabaseAdapter:
     async def get_all_folders(self, allowed_chat_ids: set[int] | None = None) -> list[dict[str, Any]]:
         """Get all chat folders with their chat counts.
 
+        Only folders that contain at least one backed-up (and, for restricted
+        viewers, accessible) chat are returned. The viewer reflects the archive,
+        not the full Telegram account: a folder whose chats were all excluded
+        from backup — or that is empty on Telegram — would otherwise show as an
+        empty filter tab that returns nothing when clicked (#208). Folder
+        membership is already limited to chats present in our DB by
+        sync_folder_members, so a zero count means "nothing archived here".
+
         Args:
             allowed_chat_ids: If set, only count chats the user can access.
         """
@@ -2266,8 +2274,8 @@ class DatabaseAdapter:
             for row in result:
                 folder = row.ChatFolder
                 count = row.chat_count or 0
-                # Skip folders with no visible chats for restricted users
-                if allowed_chat_ids is not None and count == 0:
+                # Hide folders with no backed-up chats (empty tabs help no one)
+                if count == 0:
                     continue
                 folders.append(
                     {
