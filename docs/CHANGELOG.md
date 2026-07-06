@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.19.1] - 2026-07-06
+
+### Fixed
+- **Empty folder tabs no longer clutter the viewer** — When you back up only a subset of your chats, the viewer's folder bar previously listed *every* Telegram folder, including folders none of whose chats were archived — clicking them showed nothing. Folders now appear only when they contain at least one backed-up chat, so the viewer reflects what was actually crawled rather than your full Telegram account. ([#208](https://github.com/GeiserX/Telegram-Archive/issues/208), [#209](https://github.com/GeiserX/Telegram-Archive/pull/209))
+
+### Credits
+- Thanks to [@sube32](https://github.com/sube32) for reporting the empty-folder display and the clear worked example that pinned down the intended behavior.
+
 ## [7.19.0] - 2026-07-04
 
 ### Added
