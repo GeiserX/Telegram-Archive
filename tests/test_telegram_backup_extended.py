@@ -1362,7 +1362,7 @@ class TestBackupFolders(unittest.TestCase):
 
     def test_peer_resolution_fallback_user_id(self):
         """Peer with user_id fallback when get_marked_id raises."""
-        peer = MagicMock()
+        peer = MagicMock(spec=["user_id"])
         peer.user_id = 42
         folder = _make_filter(id=4, title="Friends", include_peers=[peer])
 
