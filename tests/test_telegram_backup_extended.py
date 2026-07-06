@@ -19,6 +19,7 @@ from telethon.errors import (
 )
 from telethon.tl.types import (
     Channel,
+    InputPeerSelf,
     MessageMediaDocument,
     MessageMediaPhoto,
     User,
@@ -1254,6 +1255,8 @@ class TestBackupFolders(unittest.TestCase):
     def setUp(self):
         self.backup = _make_backup()
         self.backup._get_marked_id = MagicMock(return_value=100)
+        # Default: no self/Saved-Messages resolution unless a test opts in.
+        self.backup._get_own_id = AsyncMock(return_value=None)
 
     def test_backs_up_folders_with_peers(self):
         """Folders with include_peers are synced."""
@@ -1416,6 +1419,78 @@ class TestBackupFolders(unittest.TestCase):
         _run(self.backup._backup_folders())
 
         self.backup.db.upsert_chat_folder.assert_awaited()
+
+    def test_input_peer_self_resolves_to_own_id(self):
+        """A folder pinning Saved Messages (InputPeerSelf) resolves to own id."""
+        folder = _make_filter(id=20, title="Saved", pinned_peers=[InputPeerSelf()])
+        self.backup._get_own_id = AsyncMock(return_value=555)
+        self.backup.client = AsyncMock(return_value=[folder])
+
+        _run(self.backup._backup_folders())
+
+        synced = self.backup.db.sync_folder_members.call_args[0][1]
+        self.assertIn(555, synced)
+
+    def test_snapshot_and_contacts_fetched_once_across_folders(self):
+        """The chat snapshot and contact list are fetched once per run, not per folder."""
+        folders = [
+            _make_filter(id=21, title="A", contacts=True),
+            _make_filter(id=22, title="B", contacts=True),
+            _make_filter(id=23, title="C", groups=True),
+        ]
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
+        self.backup._get_contact_ids = AsyncMock(return_value=set())
+        self.backup.client = AsyncMock(return_value=folders)
+
+        _run(self.backup._backup_folders())
+
+        self.backup.db.get_chats_for_folder_resolution.assert_awaited_once()
+        self.backup._get_contact_ids.assert_awaited_once()
+
+
+class TestFolderResolutionHelpers(unittest.TestCase):
+    """Test _get_contact_ids / _get_own_id / _folder_rules_from_filter helpers."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+
+    def test_get_contact_ids_returns_user_ids(self):
+        result = MagicMock()
+        result.users = [MagicMock(id=1), MagicMock(id=2)]
+        self.backup.client = AsyncMock(return_value=result)
+
+        ids = _run(self.backup._get_contact_ids())
+
+        self.assertEqual(ids, {1, 2})
+
+    def test_get_contact_ids_handles_failure(self):
+        self.backup.client = AsyncMock(side_effect=Exception("flood"))
+        self.assertEqual(_run(self.backup._get_contact_ids()), set())
+
+    def test_get_own_id_returns_id(self):
+        me = MagicMock()
+        me.id = 4242
+        self.backup.client.get_me = AsyncMock(return_value=me)
+        self.assertEqual(_run(self.backup._get_own_id()), 4242)
+
+    def test_get_own_id_handles_failure(self):
+        self.backup.client.get_me = AsyncMock(side_effect=Exception("nope"))
+        self.assertIsNone(_run(self.backup._get_own_id()))
+
+    def test_folder_rules_from_chatlist_uses_safe_defaults(self):
+        """A chatlist-shaped filter (no flags / exclude attrs) is a pure allowlist."""
+        from types import SimpleNamespace
+
+        self.backup._get_marked_id = MagicMock(side_effect=lambda p: p)
+        chatlist = SimpleNamespace(pinned_peers=[11], include_peers=[22])
+
+        rules = self.backup._folder_rules_from_filter(chatlist)
+
+        self.assertEqual(rules.pinned_ids, frozenset({11}))
+        self.assertEqual(rules.include_ids, frozenset({22}))
+        self.assertEqual(rules.exclude_ids, frozenset())
+        self.assertFalse(rules.has_type_flags)
+        self.assertFalse(rules.exclude_archived)
 
 
 # ===========================================================================

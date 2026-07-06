@@ -2224,6 +2224,11 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    # Flag-based folders can now resolve to very large member sets, so the
+    # existence check is chunked to stay well under driver bind-parameter caps
+    # (SQLite ~32766, PostgreSQL 65535).
+    _FOLDER_MEMBER_CHUNK = 500
+
     @retry_on_locked()
     async def sync_folder_members(self, folder_id: int, chat_ids: list[int]) -> None:
         """Sync folder membership: replace all members for a folder."""
@@ -2233,11 +2238,15 @@ class DatabaseAdapter:
 
             # Insert new members (only for chats that exist in our DB)
             if chat_ids:
-                # Verify which chat_ids actually exist
-                existing = await session.execute(select(Chat.id).where(Chat.id.in_(chat_ids)))
-                existing_ids = {row[0] for row in existing}
+                # Dedup while preserving order; verify existence in bounded chunks.
+                unique_ids = list(dict.fromkeys(chat_ids))
+                existing_ids: set[int] = set()
+                for i in range(0, len(unique_ids), self._FOLDER_MEMBER_CHUNK):
+                    chunk = unique_ids[i : i + self._FOLDER_MEMBER_CHUNK]
+                    result = await session.execute(select(Chat.id).where(Chat.id.in_(chunk)))
+                    existing_ids.update(row[0] for row in result)
 
-                for cid in chat_ids:
+                for cid in unique_ids:
                     if cid in existing_ids:
                         session.add(ChatFolderMember(folder_id=folder_id, chat_id=cid))
 
