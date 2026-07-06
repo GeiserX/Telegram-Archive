@@ -2557,6 +2557,38 @@ class TestGetAllFolders:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_filters_empty_folders_for_default_viewer(self):
+        """Folders with no backed-up chats are hidden even without an ACL (#208).
+
+        A folder whose Telegram chats were all excluded from backup (count 0), or
+        that has no membership rows at all (None), must not appear as an empty
+        tab for the default/admin viewer — only folders with archived chats show.
+        """
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        def _row(folder_id, title, chat_count):
+            folder = MagicMock()
+            folder.id = folder_id
+            folder.title = title
+            folder.emoticon = None
+            folder.sort_order = folder_id
+            row = MagicMock()
+            row.ChatFolder = folder
+            row.chat_count = chat_count
+            return row
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(
+            return_value=iter([_row(1, "Work", 3), _row(2, "Empty", 0), _row(3, "Family", None)])
+        )
+        mock_session.execute.return_value = mock_result
+
+        result = await adapter.get_all_folders()
+        assert [f["id"] for f in result] == [1]
+        assert result[0]["chat_count"] == 3
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_folders(self):
         """get_all_folders returns empty list when no folders exist."""
         db_manager, mock_session = _make_mock_db_manager()
