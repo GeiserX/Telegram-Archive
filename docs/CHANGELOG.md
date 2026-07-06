@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.20.0] - 2026-07-06
+
+### Added
+- **Chat folders back up their full membership** — Telegram folders can be defined by pinned chats and by category rules (all groups, all channels, all bots, contacts / non-contacts), not just an explicit chat list. The backup previously only recorded a folder's explicitly-included chats, so a folder built from pins or category rules ended up with no members — and after the 7.19.1 empty-folder fix, such folders disappeared from the viewer entirely. The backup now resolves each folder's effective membership against the chats you've archived: pinned + included chats (minus excluded ones) plus the category rules, so those folders show their archived chats again. Saved Messages (pinned or via the contacts rule) resolves correctly too. ([#208](https://github.com/GeiserX/Telegram-Archive/issues/208), [#210](https://github.com/GeiserX/Telegram-Archive/pull/210))
+
+### Notes
+- Folder membership matches Telegram's own precedence (explicit pins/includes always win; excludes and category rules follow). The "unread only" / "unmuted only" refinements some folders use depend on live notification state the archive doesn't store, so they aren't reconstructed — such a folder shows all chats of its category rather than being hidden. No configuration or migration is required.
+
 ## [7.19.1] - 2026-07-06
 
 ### Fixed
