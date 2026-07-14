@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.22.0] - 2026-07-15
+
+### Fixed
+- **Jumping to a message (from the media gallery, a reply, or the calendar) now actually lands on the target instead of the latest messages.** The window request was silently ignored by the backend and returned the newest page; the target row also had no scroll anchor, so even a correct window wasn't scrolled to. The window is now fetched correctly (with context on both sides of the target), the target is anchored and highlighted, the realtime poll and the WebSocket live-update path are both paused while viewing a detached window, and calendar date-jumps use the same path (removing an older gap-fill loop that failed for dates far back). ([#213](https://github.com/GeiserX/Telegram-Archive/issues/213))
+- **Anonymous access is now read-only.** When the viewer is exposed without authentication, it no longer grants administrative capabilities (creating viewers, minting share tokens, reading the audit log, changing settings) — those require the master account.
+- **Push subscriptions can no longer point the server at internal addresses.** Subscription endpoints are validated by resolving the host and rejecting private/loopback/link-local addresses.
+- **Media captured by the scheduled backup is now timestamped in UTC** like the realtime and import paths (it was previously written in the host's local time).
+- **Realtime updates survive database blips.** The Postgres notification listener no longer leaks a connection on each reconnect and is retried correctly after a failed restart.
+- Database-unavailable conditions (including "database is locked") now return 503 instead of 500, and chat-search wildcard characters are handled literally.
+
+### Added
+- Message-list API accepts `after_id` (newer-than cursor) and honors a lone `before_id` (older-than cursor) for jump-to-message windows.
+
+### Changed
+- **Loading a page of messages is dramatically cheaper** — reactions and reply previews are fetched in two batched queries per page instead of one-per-message (previously up to ~100 queries for a 50-message page, on an endpoint the viewer polls every few seconds). Opening a chat's statistics is cached briefly. Logs no longer include chat, topic, or message identifiers or message content.
+
+### Upgrade note
+- Migration `017` (adds an index for jump-to-message lookups) runs automatically on first start; it is idempotent and requires no action.
+
 ## [7.21.0] - 2026-07-14
 
 ### Fixed
