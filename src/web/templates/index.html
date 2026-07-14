@@ -1646,6 +1646,21 @@
                 const selectedDate = ref(null)
                 let flatpickrInstance = null
                 const showScrollToBottom = ref(false)
+
+                // Media Gallery state (v7.10.0)
+                const showMediaGallery = ref(false)
+                const mediaGalleryTab = ref('photos')
+                const mediaGalleryItems = ref([])
+                const mediaGalleryLoading = ref(false)
+                const mediaGalleryHasMore = ref(true)
+                const mediaGalleryCounts = ref({})
+
+                const mediaTabs = [
+                    { id: 'photos', label: 'Photos & Videos' },
+                    { id: 'voice', label: 'Voice' },
+                    { id: 'files', label: 'Files' },
+                ]
+
                 // Messages that arrived (WS/poll) while the user was scrolled up reading
                 // history — shown as a badge on the jump-to-latest button; cleared when the
                 // user returns near the bottom or switches view.
@@ -2921,20 +2936,6 @@
                     currentUsername.value = ''
                     showAdminPanel.value = false
                 }
-
-                // Media Gallery state (v7.10.0)
-                const showMediaGallery = ref(false)
-                const mediaGalleryTab = ref('photos')
-                const mediaGalleryItems = ref([])
-                const mediaGalleryLoading = ref(false)
-                const mediaGalleryHasMore = ref(true)
-                const mediaGalleryCounts = ref({})
-
-                const mediaTabs = [
-                    { id: 'photos', label: 'Photos & Videos' },
-                    { id: 'voice', label: 'Voice' },
-                    { id: 'files', label: 'Files' },
-                ]
 
                 // Media Gallery methods (v7.10.0)
                 const loadMediaGallery = async (append = false) => {
