@@ -27,6 +27,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Web
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
@@ -564,13 +565,31 @@ def _websocket_origin_allowed(websocket: WebSocket) -> bool:
     return origin in allowed_origins
 
 
+try:
+    from asyncpg import CannotConnectNowError, PostgresConnectionError, TooManyConnectionsError
+
+    _ASYNCPG_CONNECTION_ERRORS: tuple[type[Exception], ...] = (
+        PostgresConnectionError,
+        TooManyConnectionsError,
+        CannotConnectNowError,
+    )
+except ImportError:  # asyncpg may be absent when running SQLite-only installs
+    _ASYNCPG_CONNECTION_ERRORS = ()
+
+
 def _is_db_connection_error(exc: Exception) -> bool:
-    """Check if an exception indicates the database is unreachable."""
+    """Check if an exception indicates the database is unreachable (vs. e.g. a constraint violation)."""
     current: BaseException | None = exc
     for _ in range(10):
         if current is None:
             break
         if isinstance(current, OSError):
+            return True
+        if isinstance(current, OperationalError):
+            return True
+        if isinstance(current, DBAPIError) and current.connection_invalidated:
+            return True
+        if _ASYNCPG_CONNECTION_ERRORS and isinstance(current, _ASYNCPG_CONNECTION_ERRORS):
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -755,7 +774,9 @@ async def require_auth(
     """Dependency that enforces session-based auth. Returns UserContext."""
     if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
         if ALLOW_ANONYMOUS_VIEWER:
-            return UserContext(username="anonymous", role="master", allowed_chat_ids=None)
+            # Read-only viewer, not master: anonymous internet users must never get
+            # admin capabilities (create viewers, mint tokens, read audit log, settings).
+            return UserContext(username="anonymous", role="viewer", allowed_chat_ids=None, no_download=False)
         raise HTTPException(status_code=503, detail="Viewer authentication is not configured")
 
     # Trusted proxy header authentication (v7.9.0)
@@ -1040,7 +1061,13 @@ async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=
 
     if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
         if ALLOW_ANONYMOUS_VIEWER:
-            return {"authenticated": True, "auth_required": False, "role": "master", "username": "anonymous"}
+            return {
+                "authenticated": True,
+                "auth_required": False,
+                "role": "viewer",
+                "username": "anonymous",
+                "no_download": False,
+            }
         return {"authenticated": False, "auth_required": True, "setup_required": True}
 
     if not auth_cookie:
@@ -1774,6 +1801,14 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         if not endpoint or not p256dh or not auth:
             raise HTTPException(status_code=400, detail="Missing required subscription data")
 
+        from .push import validate_push_endpoint
+
+        # validate_push_endpoint resolves the hostname (blocking DNS lookup),
+        # so it must run off the event loop rather than block other requests.
+        if not await asyncio.to_thread(validate_push_endpoint, endpoint):
+            logger.warning("Rejected push subscription with invalid endpoint")
+            raise HTTPException(status_code=400, detail="Invalid subscription endpoint")
+
         if chat_id:
             user_chat_ids = get_user_chat_ids(user)
             if user_chat_ids is not None and chat_id not in user_chat_ids:
@@ -1898,15 +1933,43 @@ async def internal_push(request: Request):
         return {"status": "error", "detail": "Internal push processing failed"}
 
 
+# Cache chat stats to avoid re-running 3 aggregate queries on every chat open
+_chat_stats_cache: dict[int, tuple[float, dict]] = {}
+CHAT_STATS_CACHE_TTL_SECONDS = 60
+
+
+def _get_cached_chat_stats(chat_id: int) -> dict | None:
+    """Return cached stats for chat_id if still fresh, else None."""
+    entry = _chat_stats_cache.get(chat_id)
+    if entry is None:
+        return None
+    cached_at, stats = entry
+    if time.monotonic() - cached_at > CHAT_STATS_CACHE_TTL_SECONDS:
+        _chat_stats_cache.pop(chat_id, None)
+        return None
+    return stats
+
+
+def _set_cached_chat_stats(chat_id: int, stats: dict) -> None:
+    _chat_stats_cache[chat_id] = (time.monotonic(), stats)
+
+
 @app.get("/api/chats/{chat_id}/stats")
 async def get_chat_stats(chat_id: int, user: UserContext = Depends(require_auth)):
     """Get statistics for a specific chat (message count, media files, size)."""
+    # ACL check runs unconditionally, before any cache lookup, so a cache hit
+    # never bypasses access control.
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is not None and chat_id not in user_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    cached = _get_cached_chat_stats(chat_id)
+    if cached is not None:
+        return cached
+
     try:
         stats = await db.get_chat_stats(chat_id)
+        _set_cached_chat_stats(chat_id, stats)
         return stats
     except Exception as e:
         logger.error(f"Error getting chat stats: {e}", exc_info=True)

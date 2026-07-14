@@ -550,7 +550,7 @@ class TestGetMediaFilename:
             "voice": ".ogg",
             "audio": ".mp3",
             "sticker": ".webp",
-            "document": "",
+            "document": ".bin",
         }
         for media_type, ext in expected.items():
             result = listener._get_media_filename(msg, media_type, telegram_file_id="id1")

@@ -45,9 +45,11 @@ from .message_utils import (
     compute_file_hash,
     download_and_shard_media,
     extract_topic_id,
+    fallback_media_filename,
     finalize_atomic_download,
     resolve_shared_file_path,
     service_action_type,
+    utcnow_naive,
 )
 from .parallel_download import (
     ParallelDownloader,
@@ -155,8 +157,8 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         with Image.open(source) as img:
             img.thumbnail((200, 200), Image.LANCZOS)
             img.save(dest, "WEBP", quality=WEBP_QUALITY)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Thumbnail pre-generation failed: %s", e)
 
 
 async def call_with_flood_retry(
@@ -479,7 +481,7 @@ class TelegramBackup:
             start_time = datetime.now()
 
             # Store last backup time in UTC at the START of backup (not when it finishes)
-            last_backup_time = datetime.utcnow().isoformat() + "Z"
+            last_backup_time = utcnow_naive().isoformat() + "Z"
             await self.db.set_metadata("last_backup_time", last_backup_time)
 
             # Mark a backup as in progress so the viewer can show a "backing up"
@@ -508,9 +510,9 @@ class TelegramBackup:
 
                         filtered_dialogs.append(SimpleDialog(entity))
                         seen_chat_ids.add(cid)
-                        logger.info(f"  → Fetched: {self._get_chat_name(entity)} (ID: {cid})")
+                        logger.info("  → Fetched chat")
                     except Exception as e:
-                        logger.warning(f"  → Could not fetch chat {cid}: {e}")
+                        logger.warning(f"  → Could not fetch chat: {e}")
 
             else:
                 # Type-based mode: fetch full dialog list and filter
@@ -529,9 +531,13 @@ class TelegramBackup:
                 archived_chat_ids = set()
                 for dialog in archived_dialogs:
                     archived_chat_ids.add(self._get_marked_id(dialog.entity))
-                logger.info(
-                    f"Archived chat IDs from Telegram: {archived_chat_ids & (self.config.global_include_ids | self.config.private_include_ids | self.config.groups_include_ids | self.config.channels_include_ids) if archived_chat_ids else 'none matching includes'}"
+                archived_matching_includes = archived_chat_ids & (
+                    self.config.global_include_ids
+                    | self.config.private_include_ids
+                    | self.config.groups_include_ids
+                    | self.config.channels_include_ids
                 )
+                logger.info(f"Archived chats matching includes: {len(archived_matching_includes)}")
 
                 # Filter dialogs based on chat type and ID filters
                 # Also delete explicitly excluded chats from database
@@ -577,9 +583,7 @@ class TelegramBackup:
                 missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
 
                 if missing_include_ids:
-                    logger.info(
-                        f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs: {missing_include_ids}"
-                    )
+                    logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs")
                     for include_id in missing_include_ids:
                         is_in_archive = include_id in archived_chat_ids
                         try:
@@ -592,10 +596,10 @@ class TelegramBackup:
 
                             filtered_dialogs.append(SimpleDialog(entity))
                             logger.info(
-                                f"  → Added: {self._get_chat_name(entity)} (ID: {include_id}){' [in archive]' if is_in_archive else ' [not in any dialog list]'}"
+                                f"  → Added chat{' [in archive]' if is_in_archive else ' [not in any dialog list]'}"
                             )
                         except Exception as e:
-                            logger.warning(f"  → Could not fetch included chat {include_id}: {e}")
+                            logger.warning(f"  → Could not fetch included chat: {e}")
 
                 # Delete only explicitly excluded chats from database
                 if explicitly_excluded_chat_ids:
@@ -606,7 +610,7 @@ class TelegramBackup:
                         try:
                             await self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
                         except Exception as e:
-                            logger.error(f"Error deleting chat {chat_id}: {e}", exc_info=True)
+                            logger.error(f"Error deleting chat: {e}", exc_info=True)
 
             logger.info(f"Backing up {len(filtered_dialogs)} dialogs after filtering")
 
@@ -654,14 +658,12 @@ class TelegramBackup:
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
                 chat_id = self._get_marked_id(entity)
-                chat_name = self._get_chat_name(entity)
                 is_archived = chat_id in archived_chat_ids and chat_id not in seen_chat_ids
                 if chat_id in archived_chat_ids and chat_id in seen_chat_ids:
                     logger.warning(
-                        f"  Chat {chat_name} (ID: {chat_id}) appears in both regular and archived dialog lists - treating as NOT archived"
+                        "  Chat appears in both regular and archived dialog lists - treating as NOT archived"
                     )
-                label = f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}: {chat_name} (ID: {chat_id})"
-                logger.info(label)
+                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}")
 
                 try:
                     message_count = await self._backup_dialog(dialog, is_archived=is_archived)
@@ -675,7 +677,7 @@ class TelegramBackup:
                 except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
                     logger.warning(f"  → Skipped (no access): {e.__class__.__name__}")
                 except Exception as e:
-                    logger.error(f"  → Error backing up {chat_name}: {e}", exc_info=True)
+                    logger.error(f"  → Error backing up chat: {e}", exc_info=True)
 
             # v6.2.0: Backup archived dialogs that weren't already processed above.
             # Apply the same chat type/ID filters so we don't back up unintended chats.
@@ -701,8 +703,7 @@ class TelegramBackup:
                 for i, dialog in enumerate(archived_to_backup, 1):
                     entity = dialog.entity
                     chat_id = self._get_marked_id(entity)
-                    chat_name = self._get_chat_name(entity)
-                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}] {chat_name} (ID: {chat_id})")
+                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}]")
 
                     try:
                         message_count = await self._backup_dialog(dialog, is_archived=True)
@@ -882,7 +883,7 @@ class TelegramBackup:
         for chat_id, records in by_chat.items():
             # Skip media verification for chats in skip list
             if chat_id in self.config.skip_media_chat_ids:
-                logger.debug(f"Skipping media verification for chat {chat_id} (in SKIP_MEDIA_CHAT_IDS)")
+                logger.debug("Skipping media verification for chat (in SKIP_MEDIA_CHAT_IDS)")
                 continue
 
             try:
@@ -895,7 +896,7 @@ class TelegramBackup:
                 try:
                     messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=message_ids)
                 except Exception as e:
-                    logger.warning(f"Cannot access chat {chat_id} for media verification: {e}")
+                    logger.warning(f"Cannot access chat for media verification: {e}")
                     failed += len(records)
                     continue
 
@@ -911,12 +912,12 @@ class TelegramBackup:
                     msg = msg_map.get(msg_id)
 
                     if not msg:
-                        logger.warning(f"Message {msg_id} in chat {chat_id} was deleted - cannot recover media")
+                        logger.warning("Message was deleted - cannot recover media")
                         failed += 1
                         continue
 
                     if not msg.media:
-                        logger.warning(f"Message {msg_id} no longer has media - cannot recover")
+                        logger.warning("Message no longer has media - cannot recover")
                         failed += 1
                         continue
 
@@ -932,16 +933,16 @@ class TelegramBackup:
                             # Insert media record (message already exists for re-downloads)
                             await self.db.insert_media(result)
                             redownloaded += 1
-                            logger.debug(f"Re-downloaded media for message {msg_id}")
+                            logger.debug("Re-downloaded media for message")
                         else:
                             failed += 1
-                            logger.warning(f"Failed to re-download media for message {msg_id}")
+                            logger.warning("Failed to re-download media for message")
                     except Exception as e:
                         failed += 1
-                        logger.error(f"Error re-downloading media for message {msg_id}: {e}")
+                        logger.error(f"Error re-downloading media for message: {e}")
 
             except Exception as e:
-                logger.error(f"Error processing chat {chat_id} for media verification: {e}")
+                logger.error(f"Error processing chat for media verification: {e}")
                 failed += len(records)
 
         logger.info("=" * 60)
@@ -1091,7 +1092,7 @@ class TelegramBackup:
         try:
             await self._ensure_profile_photo(entity, chat_id)
         except Exception as e:
-            logger.error(f"Error downloading profile photo for {chat_id}: {e}", exc_info=True)
+            logger.error(f"Error downloading profile photo: {e}", exc_info=True)
 
         # Get last synced message ID for incremental backup
         last_message_id = await self.db.get_last_message_id(chat_id)
@@ -1268,10 +1269,10 @@ class TelegramBackup:
             try:
                 entity = await call_with_flood_retry(self.client.get_entity, cid)
             except (ChannelPrivateError, ChatForbiddenError, UserBannedInChannelError) as e:
-                logger.warning(f"Gap-fill: skipping chat {cid} (no access): {e.__class__.__name__}")
+                logger.warning(f"Gap-fill: skipping chat (no access): {e.__class__.__name__}")
                 continue
             except Exception as e:
-                logger.error(f"Gap-fill: failed to get entity for chat {cid}: {e}")
+                logger.error(f"Gap-fill: failed to get entity for chat: {e}")
                 summary["errors"] += 1
                 continue
 
@@ -1280,7 +1281,7 @@ class TelegramBackup:
             try:
                 gaps = await self.db.detect_message_gaps(cid, threshold)
             except Exception as e:
-                logger.error(f"Gap-fill: failed to detect gaps for {chat_name} ({cid}): {e}")
+                logger.error(f"Gap-fill: failed to detect gaps for chat: {e}")
                 summary["errors"] += 1
                 continue
 
@@ -1290,16 +1291,16 @@ class TelegramBackup:
             summary["chats_with_gaps"] += 1
             chat_recovered = 0
 
-            logger.info(f"Gap-fill: {chat_name} (ID: {cid}) has {len(gaps)} gap(s)")
+            logger.info(f"Gap-fill: chat has {len(gaps)} gap(s)")
 
             for gap_start, gap_end, gap_size in gaps:
-                logger.info(f"  → Filling gap: {gap_start}..{gap_end} (size {gap_size})")
+                logger.info(f"  → Filling gap (size {gap_size})")
                 try:
                     recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
                     chat_recovered += recovered
                     logger.info(f"    Recovered {recovered} messages")
                 except Exception as e:
-                    logger.error(f"    Error filling gap {gap_start}..{gap_end}: {e}")
+                    logger.error(f"    Error filling gap (size {gap_size}): {e}")
                     summary["errors"] += 1
 
             summary["total_gaps"] += len(gaps)
@@ -1330,7 +1331,7 @@ class TelegramBackup:
             chat_id: Chat ID to sync
             entity: Telegram entity
         """
-        logger.info(f"  → Syncing deletions and edits for chat {chat_id}...")
+        logger.info("  → Syncing deletions and edits for chat...")
 
         # Get all local message IDs and their edit dates
         local_messages = await self.db.get_messages_sync_data(chat_id)
@@ -1383,7 +1384,7 @@ class TelegramBackup:
                             total_updated += 1
 
             except Exception as e:
-                logger.error(f"Error syncing batch for chat {chat_id}: {e}")
+                logger.error(f"Error syncing batch for chat: {e}")
 
             total_checked += len(batch_ids)
             if total_checked % 1000 == 0:
@@ -1674,7 +1675,7 @@ class TelegramBackup:
 
         # Nothing to download (no avatar set)
         if avatar_path is None:
-            logger.debug(f"No avatar available for {file_id}")
+            logger.debug("No avatar available")
             return
 
         try:
@@ -1697,9 +1698,9 @@ class TelegramBackup:
                 download_big=False,  # Small size is usually sufficient
             )
             if result:
-                logger.info(f"📷 Avatar downloaded: {avatar_path}")
+                logger.info("📷 Avatar downloaded")
         except Exception as e:
-            logger.warning(f"Failed to download avatar for {file_id}: {e}")
+            logger.warning(f"Failed to download avatar: {e}")
 
     async def _cleanup_existing_media(self, chat_id: int) -> None:
         """
@@ -1716,7 +1717,7 @@ class TelegramBackup:
         try:
             media_records = await self.db.get_media_for_chat(chat_id)
             if not media_records:
-                logger.debug(f"No existing media found for chat {chat_id}")
+                logger.debug("No existing media found for chat")
                 return
 
             deleted_files = 0
@@ -1736,7 +1737,7 @@ class TelegramBackup:
                             os.remove(file_path)
                             deleted_files += 1
                     except Exception as e:
-                        logger.warning(f"Failed to delete media file {file_path}: {e}")
+                        logger.warning(f"Failed to delete media file: {e}")
 
             # Delete all media records from database for this chat
             deleted_records = await self.db.delete_media_for_chat(chat_id)
@@ -1748,9 +1749,9 @@ class TelegramBackup:
                     remaining = os.listdir(chat_media_dir)
                     if not remaining:
                         os.rmdir(chat_media_dir)
-                        logger.debug(f"Removed empty media directory for chat {chat_id}")
+                        logger.debug("Removed empty media directory for chat")
                 except Exception as e:
-                    logger.debug(f"Could not remove media directory for chat {chat_id}: {e}")
+                    logger.debug(f"Could not remove media directory for chat: {e}")
 
             if deleted_files > 0 or deleted_symlinks > 0 or deleted_records > 0:
                 freed_mb = freed_bytes / (1024 * 1024)
@@ -1760,12 +1761,11 @@ class TelegramBackup:
                 if deleted_symlinks > 0:
                     parts.append(f"{deleted_symlinks} symlinks removed")
                 logger.info(
-                    f"Cleaned up existing media for chat {chat_id}: "
-                    f"{', '.join(parts)}, {deleted_records} DB records deleted"
+                    f"Cleaned up existing media for chat: {', '.join(parts)}, {deleted_records} DB records deleted"
                 )
 
         except Exception as e:
-            logger.error(f"Error cleaning up existing media for chat {chat_id}: {e}", exc_info=True)
+            logger.error(f"Error cleaning up existing media for chat: {e}", exc_info=True)
 
     async def _refresh_message_for_media(self, chat_id: int, message: Message) -> Message | None:
         """Best-effort re-fetch so Telegram issues an updated media reference/location.
@@ -2028,7 +2028,7 @@ class TelegramBackup:
                 "mime_type": getattr(media, "mime_type", None),
                 "content_hash": content_hash,
                 "downloaded": True,
-                "download_date": datetime.now(),
+                "download_date": utcnow_naive(),
             }
 
             # Add type-specific metadata
@@ -2172,8 +2172,6 @@ class TelegramBackup:
         Generate a unique filename using Telegram's file_id.
         Properly handles files sent "as documents" by checking mime_type and original filename.
         """
-        import mimetypes
-
         # First, try to get original filename from document attributes
         original_name = None
         mime_type = None
@@ -2194,30 +2192,9 @@ class TelegramBackup:
         if original_name and telegram_file_id:
             return build_media_filename(telegram_file_id, original_name, self.config.max_filename_bytes)
 
-        # Determine extension from mime_type, then fall back to media_type
-        extension = None
-
-        if mime_type:
-            # Use mimetypes to get proper extension from mime_type
-            ext = mimetypes.guess_extension(mime_type)
-            if ext:
-                extension = ext.lstrip(".")
-                # Fix common mimetypes oddities
-                if extension == "jpe":
-                    extension = "jpg"
-
-        # Fall back to media_type-based extension
-        if not extension:
-            extension = self._get_media_extension(media_type)
-
-        # Build filename
-        if telegram_file_id:
-            safe_id = str(telegram_file_id).replace("/", "_").replace("\\", "_")
-            return f"{safe_id}.{extension}"
-
-        # Last resort: timestamp-based
-        timestamp = message.date.strftime("%Y%m%d_%H%M%S")
-        return f"{message.id}_{timestamp}.{extension}"
+        # No usable original name — shared fallback (message_utils) keeps this
+        # identical to the listener's ingest path for the same inputs.
+        return fallback_media_filename(telegram_file_id, media_type, mime_type, message.id)
 
     def _get_media_extension(self, media_type: str) -> str:
         """Get file extension for media type (fallback only)."""
@@ -2475,7 +2452,7 @@ class TelegramBackup:
                         await self.db.upsert_forum_topic(topic_data)
                         topics_count += 1
                 except Exception as e:
-                    logger.debug(f"Could not fetch topic {topic_id} metadata: {e}")
+                    logger.debug(f"Could not fetch topic metadata: {e}")
 
             if topics_count > 0:
                 logger.info(f"  → Inferred {topics_count} forum topics from messages")
@@ -2624,7 +2601,7 @@ class TelegramBackup:
                 await self.db.sync_folder_members(folder_id, list(member_ids))
 
                 folder_count += 1
-                logger.debug(f"  → Folder '{title}' (ID: {folder_id}): {len(member_ids)} chats")
+                logger.debug(f"  → Folder: {len(member_ids)} chats")
 
             # Remove folders that no longer exist
             await self.db.cleanup_stale_folders(active_folder_ids)

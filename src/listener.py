@@ -40,6 +40,7 @@ from .message_utils import (
     compute_file_hash,
     download_and_shard_media,
     extract_topic_id,
+    fallback_media_filename,
     finalize_atomic_download,
     sanitize_media_filename,
     utcnow_naive,
@@ -122,7 +123,7 @@ class MassOperationProtector:
             else:
                 # Block expired
                 del self._blocked[chat_id]
-                logger.info(f"🔓 Rate limit expired for chat {chat_id}")
+                logger.info("🔓 Rate limit expired for chat")
         return False, ""
 
     def _count_ops_in_window(self, chat_id: int) -> int:
@@ -179,7 +180,6 @@ class MassOperationProtector:
 
             logger.warning("=" * 70)
             logger.warning("🛡️ RATE LIMIT TRIGGERED")
-            logger.warning(f"   Chat: {chat_id}")
             logger.warning(f"   Operation type: {operation_type}")
             logger.warning(f"   Operations in {self.window_seconds}s: {ops_in_window} (max: {self.threshold})")
             logger.warning(f"   First {self.threshold} were applied, remaining blocked")
@@ -439,7 +439,7 @@ class TelegramListener:
         if deletion_mode == "soft":
             deleted_at = utcnow_naive()
             await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at)
-            logger.debug(f"🗑️ Deletion marked: msg={message_id}")
+            logger.debug("🗑️ Deletion marked")
             await self._notify_update(
                 "delete",
                 {
@@ -452,7 +452,7 @@ class TelegramListener:
             return
 
         await self.db.delete_message(chat_id, message_id)
-        logger.debug(f"🗑️ Deletion applied: msg={message_id}")
+        logger.debug("🗑️ Deletion applied")
         await self._notify_update(
             "delete",
             {"chat_id": chat_id, "message_id": message_id, "deletion_mode": "hard"},
@@ -520,7 +520,7 @@ class TelegramListener:
             avatar_path, _legacy_path = get_avatar_paths(self.config.media_path, entity, chat_id)
 
             if avatar_path is None:
-                logger.debug(f"No avatar set for {chat_id}")
+                logger.debug("No avatar set")
                 return
 
             # lexists short-circuits when an avatar (even a symlink whose
@@ -533,11 +533,11 @@ class TelegramListener:
 
             result = await self.client.download_profile_photo(entity, file=avatar_path, download_big=False)
             if result:
-                logger.info(f"📷 Avatar downloaded: {avatar_path}")
+                logger.info("📷 Avatar downloaded")
             else:
-                logger.debug(f"No avatar available for {chat_id}")
+                logger.debug("No avatar available")
         except Exception as e:
-            logger.warning(f"Failed to download avatar for {chat_id}: {e}")
+            logger.warning(f"Failed to download avatar: {e}")
 
     def _get_media_type(self, media) -> str | None:
         """Get media type as string."""
@@ -574,30 +574,27 @@ class TelegramListener:
     def _get_media_filename(self, message, media_type: str, telegram_file_id: str | None = None) -> str:
         """Generate a filename for media."""
         # Try to get original filename from document
+        original_name = None
+        mime_type = None
+
         if hasattr(message.media, "document") and message.media.document:
-            for attr in message.media.document.attributes:
+            doc = message.media.document
+            mime_type = getattr(doc, "mime_type", None)
+            for attr in doc.attributes:
                 if hasattr(attr, "file_name") and attr.file_name:
-                    # Use Telegram file ID + original name for deduplication.
-                    # Length-budget the decorative name for constrained filesystems (#212).
-                    if telegram_file_id:
-                        return build_media_filename(telegram_file_id, attr.file_name, self.config.max_filename_bytes)
-                    return sanitize_media_filename(attr.file_name)
+                    original_name = attr.file_name
+                    break
 
-        # Generate filename based on type
-        extensions = {
-            "photo": ".jpg",
-            "video": ".mp4",
-            "animation": ".mp4",
-            "voice": ".ogg",
-            "audio": ".mp3",
-            "sticker": ".webp",
-            "document": "",
-        }
-        ext = extensions.get(media_type, "")
+        # Use Telegram file ID + original name for deduplication.
+        # Length-budget the decorative name for constrained filesystems (#212).
+        if original_name and telegram_file_id:
+            return build_media_filename(telegram_file_id, original_name, self.config.max_filename_bytes)
+        if original_name:
+            return sanitize_media_filename(original_name)
 
-        if telegram_file_id:
-            return f"{telegram_file_id}{ext}"
-        return f"{message.id}_{media_type}{ext}"
+        # No usable original name — shared fallback (message_utils) keeps this
+        # identical to the backup module's ingest path for the same inputs.
+        return fallback_media_filename(telegram_file_id, media_type, mime_type, message.id)
 
     async def _download_media(self, message, chat_id: int) -> tuple[str, str, str | None] | None:
         """
@@ -805,7 +802,7 @@ class TelegramListener:
                         try:
                             resolved = await self.db.resolve_message_chat_id(msg_id)
                             if resolved is None:
-                                logger.debug(f"⚠️ Deletion skipped (not found or ambiguous): msg={msg_id}")
+                                logger.debug("⚠️ Deletion skipped (not found or ambiguous)")
                                 continue
 
                             if not self._should_process_chat(resolved):
@@ -821,7 +818,7 @@ class TelegramListener:
                             self.stats["deletions_applied"] += 1
                         except Exception as e:
                             self.stats["errors"] += 1
-                            logger.warning(f"Could not apply deletion for msg {msg_id}: {e}")
+                            logger.warning(f"Could not apply deletion: {e}")
                         continue
 
                     if not self._should_process_chat(effective_chat_id):
@@ -857,7 +854,7 @@ class TelegramListener:
                 if chat_id not in self._tracked_chat_ids:
                     if self._should_process_chat(chat_id):
                         self._tracked_chat_ids.add(chat_id)
-                        logger.debug(f"Added chat {chat_id} to tracking list")
+                        logger.debug("Added chat to tracking list")
 
                 # Skip if not in tracked chats
                 if not self._should_process_chat(chat_id):
@@ -872,7 +869,7 @@ class TelegramListener:
 
                 # Skip messages in excluded forum topics
                 if self.config.should_skip_topic(chat_id, reply_to_top_id):
-                    logger.debug(f"⏭️ Skipping message in excluded topic {reply_to_top_id}: chat={chat_id}")
+                    logger.debug("⏭️ Skipping message in excluded topic")
                     return
 
                 self.stats["new_messages_received"] += 1
@@ -961,10 +958,10 @@ class TelegramListener:
                                         "file_name": media_file_name,
                                         "content_hash": content_hash,
                                         "downloaded": True,
-                                        "download_date": datetime.utcnow(),
+                                        "download_date": utcnow_naive(),
                                     }
                                 )
-                                logger.debug(f"📎 Downloaded media: {media_path}")
+                                logger.debug("📎 Downloaded media")
                                 # Mirror the DB row: insert_media leaves file_size/mime_type/width/
                                 # height/duration as None in this path (not passed above), so the
                                 # WS row matches what the next poll will return.
@@ -996,14 +993,9 @@ class TelegramListener:
                     }
                     await self._notifier.notify(NotificationType.NEW_MESSAGE, chat_id, {"message": ws_message})
 
-                # Log the new message (truncate text for logging)
-                text_preview = (message.text or "")[:50]
-                if len(message.text or "") > 50:
-                    text_preview += "..."
+                # Log the new message (no chat_id/msg_id/text — PII)
                 media_indicator = f" [{media_type}]" if media_type else ""
-                logger.info(
-                    f"📩 New message saved: chat={chat_id} msg={message.id}{media_indicator} text='{text_preview}'"
-                )
+                logger.info(f"📩 New message saved{media_indicator}")
 
             except Exception as e:
                 self.stats["errors"] += 1
@@ -1034,26 +1026,26 @@ class TelegramListener:
                 action_type = None
                 if event.new_photo:
                     action_type = "photo_changed"
-                    logger.info(f"📷 Chat photo changed: chat={chat_id}")
+                    logger.info("📷 Chat photo changed")
                 elif getattr(event, "photo", None) is None and not event.new_photo:
                     # Photo removed - Telethon doesn't have photo_removed attr in all versions
                     action_type = "photo_removed"
-                    logger.info(f"📷 Chat photo removed: chat={chat_id}")
+                    logger.info("📷 Chat photo removed")
                 elif event.new_title:
                     action_type = "title_changed"
-                    logger.info(f"📝 Chat title changed to '{event.new_title}': chat={chat_id}")
+                    logger.info("📝 Chat title changed")
                 elif event.user_joined:
                     action_type = "user_joined"
-                    logger.debug(f"👤 User joined: chat={chat_id}")
+                    logger.debug("👤 User joined")
                 elif event.user_left:
                     action_type = "user_left"
-                    logger.debug(f"👤 User left: chat={chat_id}")
+                    logger.debug("👤 User left")
                 elif event.user_added:
                     action_type = "user_added"
-                    logger.debug(f"👤 User added: chat={chat_id}")
+                    logger.debug("👤 User added")
                 elif event.user_kicked:
                     action_type = "user_kicked"
-                    logger.debug(f"👤 User kicked: chat={chat_id}")
+                    logger.debug("👤 User kicked")
 
                 # Save service message for display in viewer
                 if action_type:
@@ -1068,7 +1060,7 @@ class TelegramListener:
                                 actor_name = getattr(actor, "first_name", "") or getattr(actor, "title", "")
                                 if hasattr(actor, "last_name") and actor.last_name:
                                     actor_name += f" {actor.last_name}"
-                            except:
+                            except Exception:
                                 pass
 
                         # Build service message text
@@ -1108,7 +1100,7 @@ class TelegramListener:
                                 "id": service_msg_id,
                                 "chat_id": chat_id,
                                 "sender_id": actor_id,
-                                "date": datetime.now(),
+                                "date": utcnow_naive(),
                                 "text": service_text,
                                 "reply_to_msg_id": None,
                                 "reply_to_text": None,
@@ -1140,13 +1132,13 @@ class TelegramListener:
                                 "username": getattr(entity, "username", None),
                             }
                             await self.db.upsert_chat(chat_data)
-                            logger.info(f"✅ Chat {chat_id} metadata updated")
+                            logger.info("✅ Chat metadata updated")
 
                             # Download new avatar if photo changed
                             if action_type == "photo_changed":
                                 await self._download_avatar(entity, chat_id)
                     except Exception as e:
-                        logger.warning(f"Failed to update chat metadata for {chat_id}: {e}")
+                        logger.warning(f"Failed to update chat metadata: {e}")
 
             except Exception as e:
                 self.stats["errors"] += 1
@@ -1200,7 +1192,7 @@ class TelegramListener:
                     await self.db.update_message_pinned(chat_id, msg_id, is_pinning)
 
                 action = "📌 Pinned" if is_pinning else "📌 Unpinned"
-                logger.info(f"{action}: chat={chat_id} messages={pinned_messages}")
+                logger.info(f"{action}: {len(pinned_messages)} message(s)")
 
                 # Notify viewer of the update
                 await self._notify_update(
@@ -1327,8 +1319,8 @@ class TelegramListener:
             if blocked:
                 logger.warning("")
                 logger.warning(f"   🚫 Currently blocked chats: {len(blocked)}")
-                for chat_id, (reason, discarded) in blocked.items():
-                    logger.warning(f"      Chat {chat_id}: {discarded} ops discarded - {reason}")
+                for _chat_id, (reason, discarded) in blocked.items():
+                    logger.warning(f"      {discarded} ops discarded - {reason}")
 
             logger.info("=" * 70)
 
