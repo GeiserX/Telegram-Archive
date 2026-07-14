@@ -121,6 +121,18 @@ class Config:
         self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
+        # Max usable filename-component length in BYTES for the media store. Default 143
+        # keeps names writable on Synology/eCryptfs encrypted shares (whose filename-
+        # encryption overhead caps components at ~143 bytes, not the usual 255); the temp
+        # ``.part`` suffix is reserved on top of this. Raise to 255 on plain ext4/xfs/btrfs
+        # if you prefer longer decorative names. Only the decorative part is shortened; the
+        # file_id prefix (uniqueness) and the extension are always preserved. (#212)
+        self.max_filename_bytes = int(os.getenv("MEDIA_MAX_FILENAME_BYTES", "143"))
+        # Stop re-fetching a media file that keeps failing to download after this many
+        # attempts, so a permanently-unwritable file (e.g. an over-limit name on an
+        # exotic filesystem, or a revoked file reference) can't tax every backup run
+        # forever. (#212)
+        self.max_media_download_attempts = int(os.getenv("MEDIA_MAX_DOWNLOAD_ATTEMPTS", "5"))
 
         # =====================================================================
         # PARALLEL CHUNKED DOWNLOADS (issue #183)

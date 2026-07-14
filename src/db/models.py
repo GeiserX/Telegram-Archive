@@ -205,6 +205,9 @@ class Media(Base):
     duration: Mapped[int | None] = mapped_column(Integer)
     content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256 hex digest
     downloaded: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
+    # v7.x (#212): failed-download retry counter. The pending-media retry loop skips rows
+    # at/above MEDIA_MAX_DOWNLOAD_ATTEMPTS so a permanently-unwritable file stops re-fetching.
+    download_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
 
