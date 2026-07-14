@@ -3,6 +3,7 @@ Tests for the realtime notification module (src/realtime.py).
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import unittest
@@ -741,6 +742,56 @@ class TestRealtimeListenerHttpPush:
         await listener.handle_http_push({"type": "test"})
 
 
+class TestPgCallbackTaskTracking(unittest.IsolatedAsyncioTestCase):
+    """Tests for callback task bookkeeping in _pg_callback (task-leak fix).
+
+    Previously ``asyncio.create_task(self._callback(data))`` was fired without
+    keeping a reference, so the task could be garbage-collected mid-flight and
+    any exception it raised was silently dropped.
+    """
+
+    async def test_callback_task_tracked_then_discarded_on_success(self):
+        """A successful callback task is tracked while running, then discarded."""
+
+        async def ok_callback(data):
+            return None
+
+        listener = RealtimeListener(callback=ok_callback)
+        payload = json.dumps({"type": "new_message", "chat_id": 123})
+
+        listener._pg_callback(None, 0, "telegram_updates", payload)
+        self.assertEqual(len(listener._callback_tasks), 1)
+
+        task = next(iter(listener._callback_tasks))
+        await task
+        await asyncio.sleep(0)  # let the done-callback (call_soon) run
+
+        self.assertEqual(listener._callback_tasks, set())
+
+    async def test_callback_task_exception_logged_without_payload(self):
+        """A callback exception is logged (class/message only) and the task set
+        is cleaned up -- the notification payload must never appear in the log
+        (PII rule: no message content)."""
+
+        async def failing_callback(data):
+            raise ValueError("callback boom")
+
+        listener = RealtimeListener(callback=failing_callback)
+        secret_payload = json.dumps({"type": "new_message", "chat_id": 123, "message": {"text": "super secret text"}})
+
+        with self.assertLogs("src.realtime", level="WARNING") as ctx:
+            listener._pg_callback(None, 0, "telegram_updates", secret_payload)
+            task = next(iter(listener._callback_tasks))
+            with contextlib.suppress(ValueError):
+                await task
+            await asyncio.sleep(0)  # let the done-callback fire
+
+        self.assertEqual(listener._callback_tasks, set())
+        messages = ctx.output
+        self.assertTrue(any("ValueError" in m and "callback boom" in m for m in messages))
+        self.assertFalse(any("super secret text" in m for m in messages))
+
+
 # ===========================================================================
 # _notify_http non-200 response (line 149)
 # ===========================================================================
@@ -861,6 +912,48 @@ class TestListenPostgres:
             await listener._listen_postgres()
 
         assert attempt[0] >= 2
+
+    async def test_listen_postgres_closes_connection_on_exception_after_connect(self):
+        """Regression: an exception raised after connect() succeeds (inside the
+        "keep connection alive" loop) must still close the connection. Previously
+        remove_listener/close only ran on the normal-completion path, so a
+        flapping DB leaked one connection per 5s retry."""
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+
+        mock_conn = AsyncMock()
+        mock_conn.add_listener = AsyncMock()
+        mock_conn.remove_listener = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        call_count = 0
+
+        async def sleep_side_effect(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First sleep is the inner "keep connection alive" sleep(1);
+                # simulate something going wrong while the connection is open.
+                raise Exception("keep-alive loop broke")
+            # Second sleep is the outer retry-backoff sleep(5); stop the loop.
+            listener._running = False
+
+        with (
+            patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
+            patch("asyncio.sleep", side_effect=sleep_side_effect),
+        ):
+            await listener._listen_postgres()
+
+        mock_conn.remove_listener.assert_awaited_once()
+        mock_conn.close.assert_awaited_once()
 
     async def test_listen_postgres_handles_cancelled_error(self):
         """_listen_postgres breaks on CancelledError (lines 238-239)."""

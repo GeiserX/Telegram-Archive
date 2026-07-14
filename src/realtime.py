@@ -10,6 +10,7 @@ from the backup/listener components to the viewer.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -221,6 +222,10 @@ class RealtimeListener:
         self._is_postgresql = False
         self._running = False
         self._task: asyncio.Task | None = None
+        # Keeps references to in-flight callback tasks so they aren't
+        # garbage-collected mid-run and so their exceptions are retrieved
+        # (an un-referenced task's exception is otherwise silently dropped).
+        self._callback_tasks: set[asyncio.Task] = set()
 
     async def init(self):
         """Initialize and detect database type."""
@@ -264,6 +269,7 @@ class RealtimeListener:
         url = url.replace("postgresql+asyncpg://", "postgresql://")
 
         while self._running:
+            conn = None
             try:
                 conn = await asyncpg.connect(url)
                 await conn.add_listener("telegram_updates", self._pg_callback)
@@ -273,24 +279,48 @@ class RealtimeListener:
                 while self._running:
                     await asyncio.sleep(1)
 
-                await conn.remove_listener("telegram_updates", self._pg_callback)
-                await conn.close()
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"PostgreSQL LISTEN error: {e}")
                 await asyncio.sleep(5)  # Retry after 5 seconds
+            finally:
+                # Always tear down the connection, even when CancelledError or
+                # another exception interrupts the "keep connection alive" loop --
+                # otherwise a flapping DB leaks one connection per retry.
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        await conn.remove_listener("telegram_updates", self._pg_callback)
+                    with contextlib.suppress(Exception):
+                        await conn.close()
 
     def _pg_callback(self, connection, pid, channel, payload):
         """Handle PostgreSQL notification."""
-        if self._callback:
-            try:
-                data = json.loads(payload)
-                # Schedule the async callback
-                asyncio.create_task(self._callback(data))
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid JSON in notification: {payload}")
+        if not self._callback:
+            return
+
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as e:
+            # Never log the raw payload -- it may contain message content (PII rule).
+            logger.warning(f"Invalid JSON in notification: {type(e).__name__}: {e}")
+            return
+
+        # Keep a reference so the task isn't GC'd mid-flight, and retrieve its
+        # exception via the done callback instead of letting it vanish silently.
+        task = asyncio.create_task(self._callback(data))
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._on_callback_task_done)
+
+    def _on_callback_task_done(self, task: asyncio.Task) -> None:
+        """Clean up a finished callback task and surface any exception it raised."""
+        self._callback_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # Never log notification payload/data here (PII rule) -- exception class/message only.
+            logger.warning(f"Realtime callback failed: {type(exc).__name__}: {exc}")
 
     async def handle_http_push(self, payload: dict):
         """Handle HTTP push notification (for SQLite mode)."""

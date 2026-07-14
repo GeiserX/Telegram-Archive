@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Config, setup_logging
@@ -75,7 +75,7 @@ class BackupExporter:
 
         # Build export data
         export_data = {
-            "export_date": datetime.now().isoformat(),
+            "export_date": datetime.now(UTC).isoformat(),
             "filters": {"chat_id": chat_id, "start_date": start_date, "end_date": end_date},
             "statistics": {
                 "total_messages": len(messages),
