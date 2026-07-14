@@ -1742,6 +1742,12 @@
                 // monotonically older).
                 let oldestMessageCursor = null
                 let loadFailureStreak = 0
+                // True while the view is a detached jump-to-message window (loadMessagesAroundId)
+                // that does NOT contain the live tail. The realtime poll fetches the latest page
+                // (offset=0) and would upsert it in and snap the view back to newest, so the poll
+                // is suppressed until a tail-inclusive view is re-established (via
+                // resetMessagePagination, which every openChat/openTopic/search entry calls).
+                let viewingPinnedWindow = false
 
                 const messageIdKey = (msg) => msg?.id == null ? null : String(msg.id)
 
@@ -1784,6 +1790,10 @@
                     hasMore.value = true
                     oldestMessageCursor = null
                     loadFailureStreak = 0
+                    // Every openChat/openTopic/search entry loads a tail-inclusive view through
+                    // here, so clear the pinned-window flag (loadMessagesAroundId re-sets it after
+                    // its own reset). This also re-enables the realtime poll.
+                    viewingPinnedWindow = false
                     // View-entry chokepoint: every message-list swap goes through here, so the
                     // unseen-badge from the previous view resets alongside pagination.
                     unseenMessageCount.value = 0
@@ -3072,6 +3082,10 @@
                             if (chatVersion !== myVersion) return
                             messages.value = data.messages || data
                             resetMessagePagination()
+                            // This window is detached from the live tail — pause the realtime
+                            // poll so it can't fetch the latest page and snap us back to newest
+                            // (#213). Cleared when a tail-inclusive view is re-established.
+                            viewingPinnedWindow = true
                             await nextTick()
                             if (chatVersion !== myVersion) return
                             setupMessagesScrollObserver()
@@ -3350,7 +3364,7 @@
                 // Check for new messages and deletions
                 let isRefreshing = false
                 const checkForNewMessages = async () => {
-                    if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return
+                    if (!selectedChat.value || isRefreshing || messageSearchQuery.value || viewingPinnedWindow) return
 
                     isRefreshing = true
                     const myVersion = chatVersion
