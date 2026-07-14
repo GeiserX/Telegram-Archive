@@ -1736,9 +1736,12 @@ class DatabaseAdapter:
             if after_id is not None:
                 # Forward window (#213): the LIMIT must take the rows closest to the
                 # target, so select oldest-first and reverse to newest-first below to
-                # keep the response contract identical to every other mode.
+                # keep the response contract identical to every other mode. Ordering
+                # by id (monotonic per chat) instead of date lets the (chat_id, id)
+                # index satisfy both the bound and the sort — ordering by date here
+                # forced a full per-chat scan plus a temp sort.
                 stmt = stmt.where(Message.id > after_id)
-                stmt = stmt.order_by(Message.date.asc(), Message.id.asc()).limit(limit)
+                stmt = stmt.order_by(Message.id.asc()).limit(limit)
             elif before_date is not None:
                 # Use composite cursor: (date, id) for deterministic ordering
                 # Messages with same date are ordered by id DESC
@@ -1754,9 +1757,10 @@ class DatabaseAdapter:
                 # monotonically over time, so an id-only bound is chronologically
                 # correct within the chat scope. Without this branch a lone before_id
                 # silently fell through to the offset path and returned the latest
-                # page — the jump-to-message window was never fetched.
+                # page — the jump-to-message window was never fetched. Ordering by id
+                # (not date) lets the (chat_id, id) index seek directly to the bound.
                 stmt = stmt.where(Message.id < before_id)
-                stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit)
+                stmt = stmt.order_by(Message.id.desc()).limit(limit)
             else:
                 # Offset-based pagination (legacy fallback)
                 stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit).offset(offset)

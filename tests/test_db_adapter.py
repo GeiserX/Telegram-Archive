@@ -2106,9 +2106,10 @@ class TestGetMessagesPaginated:
 
         stmt = mock_session.execute.await_args_list[0].args[0]
         assert "messages.id <" in str(stmt.whereclause)
+        # id-only ordering (monotonic per chat) so the (chat_id, id) index can
+        # seek the bound directly; ordering by date forced a full per-chat scan.
         order_by = list(stmt._order_by_clauses)
-        assert str(order_by[0]) == str(Message.date.desc())
-        assert str(order_by[1]) == str(Message.id.desc())
+        assert str(order_by[0]) == str(Message.id.desc())
         assert stmt._offset_clause is None
 
     @pytest.mark.asyncio
@@ -2129,8 +2130,7 @@ class TestGetMessagesPaginated:
         stmt = mock_session.execute.await_args_list[0].args[0]
         assert "messages.id >" in str(stmt.whereclause)
         order_by = list(stmt._order_by_clauses)
-        assert str(order_by[0]) == str(Message.date.asc())
-        assert str(order_by[1]) == str(Message.id.asc())
+        assert str(order_by[0]) == str(Message.id.asc())
         # DB returned ascending [225, 226]; the response contract is newest-first.
         assert [m["id"] for m in result] == [226, 225]
 
