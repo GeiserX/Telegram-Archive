@@ -36,6 +36,7 @@ from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
 from .message_utils import (
+    build_media_filename,
     compute_file_hash,
     download_and_shard_media,
     extract_topic_id,
@@ -576,9 +577,10 @@ class TelegramListener:
         if hasattr(message.media, "document") and message.media.document:
             for attr in message.media.document.attributes:
                 if hasattr(attr, "file_name") and attr.file_name:
-                    # Use Telegram file ID + original name for deduplication
+                    # Use Telegram file ID + original name for deduplication.
+                    # Length-budget the decorative name for constrained filesystems (#212).
                     if telegram_file_id:
-                        return sanitize_media_filename(f"{telegram_file_id}_{attr.file_name}")
+                        return build_media_filename(telegram_file_id, attr.file_name, self.config.max_filename_bytes)
                     return sanitize_media_filename(attr.file_name)
 
         # Generate filename based on type

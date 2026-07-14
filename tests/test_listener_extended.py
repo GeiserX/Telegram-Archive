@@ -50,6 +50,7 @@ def _make_config(**overrides):
     config.groups_include_ids = set()
     config.channels_include_ids = set()
     config.validate_credentials = MagicMock()
+    config.max_filename_bytes = 255
     config.whitelist_mode = False
     config.chat_ids = set()
     config.listen_edits = True

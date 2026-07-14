@@ -926,6 +926,9 @@ class TestGetMediaFilename(unittest.TestCase):
 
     def setUp(self):
         self.backup = _make_backup()
+        # Real Config exposes this as an int; the MagicMock config needs it set so the
+        # filename length budget (build_media_filename) is a number, not a MagicMock.
+        self.backup.config.max_filename_bytes = 255
 
     def _make_doc_message(self, *, file_name=None, mime_type=None, msg_id=1, date=None):
         """Create a mock message with document media."""
@@ -3516,6 +3519,60 @@ class TestBackupAllInProgressFlag(unittest.TestCase):
         set_idx = calls.index(("backup_in_progress", "1"))
         clear_idx = calls.index(("backup_in_progress", "0"))
         self.assertLess(set_idx, clear_idx)
+
+
+class TestRetryPendingMediaCap(unittest.TestCase):
+    """_retry_pending_media_downloads increments attempts on unsuccessful re-tries (#212)."""
+
+    def setUp(self):
+        self.backup = _make_backup()
+        self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
+        self.backup.config.max_media_download_attempts = 5
+        self.backup.config.skip_media_chat_ids = set()
+        self.backup.db.get_pending_media_downloads = AsyncMock(
+            return_value=[{"id": "f1", "message_id": 10, "chat_id": -100, "type": "video"}]
+        )
+        self.backup.db.increment_media_download_attempts = AsyncMock()
+        self.backup.db.count_capped_media_downloads = AsyncMock(return_value=0)
+        self.backup.db.insert_media = AsyncMock()
+        msg = MagicMock()
+        msg.id = 10
+        msg.media = MagicMock()
+        self.backup.client = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[msg])
+
+    def test_passes_attempt_cap_to_query(self):
+        self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.get_pending_media_downloads.assert_awaited_once_with(100 * 1024 * 1024, 5)
+
+    def test_increment_on_failed_download(self):
+        """A download that raises bumps the attempt counter (the #212 name-too-long case)."""
+        self.backup._process_media = AsyncMock(side_effect=OSError(36, "File name too long"))
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1")
+
+    def test_increment_on_no_download_result(self):
+        """A re-attempt that returns no download (e.g. still over a limit) also counts."""
+        self.backup._process_media = AsyncMock(return_value=None)
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1")
+
+    def test_no_increment_on_success(self):
+        """A successful re-download does not bump the counter (row leaves the pending set)."""
+        self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_not_awaited()
+        self.backup.db.insert_media.assert_awaited_once()
+
+    def test_capped_files_are_logged_not_silent(self):
+        """Files given up after the cap are surfaced (aggregate count), even with no pending."""
+        self.backup.db.get_pending_media_downloads = AsyncMock(return_value=[])
+        self.backup.db.count_capped_media_downloads = AsyncMock(return_value=3)
+        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+            _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5)
+        assert any("permanently skipped" in line for line in cm.output)
 
 
 if __name__ == "__main__":
