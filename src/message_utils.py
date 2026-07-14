@@ -58,6 +58,56 @@ def sanitize_media_filename(name: str) -> str:
     return name
 
 
+# Reserve for the temp-download suffix ".{pid}.{task_id}.part": pid up to 7 digits,
+# id(asyncio.current_task()) up to ~20 digits on 64-bit, plus 3 dots + "part". A fixed,
+# generous constant keeps the truncated name DETERMINISTIC (independent of live pid/task id).
+_MEDIA_PART_SUFFIX_RESERVE = 40
+
+# Above this, an "extension" is almost certainly not one — treat the whole name as stem.
+_MEDIA_MAX_EXT_BYTES = 16
+
+
+def build_media_filename(file_id: str, original_name: str, name_max_bytes: int) -> str:
+    """Build a length-safe media filename ``<file_id>_<original stem, truncated>.<ext>``.
+
+    ``name_max_bytes`` is the usable per-component byte budget of the target filesystem
+    (e.g. ~143 on Synology eCryptfs, 255 on ext4). The temp-download suffix is reserved
+    internally so the ``.part`` file also fits (see ``download_and_shard_media``). The
+    ``file_id`` prefix (uniqueness) is always preserved; only the decorative original-name
+    stem is shortened. UTF-8 codepoint-safe (never splits a multibyte character) and
+    deterministic (a pure function of its inputs, so retries/dedup recompute the same name).
+    """
+    safe_name = sanitize_media_filename(original_name)
+    stem, ext = os.path.splitext(safe_name)
+    if len(ext.encode("utf-8")) > _MEDIA_MAX_EXT_BYTES:
+        stem, ext = safe_name, ""
+
+    safe_id = str(file_id).replace("/", "_").replace("\\", "_")
+    prefix = f"{safe_id}_"
+
+    budget = name_max_bytes - _MEDIA_PART_SUFFIX_RESERVE - len(prefix.encode("utf-8")) - len(ext.encode("utf-8"))
+    if budget <= 0:
+        # Pathological tiny budget (the reserve already ruled out a truncated stem):
+        # fall back to a short deterministic hash of the original name, keeping
+        # uniqueness (via file_id) and the extension. These tiers check against the
+        # raw name_max_bytes — the reserve was already spent deciding to land here.
+        digest = hashlib.sha1(safe_name.encode("utf-8")).hexdigest()[:8]
+        fallback = f"{safe_id}_{digest}{ext}"
+        if len(fallback.encode("utf-8")) <= name_max_bytes:
+            return fallback
+        with_ext = f"{safe_id}{ext}"
+        if len(with_ext.encode("utf-8")) <= name_max_bytes:
+            return with_ext
+        return safe_id
+
+    # Truncate the stem to the byte budget without splitting a multibyte codepoint.
+    safe_stem = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    if not safe_stem:
+        digest = hashlib.sha1(safe_name.encode("utf-8")).hexdigest()[:8]
+        return f"{safe_id}_{digest}{ext}"
+    return f"{safe_id}_{safe_stem}{ext}"
+
+
 def get_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str:
     """Build the sharded path for a file in the shared store.
 

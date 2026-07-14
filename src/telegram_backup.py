@@ -41,12 +41,12 @@ from .db import DatabaseAdapter, create_adapter
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
+    build_media_filename,
     compute_file_hash,
     download_and_shard_media,
     extract_topic_id,
     finalize_atomic_download,
     resolve_shared_file_path,
-    sanitize_media_filename,
     service_action_type,
 )
 from .parallel_download import (
@@ -958,7 +958,9 @@ class TelegramBackup:
         Respects MAX_MEDIA_SIZE_BYTES — files that still exceed the limit
         are skipped silently.
         """
-        pending = await self.db.get_pending_media_downloads(self.config.get_max_media_size_bytes())
+        pending = await self.db.get_pending_media_downloads(
+            self.config.get_max_media_size_bytes(), self.config.max_media_download_attempts
+        )
         if not pending:
             return
 
@@ -1010,16 +1012,21 @@ class TelegramBackup:
                         skipped += 1
                         continue
 
-                    # Re-attempt _process_media (which handles size checks internally)
+                    # Re-attempt _process_media (which handles size checks internally).
+                    # Count each unsuccessful re-attempt so a permanently-failing file
+                    # (e.g. a filename too long for the target filesystem, #212) stops
+                    # being re-fetched once it hits MEDIA_MAX_DOWNLOAD_ATTEMPTS.
                     try:
                         result = await self._process_media(msg, chat_id)
                         if result and result.get("downloaded"):
                             await self.db.insert_media(result)
                             downloaded += 1
                         else:
+                            await self.db.increment_media_download_attempts(record["id"])
                             skipped += 1
                     except Exception as e:
                         logger.debug(f"Retry failed for pending media: {e}")
+                        await self.db.increment_media_download_attempts(record["id"])
                         failed += 1
 
             except Exception as e:
@@ -2171,10 +2178,12 @@ class TelegramBackup:
                     original_name = attr.file_name
                     break
 
-        # If we have original filename, use it (with file_id prefix for uniqueness)
+        # If we have original filename, use it (with file_id prefix for uniqueness).
+        # Length-budget the decorative name so it stays writable on constrained
+        # filesystems (Synology/eCryptfs ~143 bytes); the file_id prefix + extension
+        # are always preserved. (#212)
         if original_name and telegram_file_id:
-            safe_id = str(telegram_file_id).replace("/", "_").replace("\\", "_")
-            return sanitize_media_filename(f"{safe_id}_{original_name}")
+            return build_media_filename(telegram_file_id, original_name, self.config.max_filename_bytes)
 
         # Determine extension from mime_type, then fall back to media_type
         extension = None
