@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.21.0] - 2026-07-14
+
+### Fixed
+- **Jumping to a message from the media gallery no longer snaps back to the latest messages** — clicking a media item loaded the correct history window and then the 3-second refresh immediately reset the view to the newest messages, so the target was never shown. The realtime refresh is now paused while you're viewing a jumped-to history window, and the "scroll to latest" button reliably returns you to live. ([#213](https://github.com/GeiserX/Telegram-Archive/issues/213), [#214](https://github.com/GeiserX/Telegram-Archive/pull/214))
+- **Media is no longer silently lost on Synology encrypted (eCryptfs) shares** — such shares cap a filename at ~143 bytes (not the usual 255), so media with long original names — especially non-Latin (Cyrillic/CJK) — failed to write and was re-fetched from Telegram on every run forever. Filenames are now length-budgeted (byte-aware, extension preserved, non-Latin safe) to fit; the unique file-id prefix and extension are always kept, only the decorative part is shortened. ([#212](https://github.com/GeiserX/Telegram-Archive/issues/212), [#215](https://github.com/GeiserX/Telegram-Archive/pull/215))
+- **A permanently-unwritable media file no longer taxes every backup run forever** — failed downloads are now retried a bounded number of times and then skipped with a logged count, instead of being re-fetched indefinitely.
+
+### Added
+- `MEDIA_MAX_FILENAME_BYTES` (default **143**) — usable filename-component byte budget for the media store. Raise to 255 on plain ext4/xfs/btrfs for longer decorative names; keep at 143 for Synology/eCryptfs encrypted shares.
+- `MEDIA_MAX_DOWNLOAD_ATTEMPTS` (default **5**) — how many times a failing media download is retried before it is skipped (and surfaced as an aggregate count). Requesting a re-download resets the counter.
+
+### Upgrade note
+- Migration `016` (adds `media.download_attempts`) runs automatically on first start; it is idempotent and requires no action.
+
+### Credits
+- Thanks to [@625801](https://github.com/625801) for the detailed reports and reproductions behind #212 and #213.
+
 ## [7.20.0] - 2026-07-06
 
 ### Added
