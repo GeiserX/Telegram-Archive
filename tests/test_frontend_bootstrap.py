@@ -230,10 +230,12 @@ def test_jump_to_message_resets_history_pagination():
 
     assert "const myVersion = ++chatVersion" in jump_body
     assert "loading.value = true" in jump_body
-    assert "messages.value = data.messages || data" in jump_body
+    assert "messages.value = [...afterRows, ...windowRows]" in jump_body
     assert "resetMessagePagination()" in jump_body
     assert "setupMessagesScrollObserver()" in jump_body
-    assert jump_body.index("messages.value = data.messages || data") < jump_body.index("resetMessagePagination()")
+    assert jump_body.index("messages.value = [...afterRows, ...windowRows]") < jump_body.index(
+        "resetMessagePagination()"
+    )
     assert jump_body.index("resetMessagePagination()") < jump_body.index("setupMessagesScrollObserver()")
 
 
@@ -248,22 +250,113 @@ def test_jump_window_suppresses_realtime_poll():
     reset_start = html.index("const resetMessagePagination = () =>")
     reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
 
-    assert "let viewingPinnedWindow = false" in html
+    assert "const viewingPinnedWindow = ref(false)" in html
     # The poll bails while a detached window is shown...
-    assert "|| viewingPinnedWindow) return" in refresh_body
-    # ...the jump sets the flag AFTER its own resetMessagePagination()...
-    assert "viewingPinnedWindow = true" in jump_body
-    assert jump_body.index("resetMessagePagination()") < jump_body.index("viewingPinnedWindow = true")
+    assert "|| viewingPinnedWindow.value) return" in refresh_body
+    # ...the jump sets the flag AFTER its own resetMessagePagination() — pinned
+    # unless a short after-context page proved the window already reaches the tail...
+    assert "viewingPinnedWindow.value = !(afterFetchComplete && afterRows.length < windowLimit)" in jump_body
+    assert jump_body.index("resetMessagePagination()") < jump_body.index("viewingPinnedWindow.value = !(")
     # ...and every tail-inclusive view entry clears it via resetMessagePagination.
-    assert "viewingPinnedWindow = false" in reset_body
+    assert "viewingPinnedWindow.value = false" in reset_body
 
     # The "scroll to latest" button must genuinely return to live from a pinned
     # window (reload the tail), not just scroll the stale window (#214 review).
     latest_start = html.index("const scrollToLatest = async () =>")
     latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
-    assert "if (viewingPinnedWindow)" in latest_body
+    assert "if (viewingPinnedWindow.value)" in latest_body
     assert "resetMessagePagination()" in latest_body
     assert "await loadMessages()" in latest_body
+    # While pinned, scrollTop sits at 0 so the scroll-position heuristic alone
+    # would hide the button — the flag must keep the exit affordance rendered.
+    assert 'v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"' in html
+
+
+def test_jump_window_fetches_context_and_scrolls_to_target():
+    """The jump loads history + after-context scoped to the topic and scrolls to the target (#213)."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+
+    # Exclusive bound keeps the target as the newest row of the history half.
+    assert "before_id=${messageId + 1}" in jump_body
+    assert "after_id=${messageId}" in jump_body
+    # Both window fetches must carry the forum-topic scope.
+    assert jump_body.count("${topicParam}") == 2
+    # Target scroll goes through the shared id-anchored helper.
+    assert "scrollToMessage(messageId)" in jump_body
+
+
+def test_message_rows_bind_the_msg_id_anchor():
+    """Both rendered row variants carry data-msg-id, and JS data-* selectors resolve.
+
+    Guards the #213 bug class: v7.21.0 shipped a querySelector for
+    [data-msg-id=...] while no element rendered the attribute, so the jump's
+    scroll/highlight was dead code.
+    """
+    import re
+
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    # service row + regular row
+    assert html.count(':data-msg-id="msg.id"') == 2
+
+    # Generic drift guard: every data-* attribute queried from JS must be
+    # rendered somewhere in the template (as a static or bound attribute).
+    queried = set(re.findall(r"querySelector(?:All)?\([`'\"]\[(data-[a-z-]+)", html))
+    assert "data-msg-id" in queried
+    for attr in queried:
+        assert f":{attr}=" in html or f" {attr}=" in html, f"JS queries [{attr}] but the template never renders it"
+
+
+def test_scroll_to_message_uses_id_anchor_not_positional_index():
+    """scrollToMessage must resolve rows by data-msg-id, not by .message-bubble index.
+
+    Service rows and hidden album rows make the bubble NodeList shorter than
+    sortedMessages, so positional lookups scrolled to the wrong message.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "querySelectorAll('.message-bubble')" not in html
+
+    helper_start = html.index("const findMessageElement = (msgId) =>")
+    helper_body = html[helper_start : html.index("const scrollToMessage = (msgId) =>", helper_start)]
+    assert '[data-msg-id="${msgId}"]' in helper_body
+    # Album-hidden targets resolve to their visible first-in-album sibling.
+    assert "getGroupedId" in helper_body
+
+    scroll_start = html.index("const scrollToMessage = (msgId) =>")
+    scroll_body = html[scroll_start : html.index("const openDatePicker", scroll_start)]
+    assert "findMessageElement(msgId)" in scroll_body
+    assert "scrollIntoView({ behavior: 'smooth', block: 'center' })" in scroll_body
+
+
+def test_websocket_new_message_respects_pinned_window_and_search():
+    """The WS path must honor the same guards as the poll — it was the ungated snap-back writer (#213)."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("case 'new_message':")
+    ws_body = html[ws_start : html.index("case 'edit':", ws_start)]
+
+    assert "if (viewingPinnedWindow.value || messageSearchQuery.value)" in ws_body
+    # The guard must run before the upsert/autoscroll path.
+    assert ws_body.index("viewingPinnedWindow.value") < ws_body.index("upsertMessages([data.message]")
+    # Desktop notifications still fire while pinned (the guard must not break out early).
+    assert "showNotification(data)" in ws_body
+
+
+def test_jump_to_date_routes_through_window_loader():
+    """Date jumps reuse the jump-window path instead of the capped push+fill-gap machinery."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    date_start = html.index("const jumpToDate = async () =>")
+    date_body = html[date_start : html.index("// Admin panel", date_start)]
+
+    assert "await loadMessagesAroundId(message.id)" in date_body
+    # The 20-page fill-gap loop (failed for targets >1000 messages back) is gone.
+    assert "fillGap" not in html
+    assert "maxIterations" not in date_body
 
 
 def test_realtime_polling_skips_search_results():
@@ -401,6 +494,7 @@ def test_unseen_message_badge_tracks_background_arrivals():
     latest_start = html.index("const scrollToLatest = async () =>")
     latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
     assert "unseenMessageCount.value = 0" in latest_body
-    # Button shows for the badge even before the distance threshold, with an aria-label.
-    assert 'v-if="showScrollToBottom || unseenMessageCount > 0"' in html
+    # Button shows for the badge even before the distance threshold (and always
+    # while a detached jump window is pinned), with an aria-label.
+    assert 'v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"' in html
     assert "' new message(s) — scroll to latest'" in html

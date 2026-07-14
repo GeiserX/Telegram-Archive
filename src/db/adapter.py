@@ -1669,6 +1669,7 @@ class DatabaseAdapter:
         search: str | None = None,
         before_date: datetime | None = None,
         before_id: int | None = None,
+        after_id: int | None = None,
         topic_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """
@@ -1688,6 +1689,10 @@ class DatabaseAdapter:
             search: Optional text search filter
             before_date: Cursor - get messages before this date (faster than offset)
             before_id: Cursor - message ID to use as tiebreaker for same-date messages
+                (or, without before_date, an id-only bound: rows with id < before_id)
+            after_id: Cursor - get messages newer than this message ID (takes
+                precedence over the other cursors; used for jump-to-message
+                after-context). Response stays newest-first like every other mode.
             topic_id: Optional forum topic ID to filter messages by thread
 
         Returns:
@@ -1728,7 +1733,16 @@ class DatabaseAdapter:
 
             # Cursor-based pagination (preferred - O(1) performance)
             # Mirrored by the viewer (src/web/templates/index.html: compareMessagesDesc/messageCursor) — keep in sync.
-            if before_date is not None:
+            if after_id is not None:
+                # Forward window (#213): the LIMIT must take the rows closest to the
+                # target, so select oldest-first and reverse to newest-first below to
+                # keep the response contract identical to every other mode. Ordering
+                # by id (monotonic per chat) instead of date lets the (chat_id, id)
+                # index satisfy both the bound and the sort — ordering by date here
+                # forced a full per-chat scan plus a temp sort.
+                stmt = stmt.where(Message.id > after_id)
+                stmt = stmt.order_by(Message.id.asc()).limit(limit)
+            elif before_date is not None:
                 # Use composite cursor: (date, id) for deterministic ordering
                 # Messages with same date are ordered by id DESC
                 if before_id is not None:
@@ -1738,6 +1752,15 @@ class DatabaseAdapter:
                 else:
                     stmt = stmt.where(Message.date < before_date)
                 stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit)
+            elif before_id is not None:
+                # Lone before_id cursor (#213): per-chat Telegram message ids increase
+                # monotonically over time, so an id-only bound is chronologically
+                # correct within the chat scope. Without this branch a lone before_id
+                # silently fell through to the offset path and returned the latest
+                # page — the jump-to-message window was never fetched. Ordering by id
+                # (not date) lets the (chat_id, id) index seek directly to the bound.
+                stmt = stmt.where(Message.id < before_id)
+                stmt = stmt.order_by(Message.id.desc()).limit(limit)
             else:
                 # Offset-based pagination (legacy fallback)
                 stmt = stmt.order_by(Message.date.desc(), Message.id.desc()).limit(limit).offset(offset)
@@ -1775,6 +1798,10 @@ class DatabaseAdapter:
                         msg["raw_data"] = {}
 
                 messages.append(msg)
+
+            if after_id is not None:
+                # Selected oldest-first for the LIMIT; restore the newest-first contract.
+                messages.reverse()
 
             version_counts = {msg["id"]: 0 for msg in messages}
             version_count_message_ids = [msg["id"] for msg in messages]

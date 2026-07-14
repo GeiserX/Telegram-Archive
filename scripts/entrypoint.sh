@@ -130,6 +130,15 @@ if has_tables and not has_alembic:
     \"\"\")
     has_016_download_attempts = cur.fetchone()[0]
 
+    # Check artifact from migration 017: idx_messages_chat_id_id index
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM pg_indexes
+            WHERE tablename = 'messages' AND indexname = 'idx_messages_chat_id_id'
+        );
+    \"\"\")
+    has_017_chat_id_id_index = cur.fetchone()[0]
+
     # Check artifact from migration 014: messages soft-delete marker columns
     cur.execute(\"\"\"
         SELECT
@@ -250,7 +259,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    if has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
+    if has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
+        stamp_version = '017'
+    elif has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '016'
     elif has_015_message_versions and has_014_soft_delete:
         stamp_version = '015'
@@ -375,6 +386,10 @@ if has_tables and not has_alembic:
     # Check artifact from migration 016: media.download_attempts column
     has_016_download_attempts = 'download_attempts' in media_columns
 
+    # Check artifact from migration 017: idx_messages_chat_id_id index
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_chat_id_id'\")
+    has_017_chat_id_id_index = cur.fetchone() is not None
+
     # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")
     has_010_tokens = cur.fetchone() is not None
@@ -414,7 +429,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    if has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
+    if has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
+        stamp_version = '017'
+    elif has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '016'
     elif has_015_message_versions and has_014_soft_delete:
         stamp_version = '015'

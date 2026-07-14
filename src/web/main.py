@@ -1424,6 +1424,7 @@ async def get_messages(
     search: str | None = None,
     before_date: str | None = None,
     before_id: int | None = None,
+    after_id: int | None = None,
     topic_id: int | None = None,
 ):
     """
@@ -1432,6 +1433,8 @@ async def get_messages(
     Supports two pagination modes:
     - Offset-based: ?offset=100 (slower for large offsets)
     - Cursor-based: ?before_date=2026-01-15T12:00:00&before_id=12345 (O(1) performance)
+      A lone ?before_id=N returns rows with id < N (jump-to-message window),
+      and ?after_id=N returns rows with id > N (jump-to-message after-context).
 
     v6.2.0: Added topic_id filter for forum topic messages.
 
@@ -1460,6 +1463,7 @@ async def get_messages(
             search=search,
             before_date=parsed_before_date,
             before_id=before_id,
+            after_id=after_id,
             topic_id=topic_id,
         )
         if user.no_download:
