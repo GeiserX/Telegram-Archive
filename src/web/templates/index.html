@@ -968,14 +968,14 @@
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
                             <!-- v6.0.0: Service type moved to raw_data.service_type -->
-                            <div v-if="msg.raw_data?.service_type === 'service'" class="flex justify-center my-2">
+                            <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2">
                                 <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
                                     style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
                                     {{ msg.text }}
                                 </div>
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
-                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
@@ -1237,7 +1237,7 @@
                     </div>
 
                     <!-- Scroll to Bottom Button -->
-                    <button v-if="showScrollToBottom || unseenMessageCount > 0"
+                    <button v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"
                         @click="scrollToLatest"
                         class="scroll-to-bottom-btn relative"
                         :aria-label="unseenMessageCount > 0 ? unseenMessageCount + ' new message(s) — scroll to latest' : 'Scroll to latest messages'"
@@ -1745,9 +1745,12 @@
                 // True while the view is a detached jump-to-message window (loadMessagesAroundId)
                 // that does NOT contain the live tail. The realtime poll fetches the latest page
                 // (offset=0) and would upsert it in and snap the view back to newest, so the poll
-                // is suppressed until a tail-inclusive view is re-established (via
-                // resetMessagePagination, which every openChat/openTopic/search entry calls).
-                let viewingPinnedWindow = false
+                // and the WS new_message handler are suppressed until a tail-inclusive view is
+                // re-established (via resetMessagePagination, which every openChat/openTopic/search
+                // entry calls). Reactive: the scroll-to-latest button renders on it so a pinned
+                // window always has an exit affordance (at scrollTop=0 the scroll-position
+                // heuristic alone would hide the button).
+                const viewingPinnedWindow = ref(false)
 
                 const messageIdKey = (msg) => msg?.id == null ? null : String(msg.id)
 
@@ -1793,7 +1796,7 @@
                     // Every openChat/openTopic/search entry loads a tail-inclusive view through
                     // here, so clear the pinned-window flag (loadMessagesAroundId re-sets it after
                     // its own reset). This also re-enables the realtime poll.
-                    viewingPinnedWindow = false
+                    viewingPinnedWindow.value = false
                     // View-entry chokepoint: every message-list swap goes through here, so the
                     // unseen-badge from the previous view resets alongside pagination.
                     unseenMessageCount.value = 0
@@ -2500,15 +2503,25 @@
                         case 'new_message':
                             // Add to messages if we're viewing that chat/topic (deduplicate by ID)
                             if (selectedChat.value?.id === data.chat_id && data.message?.id != null && messageBelongsToCurrentTopic(data.message)) {
-                                const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
-                                // insert-only: a bare realtime row (no user/media joins, text truncated
-                                // by the notifier) must never overwrite an already-loaded joined row;
-                                // the next poll tick canonicalizes it via upsertMessages(latestMessages).
-                                if (upsertMessages([data.message], { updateExisting: false }) > 0) {
-                                    if (shouldStickToBottom) {
-                                        nextTick(() => scrollToBottom())
-                                    } else {
-                                        unseenMessageCount.value += 1
+                                if (viewingPinnedWindow.value || messageSearchQuery.value) {
+                                    // Mirror the realtime-poll guard (#213): a detached jump window
+                                    // must not grow live-tail rows (the near-bottom autoscroll below
+                                    // would snap the view back to newest), and a search view must not
+                                    // gain unfiltered rows. Count it for the badge instead — the tail
+                                    // reload on exit fetches it with full joins. (Falls through to the
+                                    // desktop-notification block below.)
+                                    unseenMessageCount.value += 1
+                                } else {
+                                    const shouldStickToBottom = isNearMessageBottom(messagesContainer.value)
+                                    // insert-only: a bare realtime row (no user/media joins, text truncated
+                                    // by the notifier) must never overwrite an already-loaded joined row;
+                                    // the next poll tick canonicalizes it via upsertMessages(latestMessages).
+                                    if (upsertMessages([data.message], { updateExisting: false }) > 0) {
+                                        if (shouldStickToBottom) {
+                                            nextTick(() => scrollToBottom())
+                                        } else {
+                                            unseenMessageCount.value += 1
+                                        }
                                     }
                                 }
                             }
@@ -3073,32 +3086,64 @@
                     const myVersion = ++chatVersion
                     loading.value = true
                     try {
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=50`, {
+                        const windowLimit = 50
+                        // Scope both window fetches to the active forum topic like every other
+                        // messages fetch — without it a topic view jumps into cross-topic rows.
+                        let topicParam = ''
+                        const nav = currentNav.value
+                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
+                            topicParam = `&topic_id=${nav.topicId}`
+                        }
+                        // before_id is an exclusive bound, so +1 keeps the target itself as the
+                        // newest row of the history half of the window.
+                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
                             credentials: 'include'
                         })
                         if (chatVersion !== myVersion) return
-                        if (res.ok) {
-                            const data = await res.json()
+                        if (!res.ok) return
+                        const data = await res.json()
+                        if (chatVersion !== myVersion) return
+                        const windowRows = data.messages || data
+                        // After-context so the target can sit centered with history on both
+                        // sides (Telegram-style). Best-effort: without it the target still
+                        // renders at the window's bottom edge.
+                        let afterRows = []
+                        let afterFetchComplete = false
+                        try {
+                            const afterRes = await fetch(`/api/chats/${selectedChat.value.id}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
+                                credentials: 'include'
+                            })
                             if (chatVersion !== myVersion) return
-                            messages.value = data.messages || data
-                            resetMessagePagination()
-                            // This window is detached from the live tail — pause the realtime
-                            // poll so it can't fetch the latest page and snap us back to newest
-                            // (#213). Cleared when a tail-inclusive view is re-established.
-                            viewingPinnedWindow = true
-                            await nextTick()
-                            if (chatVersion !== myVersion) return
-                            setupMessagesScrollObserver()
-                            const el = document.querySelector(`[data-msg-id="${messageId}"]`)
-                            if (el) {
-                                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                                el.classList.add('bg-yellow-500/10')
-                                setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                            if (afterRes.ok) {
+                                const afterData = await afterRes.json()
+                                if (chatVersion !== myVersion) return
+                                afterRows = afterData.messages || afterData
+                                afterFetchComplete = true
                             }
+                        } catch (e) {
+                            console.warn('[Jump] after-context fetch failed, showing history-only window', e)
                         }
+                        messages.value = [...afterRows, ...windowRows]
+                        resetMessagePagination()
+                        // A short after-page proves the window already reaches the newest
+                        // message — stay live. Otherwise (full page, or the after-fetch
+                        // failed and we can't know) the view is detached from the live tail:
+                        // pause the realtime poll/WS upserts that would snap it back to
+                        // newest (#213). Cleared when a tail-inclusive view is re-established.
+                        viewingPinnedWindow.value = !(afterFetchComplete && afterRows.length < windowLimit)
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+                        setupMessagesScrollObserver()
+                        scrollToMessage(messageId)
                     } finally {
                         if (chatVersion === myVersion) {
                             loading.value = false
+                        }
+                        // Re-observe the sentinel after DOM updates (it is v-if'd on !loading,
+                        // so it only mounts after the flip above) — same idiom as loadMessages.
+                        await nextTick()
+                        if (messagesScrollObserver && loadMoreSentinel.value) {
+                            messagesScrollObserver.observe(loadMoreSentinel.value)
                         }
                     }
                 }
@@ -3364,7 +3409,7 @@
                 // Check for new messages and deletions
                 let isRefreshing = false
                 const checkForNewMessages = async () => {
-                    if (!selectedChat.value || isRefreshing || messageSearchQuery.value || viewingPinnedWindow) return
+                    if (!selectedChat.value || isRefreshing || messageSearchQuery.value || viewingPinnedWindow.value) return
 
                     isRefreshing = true
                     const myVersion = chatVersion
@@ -3626,7 +3671,7 @@
                     // top of that stale window and leaves the realtime poll paused (#213/#214) —
                     // the button would look like "back to live" while nothing updates. Reload the
                     // live tail so this control genuinely returns the user to the newest messages.
-                    if (viewingPinnedWindow) {
+                    if (viewingPinnedWindow.value) {
                         const myVersion = ++chatVersion  // invalidate in-flight pinned-window loads
                         loading.value = false
                         messages.value = []
@@ -4141,25 +4186,44 @@
                     })
                 }
 
-                const scrollToMessage = (msgId) => {
-                    // Find message element by ID and scroll to it
-                    const msgIndex = sortedMessages.value.findIndex(m => m.id === msgId)
-                    if (msgIndex !== -1) {
-                        nextTick(() => {
-                            const container = messagesContainer.value
-                            const msgElements = container.querySelectorAll('.message-bubble')
-                            if (msgElements[msgIndex]) {
-                                msgElements[msgIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-                                // Highlight briefly
-                                msgElements[msgIndex].style.backgroundColor = '#1e40af'
-                                setTimeout(() => {
-                                    msgElements[msgIndex].style.backgroundColor = ''
-                                }, 1000)
-                            }
-                        })
-                    } else {
-                        console.log('Message not loaded yet')
+                // Resolve the rendered row for a message id via its data-msg-id attribute.
+                // Hidden album members (only the first photo/video of a group renders a row)
+                // resolve to their visible first-in-album sibling so album targets still get
+                // a scroll anchor. Positional lookups (.message-bubble[index]) are unusable
+                // here: service rows and hidden album rows make the DOM list shorter than
+                // sortedMessages, so index-based targeting scrolls to the wrong message.
+                const findMessageElement = (msgId) => {
+                    const container = messagesContainer.value
+                    if (!container) return null
+                    const exact = container.querySelector(`[data-msg-id="${msgId}"]`)
+                    if (exact) return exact
+                    const list = sortedMessages.value
+                    const idx = list.findIndex(m => String(m.id) === String(msgId))
+                    if (idx === -1) return null
+                    const gid = getGroupedId(list[idx])
+                    if (!gid) return null
+                    // sortedMessages is newest-first; the rendered album row is the group
+                    // member with the lowest index (isFirstInAlbum), so walk toward 0.
+                    for (let i = idx - 1; i >= 0; i--) {
+                        if (getGroupedId(list[i]) !== gid) break
+                        const el = container.querySelector(`[data-msg-id="${list[i].id}"]`)
+                        if (el) return el
                     }
+                    return null
+                }
+
+                const scrollToMessage = (msgId) => {
+                    nextTick(() => {
+                        const el = findMessageElement(msgId)
+                        if (!el) {
+                            console.log('Message not loaded yet')
+                            return
+                        }
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        // Highlight briefly (same flash the jump path always intended)
+                        el.classList.add('bg-yellow-500/10')
+                        setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                    })
                 }
 
                 const openDatePicker = (initialDate) => {
@@ -4226,95 +4290,21 @@
                             return
                         }
 
-                        // Check if message is already loaded
+                        // Fast path: target already rendered — just scroll to it.
                         const existingIndex = sortedMessages.value.findIndex(m => m.id === message.id)
-
                         if (existingIndex !== -1) {
-                            // Message already loaded, just scroll to it
                             await nextTick()
                             scrollToMessage(message.id)
-                        } else {
-                            // Message not loaded, we need to load it
-                            // Since messages are loaded in DESC order (newest first), and we're looking for
-                            // a specific date, we'll add the message to our list and scroll to it
-                            // The message will be properly positioned when we load more messages
-
-                            // Capture oldest loaded message date BEFORE adding the new message
-                            // sortedMessages is newest-first, so last element is oldest
-                            const oldestLoadedDateBeforeJump = sortedMessages.value.length > 0
-                                ? sortedMessages.value[sortedMessages.value.length - 1].date
-                                : null
-
-                            // Add the message to the list (it will be sorted correctly by date)
-                            messages.value.push(message)
-
-                            await nextTick()
-
-                            // Find it in sorted messages and scroll
-                            const sortedIndex = sortedMessages.value.findIndex(m => m.id === message.id)
-                            if (sortedIndex !== -1) {
-                                scrollToMessage(message.id)
-
-                                // Load surrounding messages to fill the gap between jumped message
-                                // and previously loaded messages. loadMessages() uses pagination,
-                                // so we need to keep loading until the gap is filled.
-                                const targetDate = moment(message.date)
-
-                                // Only fill gap if target is older than what we had loaded
-                                if (oldestLoadedDateBeforeJump && targetDate.isBefore(moment(oldestLoadedDateBeforeJump))) {
-                                    // Load messages in background to fill the gap
-                                    const fillGap = async () => {
-                                        // Keep loading until pagination catches up to the target date
-                                        let iterations = 0
-                                        const maxIterations = 20 // Safety limit
-                                        const targetTime = new Date(message.date).getTime()
-
-                                        while (hasMore.value && iterations < maxIterations) {
-                                            // Abort if user switched to a different chat
-                                            if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
-                                                return
-                                            }
-
-                                            // Check if gap is filled by looking at target's position
-                                            // in sorted messages (newest-first, so oldest is last)
-                                            const sorted = sortedMessages.value
-                                            const targetIdx = sorted.findIndex(m => m.id === message.id)
-
-                                            // Gap is filled when target is no longer the oldest loaded
-                                            if (targetIdx !== -1 && targetIdx < sorted.length - 1) {
-                                                break
-                                            }
-
-                                            // Track message IDs before loading to detect new messages
-                                            const idsBefore = new Set(messages.value.map(m => m.id))
-
-                                            await loadMessages()
-                                            iterations++
-
-                                            // Check if any newly loaded message is at or before target date
-                                            // This means pagination has reached the target (gap is filled)
-                                            // without needing to load messages OLDER than the target
-                                            let reachedTarget = false
-                                            for (const m of messages.value) {
-                                                if (!idsBefore.has(m.id) && new Date(m.date).getTime() <= targetTime) {
-                                                    reachedTarget = true
-                                                    break
-                                                }
-                                            }
-                                            if (reachedTarget) {
-                                                break
-                                            }
-
-                                            // Small delay between requests
-                                            await new Promise(resolve => setTimeout(resolve, 50))
-                                        }
-                                    }
-
-                                    // Start filling gap after a short delay
-                                    setTimeout(fillGap, 200)
-                                }
-                            }
+                            return
                         }
+
+                        // Load a detached window centered on the target — the same path as
+                        // the media-gallery jump (#213). The previous push-into-tail +
+                        // fill-the-gap approach capped at 20 pages, so dates further back
+                        // than ~1000 messages never got their gap filled, and the realtime
+                        // poll's near-bottom autoscroll could snap the view back to the
+                        // tail mid-fill.
+                        await loadMessagesAroundId(message.id)
                     } catch (e) {
                         console.error('Error jumping to date:', e)
                         closeDatePicker()
@@ -4542,6 +4532,7 @@
                     formatMediaDate,
                     formatFileSize,
                     loadMessagesAroundId,
+                    viewingPinnedWindow,
                     searchMessages,
                     isOwnMessage,
                     getSenderName,

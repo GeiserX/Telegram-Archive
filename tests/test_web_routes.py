@@ -337,6 +337,21 @@ class TestMessagesEndpoint(_WebTestBase):
         self.assertIsNotNone(call_kwargs["before_date"])
         self.assertEqual(call_kwargs["before_id"], 500)
 
+    async def test_passes_jump_window_cursor_params(self):
+        """get_messages forwards a lone before_id and after_id to db (#213 jump window)."""
+        self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
+        async with self._client() as client:
+            resp_before = await client.get("/api/chats/1/messages?before_id=501&limit=50")
+            resp_after = await client.get("/api/chats/1/messages?after_id=500&limit=50")
+        self.assertEqual(resp_before.status_code, 200)
+        self.assertEqual(resp_after.status_code, 200)
+        first = self.mock_db.get_messages_paginated.call_args_list[0].kwargs
+        second = self.mock_db.get_messages_paginated.call_args_list[1].kwargs
+        self.assertEqual(first["before_id"], 501)
+        self.assertIsNone(first["before_date"])
+        self.assertIsNone(first["after_id"])
+        self.assertEqual(second["after_id"], 500)
+
     async def test_invalid_before_date_returns_400(self):
         """get_messages returns 400 for invalid before_date format."""
         async with self._client() as client:

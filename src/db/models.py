@@ -108,6 +108,9 @@ class Message(Base):
         Index("idx_messages_sender_id", "sender_id"),
         # Composite index for fast pagination: WHERE chat_id = ? ORDER BY date DESC
         Index("idx_messages_chat_date_desc", "chat_id", date.desc()),
+        # v7.22.0: id-bounded jump-window cursors (lone before_id / after_id, #213)
+        # seek on (chat_id, id); the composite PK leads with id so it can't serve them.
+        Index("idx_messages_chat_id_id", "chat_id", "id"),
         # Index for finding pinned messages in a chat
         Index("idx_messages_chat_pinned", "chat_id", "is_pinned"),
         # Index for reply lookups
