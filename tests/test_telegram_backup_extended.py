@@ -3533,6 +3533,7 @@ class TestRetryPendingMediaCap(unittest.TestCase):
             return_value=[{"id": "f1", "message_id": 10, "chat_id": -100, "type": "video"}]
         )
         self.backup.db.increment_media_download_attempts = AsyncMock()
+        self.backup.db.count_capped_media_downloads = AsyncMock(return_value=0)
         self.backup.db.insert_media = AsyncMock()
         msg = MagicMock()
         msg.id = 10
@@ -3563,6 +3564,15 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         _run(self.backup._retry_pending_media_downloads())
         self.backup.db.increment_media_download_attempts.assert_not_awaited()
         self.backup.db.insert_media.assert_awaited_once()
+
+    def test_capped_files_are_logged_not_silent(self):
+        """Files given up after the cap are surfaced (aggregate count), even with no pending."""
+        self.backup.db.get_pending_media_downloads = AsyncMock(return_value=[])
+        self.backup.db.count_capped_media_downloads = AsyncMock(return_value=3)
+        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+            _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5)
+        assert any("permanently skipped" in line for line in cm.output)
 
 
 if __name__ == "__main__":

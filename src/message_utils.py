@@ -87,10 +87,14 @@ def build_media_filename(file_id: str, original_name: str, name_max_bytes: int) 
 
     budget = name_max_bytes - _MEDIA_PART_SUFFIX_RESERVE - len(prefix.encode("utf-8")) - len(ext.encode("utf-8"))
     if budget <= 0:
-        # Pathological tiny budget (the reserve already ruled out a truncated stem):
-        # fall back to a short deterministic hash of the original name, keeping
-        # uniqueness (via file_id) and the extension. These tiers check against the
-        # raw name_max_bytes — the reserve was already spent deciding to land here.
+        # Pathological tiny budget, only reachable via an absurdly small
+        # MEDIA_MAX_FILENAME_BYTES (never at the 143/255 defaults, where budget is
+        # comfortably positive). Fall back to a short deterministic hash of the
+        # original name, keeping uniqueness (via file_id) and the extension. The
+        # tiers check against the raw name_max_bytes: at a sub-reserve budget the
+        # temp ``.part`` can't be made to fit anyway (a real file_id alone plus the
+        # suffix already overflows), so we return the shortest useful name that fits
+        # the component limit rather than uselessly dropping the extension.
         digest = hashlib.sha1(safe_name.encode("utf-8")).hexdigest()[:8]
         fallback = f"{safe_id}_{digest}{ext}"
         if len(fallback.encode("utf-8")) <= name_max_bytes:

@@ -93,3 +93,33 @@ class TestRetryCap:
 
         pending = await adapter.get_pending_media_downloads(max_attempts=5)
         assert {p["id"] for p in pending} == {"real"}
+
+    @pytest.mark.asyncio
+    async def test_count_capped_media_downloads(self, adapter):
+        await _add(adapter, "under", attempts=2)
+        await _add(adapter, "at_cap", attempts=5)
+        await _add(adapter, "over_cap", attempts=8)
+        await _add(adapter, "done", downloaded=1, attempts=9)  # downloaded → not counted
+        await _add(adapter, "geo_capped", attempts=9, mtype="geo")  # metadata → not counted
+
+        assert await adapter.count_capped_media_downloads(5) == 2  # at_cap + over_cap
+
+    @pytest.mark.asyncio
+    async def test_mark_for_redownload_resets_attempts(self, adapter):
+        await _add(adapter, "capped", downloaded=1, attempts=9)
+
+        await adapter.mark_media_for_redownload("capped")
+
+        # attempts reset to 0 and downloaded cleared → eligible for retry again
+        async with adapter.db_manager.async_session_factory() as session:
+            from sqlalchemy import select
+
+            row = (
+                await session.execute(
+                    select(Media.download_attempts, Media.downloaded, Media.file_path).where(Media.id == "capped")
+                )
+            ).one()
+        assert row.download_attempts == 0
+        assert row.downloaded == 0
+        assert row.file_path is None
+        assert {p["id"] for p in await adapter.get_pending_media_downloads(max_attempts=5)} == {"capped"}

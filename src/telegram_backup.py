@@ -961,6 +961,15 @@ class TelegramBackup:
         pending = await self.db.get_pending_media_downloads(
             self.config.get_max_media_size_bytes(), self.config.max_media_download_attempts
         )
+        # Surface (don't silently swallow) files given up after hitting the retry cap —
+        # the silent-loss failure mode #212 was about. Count only (no chat/file names, PII).
+        capped = await self.db.count_capped_media_downloads(self.config.max_media_download_attempts)
+        if capped:
+            logger.warning(
+                f"{capped} media file(s) permanently skipped after "
+                f"{self.config.max_media_download_attempts} failed download attempts "
+                f"(raise MEDIA_MAX_DOWNLOAD_ATTEMPTS to retry them)"
+            )
         if not pending:
             return
 
