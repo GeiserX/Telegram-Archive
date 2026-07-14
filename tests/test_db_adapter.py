@@ -2090,6 +2090,51 @@ class TestGetMessagesPaginated:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_lone_before_id_bounds_window_by_id(self):
+        """A lone before_id must bound the query by id — not silently fall back to the
+        latest offset-0 page, which made every jump-to-message land on the newest
+        messages (#213)."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_session.execute.return_value = mock_result
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        await adapter.get_messages_paginated(chat_id=100, before_id=224, limit=50)
+
+        stmt = mock_session.execute.await_args_list[0].args[0]
+        assert "messages.id <" in str(stmt.whereclause)
+        order_by = list(stmt._order_by_clauses)
+        assert str(order_by[0]) == str(Message.date.desc())
+        assert str(order_by[1]) == str(Message.id.desc())
+        assert stmt._offset_clause is None
+
+    @pytest.mark.asyncio
+    async def test_after_id_selects_nearest_rows_and_returns_newest_first(self):
+        """after_id takes the rows closest to the target (ascending LIMIT) and reverses
+        them so the response keeps the newest-first contract of every other mode."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        rows = [self._make_message_row(msg_id=225), self._make_message_row(msg_id=226)]
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter(rows))
+        mock_session.execute.return_value = mock_result
+        adapter.get_reactions = AsyncMock(return_value=[])
+
+        result = await adapter.get_messages_paginated(chat_id=100, after_id=224, limit=50)
+
+        stmt = mock_session.execute.await_args_list[0].args[0]
+        assert "messages.id >" in str(stmt.whereclause)
+        order_by = list(stmt._order_by_clauses)
+        assert str(order_by[0]) == str(Message.date.asc())
+        assert str(order_by[1]) == str(Message.id.asc())
+        # DB returned ascending [225, 226]; the response contract is newest-first.
+        assert [m["id"] for m in result] == [226, 225]
+
+    @pytest.mark.asyncio
     async def test_offset_pagination_orders_same_timestamp_by_id_desc(self):
         """Offset pagination uses the deterministic date DESC, id DESC ordering."""
         db_manager, mock_session = _make_mock_db_manager()
