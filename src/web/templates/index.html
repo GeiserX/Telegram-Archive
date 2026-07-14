@@ -3619,10 +3619,24 @@
                     }
                 }
 
-                const scrollToLatest = () => {
-                    scrollToBottom(true)
+                const scrollToLatest = async () => {
                     showScrollToBottom.value = false
                     unseenMessageCount.value = 0
+                    // From a detached jump-to-message window, scrolling alone only reaches the
+                    // top of that stale window and leaves the realtime poll paused (#213/#214) —
+                    // the button would look like "back to live" while nothing updates. Reload the
+                    // live tail so this control genuinely returns the user to the newest messages.
+                    if (viewingPinnedWindow) {
+                        const myVersion = ++chatVersion  // invalidate in-flight pinned-window loads
+                        loading.value = false
+                        messages.value = []
+                        resetMessagePagination()  // clears viewingPinnedWindow → poll resumes
+                        await loadMessages()
+                        if (chatVersion !== myVersion) return
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+                    }
+                    scrollToBottom(true)
                 }
 
                 const isOwnMessage = (msg) => {

@@ -257,6 +257,14 @@ def test_jump_window_suppresses_realtime_poll():
     # ...and every tail-inclusive view entry clears it via resetMessagePagination.
     assert "viewingPinnedWindow = false" in reset_body
 
+    # The "scroll to latest" button must genuinely return to live from a pinned
+    # window (reload the tail), not just scroll the stale window (#214 review).
+    latest_start = html.index("const scrollToLatest = async () =>")
+    latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
+    assert "if (viewingPinnedWindow)" in latest_body
+    assert "resetMessagePagination()" in latest_body
+    assert "await loadMessages()" in latest_body
+
 
 def test_realtime_polling_skips_search_results():
     """Latest-message polling should not mix unfiltered rows into search results."""
@@ -390,7 +398,7 @@ def test_unseen_message_badge_tracks_background_arrivals():
     reset_start = html.index("const resetMessagePagination = () =>")
     reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
     assert "unseenMessageCount.value = 0" in reset_body
-    latest_start = html.index("const scrollToLatest = () =>")
+    latest_start = html.index("const scrollToLatest = async () =>")
     latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
     assert "unseenMessageCount.value = 0" in latest_body
     # Button shows for the badge even before the distance threshold, with an aria-label.
