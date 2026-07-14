@@ -237,6 +237,35 @@ def test_jump_to_message_resets_history_pagination():
     assert jump_body.index("resetMessagePagination()") < jump_body.index("setupMessagesScrollObserver()")
 
 
+def test_jump_window_suppresses_realtime_poll():
+    """A jump-to-message window pauses the offset=0 poll so it can't snap to newest (#213)."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    reset_start = html.index("const resetMessagePagination = () =>")
+    reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
+
+    assert "let viewingPinnedWindow = false" in html
+    # The poll bails while a detached window is shown...
+    assert "|| viewingPinnedWindow) return" in refresh_body
+    # ...the jump sets the flag AFTER its own resetMessagePagination()...
+    assert "viewingPinnedWindow = true" in jump_body
+    assert jump_body.index("resetMessagePagination()") < jump_body.index("viewingPinnedWindow = true")
+    # ...and every tail-inclusive view entry clears it via resetMessagePagination.
+    assert "viewingPinnedWindow = false" in reset_body
+
+    # The "scroll to latest" button must genuinely return to live from a pinned
+    # window (reload the tail), not just scroll the stale window (#214 review).
+    latest_start = html.index("const scrollToLatest = async () =>")
+    latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
+    assert "if (viewingPinnedWindow)" in latest_body
+    assert "resetMessagePagination()" in latest_body
+    assert "await loadMessages()" in latest_body
+
+
 def test_realtime_polling_skips_search_results():
     """Latest-message polling should not mix unfiltered rows into search results."""
     html = INDEX_HTML.read_text(encoding="utf-8")
@@ -246,7 +275,7 @@ def test_realtime_polling_skips_search_results():
     search_start = html.index("const searchMessages = async () =>")
     search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
 
-    assert "if (!selectedChat.value || isRefreshing || messageSearchQuery.value) return" in refresh_body
+    assert "isRefreshing || messageSearchQuery.value" in refresh_body
     assert "chatVersion++" in search_body
     # The version bump makes an invalidated in-flight load skip its own loading=false
     # (finally sees a version mismatch), so search must reset the gate itself or a
@@ -369,7 +398,7 @@ def test_unseen_message_badge_tracks_background_arrivals():
     reset_start = html.index("const resetMessagePagination = () =>")
     reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
     assert "unseenMessageCount.value = 0" in reset_body
-    latest_start = html.index("const scrollToLatest = () =>")
+    latest_start = html.index("const scrollToLatest = async () =>")
     latest_body = html[latest_start : html.index("const isOwnMessage = (msg) =>", latest_start)]
     assert "unseenMessageCount.value = 0" in latest_body
     # Button shows for the badge even before the distance threshold, with an aria-label.
