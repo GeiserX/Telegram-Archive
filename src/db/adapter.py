@@ -1257,13 +1257,17 @@ class DatabaseAdapter:
             if len(rows) < batch_size:
                 return
 
-    async def get_pending_media_downloads(self, max_media_size_bytes: int | None = None) -> list[dict[str, Any]]:
+    async def get_pending_media_downloads(
+        self, max_media_size_bytes: int | None = None, max_attempts: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 
         Returns records where downloaded=0 for downloadable media types
         (excludes contact/geo/poll which are metadata-only).
         Files exceeding max_media_size_bytes are excluded to prevent
-        infinite retry of over-limit media.
+        infinite retry of over-limit media. Records whose download_attempts have
+        reached max_attempts are also excluded, so a permanently-failing file
+        (e.g. an unwritable filename) can't be re-fetched every run forever (#212).
         """
         async with self.db_manager.async_session_factory() as session:
             conditions = [
@@ -1272,6 +1276,8 @@ class DatabaseAdapter:
             ]
             if max_media_size_bytes is not None:
                 conditions.append(or_(Media.file_size.is_(None), Media.file_size <= max_media_size_bytes))
+            if max_attempts is not None:
+                conditions.append(Media.download_attempts < max_attempts)
             stmt = select(Media).where(and_(*conditions)).order_by(Media.chat_id, Media.message_id)
             result = await session.execute(stmt)
             return [
@@ -1284,16 +1290,53 @@ class DatabaseAdapter:
                     "file_name": m.file_name,
                     "file_size": m.file_size,
                     "downloaded": m.downloaded,
+                    "download_attempts": m.download_attempts,
                 }
                 for m in result.scalars()
             ]
 
-    async def mark_media_for_redownload(self, media_id: str) -> None:
-        """Mark a media record as needing re-download."""
+    @retry_on_locked()
+    async def increment_media_download_attempts(self, media_id: str) -> None:
+        """Bump the failed-download attempt counter for a media record (#212)."""
         async with self.db_manager.async_session_factory() as session:
-            stmt = update(Media).where(Media.id == media_id).values(downloaded=0, file_path=None, download_date=None)
+            stmt = (
+                update(Media)
+                .where(Media.id == media_id)
+                .values(download_attempts=func.coalesce(Media.download_attempts, 0) + 1)
+            )
             await session.execute(stmt)
             await session.commit()
+
+    async def mark_media_for_redownload(self, media_id: str) -> None:
+        """Mark a media record as needing re-download.
+
+        Also resets download_attempts so a row that previously hit the retry
+        cap (#212) becomes eligible for the pending-download retry again.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                update(Media)
+                .where(Media.id == media_id)
+                .values(downloaded=0, file_path=None, download_date=None, download_attempts=0)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def count_capped_media_downloads(self, max_attempts: int) -> int:
+        """Count downloadable media permanently skipped after hitting the retry cap (#212).
+
+        Lets the caller surface an aggregate signal instead of silently abandoning
+        files — the very failure mode #212 was about.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(func.count(Media.id)).where(
+                and_(
+                    Media.downloaded == 0,
+                    Media.type.notin_(["contact", "geo", "poll"]),
+                    Media.download_attempts >= max_attempts,
+                )
+            )
+            return (await session.execute(stmt)).scalar() or 0
 
     async def update_media_file_path(self, media_id: str, file_path: str) -> None:
         """Update the stored file_path for a single media record."""
