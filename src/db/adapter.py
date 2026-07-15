@@ -472,14 +472,14 @@ class DatabaseAdapter:
                 "participants_count": chat_data.get("participants_count"),
                 "is_forum": chat_data.get("is_forum", 0),
                 "is_archived": chat_data.get("is_archived", 0),
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             # Build update set from only the fields explicitly provided in chat_data.
             # This prevents partial upserts (e.g. from the listener) from resetting
             # is_forum/is_archived to their defaults.
             update_set = {
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
             # Always update these basic metadata fields
             for field in (
@@ -552,13 +552,14 @@ class DatabaseAdapter:
 
             # Apply search filter if provided
             if search:
-                search_pattern = f"%{search}%"
+                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+                search_pattern = f"%{escaped}%"
                 stmt = stmt.where(
                     or_(
-                        Chat.title.ilike(search_pattern),
-                        Chat.first_name.ilike(search_pattern),
-                        Chat.last_name.ilike(search_pattern),
-                        Chat.username.ilike(search_pattern),
+                        Chat.title.ilike(search_pattern, escape="\\"),
+                        Chat.first_name.ilike(search_pattern, escape="\\"),
+                        Chat.last_name.ilike(search_pattern, escape="\\"),
+                        Chat.username.ilike(search_pattern, escape="\\"),
                     )
                 )
 
@@ -616,13 +617,14 @@ class DatabaseAdapter:
                 stmt = stmt.where(or_(Chat.is_archived == 0, Chat.is_archived.is_(None)))
 
             if search:
-                search_pattern = f"%{search}%"
+                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+                search_pattern = f"%{escaped}%"
                 stmt = stmt.where(
                     or_(
-                        Chat.title.ilike(search_pattern),
-                        Chat.first_name.ilike(search_pattern),
-                        Chat.last_name.ilike(search_pattern),
-                        Chat.username.ilike(search_pattern),
+                        Chat.title.ilike(search_pattern, escape="\\"),
+                        Chat.first_name.ilike(search_pattern, escape="\\"),
+                        Chat.last_name.ilike(search_pattern, escape="\\"),
+                        Chat.username.ilike(search_pattern, escape="\\"),
                     )
                 )
 
@@ -642,7 +644,7 @@ class DatabaseAdapter:
                 "last_name": user_data.get("last_name"),
                 "phone": user_data.get("phone"),
                 "is_bot": 1 if user_data.get("is_bot") else 0,
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             if self._is_sqlite:
@@ -655,7 +657,7 @@ class DatabaseAdapter:
                         "last_name": stmt.excluded.last_name,
                         "phone": stmt.excluded.phone,
                         "is_bot": stmt.excluded.is_bot,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": utcnow_naive(),
                     },
                 )
             else:
@@ -668,7 +670,7 @@ class DatabaseAdapter:
                         "last_name": stmt.excluded.last_name,
                         "phone": stmt.excluded.phone,
                         "is_bot": stmt.excluded.is_bot,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": utcnow_naive(),
                     },
                 )
 
@@ -1258,7 +1260,10 @@ class DatabaseAdapter:
                 return
 
     async def get_pending_media_downloads(
-        self, max_media_size_bytes: int | None = None, max_attempts: int | None = None
+        self,
+        max_media_size_bytes: int | None = None,
+        max_attempts: int | None = None,
+        limit: int | None = 1000,
     ) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 
@@ -1268,6 +1273,12 @@ class DatabaseAdapter:
         infinite retry of over-limit media. Records whose download_attempts have
         reached max_attempts are also excluded, so a permanently-failing file
         (e.g. an unwritable filename) can't be re-fetched every run forever (#212).
+
+        ``limit`` bounds a single retry pass so this can't materialize the whole
+        pending-media table in memory (the same OOM class fixed in
+        ``iter_media_paths_for_repair``); pass ``None`` to restore the old
+        unbounded behavior. Ordered by (download_attempts, id) so a bounded pass
+        makes progress on the least-retried rows first.
         """
         async with self.db_manager.async_session_factory() as session:
             conditions = [
@@ -1278,8 +1289,19 @@ class DatabaseAdapter:
                 conditions.append(or_(Media.file_size.is_(None), Media.file_size <= max_media_size_bytes))
             if max_attempts is not None:
                 conditions.append(Media.download_attempts < max_attempts)
-            stmt = select(Media).where(and_(*conditions)).order_by(Media.chat_id, Media.message_id)
+            where_clause = and_(*conditions)
+            stmt = select(Media).where(where_clause).order_by(Media.download_attempts.asc(), Media.id.asc())
+            if limit is not None:
+                stmt = stmt.limit(limit)
             result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            if limit is not None and len(rows) == limit:
+                total_stmt = select(func.count(Media.id)).where(where_clause)
+                total = (await session.execute(total_stmt)).scalar() or 0
+                if total > limit:
+                    logger.info("media retry: processing %d of %d pending", limit, total)
+
             return [
                 {
                     "id": m.id,
@@ -1292,7 +1314,7 @@ class DatabaseAdapter:
                     "downloaded": m.downloaded,
                     "download_attempts": m.download_attempts,
                 }
-                for m in result.scalars()
+                for m in rows
             ]
 
     @retry_on_locked()
@@ -1432,7 +1454,7 @@ class DatabaseAdapter:
     async def update_sync_status(self, chat_id: int, last_message_id: int, message_count: int) -> None:
         """Update sync status for a chat using atomic upsert."""
         async with self.db_manager.async_session_factory() as session:
-            now = datetime.utcnow()
+            now = utcnow_naive()
             values = {
                 "chat_id": chat_id,
                 "last_message_id": last_message_id,
@@ -1555,7 +1577,6 @@ class DatabaseAdapter:
         """
         import asyncio
         import json
-        from datetime import datetime
 
         async with self.db_manager.async_session_factory() as session:
             logger.info("Calculating statistics (this may take a while)...")
@@ -1609,7 +1630,7 @@ class DatabaseAdapter:
 
         # Store in metadata
         await self.set_metadata("cached_stats", json.dumps(stats))
-        await self.set_metadata("stats_calculated_at", datetime.utcnow().isoformat())
+        await self.set_metadata("stats_calculated_at", utcnow_naive().isoformat())
 
         return stats
 
@@ -1794,7 +1815,8 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except ValueError, TypeError:
+                        logger.debug("Malformed raw_data JSON for a message row; substituting empty dict")
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -1804,14 +1826,14 @@ class DatabaseAdapter:
                 messages.reverse()
 
             version_counts = {msg["id"]: 0 for msg in messages}
-            version_count_message_ids = [msg["id"] for msg in messages]
-            if version_count_message_ids:
+            page_message_ids = [msg["id"] for msg in messages]
+            if page_message_ids:
                 count_stmt = (
                     select(MessageVersion.message_id, func.count(MessageVersion.id).label("version_count"))
                     .where(
                         and_(
                             MessageVersion.chat_id == chat_id,
-                            MessageVersion.message_id.in_(version_count_message_ids),
+                            MessageVersion.message_id.in_(page_message_ids),
                         )
                     )
                     .group_by(MessageVersion.message_id)
@@ -1819,24 +1841,47 @@ class DatabaseAdapter:
                 count_result = await session.execute(count_stmt)
                 version_counts.update({row.message_id: int(row.version_count or 0) for row in count_result})
 
-            # Get reply texts and reactions for each message
+            # Batch reply-text backfill: one query for the whole page instead of one
+            # SELECT per reply row (previously up to `limit` round-trips per page).
+            reply_ids_needed = {
+                msg["reply_to_msg_id"]
+                for msg in messages
+                if msg.get("reply_to_msg_id") and not msg.get("reply_to_text")
+            }
+            reply_texts: dict[int, str] = {}
+            if reply_ids_needed:
+                reply_stmt = select(Message.id, Message.text).where(
+                    and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed))
+                )
+                reply_result = await session.execute(reply_stmt)
+                reply_texts = {row.id: row.text for row in reply_result if row.text}
+
+            # Batch reactions: one query for the whole page instead of one
+            # get_reactions() call per message. Ties within the same emoji are
+            # broken by Reaction.id to match get_reactions' de-facto row order.
+            reactions_by_message: dict[int, list[dict[str, Any]]] = {mid: [] for mid in page_message_ids}
+            if page_message_ids:
+                reactions_stmt = (
+                    select(Reaction)
+                    .where(and_(Reaction.chat_id == chat_id, Reaction.message_id.in_(page_message_ids)))
+                    .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
+                )
+                reactions_result = await session.execute(reactions_stmt)
+                for r in reactions_result.scalars():
+                    reactions_by_message[r.message_id].append(
+                        {"emoji": r.emoji, "user_id": r.user_id, "count": r.count}
+                    )
+
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
 
                 if msg.get("reply_to_msg_id") and not msg.get("reply_to_text"):
-                    reply_result = await session.execute(
-                        select(Message.text).where(
-                            and_(Message.chat_id == chat_id, Message.id == msg["reply_to_msg_id"])
-                        )
-                    )
-                    reply_text = reply_result.scalar_one_or_none()
+                    reply_text = reply_texts.get(msg["reply_to_msg_id"])
                     if reply_text:
                         msg["reply_to_text"] = reply_text[:100]
 
-                # Get reactions
-                reactions = await self.get_reactions(msg["id"], chat_id)
                 reactions_by_emoji = {}
-                for reaction in reactions:
+                for reaction in reactions_by_message.get(msg["id"], []):
                     emoji = reaction["emoji"]
                     if emoji not in reactions_by_emoji:
                         reactions_by_emoji[emoji] = {"emoji": emoji, "count": 0, "user_ids": []}
@@ -1927,7 +1972,8 @@ class DatabaseAdapter:
             if msg.get("raw_data"):
                 try:
                     msg["raw_data"] = json.loads(msg["raw_data"])
-                except:
+                except ValueError, TypeError:
+                    logger.debug("Malformed raw_data JSON for a message row; substituting empty dict")
                     msg["raw_data"] = {}
 
             # Get reply text
@@ -2033,7 +2079,8 @@ class DatabaseAdapter:
                 if msg.get("raw_data"):
                     try:
                         msg["raw_data"] = json.loads(msg["raw_data"])
-                    except:
+                    except ValueError, TypeError:
+                        logger.debug("Malformed raw_data JSON for a message row; substituting empty dict")
                         msg["raw_data"] = {}
 
                 messages.append(msg)
@@ -2190,7 +2237,7 @@ class DatabaseAdapter:
                 "is_pinned": topic_data.get("is_pinned", 0),
                 "is_hidden": topic_data.get("is_hidden", 0),
                 "date": _strip_tz(topic_data.get("date")),
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             update_set = {
@@ -2202,7 +2249,7 @@ class DatabaseAdapter:
                 "is_pinned": values["is_pinned"],
                 "is_hidden": values["is_hidden"],
                 "date": values["date"],
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             if self._is_sqlite:
@@ -2274,14 +2321,14 @@ class DatabaseAdapter:
                 "title": folder_data["title"],
                 "emoticon": folder_data.get("emoticon"),
                 "sort_order": folder_data.get("sort_order", 0),
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             update_set = {
                 "title": values["title"],
                 "emoticon": values["emoticon"],
                 "sort_order": values["sort_order"],
-                "updated_at": datetime.utcnow(),
+                "updated_at": utcnow_naive(),
             }
 
             if self._is_sqlite:
@@ -2470,7 +2517,7 @@ class DatabaseAdapter:
             for key, value in kwargs.items():
                 if hasattr(account, key):
                     setattr(account, key, value)
-            account.updated_at = datetime.utcnow()
+            account.updated_at = utcnow_naive()
             await session.commit()
             await session.refresh(account)
             return self._viewer_account_to_dict(account)
@@ -2697,13 +2744,13 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(select(ViewerToken).where(ViewerToken.is_revoked == 0))
             for record in result.scalars().all():
-                if record.expires_at and record.expires_at < datetime.utcnow():
+                if record.expires_at and record.expires_at < utcnow_naive():
                     continue
                 computed = hashlib.pbkdf2_hmac(
                     "sha256", plaintext_token.encode(), bytes.fromhex(record.token_salt), 600_000
                 ).hex()
                 if secrets.compare_digest(computed, record.token_hash):
-                    record.last_used_at = datetime.utcnow()
+                    record.last_used_at = utcnow_naive()
                     record.use_count = (record.use_count or 0) + 1
                     await session.commit()
                     return self._viewer_token_to_dict(record)
@@ -2758,16 +2805,16 @@ class DatabaseAdapter:
         """Set a key-value setting (upsert)."""
         async with self.db_manager.async_session_factory() as session:
             if self._is_sqlite:
-                stmt = sqlite_insert(AppSettings).values(key=key, value=value, updated_at=datetime.utcnow())
+                stmt = sqlite_insert(AppSettings).values(key=key, value=value, updated_at=utcnow_naive())
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["key"],
-                    set_={"value": value, "updated_at": datetime.utcnow()},
+                    set_={"value": value, "updated_at": utcnow_naive()},
                 )
             else:
-                stmt = pg_insert(AppSettings).values(key=key, value=value, updated_at=datetime.utcnow())
+                stmt = pg_insert(AppSettings).values(key=key, value=value, updated_at=utcnow_naive())
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["key"],
-                    set_={"value": value, "updated_at": datetime.utcnow()},
+                    set_={"value": value, "updated_at": utcnow_naive()},
                 )
             await session.execute(stmt)
             await session.commit()

@@ -7,17 +7,89 @@ This module handles:
 - Sending push notifications to subscribed clients
 """
 
+import ipaddress
 import json
 import logging
-from datetime import datetime
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from py_vapid.utils import b64urlencode
 from pywebpush import WebPushException, webpush
 
+from ..message_utils import utcnow_naive
+
 logger = logging.getLogger(__name__)
+
+_LOCAL_HOSTNAME_SUFFIXES = (".local", ".internal")
+
+
+def validate_push_endpoint(endpoint: str) -> bool:
+    """Check that a push subscription endpoint is a public https URL.
+
+    The endpoint is POSTed to by the server later (see send_notification), so an
+    unvalidated value is a blind SSRF vector into internal networks. Real browser
+    push services (FCM, Mozilla autopush, WNS, Apple) are always public https
+    hosts, so rejecting anything else breaks no legitimate client.
+
+    This resolves the hostname and inspects the actual IP address(es) rather
+    than pattern-matching the literal string: alternate numeric encodings
+    (decimal/hex/octal IPv4, "127.1" shorthand) and trailing-dot FQDNs all
+    resolve, at the OS level, to the same address a browser would connect to,
+    so checking the resolved address is the only way to catch all of them.
+    This is a blocking call (DNS/resolver lookup) — callers on an event loop
+    must run it off-thread (see push_subscribe's asyncio.to_thread usage).
+
+    Residual gap, accepted as out of scope: this is a point-in-time check, so
+    a TOCTOU/DNS-rebind attack (the name resolves differently at send time)
+    isn't closed here. Closing that needs pinning the webpush connection to
+    the address validated here, which is a larger change — tracked as a
+    follow-up, not implemented now.
+    """
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError:
+        return False
+
+    if parsed.scheme != "https":
+        return False
+    if parsed.username or parsed.password:
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    hostname = hostname.lower().rstrip(".")
+    if not hostname:
+        return False
+    if hostname == "localhost" or hostname.endswith(_LOCAL_HOSTNAME_SUFFIXES):
+        return False
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        # Unresolvable — can't prove it's safe to contact, so reject.
+        return False
+
+    for *_rest, sockaddr in addr_infos:
+        try:
+            resolved_ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return False
+        if (
+            resolved_ip.is_private
+            or resolved_ip.is_loopback
+            or resolved_ip.is_link_local
+            or resolved_ip.is_reserved
+            or resolved_ip.is_multicast
+            or resolved_ip.is_unspecified
+        ):
+            return False
+
+    return True
 
 
 class PushNotificationManager:
@@ -151,7 +223,7 @@ class PushNotificationManager:
                     existing.user_agent = user_agent
                     existing.username = username
                     existing.allowed_chat_ids = allowed_json
-                    existing.last_used_at = datetime.utcnow()
+                    existing.last_used_at = utcnow_naive()
                 else:
                     sub = PushSubscription(
                         endpoint=endpoint,
@@ -161,7 +233,7 @@ class PushNotificationManager:
                         user_agent=user_agent,
                         username=username,
                         allowed_chat_ids=allowed_json,
-                        created_at=datetime.utcnow(),
+                        created_at=utcnow_naive(),
                     )
                     session.add(sub)
 
@@ -269,7 +341,7 @@ class PushNotificationManager:
             "icon": icon or "/static/favicon.ico",
             "tag": tag or f"telegram-archive-{chat_id or 'all'}",
             "data": data or {},
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow_naive().isoformat(),
         }
 
         sent = 0
@@ -307,7 +379,7 @@ class PushNotificationManager:
             await self.unsubscribe(endpoint)
 
         if sent > 0:
-            logger.info(f"Sent {sent} push notifications for chat {chat_id}")
+            logger.info(f"Sent {sent} push notifications")
 
         return sent
 

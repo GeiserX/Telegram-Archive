@@ -98,6 +98,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         self._saved_display = web_main.config.display_chat_ids
         self._saved_avatar_cache = dict(web_main._avatar_cache)
         self._saved_avatar_cache_time = web_main._avatar_cache_time
+        self._saved_chat_stats_cache = dict(web_main._chat_stats_cache)
 
         self.mock_db = _mock_db()
         web_main.db = self.mock_db
@@ -108,6 +109,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main.config.display_chat_ids = set()
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
+        web_main._chat_stats_cache.clear()
 
     def tearDown(self):
         web_main.db = self._saved_db
@@ -120,10 +122,31 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache.clear()
         web_main._avatar_cache.update(self._saved_avatar_cache)
         web_main._avatar_cache_time = self._saved_avatar_cache_time
+        web_main._chat_stats_cache.clear()
+        web_main._chat_stats_cache.update(self._saved_chat_stats_cache)
 
     def _client(self):
         transport = ASGITransport(app=web_main.app)
         return AsyncClient(transport=transport, base_url="http://test")
+
+
+class _MasterTestBase(_WebTestBase):
+    """Base for endpoints gated by require_master.
+
+    Anonymous mode is now a read-only viewer (not master), so tests that
+    exercise master-only admin endpoints need an explicit master identity
+    rather than relying on the old anonymous-is-master fallback.
+    """
+
+    def setUp(self):
+        super().setUp()
+        web_main.app.dependency_overrides[web_main.require_master] = lambda: web_main.UserContext(
+            username="admin-test", role="master"
+        )
+
+    def tearDown(self):
+        web_main.app.dependency_overrides.pop(web_main.require_master, None)
+        super().tearDown()
 
 
 # ============================================================================
@@ -166,14 +189,14 @@ class TestAuthCheckEndpoint(_WebTestBase):
     """Test /api/auth/check endpoint."""
 
     async def test_returns_authenticated_when_auth_disabled(self):
-        """auth check returns anonymous master only with explicit anonymous opt-in."""
+        """auth check returns anonymous read-only viewer only with explicit anonymous opt-in."""
         async with self._client() as client:
             resp = await client.get("/api/auth/check")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data["authenticated"])
         self.assertFalse(data["auth_required"])
-        self.assertEqual(data["role"], "master")
+        self.assertEqual(data["role"], "viewer")
 
     async def test_returns_setup_required_when_auth_missing_without_opt_in(self):
         """auth check fails closed when credentials are missing and anonymous mode is not explicit."""
@@ -220,6 +243,57 @@ class TestAuthCheckEndpoint(_WebTestBase):
             resp = await client.get("/api/auth/check", cookies={"viewer_auth": token})
         data = resp.json()
         self.assertFalse(data["authenticated"])
+
+
+# ============================================================================
+# Anonymous viewer access boundaries (security fix: anonymous must be a
+# read-only viewer, never master)
+# ============================================================================
+
+
+@_skip_unless_web
+class TestAnonymousViewerAccess(_WebTestBase):
+    """Anonymous mode (ALLOW_ANONYMOUS_VIEWER=true, no credentials) grants
+    read-only viewer access and must never grant admin/master capabilities."""
+
+    async def test_anonymous_can_read_chats(self):
+        """Anonymous users can list chats."""
+        self.mock_db.get_all_chats = AsyncMock(return_value=[{"id": 1, "title": "Chat", "type": "private"}])
+        self.mock_db.get_chat_count = AsyncMock(return_value=1)
+        async with self._client() as client:
+            resp = await client.get("/api/chats")
+        self.assertEqual(resp.status_code, 200)
+
+    async def test_anonymous_can_read_messages(self):
+        """Anonymous users can read chat messages."""
+        self.mock_db.get_messages_paginated = AsyncMock(return_value=[{"id": 1, "text": "hi"}])
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages")
+        self.assertEqual(resp.status_code, 200)
+
+    async def test_anonymous_forbidden_from_admin_viewers(self):
+        """Anonymous users get 403 on /api/admin/viewers."""
+        async with self._client() as client:
+            resp = await client.get("/api/admin/viewers")
+        self.assertEqual(resp.status_code, 403)
+
+    async def test_anonymous_forbidden_from_admin_tokens(self):
+        """Anonymous users get 403 on /api/admin/tokens."""
+        async with self._client() as client:
+            resp = await client.get("/api/admin/tokens")
+        self.assertEqual(resp.status_code, 403)
+
+    async def test_anonymous_forbidden_from_admin_audit(self):
+        """Anonymous users get 403 on /api/admin/audit."""
+        async with self._client() as client:
+            resp = await client.get("/api/admin/audit")
+        self.assertEqual(resp.status_code, 403)
+
+    async def test_anonymous_forbidden_from_admin_settings(self):
+        """Anonymous users get 403 on /api/admin/settings."""
+        async with self._client() as client:
+            resp = await client.get("/api/admin/settings")
+        self.assertEqual(resp.status_code, 403)
 
 
 # ============================================================================
@@ -618,8 +692,11 @@ class TestStatsRefreshEndpoint(_WebTestBase):
     async def test_refresh_stats_returns_result(self):
         """refresh_stats triggers recalculation and returns result."""
         self.mock_db.calculate_and_store_statistics = AsyncMock(return_value={"chats": 5})
+        web_main.AUTH_ENABLED = True
+        token = "master-tok"
+        web_main._sessions[token] = web_main.SessionData(username="admin", role="master")
         async with self._client() as client:
-            resp = await client.post("/api/stats/refresh")
+            resp = await client.post("/api/stats/refresh", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("timezone", data)
@@ -658,6 +735,31 @@ class TestChatStatsEndpoint(_WebTestBase):
         async with self._client() as client:
             resp = await client.get("/api/chats/999/stats", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 403)
+
+    async def test_chat_stats_cache_hit_avoids_second_db_call(self):
+        """A second request within the TTL is served from cache without hitting the db."""
+        self.mock_db.get_chat_stats = AsyncMock(return_value={"messages": 5, "media": 1})
+        async with self._client() as client:
+            first = await client.get("/api/chats/42/stats")
+            second = await client.get("/api/chats/42/stats")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), second.json())
+        self.mock_db.get_chat_stats.assert_awaited_once()
+
+    async def test_chat_stats_cache_hit_still_enforces_acl(self):
+        """A cached stats entry must not leak to a viewer without access to that chat."""
+        self.mock_db.get_chat_stats = AsyncMock(return_value={"messages": 5, "media": 1})
+        web_main.AUTH_ENABLED = True
+        master_token = "cs-master"
+        web_main._sessions[master_token] = web_main.SessionData(username="admin", role="master")
+        restricted_token = "cs-restricted"
+        web_main._sessions[restricted_token] = web_main.SessionData(username="v", role="viewer", allowed_chat_ids={1})
+        async with self._client() as client:
+            warm = await client.get("/api/chats/42/stats", cookies={"viewer_auth": master_token})
+            blocked = await client.get("/api/chats/42/stats", cookies={"viewer_auth": restricted_token})
+        self.assertEqual(warm.status_code, 200)
+        self.assertEqual(blocked.status_code, 403)
 
 
 # ============================================================================
@@ -758,14 +860,15 @@ class TestPushSubscribeEndpoint(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(return_value=True)
         web_main.push_manager = mock_pm
-        async with self._client() as client:
-            resp = await client.post(
-                "/api/push/subscribe",
-                json={
-                    "endpoint": "https://push.example.com/sub",
-                    "keys": {"p256dh": "key1", "auth": "auth1"},
-                },
-            )
+        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            async with self._client() as client:
+                resp = await client.post(
+                    "/api/push/subscribe",
+                    json={
+                        "endpoint": "https://push.example.com/sub",
+                        "keys": {"p256dh": "key1", "auth": "auth1"},
+                    },
+                )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "subscribed")
 
@@ -977,7 +1080,7 @@ class TestTokenAuthEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminViewersEndpoint(_WebTestBase):
+class TestAdminViewersEndpoint(_MasterTestBase):
     """Test /api/admin/viewers endpoints."""
 
     async def test_list_viewers_returns_empty(self):
@@ -1078,7 +1181,7 @@ class TestAdminViewersEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminTokensEndpoint(_WebTestBase):
+class TestAdminTokensEndpoint(_MasterTestBase):
     """Test /api/admin/tokens endpoints."""
 
     async def test_list_tokens_returns_empty(self):
@@ -1160,7 +1263,7 @@ class TestAdminTokensEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminSettingsEndpoint(_WebTestBase):
+class TestAdminSettingsEndpoint(_MasterTestBase):
     """Test /api/admin/settings endpoints."""
 
     async def test_get_settings(self):
@@ -1200,7 +1303,7 @@ class TestAdminSettingsEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAuditLogEndpoint(_WebTestBase):
+class TestAuditLogEndpoint(_MasterTestBase):
     """Test /api/admin/audit endpoint."""
 
     async def test_returns_audit_logs(self):
@@ -1228,7 +1331,7 @@ class TestAuditLogEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminChatsEndpoint(_WebTestBase):
+class TestAdminChatsEndpoint(_MasterTestBase):
     """Test /api/admin/chats endpoint."""
 
     async def test_returns_all_chats(self):
@@ -1509,11 +1612,13 @@ class TestRequireAuth(_WebTestBase):
         req.headers = headers or {}
         return req
 
-    async def test_returns_anonymous_master_when_auth_disabled(self):
-        """require_auth returns anonymous master only with explicit anonymous opt-in."""
+    async def test_returns_anonymous_viewer_when_auth_disabled(self):
+        """require_auth returns a read-only anonymous viewer, never master, on explicit opt-in."""
         result = await web_main.require_auth(request=self._mock_request(), auth_cookie=None)
         self.assertEqual(result.username, "anonymous")
-        self.assertEqual(result.role, "master")
+        self.assertEqual(result.role, "viewer")
+        self.assertIsNone(result.allowed_chat_ids)
+        self.assertFalse(result.no_download)
 
     async def test_auth_disabled_without_opt_in_fails_closed(self):
         """require_auth raises setup error when auth is missing and anonymous mode is not explicit."""

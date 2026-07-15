@@ -1,6 +1,9 @@
-"""Regression tests for build_media_filename (#212 — Synology eCryptfs filename limits)."""
+"""Regression tests for build_media_filename (#212 — Synology eCryptfs filename limits)
+and fallback_media_filename (backup/listener ingest-path parity)."""
 
-from src.message_utils import _MEDIA_PART_SUFFIX_RESERVE, build_media_filename
+from unittest.mock import MagicMock, patch
+
+from src.message_utils import _MEDIA_PART_SUFFIX_RESERVE, build_media_filename, fallback_media_filename
 
 SYNOLOGY_BUDGET = 143
 
@@ -97,3 +100,97 @@ def test_reserved_suffix_is_accounted_for():
     # Must have actually been truncated (reserve eats into the raw-fits budget).
     assert len(encoded_result) + _MEDIA_PART_SUFFIX_RESERVE <= SYNOLOGY_BUDGET
     assert len(result) < len(f"1_{name}")
+
+
+# ===========================================================================
+# fallback_media_filename — shared no-original-name path (backup/listener parity)
+# ===========================================================================
+
+
+def test_fallback_with_file_id_and_mime_type():
+    """A recognized mime_type wins over the media_type default."""
+    assert fallback_media_filename("99", "photo", "image/png", message_id=1) == "99.png"
+
+
+def test_fallback_jpe_corrected_to_jpg():
+    """The image/jpeg -> .jpe mimetypes quirk is corrected to .jpg."""
+    with patch("mimetypes.guess_extension", return_value=".jpe"):
+        result = fallback_media_filename("50", "photo", "image/jpeg", message_id=1)
+    assert result == "50.jpg"
+
+
+def test_fallback_unknown_mime_type_uses_media_type_default():
+    """An unrecognized mime_type falls back to the per-media_type default extension."""
+    assert fallback_media_filename("77", "video", "application/x-not-a-real-type", message_id=1) == "77.mp4"
+
+
+def test_fallback_no_mime_type_uses_media_type_default():
+    assert fallback_media_filename("42", "voice", None, message_id=1) == "42.ogg"
+
+
+def test_fallback_file_id_slashes_sanitized():
+    assert fallback_media_filename("a/b\\c", "document", None, message_id=1) == "a_b_c.bin"
+
+
+def test_fallback_without_file_id_uses_message_id():
+    """No telegram_file_id falls back to a deterministic <message_id>_<media_type> name."""
+    assert fallback_media_filename(None, "video", None, message_id=42) == "42_video.mp4"
+
+
+def test_fallback_extension_table_matches_for_all_media_types():
+    """Every known media_type maps to its expected extension, with and without a file_id."""
+    expected = {
+        "photo": "jpg",
+        "video": "mp4",
+        "animation": "mp4",
+        "voice": "ogg",
+        "audio": "mp3",
+        "sticker": "webp",
+        "document": "bin",
+    }
+    for media_type, ext in expected.items():
+        assert fallback_media_filename("id1", media_type, None, message_id=1) == f"id1.{ext}"
+        assert fallback_media_filename(None, media_type, None, message_id=7) == f"7_{media_type}.{ext}"
+
+
+def test_fallback_unknown_media_type_defaults_to_bin():
+    assert fallback_media_filename("id1", "some_new_type", None, message_id=1) == "id1.bin"
+
+
+# ===========================================================================
+# Cross-module parity: TelegramBackup and TelegramListener must produce the
+# SAME filename for the SAME inputs when there is no usable original name.
+# ===========================================================================
+
+
+def _make_media_message(*, msg_id, mime_type=None):
+    """A mock message with document media but no file_name attribute (no original name)."""
+    msg = MagicMock()
+    msg.id = msg_id
+    doc = MagicMock()
+    doc.mime_type = mime_type
+    attr = MagicMock(spec=[])  # no file_name attribute
+    doc.attributes = [attr]
+    msg.media.document = doc
+    return msg
+
+
+def test_backup_and_listener_fallback_filenames_match():
+    """The two ingest paths must converge on identical names (#issue)."""
+    from src.listener import TelegramListener
+    from src.telegram_backup import TelegramBackup
+
+    backup = TelegramBackup.__new__(TelegramBackup)
+    listener = TelegramListener.__new__(TelegramListener)
+
+    cases = [
+        ("photo", "image/png", "12345"),
+        ("video", None, "999"),
+        ("document", None, None),
+        ("sticker", "image/webp", "1"),
+    ]
+    for media_type, mime_type, telegram_file_id in cases:
+        msg = _make_media_message(msg_id=123, mime_type=mime_type)
+        backup_result = backup._get_media_filename(msg, media_type, telegram_file_id)
+        listener_result = listener._get_media_filename(msg, media_type, telegram_file_id)
+        assert backup_result == listener_result, f"Mismatch for {media_type}/{mime_type}/{telegram_file_id}"

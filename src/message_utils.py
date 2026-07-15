@@ -4,6 +4,7 @@ import asyncio
 import errno
 import hashlib
 import logging
+import mimetypes
 import os
 import re
 import stat
@@ -112,6 +113,55 @@ def build_media_filename(file_id: str, original_name: str, name_max_bytes: int) 
     return f"{safe_id}_{safe_stem}{ext}"
 
 
+# Per-media-type extension used only when mime_type is missing/unrecognized.
+_FALLBACK_MEDIA_EXTENSIONS = {
+    "photo": "jpg",
+    "video": "mp4",
+    "animation": "mp4",
+    "voice": "ogg",
+    "audio": "mp3",
+    "sticker": "webp",
+    "document": "bin",
+}
+
+
+def fallback_media_filename(
+    telegram_file_id: str | None,
+    media_type: str,
+    mime_type: str | None,
+    message_id: int | str | None = None,
+) -> str:
+    """Build a filename for media with no usable original name.
+
+    Canonical fallback shared by the backup and listener ingest paths so both
+    produce IDENTICAL names for the same media (previously they diverged: one
+    used mime-type-derived extensions, the other a hardcoded per-type table with
+    a different last-resort shape). The extension is derived from ``mime_type``
+    via ``mimetypes.guess_extension`` (correcting the common ``jpe`` -> ``jpg``
+    quirk), falling back to a per-``media_type`` default when the MIME type is
+    missing or unrecognized. With a Telegram file ID, the name is
+    ``<file_id>.<ext>``; without one, ``<message_id>_<media_type>.<ext>`` keeps
+    retries deterministic.
+    """
+    extension = None
+    if mime_type:
+        guessed = mimetypes.guess_extension(mime_type)
+        if guessed:
+            extension = guessed.lstrip(".")
+            if extension == "jpe":
+                extension = "jpg"
+
+    if not extension:
+        extension = _FALLBACK_MEDIA_EXTENSIONS.get(media_type, "bin")
+
+    if telegram_file_id:
+        safe_id = str(telegram_file_id).replace("/", "_").replace("\\", "_")
+        return f"{safe_id}.{extension}"
+
+    safe_message_id = message_id if message_id is not None else "unknown"
+    return f"{safe_message_id}_{media_type}.{extension}"
+
+
 def get_shared_file_path(shared_dir: str, file_name: str, content_hash: str | None) -> str:
     """Build the sharded path for a file in the shared store.
 
@@ -195,7 +245,7 @@ async def deduplicate_shared_file(
     except FileNotFoundError:
         pass
 
-    logger.debug(f"Content-hash dedup: {os.path.basename(shared_file_path)} matches existing {existing['file_name']}")
+    logger.debug("Content-hash dedup: matched existing file")
     return existing_shared, content_hash, True
 
 
@@ -291,7 +341,7 @@ async def download_and_shard_media(
                     os.symlink(rel_path, file_path)
                 else:
                     raise
-            logger.debug(f"Created symlink for deduplicated media: {file_name}")
+            logger.debug("Created symlink for deduplicated media")
         except OSError as e:
             logger.warning(f"Symlink not supported, using direct path: {e}")
             import shutil
@@ -314,7 +364,7 @@ async def download_and_shard_media(
     if not tmp_shared_file_path or not os.path.exists(tmp_shared_file_path):
         logger.warning("Media download did not produce a file")
         return None, None
-    logger.debug(f"Downloaded media to shared: {file_name}")
+    logger.debug("Downloaded media to shared")
 
     # Content-hash dedup: check if identical content already exists
     tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(db, tmp_shared_file_path, shared_dir)

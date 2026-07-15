@@ -326,6 +326,41 @@ class TestIsDbConnectionError(unittest.TestCase):
         e3.__cause__ = e2
         self.assertTrue(web_main._is_db_connection_error(e3))
 
+    def test_returns_true_for_operational_error(self):
+        """_is_db_connection_error treats sqlalchemy OperationalError as DB-down (e.g. 'database is locked')."""
+        from sqlalchemy.exc import OperationalError
+
+        exc = OperationalError("statement", {}, Exception("database is locked"))
+        self.assertTrue(web_main._is_db_connection_error(exc))
+
+    def test_returns_true_for_dbapi_error_with_connection_invalidated(self):
+        """_is_db_connection_error treats a DBAPIError with connection_invalidated=True as DB-down."""
+        from sqlalchemy.exc import DBAPIError
+
+        exc = DBAPIError("statement", {}, Exception("server closed the connection"), connection_invalidated=True)
+        self.assertTrue(web_main._is_db_connection_error(exc))
+
+    def test_returns_false_for_dbapi_error_without_connection_invalidated(self):
+        """_is_db_connection_error does not classify a plain DBAPIError as DB-down."""
+        from sqlalchemy.exc import DBAPIError
+
+        exc = DBAPIError("statement", {}, Exception("weird error"), connection_invalidated=False)
+        self.assertFalse(web_main._is_db_connection_error(exc))
+
+    def test_returns_false_for_integrity_error(self):
+        """_is_db_connection_error must NOT classify constraint violations as DB-down."""
+        from sqlalchemy.exc import IntegrityError
+
+        exc = IntegrityError("statement", {}, Exception("UNIQUE constraint failed"))
+        self.assertFalse(web_main._is_db_connection_error(exc))
+
+    def test_returns_true_for_asyncpg_connection_errors(self):
+        """_is_db_connection_error treats asyncpg connection-level errors as DB-down."""
+        asyncpg = __import__("asyncpg")
+        self.assertTrue(web_main._is_db_connection_error(asyncpg.PostgresConnectionError("conn lost")))
+        self.assertTrue(web_main._is_db_connection_error(asyncpg.TooManyConnectionsError("too many clients")))
+        self.assertTrue(web_main._is_db_connection_error(asyncpg.CannotConnectNowError("starting up")))
+
 
 @_skip_unless_web_main
 class TestGetSecureCookies(unittest.TestCase):
@@ -528,6 +563,34 @@ class TestGetCachedAvatarPath(unittest.TestCase):
         result = web_main._get_cached_avatar_path(42, "private")
         # Since no actual avatar file exists, it should be None now
         self.assertIsNone(result)
+
+
+@_skip_unless_web_main
+class TestChatStatsCache(unittest.TestCase):
+    """Test _get_cached_chat_stats / _set_cached_chat_stats TTL caching."""
+
+    def setUp(self):
+        web_main._chat_stats_cache.clear()
+
+    def tearDown(self):
+        web_main._chat_stats_cache.clear()
+
+    def test_returns_none_when_not_cached(self):
+        """_get_cached_chat_stats returns None for an unseen chat_id."""
+        self.assertIsNone(web_main._get_cached_chat_stats(999))
+
+    def test_returns_cached_value_within_ttl(self):
+        """_get_cached_chat_stats returns the stored stats before TTL expires."""
+        web_main._set_cached_chat_stats(1, {"messages": 42})
+        self.assertEqual(web_main._get_cached_chat_stats(1), {"messages": 42})
+
+    def test_invalidates_after_ttl(self):
+        """_get_cached_chat_stats returns None once the TTL has elapsed."""
+        stale_time = time.monotonic() - web_main.CHAT_STATS_CACHE_TTL_SECONDS - 1
+        web_main._chat_stats_cache[2] = (stale_time, {"messages": 1})
+        self.assertIsNone(web_main._get_cached_chat_stats(2))
+        # Expired entry should also be evicted from the dict
+        self.assertNotIn(2, web_main._chat_stats_cache)
 
 
 # ============================================================================
