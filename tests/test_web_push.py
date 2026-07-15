@@ -11,13 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
     import src.web.push as push_mod
-    from src.web.push import PushNotificationManager
+    from src.web.push import PushNotificationManager, validate_push_endpoint
 
     _PUSH_AVAILABLE = True
 except Exception:
     _PUSH_AVAILABLE = False
     push_mod = None  # type: ignore[assignment]
     PushNotificationManager = None  # type: ignore[assignment, misc]
+    validate_push_endpoint = None  # type: ignore[assignment]
 
 
 def _skip_unless_push(cls_or_fn):
@@ -34,6 +35,121 @@ def _make_manager(push_setting="full", vapid_private=None, vapid_public=None):
     cfg.vapid_public_key = vapid_public or ""
     cfg.vapid_contact = "mailto:test@example.com"
     return PushNotificationManager(db, cfg)
+
+
+# ============================================================================
+# validate_push_endpoint (SSRF guard)
+# ============================================================================
+
+
+def _addrinfo(ip: str, port: int = 443):
+    """Build a minimal socket.getaddrinfo()-shaped result for a single resolved IP."""
+    family = 10 if ":" in ip else 2  # AF_INET6 : AF_INET
+    return [(family, 1, 6, "", (ip, port) if family == 2 else (ip, port, 0, 0))]
+
+
+@_skip_unless_push
+class TestValidatePushEndpoint(unittest.TestCase):
+    """Test validate_push_endpoint accepts real push services, rejects internal/private targets.
+
+    Resolution-dependent cases mock socket.getaddrinfo so results are deterministic
+    and don't require real network access, matching what the OS resolver would
+    actually return for these hosts/literals.
+    """
+
+    def test_accepts_fcm_endpoint(self):
+        """A real FCM push endpoint resolving to a public IP is accepted."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("142.250.0.1")):
+            self.assertTrue(validate_push_endpoint("https://fcm.googleapis.com/fcm/send/abc123"))
+
+    def test_accepts_mozilla_endpoint(self):
+        """A real Mozilla autopush endpoint resolving to a public IP is accepted."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("34.0.0.1")):
+            self.assertTrue(validate_push_endpoint("https://updates.push.services.mozilla.com/wpush/v2/xyz"))
+
+    def test_accepts_endpoint_resolving_to_public_ip(self):
+        """Any hostname resolving only to public IPs is accepted."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("8.8.8.8")):
+            self.assertTrue(validate_push_endpoint("https://push.example.com/sub"))
+
+    def test_rejects_non_https_scheme(self):
+        """Plain http is rejected."""
+        self.assertFalse(validate_push_endpoint("http://push.example.com/sub"))
+
+    def test_rejects_ipv4_literal(self):
+        """IPv4 literal hosts are rejected (loopback resolves to itself, no mock needed)."""
+        self.assertFalse(validate_push_endpoint("https://192.168.1.5/sub"))
+
+    def test_rejects_ipv6_literal(self):
+        """IPv6 literal hosts are rejected."""
+        self.assertFalse(validate_push_endpoint("https://[::1]/sub"))
+
+    def test_rejects_localhost(self):
+        """localhost is rejected."""
+        self.assertFalse(validate_push_endpoint("https://localhost/sub"))
+
+    def test_rejects_dot_local_suffix(self):
+        """.local mDNS hostnames are rejected."""
+        self.assertFalse(validate_push_endpoint("https://printer.local/sub"))
+
+    def test_rejects_dot_internal_suffix(self):
+        """.internal hostnames are rejected."""
+        self.assertFalse(validate_push_endpoint("https://api.internal/sub"))
+
+    def test_rejects_userinfo_in_url(self):
+        """Embedded credentials in the URL are rejected."""
+        self.assertFalse(validate_push_endpoint("https://user:pass@push.example.com/sub"))
+
+    def test_rejects_empty_string(self):
+        """Empty endpoint is rejected."""
+        self.assertFalse(validate_push_endpoint(""))
+
+    def test_rejects_missing_hostname(self):
+        """URL with no hostname is rejected."""
+        self.assertFalse(validate_push_endpoint("https:///sub"))
+
+    def test_rejects_unresolvable_hostname(self):
+        """A hostname that can't be resolved is rejected (can't prove it's safe)."""
+        import socket
+
+        with patch("src.web.push.socket.getaddrinfo", side_effect=socket.gaierror("nodename nor servname provided")):
+            self.assertFalse(validate_push_endpoint("https://does-not-exist.invalid/sub"))
+
+    # -- Confirmed SSRF bypass payloads (encoding tricks defeat naive string checks) --
+
+    def test_rejects_decimal_ipv4_loopback_encoding(self):
+        """Decimal-encoded IPv4 (2130706433 == 127.0.0.1) resolves to loopback and is rejected."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+            self.assertFalse(validate_push_endpoint("https://2130706433/x"))
+
+    def test_rejects_decimal_ipv4_metadata_encoding(self):
+        """Decimal-encoded cloud metadata IP (2852039166 == 169.254.169.254) is rejected."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
+            self.assertFalse(validate_push_endpoint("https://2852039166/x"))
+
+    def test_rejects_hex_ipv4_encoding(self):
+        """Hex-encoded IPv4 (0x7f.0.0.1 == 127.0.0.1) resolves to loopback and is rejected."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+            self.assertFalse(validate_push_endpoint("https://0x7f.0.0.1/x"))
+
+    def test_rejects_octal_ipv4_encoding(self):
+        """Octal-encoded IPv4 (0177.0.0.1 == 127.0.0.1) resolves to loopback and is rejected."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+            self.assertFalse(validate_push_endpoint("https://0177.0.0.1/x"))
+
+    def test_rejects_shorthand_ipv4_encoding(self):
+        """Shorthand IPv4 (127.1 == 127.0.0.1) resolves to loopback and is rejected."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+            self.assertFalse(validate_push_endpoint("https://127.1/x"))
+
+    def test_rejects_trailing_dot_localhost(self):
+        """A trailing dot (localhost.) must not defeat the localhost string check."""
+        self.assertFalse(validate_push_endpoint("https://localhost./x"))
+
+    def test_rejects_trailing_dot_loopback_ip(self):
+        """A trailing dot (127.0.0.1.) must not defeat resolution-based rejection."""
+        with patch("src.web.push.socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")):
+            self.assertFalse(validate_push_endpoint("https://127.0.0.1./x"))
 
 
 # ============================================================================

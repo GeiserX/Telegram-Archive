@@ -51,6 +51,11 @@ class BackupScheduler:
         # Real-time listener (optional)
         self._listener = None
         self._listener_task: asyncio.Task | None = None
+        # Set once (in run_forever) when the listener is supposed to be running for
+        # the life of the process. Unlike checking config directly, this lets the
+        # watchdog keep retrying after a failed start -- _start_listener resets
+        # _listener_task to None on failure, but the listener is still "enabled".
+        self._listener_enabled = False
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -238,7 +243,8 @@ class BackupScheduler:
         # Start scheduler
         self.start()
 
-        # Start real-time listener if enabled (uses shared connection)
+        # Start real-time listener if enabled (uses shared connection).
+        self._listener_enabled = self.config.enable_listener
         await self._start_listener()
 
         # Run initial backup immediately on startup (uses shared connection)
@@ -272,9 +278,13 @@ class BackupScheduler:
             while self.running:
                 await asyncio.sleep(1)
 
-                # Check if listener task died unexpectedly and restart it
-                if self.config.enable_listener and self._listener_task:
-                    if self._listener_task.done():
+                # Check if the listener task died, or never came up at all (a failed
+                # restart leaves _listener_task as None -- see _start_listener), and
+                # restart it either way. Retrying on None (not just "died") is what
+                # keeps a flapping listener from being permanently disabled after a
+                # single failed restart attempt.
+                if self._listener_enabled and (self._listener_task is None or self._listener_task.done()):
+                    if self._listener_task is not None and self._listener_task.done():
                         # Check if there was an exception
                         try:
                             exc = self._listener_task.exception()
@@ -283,10 +293,10 @@ class BackupScheduler:
                         except asyncio.CancelledError:
                             pass
 
-                        logger.warning("Listener task died, restarting...")
-                        await self._stop_listener()
-                        await asyncio.sleep(5)  # Brief pause before restart
-                        await self._start_listener()
+                    logger.warning("Listener task not running, attempting restart...")
+                    await self._stop_listener()
+                    await asyncio.sleep(5)  # Brief pause before restart
+                    await self._start_listener()
 
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")

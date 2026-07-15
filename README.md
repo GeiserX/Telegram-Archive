@@ -191,7 +191,7 @@ docker compose up -d
 
 **View your backup** at http://localhost:8000
 
-The default compose binds the viewer to `127.0.0.1`. Put it behind a reverse proxy only after setting `VIEWER_USERNAME` and `VIEWER_PASSWORD`. To deliberately run without auth for a local-only viewer, set `ALLOW_ANONYMOUS_VIEWER=true`.
+The default compose binds the viewer to `127.0.0.1`. Put it behind a reverse proxy only after setting `VIEWER_USERNAME` and `VIEWER_PASSWORD`. To deliberately run without auth for a local-only viewer, set `ALLOW_ANONYMOUS_VIEWER=true` — this grants read-only access only; writes still require the master account.
 
 ### Common Issues
 
@@ -254,6 +254,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
 | `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
+| `MEDIA_MAX_FILENAME_BYTES` | `143` | B | Usable filename byte budget for downloaded media. Raise to `255` on plain ext4/xfs; keep `143` for Synology/eCryptfs encrypted shares |
+| `MEDIA_MAX_DOWNLOAD_ATTEMPTS` | `5` | B | Stop retrying a file's download after this many failed attempts. Re-requesting the download resets the counter |
 | `PARALLEL_DOWNLOAD_ENABLED` | `false` | B | Fetch large files over several connections to lift the single-stream speed cap (see below) |
 | `PARALLEL_DOWNLOAD_MIN_SIZE_MB` | `20` | B | Only files at least this large use the parallel path (min 1) |
 | `PARALLEL_DOWNLOAD_CONNECTIONS` | `4` | B | Concurrent connections per file (clamped 2–8) |
@@ -307,8 +309,11 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | **Viewer & Authentication** | | | |
 | `VIEWER_USERNAME` | - | V | Master web viewer username |
 | `VIEWER_PASSWORD` | - | V | Master web viewer password |
-| `ALLOW_ANONYMOUS_VIEWER` | `false` | V | Explicitly allow unauthenticated local viewer mode |
+| `ALLOW_ANONYMOUS_VIEWER` | `false` | V | Explicitly allow unauthenticated local viewer mode. Grants **read-only** access — browsing/search work, but settings, viewer/token management, and deletions still require the master account |
 | `AUTH_SESSION_DAYS` | `30` | V | Days before re-authentication is required |
+| `AUTH_PROXY_HEADER` | - | V | Header carrying the authenticated username from a trusted reverse proxy (Authelia, Authentik, Keycloak), e.g. `Remote-User`. See warning below |
+| `AUTH_PROXY_ADMIN_USERS` | - | V | Comma-separated usernames from `AUTH_PROXY_HEADER` that get the admin (master) role |
+| `AUTH_PROXY_DEFAULT_ACCESS` | `none` | V | Default chat access for auto-created proxy users: `none` or `all` |
 | `DISPLAY_CHAT_IDS` | - | V | Restrict viewer to specific chats (comma-separated IDs) |
 | `TRUST_PROXY_HEADERS` | `false` | V | Trust `X-Forwarded-For` / `X-Real-IP` only when your reverse proxy overwrites them |
 | `INTERNAL_PUSH_SECRET` | - | B/V | Shared secret for SQLite backup-to-viewer realtime push over Docker/private networks |
@@ -324,6 +329,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VAPID_PRIVATE_KEY` | *auto-generated* | V | Custom VAPID private key for Web Push |
 | `VAPID_PUBLIC_KEY` | *auto-generated* | V | Custom VAPID public key for Web Push |
 | `VAPID_CONTACT` | `mailto:admin@example.com` | V | Contact email included in Web Push requests |
+
+> ⚠️ **`AUTH_PROXY_HEADER` requires a trusted reverse proxy.** Your proxy MUST strip or overwrite this header on **every** inbound request before it reaches the viewer. If it merely passes the header through, any client can set it themselves and impersonate any user — including an admin — with a single request header. This is a full authentication bypass, not a hardening nicety. Only enable this if you've verified your proxy config strips client-supplied values for the header you choose.
 
 ### Chat Filtering
 

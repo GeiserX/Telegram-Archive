@@ -473,6 +473,54 @@ def test_gallery_close_restores_reading_position_and_focus():
     )
 
 
+def test_toast_exists_and_is_wired_into_jump_failure_path():
+    """A minimal toast must surface the jump-window failure instead of failing silently."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const toastMessage = ref(null)" in html
+    assert "const showToast = (message, ms = 4000) =>" in html
+    assert 'v-if="toastMessage"' in html
+    assert "toastMessage," in html
+    assert "showToast," in html
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+    assert "showToast('Could not load messages around that message')" in jump_body
+    # Both the primary-fetch !res.ok branch and a thrown network error must toast.
+    assert jump_body.count("showToast('Could not load messages around that message')") == 2
+
+    chats_start = html.index("const loadChats = async (append = false) =>")
+    chats_body = html[chats_start : html.index("const loadMessages = async () =>", chats_start)]
+    assert "showToast('Failed to load chats')" in chats_body
+
+    load_start = html.index("const loadMessages = async () =>")
+    load_body = html[load_start : html.index("const searchMessages = async () =>", load_start)]
+    assert "showToast('Failed to load messages')" in load_body
+
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    assert "showToast(" not in refresh_body
+
+    date_start = html.index("const jumpToDate = async () =>")
+    date_body = html[date_start : html.index("// Admin panel", date_start)]
+    assert "showToast('No messages found for this date')" in date_body
+    assert "showToast('Failed to jump to date. Please try again.')" in date_body
+    assert "alert(" not in date_body
+
+
+def test_shipped_debug_logs_are_absent():
+    """Debug instrumentation left over from troubleshooting must not ship."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "'>>> Loading more messages" not in html
+    assert "console.log('Stats loaded:'" not in html
+    assert "console.log('[DEBUG] onMounted started')" not in html
+    assert "console.log('[DEBUG] Fetching /api/auth/check...')" not in html
+    assert "console.log('[DEBUG] Fetch response:'" not in html
+    assert "console.log('[DEBUG] Auth response data:'" not in html
+    assert "console.log('[DEBUG] authRequired:'" not in html
+
+
 def test_unseen_message_badge_tracks_background_arrivals():
     """Messages arriving while scrolled up must surface a count on the jump button."""
     html = INDEX_HTML.read_text(encoding="utf-8")

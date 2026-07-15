@@ -122,6 +122,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         self._saved_display = web_main.config.display_chat_ids
         self._saved_avatar_cache = dict(web_main._avatar_cache)
         self._saved_avatar_cache_time = web_main._avatar_cache_time
+        self._saved_chat_stats_cache = dict(web_main._chat_stats_cache)
         self._saved_media_root = web_main._media_root
         self._saved_realtime = web_main.realtime_listener
 
@@ -134,6 +135,7 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main.config.display_chat_ids = set()
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
+        web_main._chat_stats_cache.clear()
 
     def tearDown(self):
         if not _WEB_AVAILABLE:
@@ -148,12 +150,36 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache.clear()
         web_main._avatar_cache.update(self._saved_avatar_cache)
         web_main._avatar_cache_time = self._saved_avatar_cache_time
+        web_main._chat_stats_cache.clear()
+        web_main._chat_stats_cache.update(self._saved_chat_stats_cache)
         web_main._media_root = self._saved_media_root
         web_main.realtime_listener = self._saved_realtime
 
     def _client(self):
         transport = ASGITransport(app=web_main.app)
         return AsyncClient(transport=transport, base_url="http://test")
+
+
+class _MasterTestBase(_WebTestBase):
+    """Base for endpoints gated by require_master.
+
+    Anonymous mode is now a read-only viewer (not master), so tests that
+    exercise master-only admin endpoints need an explicit master identity
+    rather than relying on the old anonymous-is-master fallback.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if not _WEB_AVAILABLE:
+            return
+        web_main.app.dependency_overrides[web_main.require_master] = lambda: web_main.UserContext(
+            username="admin-test", role="master"
+        )
+
+    def tearDown(self):
+        if _WEB_AVAILABLE:
+            web_main.app.dependency_overrides.pop(web_main.require_master, None)
+        super().tearDown()
 
 
 # ============================================================================
@@ -918,7 +944,7 @@ class TestExportEndpoint(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminViewerUpdateEdgeCases(_WebTestBase):
+class TestAdminViewerUpdateEdgeCases(_MasterTestBase):
     """Test /api/admin/viewers/{id} PUT edge cases."""
 
     async def test_update_viewer_password(self):
@@ -1003,7 +1029,7 @@ class TestAdminViewerUpdateEdgeCases(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminTokenEdgeCases(_WebTestBase):
+class TestAdminTokenEdgeCases(_MasterTestBase):
     """Test /api/admin/tokens edge cases."""
 
     async def test_create_token_with_expiry(self):
@@ -1125,7 +1151,7 @@ class TestAdminTokenEdgeCases(_WebTestBase):
 
 
 @_skip_unless_web
-class TestAdminSettingsEdgeCases(_WebTestBase):
+class TestAdminSettingsEdgeCases(_MasterTestBase):
     """Test /api/admin/settings edge cases."""
 
     async def test_set_setting_invalid_json_returns_400(self):
@@ -1167,14 +1193,15 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(return_value=False)
         web_main.push_manager = mock_pm
-        async with self._client() as client:
-            resp = await client.post(
-                "/api/push/subscribe",
-                json={
-                    "endpoint": "https://push.example.com/sub",
-                    "keys": {"p256dh": "k", "auth": "a"},
-                },
-            )
+        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            async with self._client() as client:
+                resp = await client.post(
+                    "/api/push/subscribe",
+                    json={
+                        "endpoint": "https://push.example.com/sub",
+                        "keys": {"p256dh": "k", "auth": "a"},
+                    },
+                )
         self.assertEqual(resp.status_code, 500)
 
     async def test_subscribe_with_chat_id_restricted(self):
@@ -1185,16 +1212,17 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         web_main.push_manager = mock_pm
-        async with self._client() as client:
-            resp = await client.post(
-                "/api/push/subscribe",
-                json={
-                    "endpoint": "https://push.example.com/sub",
-                    "keys": {"p256dh": "k", "auth": "a"},
-                    "chat_id": 999,
-                },
-                cookies={"viewer_auth": token},
-            )
+        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            async with self._client() as client:
+                resp = await client.post(
+                    "/api/push/subscribe",
+                    json={
+                        "endpoint": "https://push.example.com/sub",
+                        "keys": {"p256dh": "k", "auth": "a"},
+                        "chat_id": 999,
+                    },
+                    cookies={"viewer_auth": token},
+                )
         self.assertEqual(resp.status_code, 403)
 
     async def test_subscribe_db_connection_error(self):
@@ -1203,14 +1231,15 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.subscribe = AsyncMock(side_effect=OSError("db down"))
         web_main.push_manager = mock_pm
-        async with self._client() as client:
-            resp = await client.post(
-                "/api/push/subscribe",
-                json={
-                    "endpoint": "https://push.example.com/sub",
-                    "keys": {"p256dh": "k", "auth": "a"},
-                },
-            )
+        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            async with self._client() as client:
+                resp = await client.post(
+                    "/api/push/subscribe",
+                    json={
+                        "endpoint": "https://push.example.com/sub",
+                        "keys": {"p256dh": "k", "auth": "a"},
+                    },
+                )
         self.assertEqual(resp.status_code, 503)
 
     async def test_unsubscribe_missing_endpoint(self):
@@ -1453,7 +1482,7 @@ class TestChatsAvatarErrors(_WebTestBase):
 
 
 @_skip_unless_web
-class TestEndpointDbErrors(_WebTestBase):
+class TestEndpointDbErrors(_MasterTestBase):
     """Test DB error handling in various endpoints."""
 
     async def test_folders_db_connection_error(self):

@@ -931,6 +931,67 @@ class TestRunForeverListenerRestart:
             assert scheduler._stop_listener.await_count >= 1
             assert scheduler._start_listener.await_count >= 1
 
+    async def test_watchdog_retries_after_failed_start_until_success(self):
+        """Regression: a failed restart must not permanently disable the listener.
+
+        _start_listener resets _listener_task to None on failure. The old watchdog
+        condition (`self.config.enable_listener and self._listener_task`) is falsy
+        once _listener_task is None, so it never attempted another restart -- only
+        a container restart could recover. The fixed watchdog keeps retrying based
+        on `self._listener_enabled` regardless of whether the task is None or done.
+        """
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            config.enable_listener = True
+            scheduler = BackupScheduler(config)
+
+            mock_connection = AsyncMock()
+            mock_connection.client = MagicMock()
+
+            scheduler._connect = AsyncMock()
+            scheduler._connection = mock_connection
+            # scheduler.start() is mocked out, so it never sets self.running -- set it
+            # directly to actually enter the `while self.running:` watchdog loop below.
+            scheduler.start = MagicMock(side_effect=lambda: setattr(scheduler, "running", True))
+            scheduler._stop_listener = AsyncMock()
+            scheduler._disconnect = AsyncMock()
+
+            attempt = [0]
+
+            async def flaky_start_listener():
+                attempt[0] += 1
+                if attempt[0] < 3:
+                    # Mirrors the real _start_listener failure path: task/listener stay None.
+                    scheduler._listener_task = None
+                    scheduler._listener = None
+                else:
+                    scheduler._listener_task = MagicMock(done=MagicMock(return_value=False))
+                    scheduler._listener = AsyncMock()
+
+            scheduler._start_listener = AsyncMock(side_effect=flaky_start_listener)
+
+            call_count = 0
+
+            async def fake_sleep(seconds):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 3:
+                    scheduler.running = False
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch("src.scheduler.asyncio.sleep", side_effect=fake_sleep),
+            ):
+                await scheduler.run_forever()
+
+            # Initial start (attempt 1) plus at least one watchdog-triggered retry
+            # while the task stayed None -- proves the watchdog didn't give up after one try.
+            assert attempt[0] >= 2
+            assert scheduler._listener_task is not None
+
     async def test_listener_task_cancelled_restart(self):
         """Cancelled listener task is restarted during the main loop."""
         with patch("src.scheduler.signal.signal"):
