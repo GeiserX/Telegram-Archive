@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import DatabaseAdapter, close_database, get_adapter, init_database
+from .message_utils import utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -714,7 +715,7 @@ class TelegramImporter:
                             "height": msg.get("height"),
                             "duration": msg.get("duration_seconds"),
                             "downloaded": True,
-                            "download_date": datetime.now(UTC).replace(tzinfo=None),
+                            "download_date": utcnow_naive(),
                             "_source": str(source),
                             "_dest": str(dest_file),
                         }

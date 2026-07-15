@@ -107,7 +107,9 @@ class TestAuthDisabled:
         data = resp.json()
         assert data["authenticated"] is True
         assert data["auth_required"] is False
-        assert data["role"] == "master"
+        # Anonymous access is read-only viewer, never master (#H1 security fix):
+        # exposing the archive publicly must not hand out admin capabilities.
+        assert data["role"] == "viewer"
 
     def test_endpoints_accessible_without_cookies(self, no_auth_env):
         client, _, _ = _get_client()

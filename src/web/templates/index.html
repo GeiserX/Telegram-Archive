@@ -1598,6 +1598,12 @@
                 </div>
             </div>
         </div>
+
+        <!-- Toast notification for background failures -->
+        <div v-if="toastMessage"
+            class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
+            {{ toastMessage }}
+        </div>
     </div>
 
     <script>
@@ -1611,6 +1617,9 @@
                 const versionsMessage = ref(null)
                 const messageVersionsLoading = ref({})
                 const messageVersionsErrors = ref({})
+                // Per-message-keyed staleness counter (chatVersion is chat-scoped, so it
+                // can't tell two versions-drawer loads for different messages in the same
+                // chat apart — this needs its own key per message id instead).
                 const messageVersionsRequestSeq = ref({})
                 const versionsCloseBtn = ref(null)
                 const selectedChat = ref(null)
@@ -1678,7 +1687,22 @@
                 const infiniteScrollSentinel = ref(null)
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
+                // Two idioms share chatVersion: `++chatVersion` invalidates other in-flight
+                // work (view entries/jumps) so their post-await guards discard themselves,
+                // while a bare capture (`const myVersion = chatVersion`) is a passive read
+                // used by background polls so they never cancel a user-initiated action.
+                // This asymmetry is deliberate — polls follow, they don't preempt.
                 let chatVersion = 0  // Incremented on each selectChat to invalidate stale requests
+
+                // Minimal toast for surfacing background failures that would otherwise be
+                // console-only (and thus invisible to the user, who just sees a stalled UI).
+                const toastMessage = ref(null)
+                let toastTimer = null
+                const showToast = (message, ms = 4000) => {
+                    toastMessage.value = message
+                    if (toastTimer) clearTimeout(toastTimer)
+                    toastTimer = setTimeout(() => { toastMessage.value = null }, ms)
+                }
 
                 // Server-side search
                 const searchResults = ref([])
@@ -1971,6 +1995,7 @@
                             isAuthenticated.value = false
                         } else {
                             chatsError.value = 'Failed to load chats. Please try again.'
+                            showToast('Failed to load chats')
                         }
                     } finally {
                         loadingChats.value = false
@@ -2199,7 +2224,6 @@
                         (entries) => {
                             // When sentinel becomes visible, load more messages
                             if (entries[0].isIntersecting && hasMore.value && !loading.value) {
-                                console.log('>>> Loading more messages (sentinel visible)')
                                 loadMessages()
                             }
                         },
@@ -2236,7 +2260,6 @@
                         })
                         if (res.ok) {
                             const stats = await res.json()
-                            console.log('Stats loaded:', stats)
 
                             // Store stats data
                             statsData.value = {
@@ -2322,22 +2345,17 @@
 
                 // Auth check on mount
                 onMounted(async () => {
-                    console.log('[DEBUG] onMounted started')
                     try {
-                        console.log('[DEBUG] Fetching /api/auth/check...')
                         const res = await fetch('/api/auth/check', {
                             credentials: 'include'
                         })
-                        console.log('[DEBUG] Fetch response:', res.status, res.ok)
                         if (res.ok) {
                             const data = await res.json()
-                            console.log('[DEBUG] Auth response data:', JSON.stringify(data))
                             authRequired.value = !!data.auth_required
                             isAuthenticated.value = !!data.authenticated
                             userRole.value = data.role || ''
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
-                            console.log('[DEBUG] authRequired:', authRequired.value, 'isAuthenticated:', isAuthenticated.value)
 
                             // Auto-login via token URL. Prefer #token= so bearer-equivalent
                             // share tokens are not sent to servers/proxies in request logs.
@@ -3100,7 +3118,10 @@
                             credentials: 'include'
                         })
                         if (chatVersion !== myVersion) return
-                        if (!res.ok) return
+                        if (!res.ok) {
+                            showToast('Could not load messages around that message')
+                            return
+                        }
                         const data = await res.json()
                         if (chatVersion !== myVersion) return
                         const windowRows = data.messages || data
@@ -3135,6 +3156,9 @@
                         if (chatVersion !== myVersion) return
                         setupMessagesScrollObserver()
                         scrollToMessage(messageId)
+                    } catch (e) {
+                        console.error('[Jump] Failed to load messages around id', e)
+                        showToast('Could not load messages around that message')
                     } finally {
                         if (chatVersion === myVersion) {
                             loading.value = false
@@ -3584,6 +3608,7 @@
                         page.value++  // Still increment for search pagination
                     } catch (e) {
                         console.error("Failed to load messages", e)
+                        showToast('Failed to load messages')
                     } finally {
                         // Only reset loading if this is still the current chat
                         if (chatVersion === myVersion) {
@@ -4276,7 +4301,7 @@
                         if (!res.ok) {
                             if (res.status === 404) {
                                 closeDatePicker()
-                                alert('No messages found for this date')
+                                showToast('No messages found for this date')
                                 return
                             }
                             throw new Error('Failed to find message')
@@ -4308,7 +4333,7 @@
                     } catch (e) {
                         console.error('Error jumping to date:', e)
                         closeDatePicker()
-                        alert('Failed to jump to date. Please try again.')
+                        showToast('Failed to jump to date. Please try again.')
                     }
                 }
 
@@ -4493,6 +4518,8 @@
                 }
 
                 return {
+                    toastMessage,
+                    showToast,
                     chats,
                     filteredChats,
                     selectedChat,

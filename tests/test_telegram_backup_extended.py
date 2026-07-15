@@ -975,11 +975,11 @@ class TestGetMediaFilename(unittest.TestCase):
         result = self.backup._get_media_filename(msg, "video", "77")
         self.assertEqual(result, "77.mp4")
 
-    def test_no_file_id_uses_timestamp(self):
-        """No telegram_file_id uses timestamp-based filename."""
+    def test_no_file_id_uses_message_id(self):
+        """No telegram_file_id falls back to the shared message-id-based filename."""
         msg = self._make_doc_message(msg_id=42, date=datetime(2024, 3, 15, 10, 30, 0))
         result = self.backup._get_media_filename(msg, "photo", None)
-        self.assertEqual(result, "42_20240315_103000.jpg")
+        self.assertEqual(result, "42_photo.jpg")
 
     def test_file_id_with_slashes_sanitized(self):
         """Slashes in file_id are replaced with underscores."""

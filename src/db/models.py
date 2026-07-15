@@ -48,9 +48,9 @@ class Chat(Base):
     is_forum: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v6.2.0: forum with topics
     is_archived: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v6.2.0: archived chat
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()
     )
 
     # Relationships
@@ -83,7 +83,7 @@ class Message(Base):
     edit_date: Mapped[datetime | None] = mapped_column(DateTime)
     # v6.0.0: media_type, media_id, media_path REMOVED - normalized to media table
     raw_data: Mapped[str | None] = mapped_column(Text)  # JSON string
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     is_outgoing: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
     is_pinned: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 - whether this message is pinned
     is_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 0 or 1 - deleted on Telegram
@@ -168,9 +168,9 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     is_bot: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()
     )
 
     # Relationships
@@ -212,7 +212,7 @@ class Media(Base):
     # at/above MEDIA_MAX_DOWNLOAD_ATTEMPTS so a permanently-unwritable file stops re-fetching.
     download_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     # Relationship to message
     message: Mapped[Message | None] = relationship(
@@ -245,7 +245,7 @@ class Reaction(Base):
     emoji: Mapped[str] = mapped_column(String(50), nullable=False)
     user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     count: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     # Relationship to message (composite foreign key)
     message: Mapped[Message] = relationship(
@@ -272,7 +272,7 @@ class SyncStatus(Base):
 
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id"), primary_key=True)
     last_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
-    last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     message_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationship
@@ -303,7 +303,7 @@ class PushSubscription(Base):
         Text
     )  # JSON snapshot of user's allowed chats at subscribe time
     user_agent: Mapped[str | None] = mapped_column(String(500))  # Browser info for debugging
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)  # Track activity
 
     __table_args__ = (Index("idx_push_sub_chat", "chat_id"), Index("idx_push_sub_username", "username"))
@@ -327,8 +327,8 @@ class ForumTopic(Base):
     is_pinned: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     is_hidden: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     date: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     # Relationships
     chat: Mapped[Chat] = relationship("Chat", back_populates="forum_topics")
@@ -348,8 +348,8 @@ class ChatFolder(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     emoticon: Mapped[str | None] = mapped_column(String(50))
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     # Relationships
     members: Mapped[list[ChatFolderMember]] = relationship(
@@ -395,9 +395,9 @@ class ViewerAccount(Base):
     is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
     created_by: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()
     )
 
 
@@ -418,7 +418,7 @@ class ViewerAuditLog(Base):
     chat_id: Mapped[int | None] = mapped_column(BigInteger)
     ip_address: Mapped[str | None] = mapped_column(String(45))
     user_agent: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
 
 class ViewerSession(Base):
@@ -466,7 +466,7 @@ class ViewerToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = no expiry
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
     use_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 
     __table_args__ = (
         Index("idx_viewer_tokens_created_by", "created_by"),
@@ -485,5 +485,5 @@ class AppSettings(Base):
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()
     )

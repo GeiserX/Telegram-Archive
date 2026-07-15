@@ -2232,12 +2232,18 @@ class TestGetMessagesPaginated:
         version_count_result = MagicMock()
         version_count_result.__iter__ = MagicMock(return_value=iter([]))
 
-        # Third execute call returns the reply text
+        # Third execute call: batched reply-text lookup returns (id, text) rows.
+        reply_row = MagicMock()
+        reply_row.id = 39
+        reply_row.text = "Original message text"
         reply_result = MagicMock()
-        reply_result.scalar_one_or_none.return_value = "Original message text"
+        reply_result.__iter__ = MagicMock(return_value=iter([reply_row]))
 
-        mock_session.execute.side_effect = [mock_result, version_count_result, reply_result]
-        adapter.get_reactions = AsyncMock(return_value=[])
+        # Fourth execute call: batched reactions lookup, empty for this message.
+        reactions_result = MagicMock()
+        reactions_result.scalars.return_value = []
+
+        mock_session.execute.side_effect = [mock_result, version_count_result, reply_result, reactions_result]
 
         result = await adapter.get_messages_paginated(chat_id=100)
         assert result[0]["reply_to_text"] == "Original message text"[:100]
@@ -2251,15 +2257,24 @@ class TestGetMessagesPaginated:
         row = self._make_message_row(msg_id=50)
         mock_result = MagicMock()
         mock_result.__iter__ = MagicMock(return_value=iter([row]))
-        mock_session.execute.return_value = mock_result
 
-        adapter.get_reactions = AsyncMock(
-            return_value=[
-                {"emoji": "thumbsup", "count": 2, "user_id": 1},
-                {"emoji": "thumbsup", "count": 1, "user_id": 2},
-                {"emoji": "heart", "count": 1, "user_id": 3},
-            ]
-        )
+        def _mock_reaction(emoji, count, user_id):
+            r = MagicMock()
+            r.message_id = 50
+            r.emoji = emoji
+            r.count = count
+            r.user_id = user_id
+            return r
+
+        # The batched reactions query reuses the same execute() mock, so both
+        # the row iteration (main query) and .scalars() (reactions query) are
+        # configured on this one result object.
+        mock_result.scalars.return_value = [
+            _mock_reaction("heart", 1, 3),
+            _mock_reaction("thumbsup", 2, 1),
+            _mock_reaction("thumbsup", 1, 2),
+        ]
+        mock_session.execute.return_value = mock_result
 
         result = await adapter.get_messages_paginated(chat_id=100)
         reactions = result[0]["reactions"]
