@@ -1803,9 +1803,15 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
 
         from .push import validate_push_endpoint
 
-        # validate_push_endpoint resolves the hostname (blocking DNS lookup),
-        # so it must run off the event loop rather than block other requests.
-        if not await asyncio.to_thread(validate_push_endpoint, endpoint):
+        # validate_push_endpoint resolves the hostname (blocking DNS lookup), so it
+        # runs off the event loop. This endpoint is reachable without auth when
+        # ALLOW_ANONYMOUS_VIEWER is set, so bound the resolution: a hostile host that
+        # stalls DNS must fail fast (reject) rather than tie up an executor worker.
+        try:
+            endpoint_ok = await asyncio.wait_for(asyncio.to_thread(validate_push_endpoint, endpoint), timeout=5.0)
+        except TimeoutError:
+            endpoint_ok = False
+        if not endpoint_ok:
             logger.warning("Rejected push subscription with invalid endpoint")
             raise HTTPException(status_code=400, detail="Invalid subscription endpoint")
 

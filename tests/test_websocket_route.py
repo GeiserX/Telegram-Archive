@@ -55,7 +55,7 @@ def auth_env():
     """Real VIEWER_USERNAME/PASSWORD so AUTH_ENABLED is True after module reload."""
     with patch.dict(
         os.environ,
-        {"VIEWER_USERNAME": "admin", "VIEWER_PASSWORD": "testpass123", "SECURE_COOKIES": "false"},
+        {"VIEWER_USERNAME": "admin", "VIEWER_PASSWORD": "test@value/here", "SECURE_COOKIES": "false"},
     ):
         yield
 
