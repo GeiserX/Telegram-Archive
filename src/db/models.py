@@ -246,6 +246,11 @@ class Reaction(Base):
     user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+    # v7.23.0 (#219): retain-on-removal tombstone. When a reaction is no longer
+    # present in a fresh snapshot it is stamped here instead of being deleted, so
+    # a removed reaction is preserved rather than silently dropped. The live count
+    # (get_messages_paginated) excludes rows where removed_at IS NOT NULL.
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationship to message (composite foreign key)
     message: Mapped[Message] = relationship(
@@ -261,6 +266,10 @@ class Reaction(Base):
         ),
         UniqueConstraint("message_id", "chat_id", "emoji", "user_id", name="uq_reaction"),
         Index("idx_reactions_message", "message_id", "chat_id"),
+        # v7.23.0 (#219): chat-first composite matches the schema's convention
+        # (every other per-entity index leads with chat_id) and serves the
+        # page read `WHERE chat_id = ? AND message_id IN (...)`.
+        Index("idx_reactions_chat_message", "chat_id", "message_id"),
         Index("idx_reactions_user", "user_id"),
     )
 

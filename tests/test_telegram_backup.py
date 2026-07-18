@@ -470,13 +470,17 @@ class TestBackupCheckpointing(unittest.TestCase):
         self.assertEqual(call_args[0][1], 20)
 
     def test_commit_batch_called_correctly(self):
-        """_commit_batch persists messages, media and reactions."""
+        """_commit_batch persists messages, media and reconciles reactions.
+
+        #219: reactions are reconciled for EVERY message (including empty snapshots)
+        so removals-to-zero on re-fetched messages persist.
+        """
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.db = AsyncMock()
 
         batch = [
             {"id": 1, "chat_id": 100, "_media_data": {"file_path": "/a.jpg"}, "reactions": None},
-            {"id": 2, "chat_id": 100, "reactions": [{"emoji": "👍", "user_ids": [], "count": 3}]},
+            {"id": 2, "chat_id": 100, "reactions": [{"emoji": "👍", "count": 3}]},
         ]
 
         loop = asyncio.new_event_loop()
@@ -487,7 +491,10 @@ class TestBackupCheckpointing(unittest.TestCase):
 
         backup.db.insert_messages_batch.assert_awaited_once_with(batch)
         backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
-        backup.db.insert_reactions.assert_awaited_once()
+        # Reconciled once per message: empty snapshot for msg 1, the aggregate for msg 2.
+        self.assertEqual(backup.db.reconcile_reactions.await_count, 2)
+        backup.db.reconcile_reactions.assert_any_await(1, 100, [], mark_removed=True)
+        backup.db.reconcile_reactions.assert_any_await(2, 100, [{"emoji": "👍", "count": 3}], mark_removed=True)
 
 
 class TestTopicFilteringInBackupDialog(unittest.TestCase):
@@ -1501,32 +1508,22 @@ class TestProcessMessage(unittest.TestCase):
         self.backup._process_media.assert_not_awaited()
         self.assertNotIn("_media_data", result)
 
-    def test_reactions_with_recent_user_peers(self):
-        """Reactions with recent_reactions extract user_ids from peers."""
+    def test_reactions_extracted_as_aggregate(self):
+        """#219: extraction is per-emoji aggregate ({emoji, count}); per-user
+        attribution is intentionally not persisted (unreliable on a user client)."""
         msg = self._make_message(18)
-
-        peer1 = MagicMock(spec=["user_id"])
-        peer1.user_id = 101
-        peer2 = MagicMock(spec=["user_id"])
-        peer2.user_id = 102
-
-        recent1 = MagicMock()
-        recent1.peer_id = peer1
-        recent2 = MagicMock()
-        recent2.peer_id = peer2
 
         reaction = MagicMock()
         reaction.reaction = MagicMock(spec=["emoticon"])
         reaction.reaction.emoticon = "heart"
         reaction.count = 5
-        reaction.recent_reactions = [recent1, recent2]
 
-        msg.reactions = MagicMock()
+        msg.reactions = MagicMock(spec=["results"])
         msg.reactions.results = [reaction]
 
         result = self._run(self.backup._process_message(msg, 100))
 
-        self.assertEqual(result["reactions"][0]["user_ids"], [101, 102])
+        self.assertEqual(result["reactions"], [{"emoji": "heart", "count": 5}])
 
 
 class TestCommitBatchReactions(unittest.TestCase):
@@ -1543,51 +1540,20 @@ class TestCommitBatchReactions(unittest.TestCase):
         finally:
             loop.close()
 
-    def test_reaction_with_known_users_expanded(self):
-        """Reactions with user_ids expand into per-user rows plus anonymous remainder."""
+    def test_aggregate_reactions_passed_to_reconcile(self):
+        """#219: _commit_batch forwards the per-emoji aggregate snapshot to
+        reconcile_reactions (no client-side per-user expansion)."""
         batch = [
-            {
-                "id": 1,
-                "chat_id": 100,
-                "reactions": [
-                    {"emoji": "heart", "count": 5, "user_ids": [10, 20]},
-                ],
-            }
+            {"id": 1, "chat_id": 100, "reactions": [{"emoji": "heart", "count": 5}]},
         ]
 
         self._run(self.backup._commit_batch(batch, 100))
 
-        call_args = self.backup.db.insert_reactions.call_args
-        reactions_list = call_args[0][2]
-        # 2 per-user rows + 1 anonymous (5-2=3 remaining)
-        self.assertEqual(len(reactions_list), 3)
-        self.assertEqual(reactions_list[0]["user_id"], 10)
-        self.assertEqual(reactions_list[1]["user_id"], 20)
-        self.assertIsNone(reactions_list[2]["user_id"])
-        self.assertEqual(reactions_list[2]["count"], 3)
+        self.backup.db.reconcile_reactions.assert_any_await(1, 100, [{"emoji": "heart", "count": 5}], mark_removed=True)
 
-    def test_reaction_without_users_creates_anonymous_row(self):
-        """Reactions without user_ids create a single anonymous row."""
-        batch = [
-            {
-                "id": 2,
-                "chat_id": 100,
-                "reactions": [
-                    {"emoji": "fire", "count": 7, "user_ids": []},
-                ],
-            }
-        ]
-
-        self._run(self.backup._commit_batch(batch, 100))
-
-        call_args = self.backup.db.insert_reactions.call_args
-        reactions_list = call_args[0][2]
-        self.assertEqual(len(reactions_list), 1)
-        self.assertIsNone(reactions_list[0]["user_id"])
-        self.assertEqual(reactions_list[0]["count"], 7)
-
-    def test_no_reactions_skips_insert(self):
-        """Messages with no reactions do not call insert_reactions."""
+    def test_empty_reactions_still_reconciled(self):
+        """#219 (F2): reconcile runs even for empty snapshots so removals-to-zero
+        on re-fetched messages persist — the opposite of the old skip-on-empty."""
         batch = [
             {"id": 3, "chat_id": 100, "reactions": []},
             {"id": 4, "chat_id": 100, "reactions": None},
@@ -1595,7 +1561,9 @@ class TestCommitBatchReactions(unittest.TestCase):
 
         self._run(self.backup._commit_batch(batch, 100))
 
-        self.backup.db.insert_reactions.assert_not_awaited()
+        self.assertEqual(self.backup.db.reconcile_reactions.await_count, 2)
+        self.backup.db.reconcile_reactions.assert_any_await(3, 100, [], mark_removed=True)
+        self.backup.db.reconcile_reactions.assert_any_await(4, 100, [], mark_removed=True)
 
     def test_batch_with_no_media_skips_insert_media(self):
         """Messages without _media_data do not call insert_media."""

@@ -2352,39 +2352,35 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
         self.backup = _make_backup()
         self.backup.config.should_download_media_for_chat = MagicMock(return_value=False)
 
-    def test_reaction_with_no_emoticon_or_document_id_uses_str(self):
-        """Reaction emoji without emoticon or document_id falls back to str()."""
+    def test_reaction_with_no_emoticon_or_document_id_is_skipped(self):
+        """#219: an unrecognized reaction variant (no emoticon/document_id/paid) is
+        skipped rather than stored under an unstable str() key."""
         msg = _make_message(1)
         reaction = MagicMock()
         reaction.reaction = MagicMock(spec=[])  # no emoticon or document_id
         reaction.count = 1
-        reaction.recent_reactions = None
-        msg.reactions = MagicMock()
+        msg.reactions = MagicMock(spec=["results"])
         msg.reactions.results = [reaction]
 
         result = _run(self.backup._process_message(msg, 100))
 
-        self.assertEqual(len(result["reactions"]), 1)
+        self.assertEqual(result["reactions"], [])
 
-    def test_recent_reactions_with_channel_peer(self):
-        """Recent reactions with channel_id peer are extracted."""
+    def test_reactions_are_aggregate_only(self):
+        """#219: reactions are stored as {emoji, count} aggregates; per-user/peer
+        identity from recent_reactions is intentionally not persisted."""
         msg = _make_message(2)
-        peer = MagicMock(spec=["channel_id"])
-        peer.channel_id = 555
-        recent = MagicMock()
-        recent.peer_id = peer
-
         reaction = MagicMock()
         reaction.reaction = MagicMock(spec=["emoticon"])
         reaction.reaction.emoticon = "thumbs_up"
-        reaction.count = 1
-        reaction.recent_reactions = [recent]
-        msg.reactions = MagicMock()
+        reaction.count = 3
+        msg.reactions = MagicMock(spec=["results"])
         msg.reactions.results = [reaction]
 
         result = _run(self.backup._process_message(msg, 100))
 
-        self.assertIn(555, result["reactions"][0]["user_ids"])
+        self.assertEqual(result["reactions"], [{"emoji": "thumbs_up", "count": 3}])
+        self.assertNotIn("user_ids", result["reactions"][0])
 
     def test_reactions_extraction_exception_caught(self):
         """Exception during reaction extraction should be caught."""

@@ -26,6 +26,7 @@ from telethon.tl.types import (
     MessageMediaGeo,
     MessageMediaPhoto,
     MessageMediaPoll,
+    UpdateMessageReactions,
     UpdatePinnedChannelMessages,
     UpdatePinnedMessages,
     User,
@@ -39,6 +40,7 @@ from .message_utils import (
     build_media_filename,
     compute_file_hash,
     download_and_shard_media,
+    extract_reactions,
     extract_topic_id,
     fallback_media_filename,
     finalize_atomic_download,
@@ -262,6 +264,14 @@ class TelegramListener:
         # Background task for processing buffered operations
         self._processor_task: asyncio.Task | None = None
 
+        # Reaction debounce buffer (#219): a hot message fires many reaction updates,
+        # each a full snapshot, so we coalesce per (chat_id, message_id) keeping only
+        # the latest and flush on a timer — one reconcile + one broadcast per window.
+        # Kept separate from the MassOperationProtector so a reaction storm can never
+        # rate-limit edits/deletions in the same chat.
+        self._reaction_pending: dict[tuple[int, int], list[dict]] = {}
+        self._reaction_flush_task: asyncio.Task | None = None
+
         # Real-time notifier for viewer WebSocket updates
         self._notifier: RealtimeNotifier | None = None
 
@@ -275,6 +285,8 @@ class TelegramListener:
             "deletions_skipped": 0,  # Skipped due to LISTEN_DELETIONS=false
             "new_messages_received": 0,
             "new_messages_saved": 0,
+            "reactions_received": 0,
+            "reactions_applied": 0,
             "bursts_intercepted": 0,
             "operations_discarded": 0,
             "errors": 0,
@@ -299,6 +311,10 @@ class TelegramListener:
                 logger.info("  LISTEN_NEW_MESSAGES_MEDIA: false (media on scheduled backup)")
         else:
             logger.info("  LISTEN_NEW_MESSAGES: false (saved on scheduled backup)")
+        if config.listen_reactions:
+            logger.info("  LISTEN_REACTIONS: true - Reactions captured in real-time (aggregate, best-effort)")
+        else:
+            logger.info("  LISTEN_REACTIONS: false (reactions on scheduled backup)")
         if config.skip_topic_ids:
             total = sum(len(t) for t in config.skip_topic_ids.values())
             logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
@@ -415,6 +431,7 @@ class TelegramListener:
                 "delete": NotificationType.DELETE,
                 "new_message": NotificationType.NEW_MESSAGE,
                 "pin": NotificationType.PIN,
+                "reaction": NotificationType.REACTION,
             }
 
             nt = type_map.get(notification_type)
@@ -426,6 +443,39 @@ class TelegramListener:
             await self._notifier.notify(nt, chat_id, data)
         except Exception as e:
             logger.debug(f"Failed to send notification: {e}")
+
+    async def _flush_reactions(self) -> None:
+        """Reconcile and broadcast the coalesced reaction snapshots (#219).
+
+        Drains the debounce buffer atomically (swap-then-process) so handlers can
+        keep buffering while this runs. Each entry is a full snapshot, so a single
+        reconcile per message is loss-free. PII: log error classes only.
+        """
+        if not self._reaction_pending:
+            return
+        pending = self._reaction_pending
+        self._reaction_pending = {}
+        for (chat_id, message_id), observed in pending.items():
+            try:
+                outcome = await self.db.reconcile_reactions(message_id, chat_id, observed, mark_removed=True)
+                if outcome == "reconciled":
+                    self.stats["reactions_applied"] += 1
+                    await self._notify_update(
+                        "reaction",
+                        {"chat_id": chat_id, "message_id": message_id, "reactions": observed},
+                    )
+            except Exception as e:
+                self.stats["errors"] += 1
+                logger.error(f"Error reconciling reactions: {type(e).__name__}")
+
+    async def _reaction_flush_loop(self) -> None:
+        """Periodically flush the reaction debounce buffer while the listener runs."""
+        try:
+            while self._running:
+                await asyncio.sleep(self.config.reaction_debounce_seconds)
+                await self._flush_reactions()
+        except asyncio.CancelledError:
+            raise
 
     def _get_deletion_mode(self) -> str:
         """Return configured deletion mode, defaulting to legacy hard delete."""
@@ -1203,6 +1253,34 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error in pin handler: {e}", exc_info=True)
 
+        @self.client.on(events.Raw(types=[UpdateMessageReactions]))
+        async def on_message_reactions(event) -> None:
+            """Handle real-time reaction changes (#219, opt-in via LISTEN_REACTIONS).
+
+            UpdateMessageReactions carries the FULL current aggregate snapshot with
+            no gap recovery (best-effort). We coalesce bursts per message via the
+            debounce buffer and reconcile the latest snapshot; the scheduled sweep
+            remains the backstop. PII: never log chat/message/user ids or emoji.
+            """
+            if not self.config.listen_reactions:
+                return
+            try:
+                chat_id = self._get_marked_id(event.peer)
+                if not self._should_process_chat(chat_id):
+                    return
+                # Forum topic filtering: reactions carry top_msg_id (the topic id)
+                # rather than a full message, so use it directly.
+                if self.config.should_skip_topic(chat_id, getattr(event, "top_msg_id", None)):
+                    return
+
+                observed = extract_reactions(getattr(event, "reactions", None))
+                self.stats["reactions_received"] += 1
+                # Latest full snapshot wins; the timed flush reconciles + broadcasts.
+                self._reaction_pending[(chat_id, event.msg_id)] = observed
+            except Exception as e:
+                self.stats["errors"] += 1
+                logger.error(f"Error in reaction handler: {type(e).__name__}")
+
     async def run(self) -> None:
         """
         Run the listener until stopped.
@@ -1216,6 +1294,10 @@ class TelegramListener:
 
         # Start the rate limiter
         self._protector.start()
+
+        # Start the reaction debounce flusher (#219) when reactions are enabled.
+        if self.config.listen_reactions:
+            self._reaction_flush_task = asyncio.create_task(self._reaction_flush_loop())
 
         # Write listener status to database (for viewer to display)
         try:
@@ -1249,6 +1331,19 @@ class TelegramListener:
                     await self._processor_task
                 except asyncio.CancelledError:
                     pass
+
+            # Stop the reaction flusher and drain any buffered snapshots so a
+            # reaction observed just before shutdown is not lost (#219).
+            if self._reaction_flush_task:
+                self._reaction_flush_task.cancel()
+                try:
+                    await self._reaction_flush_task
+                except asyncio.CancelledError:
+                    pass
+            try:
+                await self._flush_reactions()
+            except Exception as e:
+                logger.debug(f"Final reaction flush failed: {type(e).__name__}")
 
             # Stop the protector
             await self._protector.stop()
