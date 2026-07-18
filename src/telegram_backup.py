@@ -44,6 +44,7 @@ from .message_utils import (
     build_media_filename,
     compute_file_hash,
     download_and_shard_media,
+    extract_reactions,
     extract_topic_id,
     fallback_media_filename,
     finalize_atomic_download,
@@ -1165,21 +1166,15 @@ class TelegramBackup:
                 await self.db.insert_media(msg["_media_data"])
 
         for msg in batch_data:
-            if msg.get("reactions"):
-                reactions_list: list[dict] = []
-                for reaction in msg["reactions"]:
-                    if reaction.get("user_ids") and len(reaction["user_ids"]) > 0:
-                        for user_id in reaction["user_ids"]:
-                            reactions_list.append({"emoji": reaction["emoji"], "user_id": user_id, "count": 1})
-                        remaining = reaction.get("count", 0) - len(reaction["user_ids"])
-                        if remaining > 0:
-                            reactions_list.append({"emoji": reaction["emoji"], "user_id": None, "count": remaining})
-                    else:
-                        reactions_list.append(
-                            {"emoji": reaction["emoji"], "user_id": None, "count": reaction.get("count", 1)}
-                        )
-                if reactions_list:
-                    await self.db.insert_reactions(msg["id"], chat_id, reactions_list)
+            # Reconcile reactions for every processed message, including those whose
+            # snapshot is empty ([]), so removals-to-zero on re-fetched messages
+            # persist instead of leaving stale rows (#219). reconcile_reactions is
+            # idempotent (a stable message re-scans to a no-op) and preserves
+            # created_at. A None snapshot means extraction FAILED (shape drift) —
+            # skip rather than tombstone valid rows.
+            observed = msg.get("reactions")
+            if observed is not None:
+                await self.db.reconcile_reactions(msg["id"], chat_id, observed, mark_removed=True)
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
         """
@@ -1614,46 +1609,9 @@ class TelegramBackup:
                 if media_result:
                     message_data["_media_data"] = media_result
 
-        # Extract reactions if available
-        reactions_data = []
-        if hasattr(message, "reactions") and message.reactions:
-            try:
-                # Check if reactions.results exists (MessageReactions object)
-                if hasattr(message.reactions, "results") and message.reactions.results:
-                    for reaction in message.reactions.results:
-                        emoji = reaction.reaction
-                        # Handle both emoji strings and ReactionEmoji objects
-                        if hasattr(emoji, "emoticon"):
-                            emoji_str = emoji.emoticon
-                        elif hasattr(emoji, "document_id"):
-                            # Custom emoji (animated sticker) - use document_id as identifier
-                            emoji_str = f"custom_{emoji.document_id}"
-                        else:
-                            emoji_str = str(emoji)
-
-                        # Get user IDs who reacted (if available)
-                        user_ids = []
-                        if hasattr(reaction, "recent_reactions") and reaction.recent_reactions:
-                            for recent in reaction.recent_reactions:
-                                if hasattr(recent, "peer_id"):
-                                    peer = recent.peer_id
-                                    if hasattr(peer, "user_id"):
-                                        user_ids.append(peer.user_id)
-                                    elif hasattr(peer, "channel_id"):
-                                        user_ids.append(peer.channel_id)
-
-                        reactions_data.append({"emoji": emoji_str, "count": reaction.count, "user_ids": user_ids})
-
-                    if reactions_data:
-                        logger.debug(f"Extracted {len(reactions_data)} reactions for message {message.id}")
-            except Exception as e:
-                logger.warning(f"Error extracting reactions for message {message.id}: {e}")
-                import traceback
-
-                logger.debug(traceback.format_exc())
-
-        # Store reactions separately (will be called after message is inserted)
-        message_data["reactions"] = reactions_data
+        # Extract reactions (per-emoji aggregate snapshot). Reconciled after the
+        # message is inserted; see DatabaseAdapter.reconcile_reactions (#219).
+        message_data["reactions"] = extract_reactions(getattr(message, "reactions", None))
 
         # Return message data for batch processing
         return message_data

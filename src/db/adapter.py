@@ -281,9 +281,11 @@ class DatabaseAdapter:
         """Decide whether a re-scanned/imported message may replace archived text.
 
         Truth table (upsert sources: backup re-scan, gap-fill, import):
-        - same text            -> apply only to bump edit_date, and only when strictly
-                                  newer (``>`` via _newer_edit_date) so identical
-                                  replays are perfect no-ops (reaction-only edits).
+        - same text            -> never bump edit_date (#219): Telegram bumps
+                                  edit_date server-side for reaction-only changes,
+                                  so treating an unchanged-text re-scan as an edit
+                                  produced a phantom "edited" marker. Non-text
+                                  metadata still refreshes via _pending_update_values.
         - empty -> non-empty   -> always fill (late hydration), even without an
                                   edit_date; caller preserves the existing edit_date.
         - differing text, no incoming edit_date -> refuse: an upsert source with no
@@ -298,7 +300,13 @@ class DatabaseAdapter:
         old_edit_date = _strip_tz(existing.edit_date)
 
         if old_text == new_text:
-            return _newer_edit_date(old_edit_date, new_edit_date)
+            # Same text -> never bump edit_date. Telegram bumps a message's
+            # edit_date server-side when only reactions change (#219), so bumping
+            # here would set edit_date with no version and surface a phantom
+            # "edited" marker on re-scan/gap-fill/import too. Non-text metadata
+            # still refreshes via _pending_update_values regardless of this gate;
+            # reactions are reconciled by reconcile_reactions.
+            return False
         if (old_text is None or old_text == "") and new_text not in (None, ""):
             return True
         if new_edit_date is None:
@@ -320,7 +328,12 @@ class DatabaseAdapter:
         old_edit_date = _strip_tz(existing.edit_date)
         edit_date = _strip_tz(edit_date)
 
-        if existing.text == new_text and old_edit_date == edit_date:
+        if existing.text == new_text:
+            # Text unchanged -> not a real text edit. Telegram bumps edit_date for
+            # reaction-only changes (server-side; message.edit_hide is documented as
+            # unreliable), so applying here would set edit_date with no version and
+            # surface a phantom "edited" marker (#219). Reactions are captured by the
+            # dedicated reaction path instead.
             return False
         if edit_date is None:
             return old_edit_date is None
@@ -1369,56 +1382,6 @@ class DatabaseAdapter:
 
     # ========== Reaction Operations ==========
 
-    @retry_on_locked()
-    async def insert_reactions(self, message_id: int, chat_id: int, reactions: list[dict[str, Any]]) -> None:
-        """Insert reactions for a message using upsert to avoid sequence issues."""
-        if not reactions:
-            return
-
-        async with self.db_manager.async_session_factory() as session:
-            # Delete existing reactions first
-            await session.execute(
-                delete(Reaction).where(and_(Reaction.message_id == message_id, Reaction.chat_id == chat_id))
-            )
-            await session.commit()
-
-        # Insert in a separate transaction to avoid sequence conflicts
-        async with self.db_manager.async_session_factory() as session:
-            for reaction in reactions:
-                try:
-                    r = Reaction(
-                        message_id=message_id,
-                        chat_id=chat_id,
-                        emoji=reaction["emoji"],
-                        user_id=reaction.get("user_id"),
-                        count=reaction.get("count", 1),
-                    )
-                    session.add(r)
-                    await session.flush()  # Flush each to catch errors early
-                except Exception as e:
-                    if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
-                        # Sequence out of sync — rollback undoes ALL flushed inserts
-                        logger.warning("Reactions sequence out of sync, resetting and retrying all...")
-                        await session.rollback()
-                        await self._reset_reactions_sequence()
-                        # Retry ALL reactions in a fresh transaction
-                        async with self.db_manager.async_session_factory() as retry_session:
-                            for r_data in reactions:
-                                retry_session.add(
-                                    Reaction(
-                                        message_id=message_id,
-                                        chat_id=chat_id,
-                                        emoji=r_data["emoji"],
-                                        user_id=r_data.get("user_id"),
-                                        count=r_data.get("count", 1),
-                                    )
-                                )
-                            await retry_session.commit()
-                        return
-                    raise
-
-            await session.commit()
-
     async def _reset_reactions_sequence(self) -> None:
         """Reset the reactions table sequence to max(id) + 1."""
         async with self.db_manager.async_session_factory() as session:
@@ -1430,15 +1393,170 @@ class DatabaseAdapter:
                 logger.info("Reset reactions_id_seq sequence")
 
     async def get_reactions(self, message_id: int, chat_id: int) -> list[dict[str, Any]]:
-        """Get all reactions for a message."""
+        """Get all currently-active reactions for a message (excludes tombstoned)."""
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(Reaction)
-                .where(and_(Reaction.message_id == message_id, Reaction.chat_id == chat_id))
+                .where(
+                    and_(
+                        Reaction.message_id == message_id,
+                        Reaction.chat_id == chat_id,
+                        Reaction.removed_at.is_(None),
+                    )
+                )
                 .order_by(Reaction.emoji)
             )
             result = await session.execute(stmt)
             return [{"emoji": r.emoji, "user_id": r.user_id, "count": r.count} for r in result.scalars()]
+
+    @retry_on_locked()
+    async def reconcile_reactions(
+        self,
+        message_id: int,
+        chat_id: int,
+        observed: list[dict[str, Any]],
+        *,
+        mark_removed: bool = True,
+        _after_seq_reset: bool = False,
+    ) -> str:
+        """Reconcile a message's reactions against a fresh FULL snapshot (#219).
+
+        ``observed`` is the complete current per-emoji aggregate
+        (``[{"emoji", "count"}]``, ``count`` authoritative) — the same shape the
+        scheduled backup and the live UpdateMessageReactions handler both produce.
+        Storage is intentionally EMOJI-AGGREGATE ONLY (one row per (message, chat,
+        emoji), ``user_id`` NULL): per-user attribution is unsound on a user client
+        (Telegram exposes only a tiny ``recent_reactions`` preview, so a reactor
+        rolling off it is indistinguishable from a removal), so we never persist or
+        rely on it. Unlike the legacy full delete-then-reinsert, this:
+
+        - preserves ``created_at`` on the surviving row (first-seen survives
+          re-scans — the reporter's histogram measured backup cadence precisely
+          because the old path reset it every run);
+        - keeps exactly one row per emoji via UPDATE, never ON CONFLICT (the
+          ``uq_reaction`` constraint's nullable ``user_id`` is non-colliding in SQL,
+          so an upsert on it would grow unbounded) — and collapses any legacy
+          multi-row-per-emoji rows into that single aggregate;
+        - reconciles removals INCLUDING to zero: an emoji absent from ``observed``
+          is tombstoned (``removed_at``) when ``mark_removed`` (default), else
+          deleted — this branch runs even when ``observed`` is empty;
+        - is a no-op when the message is not archived (best-effort; never stubs a
+          synthetic message row, which would render blank in the viewer and, with
+          the FK having no CASCADE, raise on PostgreSQL).
+
+        Returns ``"reconciled"`` | ``"noop"`` | ``"no_message"``.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # Lock the parent message row for the whole reconcile so the live
+            # listener and the scheduled backup can't both read "no rows" and insert
+            # duplicate aggregate rows for the same emoji (uq_reaction is inert for
+            # NULL user_id, so nothing else dedups them → inflated viewer counts).
+            # This also guards the FK: reactions.fk_reaction_message has no CASCADE,
+            # so a reaction for an unarchived message would raise on PostgreSQL.
+            if await self._load_message_for_update(session, chat_id, message_id) is None:
+                return "no_message"
+
+            existing_rows = (
+                (
+                    await session.execute(
+                        select(Reaction).where(and_(Reaction.message_id == message_id, Reaction.chat_id == chat_id))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            by_emoji: dict[str, list[Reaction]] = {}
+            for r in existing_rows:
+                by_emoji.setdefault(r.emoji, []).append(r)
+
+            # Authoritative per-emoji counts from the snapshot (later duplicates of an
+            # emoji are summed defensively; the extractor yields one entry per emoji).
+            desired: dict[str, int] = {}
+            for entry in observed:
+                emoji = entry.get("emoji")
+                if not emoji:
+                    continue
+                count = int(entry.get("count", 0) or 0)
+                if count <= 0:
+                    # A zero/negative count is "absent", not a live reaction — leave it
+                    # out of `desired` so the emoji is tombstoned/removed below.
+                    continue
+                desired[emoji] = desired.get(emoji, 0) + count
+
+            now = utcnow_naive()
+            changed = False
+
+            for emoji, count in desired.items():
+                rows = by_emoji.get(emoji)
+                if rows:
+                    # Keep the earliest-seen row as the aggregate (preserves
+                    # created_at); collapse any others (legacy per-user/dup rows).
+                    rows_sorted = sorted(rows, key=lambda r: (r.created_at or now, r.id))
+                    keep = rows_sorted[0]
+                    if keep.count != count or keep.user_id is not None or keep.removed_at is not None:
+                        keep.count = count
+                        keep.user_id = None
+                        keep.removed_at = None
+                        changed = True
+                    for extra in rows_sorted[1:]:
+                        await session.delete(extra)
+                        changed = True
+                else:
+                    session.add(
+                        Reaction(
+                            message_id=message_id,
+                            chat_id=chat_id,
+                            emoji=emoji,
+                            user_id=None,
+                            count=count,
+                            created_at=now,
+                            removed_at=None,
+                        )
+                    )
+                    changed = True
+
+            # Emojis no longer present: tombstone (retain) or delete. Collapse any
+            # legacy multi-row group into one retained row so counts don't inflate.
+            for emoji, rows in by_emoji.items():
+                if emoji in desired:
+                    continue
+                if mark_removed:
+                    rows_sorted = sorted(rows, key=lambda r: (r.created_at or now, r.id))
+                    keep = rows_sorted[0]
+                    total = sum(r.count or 0 for r in rows)
+                    if keep.removed_at is None or keep.count != total or keep.user_id is not None:
+                        keep.removed_at = keep.removed_at or now
+                        keep.count = total
+                        keep.user_id = None
+                        changed = True
+                    for extra in rows_sorted[1:]:
+                        await session.delete(extra)
+                        changed = True
+                else:
+                    for row in rows:
+                        await session.delete(row)
+                        changed = True
+
+            if not changed:
+                return "noop"
+
+            try:
+                await session.commit()
+            except Exception as e:
+                await session.rollback()
+                # A brand-new reaction row can collide with a stale PG serial (the
+                # long-standing reactions_id_seq drift). Reset the sequence and retry
+                # the reconcile ONCE with the same snapshot so the authoritative state
+                # is actually applied (returning early would drop it until the next
+                # event). Log the error class only (never ids/emoji — PII).
+                if not _after_seq_reset and ("duplicate key" in str(e).lower() or "unique" in str(e).lower()):
+                    logger.warning("Reactions sequence out of sync during reconcile, resetting and retrying")
+                    await self._reset_reactions_sequence()
+                    return await self.reconcile_reactions(
+                        message_id, chat_id, observed, mark_removed=mark_removed, _after_seq_reset=True
+                    )
+                raise
+            return "reconciled"
 
     # ========== Sync Status Operations ==========
 
@@ -1863,7 +1981,15 @@ class DatabaseAdapter:
             if page_message_ids:
                 reactions_stmt = (
                     select(Reaction)
-                    .where(and_(Reaction.chat_id == chat_id, Reaction.message_id.in_(page_message_ids)))
+                    .where(
+                        and_(
+                            Reaction.chat_id == chat_id,
+                            Reaction.message_id.in_(page_message_ids),
+                            # Tombstoned (retain-on-removal) reactions are archived
+                            # history, not part of the live displayed count (#219).
+                            Reaction.removed_at.is_(None),
+                        )
+                    )
                     .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
                 )
                 reactions_result = await session.execute(reactions_stmt)
