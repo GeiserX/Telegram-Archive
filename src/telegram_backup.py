@@ -1167,11 +1167,14 @@ class TelegramBackup:
 
         for msg in batch_data:
             # Reconcile reactions for every processed message, including those whose
-            # snapshot is now empty, so removals-to-zero on re-fetched messages
+            # snapshot is empty ([]), so removals-to-zero on re-fetched messages
             # persist instead of leaving stale rows (#219). reconcile_reactions is
             # idempotent (a stable message re-scans to a no-op) and preserves
-            # created_at. The message set here is the sweep's incremental window.
-            await self.db.reconcile_reactions(msg["id"], chat_id, msg.get("reactions") or [], mark_removed=True)
+            # created_at. A None snapshot means extraction FAILED (shape drift) —
+            # skip rather than tombstone valid rows.
+            observed = msg.get("reactions")
+            if observed is not None:
+                await self.db.reconcile_reactions(msg["id"], chat_id, observed, mark_removed=True)
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
         """

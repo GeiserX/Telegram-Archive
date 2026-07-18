@@ -1274,6 +1274,10 @@ class TelegramListener:
                     return
 
                 observed = extract_reactions(getattr(event, "reactions", None))
+                if observed is None:
+                    # Extraction failed (unexpected shape) — skip rather than buffer
+                    # an empty snapshot that would tombstone valid reactions.
+                    return
                 self.stats["reactions_received"] += 1
                 # Latest full snapshot wins; the timed flush reconciles + broadcasts.
                 self._reaction_pending[(chat_id, event.msg_id)] = observed

@@ -139,14 +139,23 @@ if has_tables and not has_alembic:
     \"\"\")
     has_017_chat_id_id_index = cur.fetchone()[0]
 
-    # Check artifact from migration 018: reactions.removed_at column + chat-first index
+    # Check artifacts from migration 018: reactions.removed_at column AND the
+    # chat-first index. Both must exist to stamp 018, or a partial schema would
+    # skip creating whichever the migration would otherwise add.
     cur.execute(\"\"\"
         SELECT EXISTS (
             SELECT FROM information_schema.columns
             WHERE table_name = 'reactions' AND column_name = 'removed_at'
         );
     \"\"\")
-    has_018_reaction_removed_at = cur.fetchone()[0]
+    has_018_removed_at_col = cur.fetchone()[0]
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM pg_indexes
+            WHERE tablename = 'reactions' AND indexname = 'idx_reactions_chat_message'
+        );
+    \"\"\")
+    has_018_reaction_removed_at = has_018_removed_at_col and cur.fetchone()[0]
 
     # Check artifact from migration 014: messages soft-delete marker columns
     cur.execute(\"\"\"
@@ -401,10 +410,12 @@ if has_tables and not has_alembic:
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_chat_id_id'\")
     has_017_chat_id_id_index = cur.fetchone() is not None
 
-    # Check artifact from migration 018: reactions.removed_at column
+    # Check artifacts from migration 018: reactions.removed_at column AND the
+    # chat-first index (both required to stamp 018, else a partial schema skips one).
     cur.execute(\"PRAGMA table_info(reactions)\")
     reaction_columns = {row[1] for row in cur.fetchall()}
-    has_018_reaction_removed_at = 'removed_at' in reaction_columns
+    cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_reactions_chat_message'\")
+    has_018_reaction_removed_at = ('removed_at' in reaction_columns) and (cur.fetchone() is not None)
 
     # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")

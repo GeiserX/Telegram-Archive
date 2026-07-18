@@ -60,15 +60,17 @@ def test_upgrade_adds_column_and_index_and_is_idempotent():
     engine = sa.create_engine("sqlite://")
     with engine.connect() as conn:
         _create_reactions_table(conn)
+        # A pre-existing row (before the migration) must survive with removed_at NULL.
+        conn.execute(sa.text("INSERT INTO reactions (id, message_id, chat_id, emoji) VALUES (1, 1, -100, '👍')"))
 
         _run(conn, migration.upgrade)
         assert "removed_at" in _columns(conn)
         assert "idx_reactions_chat_message" in _indexes(conn)
 
-        # existing rows have removed_at NULL (active)
-        conn.execute(sa.text("INSERT INTO reactions (id, message_id, chat_id, emoji) VALUES (1, 1, -100, '👍')"))
-        val = conn.execute(sa.text("SELECT removed_at FROM reactions WHERE id=1")).scalar()
-        assert val is None
+        # the pre-existing row is preserved and treated as active (removed_at NULL)
+        row = conn.execute(sa.text("SELECT emoji, removed_at FROM reactions WHERE id=1")).one()
+        assert row.emoji == "👍"
+        assert row.removed_at is None
 
         # re-run must be a no-op (both artifacts already present)
         _run(conn, migration.upgrade)

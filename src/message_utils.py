@@ -478,13 +478,21 @@ def normalize_reaction_emoji(reaction: object) -> str | None:
     return None
 
 
-def extract_reactions(message_reactions: object) -> list[dict[str, object]]:
+def extract_reactions(message_reactions: object) -> list[dict[str, object]] | None:
     """Extract the per-emoji aggregate from a Telethon ``MessageReactions``.
 
     Accepts ``message.reactions`` (scheduled backup) or an
     ``UpdateMessageReactions.reactions`` (live listener) — both are the same
     ``MessageReactions`` object carrying the FULL current snapshot in
-    ``results`` (``list[ReactionCount]``). Returns ``[{"emoji", "count"}]``.
+    ``results`` (``list[ReactionCount]``).
+
+    Returns:
+    - ``[{"emoji", "count"}, ...]`` — the current aggregate (possibly ``[]`` for a
+      message with no reactions; callers treat ``[]`` as an authoritative empty
+      snapshot and reconcile removals down to zero).
+    - ``None`` — extraction FAILED (unexpected shape). Callers MUST skip
+      reconciliation on ``None`` rather than treat it as empty, so transient
+      Telethon shape drift can never tombstone valid reactions.
 
     Aggregate-only by design (see ``DatabaseAdapter.reconcile_reactions``):
     ``results`` counts are authoritative; per-user identity from
@@ -505,8 +513,9 @@ def extract_reactions(message_reactions: object) -> list[dict[str, object]]:
                 continue
             out.append({"emoji": emoji, "count": count})
     except Exception as e:
-        # Telethon is archived (Feb 2026); tolerate shape drift rather than break
-        # a whole backup batch. No identifiers/content logged (PII).
-        logger.debug("Reaction extraction skipped: %s", type(e).__name__)
-        return []
+        # Telethon is archived (Feb 2026); tolerate shape drift rather than break a
+        # whole backup batch — but signal FAILURE (None) so callers skip reconcile
+        # instead of tombstoning valid rows. No identifiers/content logged (PII).
+        logger.debug("Reaction extraction failed, skipping reconcile: %s", type(e).__name__)
+        return None
     return out

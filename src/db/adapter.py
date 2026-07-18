@@ -305,7 +305,7 @@ class DatabaseAdapter:
             # here would set edit_date with no version and surface a phantom
             # "edited" marker on re-scan/gap-fill/import too. Non-text metadata
             # still refreshes via _pending_update_values regardless of this gate;
-            # reactions are reconciled by merge_reactions.
+            # reactions are reconciled by reconcile_reactions.
             return False
         if (old_text is None or old_text == "") and new_text not in (None, ""):
             return True
@@ -1411,7 +1411,13 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def reconcile_reactions(
-        self, message_id: int, chat_id: int, observed: list[dict[str, Any]], *, mark_removed: bool = True
+        self,
+        message_id: int,
+        chat_id: int,
+        observed: list[dict[str, Any]],
+        *,
+        mark_removed: bool = True,
+        _after_seq_reset: bool = False,
     ) -> str:
         """Reconcile a message's reactions against a fresh FULL snapshot (#219).
 
@@ -1441,10 +1447,13 @@ class DatabaseAdapter:
         Returns ``"reconciled"`` | ``"noop"`` | ``"no_message"``.
         """
         async with self.db_manager.async_session_factory() as session:
-            exists = await session.execute(
-                select(Message.id).where(and_(Message.chat_id == chat_id, Message.id == message_id))
-            )
-            if exists.scalar_one_or_none() is None:
+            # Lock the parent message row for the whole reconcile so the live
+            # listener and the scheduled backup can't both read "no rows" and insert
+            # duplicate aggregate rows for the same emoji (uq_reaction is inert for
+            # NULL user_id, so nothing else dedups them → inflated viewer counts).
+            # This also guards the FK: reactions.fk_reaction_message has no CASCADE,
+            # so a reaction for an unarchived message would raise on PostgreSQL.
+            if await self._load_message_for_update(session, chat_id, message_id) is None:
                 return "no_message"
 
             existing_rows = (
@@ -1467,7 +1476,12 @@ class DatabaseAdapter:
                 emoji = entry.get("emoji")
                 if not emoji:
                     continue
-                desired[emoji] = desired.get(emoji, 0) + int(entry.get("count", 1) or 1)
+                count = int(entry.get("count", 0) or 0)
+                if count <= 0:
+                    # A zero/negative count is "absent", not a live reaction — leave it
+                    # out of `desired` so the emoji is tombstoned/removed below.
+                    continue
+                desired[emoji] = desired.get(emoji, 0) + count
 
             now = utcnow_naive()
             changed = False
@@ -1531,13 +1545,16 @@ class DatabaseAdapter:
             except Exception as e:
                 await session.rollback()
                 # A brand-new reaction row can collide with a stale PG serial (the
-                # long-standing reactions_id_seq drift); recover once and let the
-                # caller's snapshot be re-applied on the next update. Log the error
-                # class only (never ids/emoji — PII).
-                if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
-                    logger.warning("Reactions sequence out of sync during reconcile, resetting")
+                # long-standing reactions_id_seq drift). Reset the sequence and retry
+                # the reconcile ONCE with the same snapshot so the authoritative state
+                # is actually applied (returning early would drop it until the next
+                # event). Log the error class only (never ids/emoji — PII).
+                if not _after_seq_reset and ("duplicate key" in str(e).lower() or "unique" in str(e).lower()):
+                    logger.warning("Reactions sequence out of sync during reconcile, resetting and retrying")
                     await self._reset_reactions_sequence()
-                    return "noop"
+                    return await self.reconcile_reactions(
+                        message_id, chat_id, observed, mark_removed=mark_removed, _after_seq_reset=True
+                    )
                 raise
             return "reconciled"
 

@@ -147,6 +147,13 @@ class TestReconcileReactions:
         out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [])
         assert out == "noop"
 
+    async def test_zero_or_negative_count_treated_as_absent(self, adapter):
+        # A snapshot entry with count<=0 must not revive/retain a reaction.
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 2}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 0}])
+        assert await adapter.get_reactions(MSG_ID, CHAT_ID) == []
+        assert all(r.removed_at is not None for r in await _rows(adapter))
+
 
 class TestExtractReactions:
     def test_none_returns_empty(self):
@@ -176,8 +183,11 @@ class TestExtractReactions:
         )
         assert extract_reactions(mr) == []
 
-    def test_never_raises_on_bad_shape(self):
-        assert extract_reactions(SimpleNamespace(results=object())) == []
+    def test_failure_returns_none_sentinel(self):
+        # A broken shape must return None (skip reconcile), NOT [] (which would
+        # tombstone valid reactions). None is distinct from a valid empty snapshot.
+        assert extract_reactions(SimpleNamespace(results=object())) is None
+        assert extract_reactions(None) == []  # valid: message has no reactions
 
     def test_normalize_variants(self):
         assert normalize_reaction_emoji(SimpleNamespace(emoticon="🔥")) == "🔥"

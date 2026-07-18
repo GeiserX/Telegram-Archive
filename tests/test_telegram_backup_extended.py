@@ -2382,15 +2382,16 @@ class TestProcessMessageReactionEdgeCases(unittest.TestCase):
         self.assertEqual(result["reactions"], [{"emoji": "thumbs_up", "count": 3}])
         self.assertNotIn("user_ids", result["reactions"][0])
 
-    def test_reactions_extraction_exception_caught(self):
-        """Exception during reaction extraction should be caught."""
+    def test_reactions_extraction_failure_returns_none_sentinel(self):
+        """#219: extraction failure yields None (skip reconcile), not [] — a []
+        would be an authoritative empty snapshot and tombstone valid reactions."""
         msg = _make_message(3)
-        msg.reactions = MagicMock()
-        msg.reactions.results = MagicMock(side_effect=Exception("reaction error"))
+        msg.reactions = MagicMock(spec=["results"])
+        msg.reactions.results = object()  # non-iterable -> extraction raises internally
 
         result = _run(self.backup._process_message(msg, 100))
 
-        self.assertEqual(result["reactions"], [])
+        self.assertIsNone(result["reactions"])
 
     def test_poll_results_parse_error_caught(self):
         """Exception parsing poll results should be caught."""
