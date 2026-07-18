@@ -292,6 +292,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
+| `LISTEN_REACTIONS` | `false` | B | Capture reactions in real-time (opt-in). Best-effort and aggregate-only (per-emoji counts); the scheduled backup reconciles reactions regardless |
+| `REACTION_DEBOUNCE_SECONDS` | `1.5` | B | Coalesce a burst of reaction updates on the same message into one write |
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |

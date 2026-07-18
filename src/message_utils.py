@@ -448,3 +448,74 @@ def service_action_type(action: object) -> str:
     """
     name = type(action).__name__.removeprefix("MessageAction")
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def normalize_reaction_emoji(reaction: object) -> str | None:
+    """Normalize a Telethon ``Reaction`` variant to a stable storage string.
+
+    - ``ReactionEmoji`` -> its ``emoticon`` (e.g. ``"👍"``)
+    - ``ReactionCustomEmoji`` -> ``f"custom_{document_id}"`` (the viewer renders a
+      placeholder; resolving the sticker needs a separate API call, out of scope)
+    - ``ReactionPaid`` (Telegram Stars) -> ``"paid"`` sentinel (no per-instance emoji)
+    - ``ReactionEmpty`` / unknown -> ``None`` (ignored by the caller)
+
+    Defensive by design: Telethon is archived (Feb 2026), so this tolerates
+    attribute/shape drift rather than assuming exact constructors.
+    """
+    if reaction is None:
+        return None
+    emoticon = getattr(reaction, "emoticon", None)
+    if emoticon:
+        return emoticon
+    document_id = getattr(reaction, "document_id", None)
+    if document_id is not None:
+        return f"custom_{document_id}"
+    cls = type(reaction).__name__
+    if "Paid" in cls:
+        return "paid"
+    if "Empty" in cls:
+        return None
+    return None
+
+
+def extract_reactions(message_reactions: object) -> list[dict[str, object]] | None:
+    """Extract the per-emoji aggregate from a Telethon ``MessageReactions``.
+
+    Accepts ``message.reactions`` (scheduled backup) or an
+    ``UpdateMessageReactions.reactions`` (live listener) — both are the same
+    ``MessageReactions`` object carrying the FULL current snapshot in
+    ``results`` (``list[ReactionCount]``).
+
+    Returns:
+    - ``[{"emoji", "count"}, ...]`` — the current aggregate (possibly ``[]`` for a
+      message with no reactions; callers treat ``[]`` as an authoritative empty
+      snapshot and reconcile removals down to zero).
+    - ``None`` — extraction FAILED (unexpected shape). Callers MUST skip
+      reconciliation on ``None`` rather than treat it as empty, so transient
+      Telethon shape drift can never tombstone valid reactions.
+
+    Aggregate-only by design (see ``DatabaseAdapter.reconcile_reactions``):
+    ``results`` counts are authoritative; per-user identity from
+    ``recent_reactions`` is an unreliable sliding-window preview and is not used.
+    Never raises and never logs identifiers/content (PII).
+    """
+    if message_reactions is None:
+        return []
+    out: list[dict[str, object]] = []
+    try:
+        results = getattr(message_reactions, "results", None) or []
+        for rc in results:
+            emoji = normalize_reaction_emoji(getattr(rc, "reaction", None))
+            if not emoji:
+                continue
+            count = int(getattr(rc, "count", 0) or 0)
+            if count <= 0:
+                continue
+            out.append({"emoji": emoji, "count": count})
+    except Exception as e:
+        # Telethon is archived (Feb 2026); tolerate shape drift rather than break a
+        # whole backup batch — but signal FAILURE (None) so callers skip reconcile
+        # instead of tombstoning valid rows. No identifiers/content logged (PII).
+        logger.debug("Reaction extraction failed, skipping reconcile: %s", type(e).__name__)
+        return None
+    return out

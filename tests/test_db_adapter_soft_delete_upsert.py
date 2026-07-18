@@ -240,18 +240,22 @@ async def test_update_message_text_is_idempotent(sqlite_adapter):
 
 
 @pytest.mark.asyncio
-async def test_update_message_text_same_text_updates_edit_date_without_version(sqlite_adapter):
+async def test_update_message_text_same_text_is_noop_and_does_not_bump_edit_date(sqlite_adapter):
+    # #219: a reaction-only change bumps Telegram's edit_date with unchanged text.
+    # The archive must NOT advance its stored edit_date (it would surface a phantom
+    # "edited" marker with no version). Same-text edits are a no-op.
     await sqlite_adapter.insert_message(
         {"id": 28, "chat_id": 300, "date": datetime(2026, 6, 26, 10, 0), "text": "original"}
     )
 
     reaction_edit_date = datetime(2026, 6, 26, 10, 15)
-    await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date)
+    outcome = await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date)
 
     message = await _get_message(sqlite_adapter, 28, 300)
     versions = await _get_versions(sqlite_adapter, 28, 300)
+    assert outcome == "noop"
     assert message.text == "original"
-    assert message.edit_date == reaction_edit_date
+    assert message.edit_date is None  # not bumped by the reaction-only "edit"
     assert versions == []
 
 
@@ -419,7 +423,10 @@ async def test_repeated_upsert_with_same_edit_date_is_idempotent(sqlite_adapter)
 
 
 @pytest.mark.asyncio
-async def test_upsert_same_text_updates_edit_date_without_version(sqlite_adapter):
+async def test_upsert_same_text_does_not_bump_edit_date(sqlite_adapter):
+    # #219: the backup/gap-fill/import upsert path must also NOT advance edit_date
+    # on an unchanged-text re-scan (a re-fetched message whose only server-side
+    # change was a reaction), or the phantom "edited" marker resurfaces post-sweep.
     await sqlite_adapter.insert_message(
         {"id": 29, "chat_id": 300, "date": datetime(2026, 6, 26, 12, 0), "text": "original"}
     )
@@ -438,7 +445,7 @@ async def test_upsert_same_text_updates_edit_date_without_version(sqlite_adapter
     message = await _get_message(sqlite_adapter, 29, 300)
     versions = await _get_versions(sqlite_adapter, 29, 300)
     assert message.text == "original"
-    assert message.edit_date == reaction_edit_date
+    assert message.edit_date is None  # same text -> edit_date not bumped
     assert versions == []
 
 

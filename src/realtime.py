@@ -49,6 +49,7 @@ class NotificationType(str, Enum):
     DELETE = "delete"
     CHAT_UPDATE = "chat_update"
     PIN = "pin"
+    REACTION = "reaction"
 
 
 def _truncate_notify_data(data: dict, max_text: int = 500) -> dict:

@@ -117,7 +117,7 @@ class TestAsyncDatabaseAdapter(unittest.TestCase):
             "insert_message",
             "insert_messages_batch",
             "get_reactions",
-            "insert_reactions",
+            "reconcile_reactions",
         ]
 
         for method in required_methods:
