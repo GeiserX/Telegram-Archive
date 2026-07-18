@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.23.0] - 2026-07-18
+
+### Added
+- **Real-time reaction capture (`LISTEN_REACTIONS`, opt-in, default off).** With the listener enabled, reactions are now reconciled the moment they change instead of waiting for the next scheduled backup (previously up to the whole `SCHEDULE` interval behind). Reactions are stored as per-emoji aggregate counts; a removed reaction is retained (tombstoned) rather than silently dropped. Capture is best-effort by design — Telegram gives a user client no delivery guarantee for reaction updates, so the scheduled backup remains the reconciliation backstop. ([#219](https://github.com/GeiserX/Telegram-Archive/issues/219))
+- `REACTION_DEBOUNCE_SECONDS` (default **1.5**) — coalesces a burst of reaction updates on the same message into a single write and broadcast, so a popular message can't thrash the database.
+
+### Fixed
+- **Reactions no longer lag the scheduled backup, and an add-then-remove between sweeps is preserved** instead of vanishing without a trace. ([#219](https://github.com/GeiserX/Telegram-Archive/issues/219))
+- **A message whose edit timestamp changed only because of a reaction no longer shows a phantom "edited" marker.** Telegram bumps a message's edit date server-side when reactions change; the archive now advances its stored edit date only on a real text change (fixed for both the real-time listener and the scheduled/backfill paths), so "edited" reflects genuine edits and real edits are never hidden.
+- **Reaction removals down to zero are now persisted**, and a reaction's first-seen timestamp is preserved across re-scans (the scheduled backup previously reset it every run and never cleared reactions back to empty).
+
+### Changed
+- Reaction storage moved to per-emoji aggregate counts with a retain-on-removal tombstone; per-user reaction attribution is intentionally not persisted (a user client only sees a small, unreliable preview of who reacted, so it cannot be tracked accurately). Broadcast-channel reactions are aggregate-only by Telegram policy.
+
+### Upgrade note
+- Migration `018` (adds `reactions.removed_at` and a `(chat_id, message_id)` index) runs automatically on first start; it is idempotent and requires no action.
+
 ## [7.22.0] - 2026-07-15
 
 ### Fixed

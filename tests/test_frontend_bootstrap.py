@@ -546,3 +546,24 @@ def test_unseen_message_badge_tracks_background_arrivals():
     # while a detached jump window is pinned), with an aria-label.
     assert 'v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"' in html
     assert "' new message(s) — scroll to latest'" in html
+
+
+def test_reaction_ws_case_patches_message_reactions():
+    """#219: the WS 'reaction' event replaces a loaded message's reactions in place.
+
+    The reactions block already renders msg.reactions generically, and the 3s poll
+    merges reactions via upsertMessages, so this case is the instant-update path.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ws_start = html.index("const handleWebSocketMessage = (data) =>")
+    ws_body = html[ws_start:]
+
+    assert "case 'reaction':" in ws_body
+    reaction_start = ws_body.index("case 'reaction':")
+    reaction_body = ws_body[reaction_start : ws_body.index("case 'delete':", reaction_start)]
+    # Same chat-scope guard as the 'edit' case, wholesale-replace the reactions array.
+    assert "selectedChat.value?.id !== data.chat_id" in reaction_body
+    assert "reactionMsg.reactions = data.reactions" in reaction_body
+    # The reactions block renders the aggregate shape the server sends.
+    assert 'v-for="reaction in msg.reactions"' in html

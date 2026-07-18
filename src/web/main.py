@@ -255,6 +255,16 @@ async def handle_realtime_notification(payload: dict):
                 "pinned": data.get("pinned", True),
             },
         )
+    elif notification_type == "reaction":
+        await ws_manager.broadcast_to_chat(
+            chat_id,
+            {
+                "type": "reaction",
+                "chat_id": chat_id,
+                "message_id": data.get("message_id"),
+                "reactions": data.get("reactions", []),
+            },
+        )
 
 
 async def session_cleanup_task():

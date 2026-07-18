@@ -320,6 +320,18 @@ class Config:
         # When enabled, updates to chat metadata are captured in real-time
         self.listen_chat_actions = os.getenv("LISTEN_CHAT_ACTIONS", "true").lower() == "true"
 
+        # LISTEN_REACTIONS: Capture message reactions in real-time (#219).
+        # DEFAULT FALSE (opt-in): reaction push is best-effort on a user client
+        # (Telegram gives no gap recovery and recommends polling), it is storm-prone
+        # on popular messages, and it captures aggregate per-emoji counts only.
+        # When off, reactions are still reconciled by the scheduled backup sweep.
+        self.listen_reactions = _parse_bool(os.getenv("LISTEN_REACTIONS"), default=False)
+
+        # REACTION_DEBOUNCE_SECONDS: coalesce a burst of reaction updates for the same
+        # message into one reconcile/broadcast. Each update carries the full current
+        # snapshot, so keeping only the latest within the window is loss-free.
+        self.reaction_debounce_seconds = max(0.1, float(os.getenv("REACTION_DEBOUNCE_SECONDS", "1.5")))
+
         # Note: LISTEN_ALBUMS removed - albums are automatically handled via grouped_id
         # in the NewMessage handler. The viewer groups messages by grouped_id.
 
