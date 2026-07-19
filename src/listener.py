@@ -45,6 +45,8 @@ from .message_utils import (
     fallback_media_filename,
     finalize_atomic_download,
     sanitize_media_filename,
+    service_action_type,
+    service_message_text,
     utcnow_naive,
 )
 from .realtime import NotificationType, RealtimeNotifier
@@ -444,6 +446,36 @@ class TelegramListener:
         except Exception as e:
             logger.debug(f"Failed to send notification: {e}")
 
+    def _buffer_reaction_snapshot(self, chat_id: int, message: object, *, overwrite: bool = True) -> None:
+        """Feed a message's reaction snapshot into the debounce buffer (#221).
+
+        Skips when the reactions feature is off, when the message carries no
+        reactions object at all (an edit or new message without one conveys NO
+        information — treating it as an authoritative empty snapshot could
+        tombstone reactions observed moments earlier), and when Telegram marks
+        the object ``min`` (partial; documented to omit the current user's own
+        reactions, so reconciling it could falsely remove a self-reaction).
+
+        ``overwrite=False`` is for producers whose capture-to-write path crosses
+        an await (the new-message handler): a snapshot buffered meanwhile by the
+        live reaction handler is strictly fresher and must win. Synchronous
+        capture-and-write producers keep arrival order and may overwrite.
+        """
+        if not self.config.listen_reactions:
+            return
+        reactions_obj = getattr(message, "reactions", None)
+        if reactions_obj is None or getattr(reactions_obj, "min", False):
+            return
+        observed = extract_reactions(reactions_obj)
+        if observed is None:
+            return
+        key = (chat_id, message.id)
+        if overwrite:
+            self._reaction_pending[key] = observed
+        else:
+            self._reaction_pending.setdefault(key, observed)
+        self.stats["reactions_received"] += 1
+
     async def _flush_reactions(self) -> None:
         """Reconcile and broadcast the coalesced reaction snapshots (#219).
 
@@ -774,6 +806,16 @@ class TelegramListener:
                 if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                     return
 
+                # Reaction-carrying edits (#221): Telegram delivers some reaction
+                # changes as genuine UpdateEditMessage events (Telethon #4635), which
+                # our text-outcome early return below would otherwise discard. Harvest
+                # them into the same debounce buffer as the live reaction handler,
+                # BEFORE the rate-limit check and the text early return, so a
+                # reaction-only edit still reconciles and an edit rate limit can't
+                # suppress it. Capture and write are synchronous here, so arrival
+                # order is preserved and overwriting is correct.
+                self._buffer_reaction_snapshot(chat_id, message)
+
                 self.stats["edits_received"] += 1
                 new_text = message.text or ""
                 edit_date = message.edit_date
@@ -985,6 +1027,14 @@ class TelegramListener:
                 await self.db.insert_message(message_data)
                 self.stats["new_messages_saved"] += 1
 
+                # New messages can arrive already carrying reactions (fast reactors,
+                # forwarded content). Buffer them now that the row exists (#221).
+                # overwrite=False: the awaits above (insert_message etc.) opened a
+                # window in which the live reaction handler may have buffered a
+                # FRESHER snapshot for this message — our event-time capture must
+                # not clobber it (review finding, reproduced).
+                self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
+
                 # v6.0.0: Handle media - create Media record AFTER message exists
                 # ws_media mirrors the API row's nested media dict for the WS notify payload
                 # below; stays None when media wasn't downloaded/inserted (DB has no record then either).
@@ -1073,108 +1123,105 @@ class TelegramListener:
                     self.stats["chat_actions"] = 0
                 self.stats["chat_actions"] += 1
 
-                action_type = None
-                if event.new_photo:
-                    action_type = "photo_changed"
+                # Only events built from a real service message carry a row we can
+                # archive. Participant-sync builds (UpdateChatParticipantAdd/Delete,
+                # UpdateChannelParticipant) and unpins pass a peer only, so
+                # action_message is None. Writing a row here used to fabricate a
+                # wall-clock-derived id that could collide with real message ids and
+                # left ~2 phantom rows per join (#222); now we simply skip.
+                msg = event.action_message
+                if msg is None:
+                    logger.debug("Chat action without service message - skipped")
+                    return
+
+                # Honor forum topic exclusions exactly like the new-message handler.
+                topic_id = extract_topic_id(msg)
+                if self.config.should_skip_topic(chat_id, topic_id):
+                    logger.debug("⏭️ Skipping chat action in excluded topic")
+                    return
+
+                # Storage tag shared with the backfill sweep (chat_joined_by_link,
+                # chat_edit_title, ...), derived from the MessageAction class name.
+                action_type = service_action_type(msg.action)
+
+                # Metadata classification (Telethon 1.43 ChatAction semantics):
+                #   photo changed -> new_photo set AND photo is a Photo
+                #   photo removed -> new_photo set AND photo is None
+                #   title changed -> new_title set AND not a chat/channel creation
+                photo_changed = bool(event.new_photo) and event.photo is not None
+                photo_removed = bool(event.new_photo) and event.photo is None
+                title_changed = event.new_title is not None and not event.created
+
+                if photo_changed:
                     logger.info("📷 Chat photo changed")
-                elif getattr(event, "photo", None) is None and not event.new_photo:
-                    # Photo removed - Telethon doesn't have photo_removed attr in all versions
-                    action_type = "photo_removed"
+                elif photo_removed:
                     logger.info("📷 Chat photo removed")
-                elif event.new_title:
-                    action_type = "title_changed"
+                elif title_changed:
                     logger.info("📝 Chat title changed")
                 elif event.user_joined:
-                    action_type = "user_joined"
                     logger.debug("👤 User joined")
-                elif event.user_left:
-                    action_type = "user_left"
-                    logger.debug("👤 User left")
                 elif event.user_added:
-                    action_type = "user_added"
                     logger.debug("👤 User added")
+                elif event.user_left:
+                    logger.debug("👤 User left")
                 elif event.user_kicked:
-                    action_type = "user_kicked"
                     logger.debug("👤 User kicked")
 
-                # Save service message for display in viewer
-                if action_type:
+                # Resolve the display name of the affected user (the subject of the
+                # service sentence) when the event names one.
+                actor_name = None
+                if hasattr(event, "user_id") and event.user_id:
                     try:
-                        # Get actor info if available
-                        actor_id = None
-                        actor_name = None
-                        if hasattr(event, "user_id") and event.user_id:
-                            actor_id = event.user_id
-                            try:
-                                actor = await call_with_flood_retry(self.client.get_entity, event.user_id)
-                                actor_name = getattr(actor, "first_name", "") or getattr(actor, "title", "")
-                                if hasattr(actor, "last_name") and actor.last_name:
-                                    actor_name += f" {actor.last_name}"
-                            except Exception:
-                                pass
-
-                        # Build service message text
-                        service_text = None
-                        if action_type == "photo_changed":
-                            service_text = (
-                                f"{actor_name or 'Someone'} changed the group photo"
-                                if actor_name
-                                else "Group photo was changed"
-                            )
-                        elif action_type == "photo_removed":
-                            service_text = (
-                                f"{actor_name or 'Someone'} removed the group photo"
-                                if actor_name
-                                else "Group photo was removed"
-                            )
-                        elif action_type == "title_changed":
-                            service_text = f'{actor_name or "Someone"} changed the group name to "{event.new_title}"'
-                        elif action_type == "user_joined":
-                            service_text = f"{actor_name or 'Someone'} joined the group"
-                        elif action_type == "user_left":
-                            service_text = f"{actor_name or 'Someone'} left the group"
-                        elif action_type == "user_added":
-                            service_text = f"{actor_name or 'Someone'} was added to the group"
-                        elif action_type == "user_kicked":
-                            service_text = f"{actor_name or 'Someone'} was removed from the group"
-
-                        if service_text:
-                            # Generate unique message ID for service messages
-                            # Use negative ID to avoid collision with real messages
-                            import time
-
-                            service_msg_id = -int(time.time() * 1000) % 2147483647
-
-                            # v6.0.0: media_type removed - service type indicated by raw_data.service_type
-                            message_data = {
-                                "id": service_msg_id,
-                                "chat_id": chat_id,
-                                "sender_id": actor_id,
-                                "date": utcnow_naive(),
-                                "text": service_text,
-                                "reply_to_msg_id": None,
-                                "reply_to_text": None,
-                                "forward_from_id": None,
-                                "edit_date": None,
-                                "raw_data": {
-                                    "service_type": "service",
-                                    "action_type": action_type,
-                                    "new_title": event.new_title if action_type == "title_changed" else None,
-                                },
-                                "is_outgoing": 0,
-                            }
-                            await self.db.insert_message(message_data)
-                            logger.info("📌 Service message saved")
+                        actor = await call_with_flood_retry(self.client.get_entity, event.user_id)
+                        actor_name = getattr(actor, "first_name", "") or getattr(actor, "title", "")
+                        if hasattr(actor, "last_name") and actor.last_name:
+                            actor_name += f" {actor.last_name}"
                     except Exception as e:
-                        logger.warning(f"Failed to save service message: {e}")
+                        actor_name = None
+                        logger.debug("Actor name lookup failed: %s", type(e).__name__)
 
-                # Update chat info if photo or title changed
-                if action_type in ("photo_changed", "title_changed"):
-                    # Get full entity for update
+                service_text = service_message_text(
+                    msg.action,
+                    actor_name=actor_name,
+                    affected_left=bool(event.user_left),
+                    affected_joined_self=bool(event.user_joined),
+                )
+
+                # Persist with the REAL Telegram id/date so this row upserts cleanly
+                # against the same id a later sweep re-scans. events.NewMessage skips
+                # MessageService, so this handler is the only real-time source of
+                # service rows. raw_data mirrors the sweep shape (service_type /
+                # action_type / new_title).
+                message_data = {
+                    "id": msg.id,
+                    "chat_id": chat_id,
+                    "sender_id": msg.sender_id,
+                    "date": msg.date,
+                    "text": service_text or "",
+                    "reply_to_msg_id": msg.reply_to_msg_id,
+                    "reply_to_top_id": topic_id,
+                    "reply_to_text": None,
+                    "forward_from_id": None,
+                    "edit_date": None,
+                    "raw_data": {
+                        "service_type": "service",
+                        "action_type": action_type,
+                    },
+                    "is_outgoing": 1 if msg.out else 0,
+                }
+                if event.new_title is not None:
+                    message_data["raw_data"]["new_title"] = event.new_title
+
+                await self.db.insert_message(message_data)
+                logger.info("📌 Service message saved")
+
+                # Refresh cached chat metadata on a photo or title change. A photo
+                # add/swap also re-downloads the avatar; a removal only updates the
+                # row (there is no new avatar to fetch).
+                if photo_changed or photo_removed or title_changed:
                     try:
                         entity = await call_with_flood_retry(self.client.get_entity, chat_id)
                         if entity:
-                            # Update chat in database
                             chat_data = {
                                 "id": chat_id,
                                 "type": "channel" if hasattr(entity, "broadcast") else "group",
@@ -1184,8 +1231,7 @@ class TelegramListener:
                             await self.db.upsert_chat(chat_data)
                             logger.info("✅ Chat metadata updated")
 
-                            # Download new avatar if photo changed
-                            if action_type == "photo_changed":
+                            if photo_changed:
                                 await self._download_avatar(entity, chat_id)
                     except Exception as e:
                         logger.warning(f"Failed to update chat metadata: {e}")

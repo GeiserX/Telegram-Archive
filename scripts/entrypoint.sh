@@ -277,6 +277,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
+    # Migration 019 is a data-only cleanup (deletes phantom chat-action rows) with
+    # no detectable schema artifact, so it is intentionally absent from this ladder;
+    # alembic upgrade head always runs it (idempotent) after stamping at 018.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
@@ -456,6 +459,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
+    # Migration 019 is a data-only cleanup (deletes phantom chat-action rows) with
+    # no detectable schema artifact, so it is intentionally absent from this ladder;
+    # alembic upgrade head always runs it (idempotent) after stamping at 018.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:

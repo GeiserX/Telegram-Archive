@@ -333,6 +333,7 @@ class TestBackupCheckpointing(unittest.TestCase):
         self.config.skip_media_chat_ids = set()
         self.config.skip_media_delete_existing = False
         self.config.sync_deletions_edits = False
+        self.config.reaction_resweep_days = 0
         self.config.should_skip_topic = MagicMock(return_value=False)
         self.config.media_path = os.path.join(self.temp_dir, "media")
 
@@ -509,6 +510,7 @@ class TestTopicFilteringInBackupDialog(unittest.TestCase):
         self.config.skip_media_chat_ids = set()
         self.config.skip_media_delete_existing = False
         self.config.sync_deletions_edits = False
+        self.config.reaction_resweep_days = 0
         self.config.media_path = os.path.join(self.temp_dir, "media")
 
         self.db = AsyncMock()
@@ -1696,6 +1698,7 @@ class TestBackupDialogCursorAdvancesOnSkippedMessages(unittest.TestCase):
         self.config.skip_media_chat_ids = set()
         self.config.skip_media_delete_existing = False
         self.config.sync_deletions_edits = False
+        self.config.reaction_resweep_days = 0
         self.config.media_path = os.path.join(self.temp_dir, "media")
 
         self.db = AsyncMock()

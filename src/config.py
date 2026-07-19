@@ -332,6 +332,18 @@ class Config:
         # snapshot, so keeping only the latest within the window is loss-free.
         self.reaction_debounce_seconds = max(0.1, float(os.getenv("REACTION_DEBOUNCE_SECONDS", "1.5")))
 
+        # REACTION_RESWEEP_DAYS: bounded reaction re-sweep window (#221). Telegram does
+        # not reliably push reaction updates for the archive account's OWN reactions
+        # (made from another device) to this session, and the scheduled sweep only
+        # revisits messages inside its incremental window. When >0, each scheduled
+        # sweep re-checks the last N days of messages per chat and reconciles their
+        # current aggregate. DEFAULT 0 (disabled) — opt-in, small extra API cost.
+        self.reaction_resweep_days: float = max(0.0, float(os.getenv("REACTION_RESWEEP_DAYS", "0")))
+
+        # REACTION_RESWEEP_MAX_PER_CHAT: cap on messages re-checked per chat per sweep
+        # (fetched newest-first in batches of 100 → ceil(cap/100) requests/chat/sweep).
+        self.reaction_resweep_max_per_chat: int = max(1, int(os.getenv("REACTION_RESWEEP_MAX_PER_CHAT", "500")))
+
         # Note: LISTEN_ALBUMS removed - albums are automatically handled via grouped_id
         # in the NewMessage handler. The viewer groups messages by grouped_id.
 

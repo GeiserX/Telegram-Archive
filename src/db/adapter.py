@@ -764,6 +764,23 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 
+    async def get_message_ids_since(self, chat_id: int, cutoff: datetime, limit: int) -> list[int]:
+        """Return the newest message IDs in a chat dated at or after ``cutoff`` (#221).
+
+        Used by the bounded reaction re-sweep to recover self-reactions Telegram
+        never pushed to this session. Newest-first (highest id) and capped at
+        ``limit`` so the caller re-checks the most recent window at a fixed cost.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Message.id)
+                .where(and_(Message.chat_id == chat_id, Message.date >= cutoff))
+                .order_by(Message.id.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [row.id for row in result]
+
     async def get_chat_id_for_message(self, message_id: int) -> int | None:
         """
         Look up the chat_id for a message by its ID.

@@ -294,6 +294,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
 | `LISTEN_REACTIONS` | `false` | B | Capture reactions in real-time (opt-in). Best-effort and aggregate-only (per-emoji counts); the scheduled backup reconciles reactions regardless |
 | `REACTION_DEBOUNCE_SECONDS` | `1.5` | B | Coalesce a burst of reaction updates on the same message into one write |
+| `REACTION_RESWEEP_DAYS` | `0` | B | Re-check the last N days of messages per chat on every scheduled sweep to recover your own reactions (`0` disables). See [Reactions made by your own account](#reactions-made-by-your-own-account) |
+| `REACTION_RESWEEP_MAX_PER_CHAT` | `500` | B | Cap on messages re-checked per chat per sweep (≈5 API calls/chat/sweep at the default) |
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |
@@ -394,6 +396,12 @@ LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 **Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=hard`, deletions mirror Telegram and remove archived messages. Set `DELETION_MODE=soft` to keep the original archived message and show `deleted` in the message metadata. Soft-deleted messages are retained in the archive — they remain counted in chat statistics and continue to appear in search and exports, flagged as `deleted`.
 
 **Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow, and uses the same `DELETION_MODE` behavior for deleted messages.
+
+#### Reactions made by your own account
+
+Telegram does not reliably push reaction updates for the archive account's **own** reactions — the ones you add from another device — to the archive's session. To close that gap, the listener additionally harvests reactions carried on edit events (Telegram delivers some reaction changes as edits), and new messages are checked for reactions the moment they arrive.
+
+For reactions on **older** messages, set `REACTION_RESWEEP_DAYS=N`: on every scheduled sweep the backup re-checks the last N days of messages per chat and reconciles their current reactions. It is bounded by `REACTION_RESWEEP_MAX_PER_CHAT` (default 500, ≈5 API calls per chat per sweep) and defaults to `0` (disabled). Self-reactions on messages older than the sweep's incremental window are captured only by this re-sweep, so enable it if you react to your own older messages and want those counts archived.
 
 ### Mass Operation Protection
 

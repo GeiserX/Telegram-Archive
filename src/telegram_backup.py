@@ -9,7 +9,7 @@ import logging
 import os
 import random
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient
 from telethon.errors import (
@@ -50,6 +50,7 @@ from .message_utils import (
     finalize_atomic_download,
     resolve_shared_file_path,
     service_action_type,
+    service_message_text,
     utcnow_naive,
 )
 from .parallel_download import (
@@ -1155,6 +1156,11 @@ class TelegramBackup:
         # Always sync pinned messages to keep them up-to-date
         await self._sync_pinned_messages(chat_id, entity)
 
+        # Bounded reaction re-sweep (opt-in): recover self-reactions Telegram never
+        # pushed to this session by re-checking the last N days of messages (#221).
+        if self.config.reaction_resweep_days > 0:
+            await self._resweep_reactions(entity, chat_id)
+
         return grand_total
 
     async def _commit_batch(self, batch_data: list[dict], chat_id: int) -> None:
@@ -1378,6 +1384,16 @@ class TelegramBackup:
                         if outcome == "applied":
                             total_updated += 1
 
+                    # Piggyback reaction reconcile (#221): the full message is already
+                    # in hand, so harvest its reactions at zero extra API cost. Skip
+                    # None (extraction failure) and min payloads (partial; may omit the
+                    # account's own reaction → false tombstone). PII: aggregate only.
+                    reactions_obj = getattr(remote_msg, "reactions", None)
+                    if not getattr(reactions_obj, "min", False):
+                        observed = extract_reactions(reactions_obj)
+                        if observed is not None:
+                            await self.db.reconcile_reactions(msg_id, chat_id, observed, mark_removed=True)
+
             except Exception as e:
                 logger.error(f"Error syncing batch for chat: {e}")
 
@@ -1387,6 +1403,88 @@ class TelegramBackup:
 
         if total_deleted > 0 or total_updated > 0:
             logger.info(f"  → Sync result: {total_deleted} deleted, {total_updated} updated")
+
+    async def _resweep_reactions(self, entity, chat_id: int) -> None:
+        """Re-check reactions on recent messages to recover self-reactions (#221).
+
+        Telegram does not reliably push ``UpdateMessageReactions`` for reactions the
+        archive account makes from ANOTHER device, and the scheduled sweep only
+        revisits messages inside its incremental window — so self-reactions on older
+        messages are otherwise missed. This opt-in pass (``REACTION_RESWEEP_DAYS`` > 0)
+        re-reads the last N days of messages for this chat and reconciles their current
+        aggregate, capped at ``REACTION_RESWEEP_MAX_PER_CHAT`` (default 500 → at most 5
+        requests/chat/sweep). Sequential per chunk, reusing ``call_with_flood_retry``'s
+        bounded backoff. PII: aggregate counts only, never ids/emoji.
+        """
+        from telethon.tl.functions.messages import GetMessagesReactionsRequest
+        from telethon.tl.types import UpdateMessageReactions
+
+        cutoff = utcnow_naive() - timedelta(days=self.config.reaction_resweep_days)
+        ids = await self.db.get_message_ids_since(chat_id, cutoff, self.config.reaction_resweep_max_per_chat)
+        if not ids:
+            return
+
+        checked = 0
+        reconciled = 0
+        batch_size = 100
+        for i in range(0, len(ids), batch_size):
+            chunk = ids[i : i + batch_size]
+            checked += len(chunk)
+
+            # PRIMARY: one raw request returns just the reaction aggregates for the
+            # requested ids. Updates inside an RPC result are tagged _self_outgoing by
+            # Telethon and never reach the listener's dispatch loop, so parsing the
+            # result directly cannot double-process with the live handler. ``updates``
+            # stays None only if the request itself failed (→ fallback below).
+            updates = None
+            try:
+                result = await call_with_flood_retry(self.client, GetMessagesReactionsRequest(peer=entity, id=chunk))
+                updates = getattr(result, "updates", []) or []
+            except Exception as e:
+                # Raw request unsupported for this peer, or ids rejected (e.g. deleted
+                # on Telegram → MSG_ID_INVALID). Fall back to a full-message fetch.
+                logger.debug("Reaction resweep raw request failed, falling back: %s", type(e).__name__)
+
+            if updates is not None:
+                for u in updates:
+                    # Only ids ECHOED BACK are reconciled; ids absent from the response
+                    # are left untouched (absence never means "reacted to zero").
+                    if not isinstance(u, UpdateMessageReactions):
+                        continue
+                    reactions_obj = getattr(u, "reactions", None)
+                    if getattr(reactions_obj, "min", False):
+                        continue
+                    observed = extract_reactions(reactions_obj)
+                    if observed is None:
+                        continue
+                    if (
+                        await self.db.reconcile_reactions(u.msg_id, chat_id, observed, mark_removed=True)
+                        == "reconciled"
+                    ):
+                        reconciled += 1
+                continue
+
+            # FALLBACK: full-message fetch. get_messages returns None placeholders for
+            # missing ids (skip); a returned message with reactions=None is a definitive
+            # empty snapshot (extract_reactions(None) == []) → reconcile to zero.
+            try:
+                msgs = await call_with_flood_retry(self.client.get_messages, entity, ids=chunk)
+            except Exception as e:
+                logger.debug("Reaction resweep fallback fetch failed: %s", type(e).__name__)
+                continue
+            for msg in msgs or []:
+                if msg is None:
+                    continue
+                reactions_obj = getattr(msg, "reactions", None)
+                if getattr(reactions_obj, "min", False):
+                    continue
+                observed = extract_reactions(reactions_obj)
+                if observed is None:
+                    continue
+                if await self.db.reconcile_reactions(msg.id, chat_id, observed, mark_removed=True) == "reconciled":
+                    reconciled += 1
+
+        logger.info("  → Reaction resweep: checked %d ids, reconciled %d", checked, reconciled)
 
     async def _sync_pinned_messages(self, chat_id: int, entity) -> None:
         """
@@ -1468,6 +1566,32 @@ class TelegramBackup:
         # Fallback for any other type
         return str(text_obj)
 
+    async def _resolve_display_name(self, user_id: int) -> str | None:
+        """Display name for a user id: local users table first, then the API.
+
+        Used to name the AFFECTED user in add/kick service texts (#222 review).
+        Returns None when the user is unknown everywhere; the caller then renders
+        "Someone ..." rather than attributing the action to the wrong person.
+        """
+        try:
+            row = await self.db.get_user_by_id(user_id)
+        except Exception:
+            row = None
+        if row:
+            name = (row.get("first_name") or "").strip()
+            if row.get("last_name"):
+                name = f"{name} {row['last_name']}".strip()
+            if name:
+                return name
+        try:
+            entity = await call_with_flood_retry(self.client.get_entity, user_id)
+        except Exception:
+            return None
+        name = getattr(entity, "first_name", "") or getattr(entity, "title", "")
+        if name and getattr(entity, "last_name", None):
+            name += f" {entity.last_name}"
+        return name or None
+
     async def _process_message(self, message: Message, chat_id: int) -> dict:
         """
         Process and save a single message.
@@ -1504,13 +1628,12 @@ class TelegramBackup:
         }
 
         # Preserve service-action metadata (e.g. forum topic creations and
-        # renames) so historical backfills carry the same raw_data *shape* as
-        # the live listener (service_type / action_type / new_title). The
-        # action_type *vocabulary* differs by design: the backfill derives it
-        # from low-level MessageAction class names (chat_edit_title, ...) while
-        # the listener uses curated event names (title_changed, ...) — only the
-        # keys are shared, not the values. Without this, service events are
-        # stored without their payload and are irrecoverable once archived.
+        # renames) so historical backfills carry the same raw_data *shape* AND
+        # *vocabulary* as the live listener: since the #222 fix both derive
+        # action_type from the MessageAction class name via service_action_type
+        # (chat_edit_title, chat_joined_by_link, ...). Without this, service
+        # events are stored without their payload and are irrecoverable once
+        # archived.
         action = getattr(message, "action", None)
         if action is not None:
             message_data["raw_data"]["service_type"] = "service"
@@ -1518,6 +1641,49 @@ class TelegramBackup:
             action_title = getattr(action, "title", None)
             if action_title is not None:
                 message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
+
+            # Service messages carry no user-authored text, so synthesize the same
+            # human-readable line the live listener stores. Only fill an empty text
+            # (a service message with real text is left untouched).
+            #
+            # The sentence SUBJECT is the affected user for add/kick actions — the
+            # person added or removed (mirroring the listener, which resolves
+            # event.user_id) — never the admin who performed it. For every other
+            # action the sender IS the subject. When the affected user cannot be
+            # resolved the text falls back to "Someone ...", never to the wrong name.
+            if not message.text:
+                action_cls = type(action).__name__
+                subject_id = None
+                joined_self = False
+                if action_cls == "MessageActionChatAddUser":
+                    added_users = list(getattr(action, "users", None) or [])
+                    joined_self = added_users == [message.sender_id]
+                    if added_users and not joined_self:
+                        subject_id = added_users[0]
+                elif action_cls == "MessageActionChatDeleteUser":
+                    affected_id = getattr(action, "user_id", None)
+                    if affected_id is not None and affected_id != message.sender_id:
+                        subject_id = affected_id
+
+                if subject_id is not None:
+                    actor_name = await self._resolve_display_name(subject_id)
+                else:
+                    sender = message.sender
+                    actor_name = None
+                    if sender is not None:
+                        actor_name = getattr(sender, "first_name", "") or getattr(sender, "title", "")
+                        if actor_name and getattr(sender, "last_name", None):
+                            actor_name += f" {sender.last_name}"
+                affected_left = getattr(action, "user_id", None) == message.sender_id
+                message_data["text"] = (
+                    service_message_text(
+                        action,
+                        actor_name=actor_name,
+                        affected_left=affected_left,
+                        affected_joined_self=joined_self,
+                    )
+                    or ""
+                )
 
         # Capture grouped_id for album detection (multiple photos/videos sent together)
         if message.grouped_id:
