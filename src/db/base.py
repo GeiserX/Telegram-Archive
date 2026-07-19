@@ -110,18 +110,24 @@ class DatabaseManager:
         # Engine configuration differs by database type
         if self._is_sqlite:
             # SQLite: Use NullPool for better async compatibility
+            # hide_parameters: DB errors must never embed bound values (message
+            # text, chat ids) in logs — PII rule.
             self.engine = create_async_engine(
                 self.database_url,
                 echo=os.getenv("DB_ECHO", "false").lower() == "true",
                 poolclass=NullPool,
+                hide_parameters=True,
             )
             # Set up SQLite-specific pragmas
             self._setup_sqlite_pragmas()
         else:
             # PostgreSQL: Use connection pooling
+            # hide_parameters: DB errors must never embed bound values (message
+            # text, chat ids) in logs — PII rule.
             self.engine = create_async_engine(
                 self.database_url,
                 echo=os.getenv("DB_ECHO", "false").lower() == "true",
+                hide_parameters=True,
                 poolclass=AsyncAdaptedQueuePool,
                 pool_size=5,
                 max_overflow=10,
