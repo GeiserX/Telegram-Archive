@@ -188,6 +188,54 @@ class TestChatActionHandler:
         assert "removed" in data["text"].lower()
         assert "photo" in data["text"].lower()
         db.upsert_chat.assert_awaited_once()
+
+    async def test_join_does_not_refresh_chat_metadata(self):
+        # The metadata-refresh side effect fires only for photo/title changes; a
+        # join (no photo flags, no new_title) must not touch chat metadata
+        # (review finding: the old catch-all classifier did exactly that).
+        listener, handler, db = _build()
+        event = _event(
+            _service_msg(MessageActionChatJoinedByLink(inviter_id=0)),
+            user_joined=True,
+            user_id=ACTOR_ID,
+        )
+
+        await handler(event)
+
+        db.upsert_chat.assert_not_awaited()
+        listener._download_avatar.assert_not_awaited()
+
+    async def test_row_carries_real_topic_reply_and_outgoing_fields(self):
+        # reply_to_top_id / reply_to_msg_id / is_outgoing come from the real
+        # service message, not hardcoded defaults (review finding).
+        listener, handler, db = _build()
+        msg = _service_msg(MessageActionChatJoinedByLink(inviter_id=0), out=True)
+        msg.reply_to_msg_id = 4242
+        msg.reply_to = SimpleNamespace(reply_to_top_id=99, reply_to_msg_id=4242, forum_topic=True)
+        event = _event(msg, user_joined=True, user_id=ACTOR_ID)
+
+        await handler(event)
+
+        data = db.insert_message.call_args[0][0]
+        assert data["is_outgoing"] == 1
+        assert data["reply_to_msg_id"] == 4242
+        assert data["reply_to_top_id"] == 99
+
+    async def test_self_join_via_username_reads_joined_not_added(self):
+        # ChatAddUser where the user added themselves (Telethon maps it to
+        # user_joined=True) must read "joined the group", not "was added".
+        listener, handler, db = _build()
+        event = _event(
+            _service_msg(MessageActionChatAddUser(users=[ACTOR_ID])),
+            user_joined=True,
+            user_id=ACTOR_ID,
+        )
+
+        await handler(event)
+
+        data = db.insert_message.call_args[0][0]
+        assert data["raw_data"]["action_type"] == "chat_add_user"
+        assert data["text"] == "Alice joined the group"
         listener._download_avatar.assert_not_called()
 
     async def test_edit_photo_downloads_avatar(self):

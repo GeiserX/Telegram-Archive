@@ -203,12 +203,37 @@ class TestEditVectorReactions:
         asyncio.run(listener._flush_reactions())
         db.reconcile_reactions.assert_awaited_once_with(42, TRACKED, [{"emoji": "🔥", "count": 1}], mark_removed=True)
 
-    def test_edit_without_reactions_buffers_empty_snapshot(self):
-        # extract_reactions(None) == [] is a valid empty snapshot: an edit whose
-        # message carries no reactions object means the message has zero reactions.
+    def test_edit_without_reactions_object_not_buffered(self):
+        # A missing reactions object conveys NO information (review finding:
+        # treating it as an authoritative empty snapshot could tombstone
+        # reactions observed moments earlier) — skip, don't buffer [].
         listener, handlers, _db = _build_all()
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=None)))
+        assert listener._reaction_pending == {}
+
+    def test_edit_with_empty_results_buffers_empty_snapshot(self):
+        # An explicit reactions object with zero results IS authoritative: the
+        # message's reactions were cleared -> buffer [] so the flush tombstones.
+        listener, handlers, _db = _build_all()
+        asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions())))
         assert listener._reaction_pending[(TRACKED, 42)] == []
+
+    def test_edit_overwrites_older_buffered_snapshot(self):
+        # Edit capture-and-write is synchronous, so arrival order holds and a
+        # newer edit snapshot replaces whatever was buffered.
+        listener, handlers, _db = _build_all()
+        listener._reaction_pending[(TRACKED, 42)] = [{"emoji": "🔥", "count": 1}]
+        asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
+        assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
+
+    def test_rate_limited_edit_still_harvests_reactions(self):
+        # The harvest sits BEFORE the protector check, so an edit rate limit
+        # cannot suppress reaction capture (PR claim, now locked by a test).
+        listener, handlers, db = _build_all()
+        listener._protector.check_operation = MagicMock(return_value=(False, "rate limited"))
+        asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
+        assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
+        db.update_message_text.assert_not_awaited()
 
     def test_min_payload_not_buffered(self):
         listener, handlers, _db = _build_all()
@@ -259,3 +284,31 @@ class TestNewMessageReactions:
         listener, handlers, _db = _build_all(listen_reactions=False)
         asyncio.run(handlers["on_new_message"](_new_message_event(reactions=_reactions(("👍", 1)))))
         assert listener._reaction_pending == {}
+
+    def test_new_message_without_reactions_object_not_buffered(self):
+        # No reactions object = no information; must not buffer [] (review
+        # finding: the old [] write could tombstone a snapshot buffered by the
+        # live reaction handler during on_new_message's awaits).
+        listener, handlers, _db = _build_all()
+        asyncio.run(handlers["on_new_message"](_new_message_event(reactions=None)))
+        assert listener._reaction_pending == {}
+
+    def test_new_message_does_not_clobber_fresher_live_snapshot(self):
+        # The awaits inside on_new_message (insert_message, ...) open a window
+        # in which the live reaction handler can buffer a FRESHER snapshot for
+        # the same message; the handler's event-time capture must not overwrite
+        # it (review finding, reproduced end-to-end before the fix).
+        listener, handlers, db = _build_all()
+
+        async def live_reaction_arrives_mid_insert(*_args, **_kwargs):
+            listener._reaction_pending[(TRACKED, 77)] = [{"emoji": "🔥", "count": 3}]
+
+        db.insert_message = AsyncMock(side_effect=live_reaction_arrives_mid_insert)
+        asyncio.run(handlers["on_new_message"](_new_message_event(reactions=_reactions(("👍", 1)))))
+        assert listener._reaction_pending[(TRACKED, 77)] == [{"emoji": "🔥", "count": 3}]
+
+    def test_harvest_producers_bump_reactions_received(self):
+        listener, handlers, _db = _build_all()
+        asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
+        asyncio.run(handlers["on_new_message"](_new_message_event(msg_id=78, reactions=_reactions(("🔥", 1)))))
+        assert listener.stats["reactions_received"] == 2

@@ -446,6 +446,36 @@ class TelegramListener:
         except Exception as e:
             logger.debug(f"Failed to send notification: {e}")
 
+    def _buffer_reaction_snapshot(self, chat_id: int, message: object, *, overwrite: bool = True) -> None:
+        """Feed a message's reaction snapshot into the debounce buffer (#221).
+
+        Skips when the reactions feature is off, when the message carries no
+        reactions object at all (an edit or new message without one conveys NO
+        information — treating it as an authoritative empty snapshot could
+        tombstone reactions observed moments earlier), and when Telegram marks
+        the object ``min`` (partial; documented to omit the current user's own
+        reactions, so reconciling it could falsely remove a self-reaction).
+
+        ``overwrite=False`` is for producers whose capture-to-write path crosses
+        an await (the new-message handler): a snapshot buffered meanwhile by the
+        live reaction handler is strictly fresher and must win. Synchronous
+        capture-and-write producers keep arrival order and may overwrite.
+        """
+        if not self.config.listen_reactions:
+            return
+        reactions_obj = getattr(message, "reactions", None)
+        if reactions_obj is None or getattr(reactions_obj, "min", False):
+            return
+        observed = extract_reactions(reactions_obj)
+        if observed is None:
+            return
+        key = (chat_id, message.id)
+        if overwrite:
+            self._reaction_pending[key] = observed
+        else:
+            self._reaction_pending.setdefault(key, observed)
+        self.stats["reactions_received"] += 1
+
     async def _flush_reactions(self) -> None:
         """Reconcile and broadcast the coalesced reaction snapshots (#219).
 
@@ -782,16 +812,9 @@ class TelegramListener:
                 # them into the same debounce buffer as the live reaction handler,
                 # BEFORE the rate-limit check and the text early return, so a
                 # reaction-only edit still reconciles and an edit rate limit can't
-                # suppress it. Skip min payloads (partial; documented to omit the
-                # current user's own reaction → could falsely tombstone a just-added
-                # self-reaction). extract_reactions(None) == [] is a valid empty
-                # snapshot (the message currently has zero reactions).
-                if self.config.listen_reactions:
-                    reactions_obj = getattr(message, "reactions", None)
-                    if not getattr(reactions_obj, "min", False):
-                        observed = extract_reactions(reactions_obj)
-                        if observed is not None:
-                            self._reaction_pending[(chat_id, message.id)] = observed
+                # suppress it. Capture and write are synchronous here, so arrival
+                # order is preserved and overwriting is correct.
+                self._buffer_reaction_snapshot(chat_id, message)
 
                 self.stats["edits_received"] += 1
                 new_text = message.text or ""
@@ -1005,16 +1028,12 @@ class TelegramListener:
                 self.stats["new_messages_saved"] += 1
 
                 # New messages can arrive already carrying reactions (fast reactors,
-                # forwarded content). Buffer them into the shared reaction debounce
-                # buffer now that the row exists, so the flush can reconcile them
-                # (#221). Skip min payloads (partial; may omit our own reaction).
-                # extract_reactions(None) == [] is a valid empty snapshot.
-                if self.config.listen_reactions:
-                    reactions_obj = getattr(message, "reactions", None)
-                    if not getattr(reactions_obj, "min", False):
-                        observed = extract_reactions(reactions_obj)
-                        if observed is not None:
-                            self._reaction_pending[(chat_id, message.id)] = observed
+                # forwarded content). Buffer them now that the row exists (#221).
+                # overwrite=False: the awaits above (insert_message etc.) opened a
+                # window in which the live reaction handler may have buffered a
+                # FRESHER snapshot for this message — our event-time capture must
+                # not clobber it (review finding, reproduced).
+                self._buffer_reaction_snapshot(chat_id, message, overwrite=False)
 
                 # v6.0.0: Handle media - create Media record AFTER message exists
                 # ws_media mirrors the API row's nested media dict for the WS notify payload
@@ -1157,13 +1176,15 @@ class TelegramListener:
                         actor_name = getattr(actor, "first_name", "") or getattr(actor, "title", "")
                         if hasattr(actor, "last_name") and actor.last_name:
                             actor_name += f" {actor.last_name}"
-                    except Exception:
+                    except Exception as e:
                         actor_name = None
+                        logger.debug("Actor name lookup failed: %s", type(e).__name__)
 
                 service_text = service_message_text(
                     msg.action,
-                    actor_name=actor_name or None,
+                    actor_name=actor_name,
                     affected_left=bool(event.user_left),
+                    affected_joined_self=bool(event.user_joined),
                 )
 
                 # Persist with the REAL Telegram id/date so this row upserts cleanly

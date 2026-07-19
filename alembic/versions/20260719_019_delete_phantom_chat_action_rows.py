@@ -119,8 +119,9 @@ def upgrade() -> None:
     # recompute when that marker is absent (src/web/main.py), so dropping the blob
     # alone would leave the dashboard showing zeros for up to a day until the
     # scheduled recompute. Deleting both makes the next viewer start recompute
-    # fresh stats right away. get_chat_stats() is computed on the fly (no cache)
-    # and self-corrects, so it needs no action here.
+    # fresh stats right away. Per-chat stats (get_chat_stats) are computed on
+    # the fly behind a 60-second in-memory web-layer cache that expires on its
+    # own, so they need no action here.
     # Idempotent: a re-run deletes 0 rows.
     if "metadata" in tables:
         conn.execute(sa.text("DELETE FROM metadata WHERE \"key\" IN ('cached_stats', 'stats_calculated_at')"))

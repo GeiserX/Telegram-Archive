@@ -1566,6 +1566,32 @@ class TelegramBackup:
         # Fallback for any other type
         return str(text_obj)
 
+    async def _resolve_display_name(self, user_id: int) -> str | None:
+        """Display name for a user id: local users table first, then the API.
+
+        Used to name the AFFECTED user in add/kick service texts (#222 review).
+        Returns None when the user is unknown everywhere; the caller then renders
+        "Someone ..." rather than attributing the action to the wrong person.
+        """
+        try:
+            row = await self.db.get_user_by_id(user_id)
+        except Exception:
+            row = None
+        if row:
+            name = (row.get("first_name") or "").strip()
+            if row.get("last_name"):
+                name = f"{name} {row['last_name']}".strip()
+            if name:
+                return name
+        try:
+            entity = await call_with_flood_retry(self.client.get_entity, user_id)
+        except Exception:
+            return None
+        name = getattr(entity, "first_name", "") or getattr(entity, "title", "")
+        if name and getattr(entity, "last_name", None):
+            name += f" {entity.last_name}"
+        return name or None
+
     async def _process_message(self, message: Message, chat_id: int) -> dict:
         """
         Process and save a single message.
@@ -1602,13 +1628,12 @@ class TelegramBackup:
         }
 
         # Preserve service-action metadata (e.g. forum topic creations and
-        # renames) so historical backfills carry the same raw_data *shape* as
-        # the live listener (service_type / action_type / new_title). The
-        # action_type *vocabulary* differs by design: the backfill derives it
-        # from low-level MessageAction class names (chat_edit_title, ...) while
-        # the listener uses curated event names (title_changed, ...) — only the
-        # keys are shared, not the values. Without this, service events are
-        # stored without their payload and are irrecoverable once archived.
+        # renames) so historical backfills carry the same raw_data *shape* AND
+        # *vocabulary* as the live listener: since the #222 fix both derive
+        # action_type from the MessageAction class name via service_action_type
+        # (chat_edit_title, chat_joined_by_link, ...). Without this, service
+        # events are stored without their payload and are irrecoverable once
+        # archived.
         action = getattr(message, "action", None)
         if action is not None:
             message_data["raw_data"]["service_type"] = "service"
@@ -1619,18 +1644,45 @@ class TelegramBackup:
 
             # Service messages carry no user-authored text, so synthesize the same
             # human-readable line the live listener stores. Only fill an empty text
-            # (a service message with real text is left untouched). ChatDeleteUser
-            # is "left" when the affected user is the sender, else "removed".
+            # (a service message with real text is left untouched).
+            #
+            # The sentence SUBJECT is the affected user for add/kick actions — the
+            # person added or removed (mirroring the listener, which resolves
+            # event.user_id) — never the admin who performed it. For every other
+            # action the sender IS the subject. When the affected user cannot be
+            # resolved the text falls back to "Someone ...", never to the wrong name.
             if not message.text:
-                sender = message.sender
-                actor_name = None
-                if sender is not None:
-                    actor_name = getattr(sender, "first_name", "") or getattr(sender, "title", "")
-                    if actor_name and getattr(sender, "last_name", None):
-                        actor_name += f" {sender.last_name}"
+                action_cls = type(action).__name__
+                subject_id = None
+                joined_self = False
+                if action_cls == "MessageActionChatAddUser":
+                    added_users = list(getattr(action, "users", None) or [])
+                    joined_self = added_users == [message.sender_id]
+                    if added_users and not joined_self:
+                        subject_id = added_users[0]
+                elif action_cls == "MessageActionChatDeleteUser":
+                    affected_id = getattr(action, "user_id", None)
+                    if affected_id is not None and affected_id != message.sender_id:
+                        subject_id = affected_id
+
+                if subject_id is not None:
+                    actor_name = await self._resolve_display_name(subject_id)
+                else:
+                    sender = message.sender
+                    actor_name = None
+                    if sender is not None:
+                        actor_name = getattr(sender, "first_name", "") or getattr(sender, "title", "")
+                        if actor_name and getattr(sender, "last_name", None):
+                            actor_name += f" {sender.last_name}"
                 affected_left = getattr(action, "user_id", None) == message.sender_id
                 message_data["text"] = (
-                    service_message_text(action, actor_name=actor_name or None, affected_left=affected_left) or ""
+                    service_message_text(
+                        action,
+                        actor_name=actor_name,
+                        affected_left=affected_left,
+                        affected_joined_self=joined_self,
+                    )
+                    or ""
                 )
 
         # Capture grouped_id for album detection (multiple photos/videos sent together)

@@ -21,6 +21,7 @@ from telethon.errors import (
 from telethon.tl.types import (
     Channel,
     InputPeerSelf,
+    MessageActionChatAddUser,
     MessageActionChatDeleteUser,
     MessageActionChatEditTitle,
     MessageActionChatJoinedByLink,
@@ -3592,6 +3593,9 @@ class TestProcessMessageServiceText(unittest.TestCase):
 
     def setUp(self):
         self.backup = _make_backup()
+        # Subject resolution defaults: unknown everywhere -> "Someone ..." texts.
+        self.backup.db.get_user_by_id = AsyncMock(return_value=None)
+        self.backup.client.get_entity = AsyncMock(side_effect=RuntimeError("unavailable"))
 
     def _service_message(self, msg_id, action, *, sender_first, sender_id, text=""):
         msg = _make_message(msg_id, text=text)
@@ -3613,11 +3617,37 @@ class TestProcessMessageServiceText(unittest.TestCase):
         result = _run(self.backup._process_message(msg, 100))
         self.assertEqual(result["text"], "Sam left the group")
 
-    def test_delete_user_removed_when_sender_differs(self):
-        # action.user_id != message.sender_id -> a different user removed them.
+    def test_delete_user_names_the_removed_user_not_the_actor(self):
+        # The SUBJECT of "was removed" is the affected user (action.user_id),
+        # resolved from the local users table — never the admin who kicked them
+        # (#223 review: the sender is the actor, not the subject).
+        self.backup.db.get_user_by_id = AsyncMock(return_value={"first_name": "Bob", "last_name": None})
         msg = self._service_message(702, MessageActionChatDeleteUser(user_id=999), sender_first="Mod", sender_id=88)
         result = _run(self.backup._process_message(msg, 100))
-        self.assertEqual(result["text"], "Mod was removed from the group")
+        self.assertEqual(result["text"], "Bob was removed from the group")
+        self.backup.db.get_user_by_id.assert_awaited_once_with(999)
+
+    def test_delete_user_unresolvable_subject_never_names_the_actor(self):
+        # Affected user unknown in the users table AND via the API: the text must
+        # degrade to "Someone", never attribute the removal to the actor's name.
+        msg = self._service_message(705, MessageActionChatDeleteUser(user_id=999), sender_first="Mod", sender_id=88)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "Someone was removed from the group")
+
+    def test_add_user_names_the_added_user_not_the_actor(self):
+        self.backup.db.get_user_by_id = AsyncMock(return_value={"first_name": "Ana", "last_name": "P"})
+        msg = self._service_message(706, MessageActionChatAddUser(users=[777]), sender_first="Mod", sender_id=88)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "Ana P was added to the group")
+        self.backup.db.get_user_by_id.assert_awaited_once_with(777)
+
+    def test_add_user_self_join_uses_sender_and_joined_wording(self):
+        # users == [sender_id]: the user added themselves via the public username;
+        # subject is the sender and the wording is "joined", not "was added".
+        msg = self._service_message(707, MessageActionChatAddUser(users=[88]), sender_first="Sam", sender_id=88)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "Sam joined the group")
+        self.backup.db.get_user_by_id.assert_not_awaited()
 
     def test_non_empty_service_text_is_preserved(self):
         msg = self._service_message(

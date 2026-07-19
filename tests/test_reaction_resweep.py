@@ -146,10 +146,10 @@ def _backup(days=7.0, max_per_chat=500):
 
 
 class TestResweepReactions:
-    async def test_disabled_days_zero_makes_no_calls(self):
-        # Direct-call guard: _resweep_reactions itself is only reached via the
-        # _backup_dialog gate, but prove it never touches the DB/API when there
-        # is nothing to sweep either.
+    async def test_no_recent_ids_makes_no_calls(self):
+        # _resweep_reactions is only reached via the _backup_dialog days>0 gate
+        # (covered by test_disabled_days_zero_skips_resweep); prove it also never
+        # touches the API when the window selects nothing.
         b = _backup()
         b.db.get_message_ids_since = AsyncMock(return_value=[])
         await b._resweep_reactions(MagicMock(), CHAT)
@@ -158,10 +158,16 @@ class TestResweepReactions:
 
     async def test_chunks_250_ids_into_3_requests(self):
         b = _backup()
-        b.db.get_message_ids_since = AsyncMock(return_value=list(range(1, 251)))
+        ids = list(range(1, 251))
+        b.db.get_message_ids_since = AsyncMock(return_value=ids)
         b.client.return_value = SimpleNamespace(updates=[])  # nothing echoed → nothing reconciled
         await b._resweep_reactions(MagicMock(), CHAT)
         assert b.client.await_count == 3
+        # Each request must carry exactly its 100-id slice (review finding: the
+        # payload was never asserted, only the request count).
+        sent = [call.args[0].id for call in b.client.await_args_list]
+        assert [len(chunk) for chunk in sent] == [100, 100, 50]
+        assert [i for chunk in sent for i in chunk] == ids
         b.client.get_messages.assert_not_awaited()
 
     async def test_reconciles_only_echoed_updates(self):
