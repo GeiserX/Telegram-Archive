@@ -9,7 +9,7 @@ import logging
 import os
 import random
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient
 from telethon.errors import (
@@ -1156,6 +1156,11 @@ class TelegramBackup:
         # Always sync pinned messages to keep them up-to-date
         await self._sync_pinned_messages(chat_id, entity)
 
+        # Bounded reaction re-sweep (opt-in): recover self-reactions Telegram never
+        # pushed to this session by re-checking the last N days of messages (#221).
+        if self.config.reaction_resweep_days > 0:
+            await self._resweep_reactions(entity, chat_id)
+
         return grand_total
 
     async def _commit_batch(self, batch_data: list[dict], chat_id: int) -> None:
@@ -1379,6 +1384,16 @@ class TelegramBackup:
                         if outcome == "applied":
                             total_updated += 1
 
+                    # Piggyback reaction reconcile (#221): the full message is already
+                    # in hand, so harvest its reactions at zero extra API cost. Skip
+                    # None (extraction failure) and min payloads (partial; may omit the
+                    # account's own reaction → false tombstone). PII: aggregate only.
+                    reactions_obj = getattr(remote_msg, "reactions", None)
+                    if not getattr(reactions_obj, "min", False):
+                        observed = extract_reactions(reactions_obj)
+                        if observed is not None:
+                            await self.db.reconcile_reactions(msg_id, chat_id, observed, mark_removed=True)
+
             except Exception as e:
                 logger.error(f"Error syncing batch for chat: {e}")
 
@@ -1388,6 +1403,88 @@ class TelegramBackup:
 
         if total_deleted > 0 or total_updated > 0:
             logger.info(f"  → Sync result: {total_deleted} deleted, {total_updated} updated")
+
+    async def _resweep_reactions(self, entity, chat_id: int) -> None:
+        """Re-check reactions on recent messages to recover self-reactions (#221).
+
+        Telegram does not reliably push ``UpdateMessageReactions`` for reactions the
+        archive account makes from ANOTHER device, and the scheduled sweep only
+        revisits messages inside its incremental window — so self-reactions on older
+        messages are otherwise missed. This opt-in pass (``REACTION_RESWEEP_DAYS`` > 0)
+        re-reads the last N days of messages for this chat and reconciles their current
+        aggregate, capped at ``REACTION_RESWEEP_MAX_PER_CHAT`` (default 500 → at most 5
+        requests/chat/sweep). Sequential per chunk, reusing ``call_with_flood_retry``'s
+        bounded backoff. PII: aggregate counts only, never ids/emoji.
+        """
+        from telethon.tl.functions.messages import GetMessagesReactionsRequest
+        from telethon.tl.types import UpdateMessageReactions
+
+        cutoff = utcnow_naive() - timedelta(days=self.config.reaction_resweep_days)
+        ids = await self.db.get_message_ids_since(chat_id, cutoff, self.config.reaction_resweep_max_per_chat)
+        if not ids:
+            return
+
+        checked = 0
+        reconciled = 0
+        batch_size = 100
+        for i in range(0, len(ids), batch_size):
+            chunk = ids[i : i + batch_size]
+            checked += len(chunk)
+
+            # PRIMARY: one raw request returns just the reaction aggregates for the
+            # requested ids. Updates inside an RPC result are tagged _self_outgoing by
+            # Telethon and never reach the listener's dispatch loop, so parsing the
+            # result directly cannot double-process with the live handler. ``updates``
+            # stays None only if the request itself failed (→ fallback below).
+            updates = None
+            try:
+                result = await call_with_flood_retry(self.client, GetMessagesReactionsRequest(peer=entity, id=chunk))
+                updates = getattr(result, "updates", []) or []
+            except Exception as e:
+                # Raw request unsupported for this peer, or ids rejected (e.g. deleted
+                # on Telegram → MSG_ID_INVALID). Fall back to a full-message fetch.
+                logger.debug("Reaction resweep raw request failed, falling back: %s", type(e).__name__)
+
+            if updates is not None:
+                for u in updates:
+                    # Only ids ECHOED BACK are reconciled; ids absent from the response
+                    # are left untouched (absence never means "reacted to zero").
+                    if not isinstance(u, UpdateMessageReactions):
+                        continue
+                    reactions_obj = getattr(u, "reactions", None)
+                    if getattr(reactions_obj, "min", False):
+                        continue
+                    observed = extract_reactions(reactions_obj)
+                    if observed is None:
+                        continue
+                    if (
+                        await self.db.reconcile_reactions(u.msg_id, chat_id, observed, mark_removed=True)
+                        == "reconciled"
+                    ):
+                        reconciled += 1
+                continue
+
+            # FALLBACK: full-message fetch. get_messages returns None placeholders for
+            # missing ids (skip); a returned message with reactions=None is a definitive
+            # empty snapshot (extract_reactions(None) == []) → reconcile to zero.
+            try:
+                msgs = await call_with_flood_retry(self.client.get_messages, entity, ids=chunk)
+            except Exception as e:
+                logger.debug("Reaction resweep fallback fetch failed: %s", type(e).__name__)
+                continue
+            for msg in msgs or []:
+                if msg is None:
+                    continue
+                reactions_obj = getattr(msg, "reactions", None)
+                if getattr(reactions_obj, "min", False):
+                    continue
+                observed = extract_reactions(reactions_obj)
+                if observed is None:
+                    continue
+                if await self.db.reconcile_reactions(msg.id, chat_id, observed, mark_removed=True) == "reconciled":
+                    reconciled += 1
+
+        logger.info("  → Reaction resweep: checked %d ids, reconciled %d", checked, reconciled)
 
     async def _sync_pinned_messages(self, chat_id: int, entity) -> None:
         """

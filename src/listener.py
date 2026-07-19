@@ -776,6 +776,23 @@ class TelegramListener:
                 if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                     return
 
+                # Reaction-carrying edits (#221): Telegram delivers some reaction
+                # changes as genuine UpdateEditMessage events (Telethon #4635), which
+                # our text-outcome early return below would otherwise discard. Harvest
+                # them into the same debounce buffer as the live reaction handler,
+                # BEFORE the rate-limit check and the text early return, so a
+                # reaction-only edit still reconciles and an edit rate limit can't
+                # suppress it. Skip min payloads (partial; documented to omit the
+                # current user's own reaction → could falsely tombstone a just-added
+                # self-reaction). extract_reactions(None) == [] is a valid empty
+                # snapshot (the message currently has zero reactions).
+                if self.config.listen_reactions:
+                    reactions_obj = getattr(message, "reactions", None)
+                    if not getattr(reactions_obj, "min", False):
+                        observed = extract_reactions(reactions_obj)
+                        if observed is not None:
+                            self._reaction_pending[(chat_id, message.id)] = observed
+
                 self.stats["edits_received"] += 1
                 new_text = message.text or ""
                 edit_date = message.edit_date
@@ -986,6 +1003,18 @@ class TelegramListener:
                 # Insert the message FIRST (required for FK constraint on media table)
                 await self.db.insert_message(message_data)
                 self.stats["new_messages_saved"] += 1
+
+                # New messages can arrive already carrying reactions (fast reactors,
+                # forwarded content). Buffer them into the shared reaction debounce
+                # buffer now that the row exists, so the flush can reconcile them
+                # (#221). Skip min payloads (partial; may omit our own reaction).
+                # extract_reactions(None) == [] is a valid empty snapshot.
+                if self.config.listen_reactions:
+                    reactions_obj = getattr(message, "reactions", None)
+                    if not getattr(reactions_obj, "min", False):
+                        observed = extract_reactions(reactions_obj)
+                        if observed is not None:
+                            self._reaction_pending[(chat_id, message.id)] = observed
 
                 # v6.0.0: Handle media - create Media record AFTER message exists
                 # ws_media mirrors the API row's nested media dict for the WS notify payload

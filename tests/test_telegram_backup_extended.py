@@ -720,6 +720,7 @@ class TestBackupDialogEdgeCases(unittest.TestCase):
         self.backup.config.skip_media_chat_ids = set()
         self.backup.config.skip_media_delete_existing = False
         self.backup.config.sync_deletions_edits = False
+        self.backup.config.reaction_resweep_days = 0
         self.backup.config.media_path = os.path.join(self.temp_dir, "media")
         self.backup.db.get_last_message_id = AsyncMock(return_value=0)
         self.backup._get_marked_id = MagicMock(return_value=100)
@@ -3193,6 +3194,7 @@ class TestBackupDialogEarlyForumFetch(unittest.TestCase):
         self.backup.config.skip_media_chat_ids = set()
         self.backup.config.skip_media_delete_existing = False
         self.backup.config.sync_deletions_edits = False
+        self.backup.config.reaction_resweep_days = 0
         self.backup.config.media_path = os.path.join(self.temp_dir, "media")
         self.backup.db.get_last_message_id = AsyncMock(return_value=0)
         self.backup._get_marked_id = MagicMock(return_value=-100123)
