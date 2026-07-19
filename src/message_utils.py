@@ -428,8 +428,11 @@ def extract_topic_id(message: object) -> int | None:
 def service_action_type(action: object) -> str:
     """Normalize a Telethon ``MessageAction`` class name to a snake_case tag.
 
-    Used by the backup backfill path to label service messages in
-    ``raw_data.action_type`` (e.g. forum topic creations/renames).
+    THE shared ``raw_data.action_type`` vocabulary: since the #222 fix, both the
+    backup backfill path AND the live listener's chat-action handler label
+    service messages with these tags (the listener's old curated set —
+    ``title_changed``, ``user_joined``, ... — was retired and its historical
+    rows deleted by migration 019; nothing may ever emit those names again).
 
     Examples: ``MessageActionTopicCreate`` -> ``"topic_create"``,
     ``MessageActionTopicEdit`` -> ``"topic_edit"``,
@@ -439,15 +442,76 @@ def service_action_type(action: object) -> str:
     ``MessageActionSetMessagesTTL`` -> ``"set_messages_t_t_l"``. None of the
     title-bearing actions we care about are affected; the tag is only a stable,
     deterministic identifier and is not parsed back, so this is cosmetic.
-
-    This vocabulary is intentionally distinct from the live listener's curated
-    event-derived set (``title_changed``, ``user_joined``, ...): the backfill
-    sees low-level ``MessageAction`` classes while the listener sees high-level
-    ``events.ChatAction`` flags. Only the ``raw_data`` *shape* is shared, not the
-    ``action_type`` *values*.
     """
     name = type(action).__name__.removeprefix("MessageAction")
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def service_message_text(
+    action: object,
+    *,
+    actor_name: str | None = None,
+    affected_left: bool = False,
+    affected_joined_self: bool = False,
+) -> str | None:
+    """Build human-readable text for a Telegram service ``MessageAction``.
+
+    Shared by the real-time listener (``on_chat_action``) and the scheduled
+    backup sweep (``_process_message``) so both render identical wording for the
+    same service event. Keyed purely on the ``MessageAction`` subclass name; the
+    ``raw_data.action_type`` tag (``service_action_type``) stays the storage
+    identifier while this is the display string the viewer shows.
+
+    Args:
+        action: A Telethon ``MessageAction`` instance (``message.action`` or
+            ``event.action_message.action``).
+        actor_name: Display name of the SUBJECT of the sentence — for
+            ``ChatAddUser``/``ChatDeleteUser`` that is the AFFECTED user
+            (added/removed), not the admin who performed the action; for every
+            other action the actor and subject coincide. Falsy values render as
+            "Someone", matching the historical listener wording.
+        affected_left: ``MessageActionChatDeleteUser`` only — ``True`` when the
+            affected user removed themselves (left), ``False`` when a different
+            user removed them.
+        affected_joined_self: ``MessageActionChatAddUser`` only — ``True`` when
+            the user added themselves (joined via the public username), which
+            reads "joined the group" rather than "was added".
+
+    Returns:
+        The rendered text, or ``None`` for actions with no curated wording; the
+        caller stores ``""`` for those, exactly as the sweep does today.
+    """
+    name = type(action).__name__
+    who = actor_name or "Someone"
+    title = getattr(action, "title", None)
+    if title is not None and not isinstance(title, str):
+        # Defensive: a title may arrive as TextWithEntities rather than a plain
+        # str; fall back to its .text so the wording never breaks on drift.
+        title = getattr(title, "text", None) or str(title)
+
+    if name == "MessageActionChatJoinedByLink":
+        return f"{who} joined the group via invite link"
+    if name == "MessageActionChatJoinedByRequest":
+        return f"{who} joined the group"
+    if name == "MessageActionChatAddUser":
+        if affected_joined_self:
+            return f"{who} joined the group"
+        return f"{who} was added to the group"
+    if name == "MessageActionChatDeleteUser":
+        if affected_left:
+            return f"{who} left the group"
+        return f"{who} was removed from the group"
+    if name == "MessageActionChatEditTitle":
+        return f'{who} changed the group name to "{title}"'
+    if name == "MessageActionChatEditPhoto":
+        return f"{who} changed the group photo"
+    if name == "MessageActionChatDeletePhoto":
+        return f"{who} removed the group photo"
+    if name == "MessageActionChatCreate":
+        return f'{who} created the group "{title}"'
+    if name == "MessageActionChannelCreate":
+        return f'{who} created the channel "{title}"'
+    return None
 
 
 def normalize_reaction_emoji(reaction: object) -> str | None:
