@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.errors import (
@@ -20,6 +21,9 @@ from telethon.errors import (
 from telethon.tl.types import (
     Channel,
     InputPeerSelf,
+    MessageActionChatDeleteUser,
+    MessageActionChatEditTitle,
+    MessageActionChatJoinedByLink,
     MessageMediaDocument,
     MessageMediaPhoto,
     User,
@@ -3570,6 +3574,62 @@ class TestRetryPendingMediaCap(unittest.TestCase):
             _run(self.backup._retry_pending_media_downloads())
         self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5)
         assert any("permanently skipped" in line for line in cm.output)
+
+
+# ===========================================================================
+# _process_message service-message text (#222)
+# ===========================================================================
+
+
+class TestProcessMessageServiceText(unittest.TestCase):
+    """The backfill sweep fills empty service-message text via the shared helper.
+
+    Non-service messages and service messages that already carry text are left
+    exactly as before; only the empty-text service case is synthesized.
+    """
+
+    def setUp(self):
+        self.backup = _make_backup()
+
+    def _service_message(self, msg_id, action, *, sender_first, sender_id, text=""):
+        msg = _make_message(msg_id, text=text)
+        msg.sender = SimpleNamespace(first_name=sender_first, last_name=None, title=None)
+        msg.sender_id = sender_id
+        msg.action = action
+        return msg
+
+    def test_empty_service_text_is_generated(self):
+        msg = self._service_message(700, MessageActionChatJoinedByLink(inviter_id=0), sender_first="Dana", sender_id=55)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["raw_data"]["service_type"], "service")
+        self.assertEqual(result["raw_data"]["action_type"], "chat_joined_by_link")
+        self.assertEqual(result["text"], "Dana joined the group via invite link")
+
+    def test_delete_user_left_when_sender_is_affected(self):
+        # action.user_id == message.sender_id -> the affected user left on their own.
+        msg = self._service_message(701, MessageActionChatDeleteUser(user_id=88), sender_first="Sam", sender_id=88)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "Sam left the group")
+
+    def test_delete_user_removed_when_sender_differs(self):
+        # action.user_id != message.sender_id -> a different user removed them.
+        msg = self._service_message(702, MessageActionChatDeleteUser(user_id=999), sender_first="Mod", sender_id=88)
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "Mod was removed from the group")
+
+    def test_non_empty_service_text_is_preserved(self):
+        msg = self._service_message(
+            703, MessageActionChatEditTitle(title="Renamed"), sender_first="Dana", sender_id=55, text="hi"
+        )
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "hi")
+        self.assertEqual(result["raw_data"]["new_title"], "Renamed")
+
+    def test_non_service_message_untouched(self):
+        msg = _make_message(704, text="regular message")
+        result = _run(self.backup._process_message(msg, 100))
+        self.assertEqual(result["text"], "regular message")
+        self.assertNotIn("service_type", result["raw_data"])
 
 
 if __name__ == "__main__":

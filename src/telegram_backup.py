@@ -50,6 +50,7 @@ from .message_utils import (
     finalize_atomic_download,
     resolve_shared_file_path,
     service_action_type,
+    service_message_text,
     utcnow_naive,
 )
 from .parallel_download import (
@@ -1518,6 +1519,22 @@ class TelegramBackup:
             action_title = getattr(action, "title", None)
             if action_title is not None:
                 message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
+
+            # Service messages carry no user-authored text, so synthesize the same
+            # human-readable line the live listener stores. Only fill an empty text
+            # (a service message with real text is left untouched). ChatDeleteUser
+            # is "left" when the affected user is the sender, else "removed".
+            if not message.text:
+                sender = message.sender
+                actor_name = None
+                if sender is not None:
+                    actor_name = getattr(sender, "first_name", "") or getattr(sender, "title", "")
+                    if actor_name and getattr(sender, "last_name", None):
+                        actor_name += f" {sender.last_name}"
+                affected_left = getattr(action, "user_id", None) == message.sender_id
+                message_data["text"] = (
+                    service_message_text(action, actor_name=actor_name or None, affected_left=affected_left) or ""
+                )
 
         # Capture grouped_id for album detection (multiple photos/videos sent together)
         if message.grouped_id:

@@ -450,6 +450,64 @@ def service_action_type(action: object) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
+def service_message_text(
+    action: object,
+    *,
+    actor_name: str | None = None,
+    affected_left: bool = False,
+) -> str | None:
+    """Build human-readable text for a Telegram service ``MessageAction``.
+
+    Shared by the real-time listener (``on_chat_action``) and the scheduled
+    backup sweep (``_process_message``) so both render identical wording for the
+    same service event. Keyed purely on the ``MessageAction`` subclass name; the
+    ``raw_data.action_type`` tag (``service_action_type``) stays the storage
+    identifier while this is the display string the viewer shows.
+
+    Args:
+        action: A Telethon ``MessageAction`` instance (``message.action`` or
+            ``event.action_message.action``).
+        actor_name: Display name of the user the sentence is about. Falsy values
+            render as "Someone", matching the historical listener wording.
+        affected_left: ``MessageActionChatDeleteUser`` only — ``True`` when the
+            affected user removed themselves (left), ``False`` when a different
+            user removed them.
+
+    Returns:
+        The rendered text, or ``None`` for actions with no curated wording; the
+        caller stores ``""`` for those, exactly as the sweep does today.
+    """
+    name = type(action).__name__
+    who = actor_name or "Someone"
+    title = getattr(action, "title", None)
+    if title is not None and not isinstance(title, str):
+        # Defensive: a title may arrive as TextWithEntities rather than a plain
+        # str; fall back to its .text so the wording never breaks on drift.
+        title = getattr(title, "text", None) or str(title)
+
+    if name == "MessageActionChatJoinedByLink":
+        return f"{who} joined the group via invite link"
+    if name == "MessageActionChatJoinedByRequest":
+        return f"{who} joined the group"
+    if name == "MessageActionChatAddUser":
+        return f"{who} was added to the group"
+    if name == "MessageActionChatDeleteUser":
+        if affected_left:
+            return f"{who} left the group"
+        return f"{who} was removed from the group"
+    if name == "MessageActionChatEditTitle":
+        return f'{who} changed the group name to "{title}"'
+    if name == "MessageActionChatEditPhoto":
+        return f"{who} changed the group photo"
+    if name == "MessageActionChatDeletePhoto":
+        return f"{who} removed the group photo"
+    if name == "MessageActionChatCreate":
+        return f'{who} created the group "{title}"'
+    if name == "MessageActionChannelCreate":
+        return f'{who} created the channel "{title}"'
+    return None
+
+
 def normalize_reaction_emoji(reaction: object) -> str | None:
     """Normalize a Telethon ``Reaction`` variant to a stable storage string.
 
