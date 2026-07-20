@@ -648,6 +648,8 @@ class TestWhitelistModeBackup(unittest.TestCase):
         self.config.fill_gaps = False
         self.config.skip_media_chat_ids = set()
         self.config.skip_media_delete_existing = False
+        # Real numeric: backup_all's resweep cycle hook compares this (#224).
+        self.config.reaction_resweep_days = 0.0
         os.makedirs(self.config.media_path, exist_ok=True)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)

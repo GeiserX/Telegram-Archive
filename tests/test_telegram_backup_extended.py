@@ -54,6 +54,10 @@ def _make_backup(**overrides):
     backup.config = overrides.get("config", MagicMock())
     backup.config.should_skip_topic = MagicMock(return_value=False)
     backup.config.deletion_mode = "hard"
+    # Real numerics: backup_all/_backup_dialog compare these (MagicMock <= 0 raises).
+    backup.config.reaction_resweep_days = 0.0
+    backup.config.reaction_resweep_max_per_chat = 500
+    backup.config.reaction_resweep_batch_delay_seconds = 0.0
     backup.db = overrides.get("db", AsyncMock())
     # Folder resolution reads the archived-chat snapshot; default to empty so
     # tests that exercise _backup_folders get an iterable, not a bare AsyncMock.
