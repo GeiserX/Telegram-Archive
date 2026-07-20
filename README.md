@@ -296,6 +296,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `REACTION_DEBOUNCE_SECONDS` | `1.5` | B | Coalesce a burst of reaction updates on the same message into one write |
 | `REACTION_RESWEEP_DAYS` | `0` | B | Re-check the last N days of messages per chat on every scheduled sweep to recover your own reactions (`0` disables). See [Reactions made by your own account](#reactions-made-by-your-own-account) |
 | `REACTION_RESWEEP_MAX_PER_CHAT` | `500` | B | Cap on messages re-checked per chat per sweep (≈5 API calls/chat/sweep at the default) |
+| `REACTION_RESWEEP_BATCH_DELAY_SECONDS` | `2` | B | Minimum spacing between the re-sweep's API requests, across chats (`0` disables). Smooths bursts; on the first FloodWait the run's remaining re-sweep defers to the next sweep and resumes where it left off |
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |
@@ -402,6 +403,8 @@ LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 Telegram does not reliably push reaction updates for the archive account's **own** reactions — the ones you add from another device — to the archive's session. To close that gap, the listener additionally harvests reactions carried on edit events (Telegram delivers some reaction changes as edits), and new messages are checked for reactions the moment they arrive.
 
 For reactions on **older** messages, set `REACTION_RESWEEP_DAYS=N`: on every scheduled sweep the backup re-checks the last N days of messages per chat and reconciles their current reactions. It is bounded by `REACTION_RESWEEP_MAX_PER_CHAT` (default 500, ≈5 API calls per chat per sweep) and defaults to `0` (disabled). Self-reactions on messages older than the sweep's incremental window are captured only by this re-sweep, so enable it if you react to your own older messages and want those counts archived.
+
+Telegram rate-limits `getMessagesReactions` by **burst rate across all chats** (a handful of requests per minute per account), so the re-sweep paces itself: requests are spaced by `REACTION_RESWEEP_BATCH_DELAY_SECONDS` (default `2`, measured across chat boundaries — smoothing, deliberately not sized to make floods impossible), and on the first FloodWait of a run the remaining chats' re-sweep is deferred instead of retried. Completed chats — and the mid-chat progress of a chat too large for one burst window — are remembered per cycle, so the next scheduled sweep resumes exactly where the last one stopped. Over a few sweeps every chat in the window gets covered, without ever fighting the rate limiter.
 
 ### Mass Operation Protection
 

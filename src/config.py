@@ -344,6 +344,17 @@ class Config:
         # (fetched newest-first in batches of 100 → ceil(cap/100) requests/chat/sweep).
         self.reaction_resweep_max_per_chat: int = max(1, int(os.getenv("REACTION_RESWEEP_MAX_PER_CHAT", "500")))
 
+        # REACTION_RESWEEP_BATCH_DELAY_SECONDS: minimum spacing between the re-sweep's
+        # batched API requests, measured ACROSS chats (#224 — getMessagesReactions has
+        # a burst-rate flood limit accumulated per account+method, so per-chat caps
+        # cannot express it). Smooths bursts; it is deliberately NOT sized to prevent
+        # floods under sustained load (that would need ~15s/request) — the re-sweep
+        # additionally defers the rest of a run on its first FloodWait and resumes
+        # where it left off on the next scheduled sweep. 0 disables the spacing.
+        self.reaction_resweep_batch_delay_seconds: float = max(
+            0.0, float(os.getenv("REACTION_RESWEEP_BATCH_DELAY_SECONDS", "2"))
+        )
+
         # Note: LISTEN_ALBUMS removed - albums are automatically handled via grouped_id
         # in the NewMessage handler. The viewer groups messages by grouped_id.
 
