@@ -726,6 +726,11 @@ class TelegramBackup:
             else:
                 logger.info("No additional archived dialogs to back up")
 
+            # Persist (deferred run) or complete (clean run) the re-sweep cycle
+            # (#224) — directly after the dialog loops, so a later failure in
+            # topics/folders/statistics cannot drop the cursor update.
+            await self._finalize_resweep_cycle()
+
             # v6.2.0: Backup forum topics for forum-enabled chats.
             # Idempotent backstop to the early per-dialog fetch in _backup_dialog
             # (issue #200): re-runs after messages exist so the message-inference
@@ -751,9 +756,6 @@ class TelegramBackup:
             stats = await self.db.calculate_and_store_statistics(storage_path=self.config.backup_path)
 
             # Note: last_backup_time is stored at the START of backup (see beginning of backup_all)
-
-            # Persist (deferred run) or complete (clean run) the re-sweep cycle (#224).
-            await self._finalize_resweep_cycle()
 
             logger.info("=" * 60)
             logger.info("Backup completed successfully!")
@@ -1421,9 +1423,10 @@ class TelegramBackup:
         """
         if not hasattr(self, "_resweep_flooded"):
             self._resweep_flooded = False
-            self._resweep_last_request_ts = 0.0
+            self._resweep_last_request_ts: float | None = None
             self._resweep_dialogs_deferred = 0
             self._resweep_cycle_done: set[int] = set()
+            self._resweep_partial: dict[int, int] = {}
 
     async def _resweep_pace(self) -> None:
         """Global inter-request spacing for the re-sweep, spanning chats (#224).
@@ -1434,42 +1437,70 @@ class TelegramBackup:
         API request (raw or fallback).
         """
         delay = self.config.reaction_resweep_batch_delay_seconds
-        if delay > 0:
+        if delay > 0 and self._resweep_last_request_ts is not None:
             elapsed = time.monotonic() - self._resweep_last_request_ts
             if elapsed < delay:
                 await asyncio.sleep(delay - elapsed)
         self._resweep_last_request_ts = time.monotonic()
 
     async def _load_resweep_cycle(self) -> None:
-        """Load the chat ids already re-swept in the current cycle (#224).
+        """Load the re-sweep cycle cursor for this run (#224).
 
-        When a run defers its re-sweep after a FloodWait, the completed chats are
-        persisted so the NEXT run resumes with the chats that were skipped instead
-        of re-sweeping the same head-of-list chats forever (dialog order is
-        recency-sorted, so without this the tail would be permanently starved).
+        When a run defers its re-sweep after a FloodWait, the completed chats —
+        and the mid-chat progress of the chat that flooded — are persisted so the
+        NEXT run resumes where this one stopped instead of re-sweeping the same
+        recency-sorted head forever (which would permanently starve the tail, and
+        a chat larger than the flood bucket would never finish at all).
+
+        The cursor is discarded when its window setting no longer matches or when
+        it is older than 48h (e.g. the feature was disabled and re-enabled weeks
+        later): a stale "done" set would silently skip chats for a whole cycle.
         """
-        self._ensure_resweep_state()
         self._resweep_flooded = False
-        self._resweep_last_request_ts = 0.0
+        self._resweep_last_request_ts = None
         self._resweep_dialogs_deferred = 0
         self._resweep_cycle_done = set()
+        self._resweep_partial = {}
         if self.config.reaction_resweep_days <= 0:
             return
         try:
             raw = await self.db.get_metadata("reaction_resweep_cycle_done")
-            if raw:
-                self._resweep_cycle_done = {int(c) for c in json.loads(raw)}
+            if not raw:
+                return
+            state = json.loads(raw)
+            if not isinstance(state, dict):
+                return  # legacy/unknown shape: start a fresh cycle
+            if state.get("days") != self.config.reaction_resweep_days:
+                return  # window changed: the old cycle's coverage is meaningless
+            saved_at = datetime.fromisoformat(state.get("saved_at", ""))
+            if utcnow_naive() - saved_at > timedelta(hours=48):
+                return  # stale (e.g. disabled-then-re-enabled): start fresh
+            self._resweep_cycle_done = {int(c) for c in state.get("done", [])}
+            self._resweep_partial = {int(c): int(n) for c, n in (state.get("partial") or {}).items()}
         except Exception as e:
             logger.warning("Could not load reaction resweep cycle state: %s", type(e).__name__)
+            self._resweep_cycle_done = set()
+            self._resweep_partial = {}
 
     async def _finalize_resweep_cycle(self) -> None:
-        """Persist or complete the re-sweep cycle at the end of a run (#224)."""
+        """Persist or complete the re-sweep cycle after the dialog loops (#224).
+
+        Called directly after the dialog iteration (not at the very end of
+        ``backup_all``) so a later failure in topics/folders/statistics cannot
+        drop a deferral or a completed cycle on the floor.
+        """
         if self.config.reaction_resweep_days <= 0:
             return
         self._ensure_resweep_state()
         try:
             if self._resweep_flooded:
-                await self.db.set_metadata("reaction_resweep_cycle_done", json.dumps(sorted(self._resweep_cycle_done)))
+                state = {
+                    "saved_at": utcnow_naive().isoformat(),
+                    "days": self.config.reaction_resweep_days,
+                    "done": sorted(self._resweep_cycle_done),
+                    "partial": {str(c): n for c, n in self._resweep_partial.items()},
+                }
+                await self.db.set_metadata("reaction_resweep_cycle_done", json.dumps(state))
                 logger.warning(
                     "Reaction resweep deferred for %d dialogs after a FloodWait; "
                     "%d dialogs are done this cycle and the rest resume next run",
@@ -1478,7 +1509,7 @@ class TelegramBackup:
                 )
             else:
                 # Clean run: the cycle is complete, next run starts fresh.
-                await self.db.set_metadata("reaction_resweep_cycle_done", "[]")
+                await self.db.set_metadata("reaction_resweep_cycle_done", "{}")
         except Exception as e:
             logger.warning("Could not persist reaction resweep cycle state: %s", type(e).__name__)
 
@@ -1505,15 +1536,27 @@ class TelegramBackup:
         from telethon.tl.types import UpdateMessageReactions
 
         self._ensure_resweep_state()
+        if chat_id in self._resweep_cycle_done:
+            return  # covered earlier this cycle (checked first: done ≠ deferred)
         if self._resweep_flooded:
             self._resweep_dialogs_deferred += 1
-            return
-        if chat_id in self._resweep_cycle_done:
             return
 
         cutoff = utcnow_naive() - timedelta(days=self.config.reaction_resweep_days)
         ids = await self.db.get_message_ids_since(chat_id, cutoff, self.config.reaction_resweep_max_per_chat)
+        # Resume mid-chat after an earlier deferred run: the first ``skip_n``
+        # (newest) ids were already covered this cycle. The window shifts between
+        # runs so the offset is approximate — reconcile is idempotent, so a few
+        # re-covered or missed ids are harmless; what matters is guaranteed
+        # forward progress on chats larger than the flood bucket, which would
+        # otherwise flood at the same chunk every run and never finish.
+        skip_n = self._resweep_partial.get(chat_id, 0)
+        if skip_n:
+            ids = ids[skip_n:]
         if not ids:
+            if skip_n:
+                self._resweep_partial.pop(chat_id, None)
+                self._resweep_cycle_done.add(chat_id)
             return
 
         checked = 0
@@ -1541,6 +1584,7 @@ class TelegramBackup:
             except FloodWaitError as e:
                 self._resweep_flooded = True
                 self._resweep_dialogs_deferred += 1
+                self._resweep_partial[chat_id] = skip_n + i  # resume this chat here next run
                 logger.warning(
                     "Reaction resweep hit a getMessagesReactions FloodWait (%ss); "
                     "deferring the rest of this run's resweep",
@@ -1575,14 +1619,17 @@ class TelegramBackup:
             # (unsupported peer, rejected ids). get_messages returns None placeholders
             # for missing ids (skip); a returned message with reactions=None is a
             # definitive empty snapshot (extract_reactions(None) == []) → reconcile to
-            # zero. It draws on its own rate bucket, so it is paced identically and a
-            # FloodWait here defers the rest of the run just like the raw path.
+            # zero. It draws on its own rate bucket, so it is paced identically and,
+            # exactly like the raw path, a FloodWait defers immediately — no sleeping
+            # into the live flood window, no retry. Other errors skip the chunk (the
+            # next cycle retries it).
             await self._resweep_pace()
             try:
-                msgs = await call_with_flood_retry(self.client.get_messages, entity, ids=chunk, max_retries=1)
+                msgs = await self.client.get_messages(entity, ids=chunk)
             except FloodWaitError as e:
                 self._resweep_flooded = True
                 self._resweep_dialogs_deferred += 1
+                self._resweep_partial[chat_id] = skip_n + i  # resume this chat here next run
                 logger.warning(
                     "Reaction resweep hit a get_messages FloodWait (%ss); deferring the rest of this run's resweep",
                     e.seconds,
@@ -1605,6 +1652,7 @@ class TelegramBackup:
 
         # Every chunk completed: mark this chat covered for the current cycle so a
         # later deferred run resumes with the chats that were skipped, not this one.
+        self._resweep_partial.pop(chat_id, None)
         self._resweep_cycle_done.add(chat_id)
         logger.info("  → Reaction resweep: checked %d ids, reconciled %d", checked, reconciled)
 

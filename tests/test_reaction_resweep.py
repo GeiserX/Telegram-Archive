@@ -30,6 +30,7 @@ from src.config import Config
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager
 from src.db.models import Base, Message
+from src.message_utils import utcnow_naive
 from src.telegram_backup import TelegramBackup
 
 CHAT = -100
@@ -426,29 +427,80 @@ class TestResweepPacing:
         b.db.get_message_ids_since.assert_not_awaited()
         b.client.assert_not_awaited()
 
+    def _cursor(self, days=7.0, age_hours=0, done=(123, 456), partial=None):
+        return json.dumps(
+            {
+                "saved_at": (utcnow_naive() - timedelta(hours=age_hours)).isoformat(),
+                "days": days,
+                "done": list(done),
+                "partial": {str(c): n for c, n in (partial or {}).items()},
+            }
+        )
+
     async def test_cycle_state_loads_persists_and_clears(self):
         b = _backup()
-        b.db.get_metadata = AsyncMock(return_value="[123, 456]")
+        b.db.get_metadata = AsyncMock(return_value=self._cursor(partial={999: 200}))
         await b._load_resweep_cycle()
+        # The load must read the SAME key the persist writes (key-pinned both ways).
+        b.db.get_metadata.assert_awaited_once_with("reaction_resweep_cycle_done")
         assert b._resweep_cycle_done == {123, 456}
+        assert b._resweep_partial == {999: 200}
 
         b._resweep_flooded = True
         b._resweep_cycle_done.add(789)
         b._resweep_dialogs_deferred = 3
         b.db.set_metadata = AsyncMock()
         await b._finalize_resweep_cycle()
-        b.db.set_metadata.assert_awaited_once_with("reaction_resweep_cycle_done", json.dumps([123, 456, 789]))
+        key, payload = b.db.set_metadata.await_args.args
+        assert key == "reaction_resweep_cycle_done"
+        state = json.loads(payload)
+        assert state["done"] == [123, 456, 789]
+        assert state["partial"] == {"999": 200}
+        assert state["days"] == 7.0
+        assert "saved_at" in state
 
         b._resweep_flooded = False
         b.db.set_metadata.reset_mock()
         await b._finalize_resweep_cycle()  # clean run: cycle complete, cursor cleared
-        b.db.set_metadata.assert_awaited_once_with("reaction_resweep_cycle_done", "[]")
+        b.db.set_metadata.assert_awaited_once_with("reaction_resweep_cycle_done", "{}")
 
-    async def test_cycle_state_corrupt_metadata_tolerated(self):
+    async def test_finalize_flooded_with_nothing_completed(self):
+        # Flooded on the very first dialog: nothing done, nothing partial —
+        # the persisted state must still be valid and loadable.
+        b = _backup()
+        b._ensure_resweep_state()
+        b._resweep_flooded = True
+        b._resweep_dialogs_deferred = 1
+        b.db.set_metadata = AsyncMock()
+        await b._finalize_resweep_cycle()
+        _key, payload = b.db.set_metadata.await_args.args
+        state = json.loads(payload)
+        assert state["done"] == []
+        assert state["partial"] == {}
+
+    async def test_cycle_state_discarded_when_window_changed_or_stale(self):
+        # days mismatch: coverage from a different window is meaningless.
+        b = _backup(days=3.0)
+        b.db.get_metadata = AsyncMock(return_value=self._cursor(days=7.0))
+        await b._load_resweep_cycle()
+        assert b._resweep_cycle_done == set()
+
+        # older than 48h (e.g. feature disabled then re-enabled weeks later).
+        b2 = _backup()
+        b2.db.get_metadata = AsyncMock(return_value=self._cursor(age_hours=72))
+        await b2._load_resweep_cycle()
+        assert b2._resweep_cycle_done == set()
+
+    async def test_cycle_state_corrupt_or_legacy_tolerated(self):
         b = _backup()
         b.db.get_metadata = AsyncMock(return_value="{not json")
         await b._load_resweep_cycle()  # must not raise
         assert b._resweep_cycle_done == set()
+
+        b2 = _backup()
+        b2.db.get_metadata = AsyncMock(return_value="[123, 456]")  # legacy bare-list shape
+        await b2._load_resweep_cycle()
+        assert b2._resweep_cycle_done == set()
 
     async def test_cycle_state_ignored_when_resweep_disabled(self):
         b = _backup(days=0)
@@ -458,3 +510,48 @@ class TestResweepPacing:
         await b._finalize_resweep_cycle()
         b.db.get_metadata.assert_not_awaited()
         b.db.set_metadata.assert_not_awaited()
+
+    async def test_flood_mid_chat_records_partial_progress(self):
+        # 250 ids, flood on the SECOND chunk: the chat is NOT done, and the
+        # cursor records that the newest 100 ids were covered so the next run
+        # resumes there instead of flooding at the same chunk forever.
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=list(range(1, 251)))
+        b.client.side_effect = [SimpleNamespace(updates=[]), FloodWaitError(request=None, capture=60)]
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_flooded is True
+        assert CHAT not in b._resweep_cycle_done
+        assert b._resweep_partial == {CHAT: 100}
+
+    async def test_partial_chat_resumes_and_completes_next_run(self):
+        # Cursor says the newest 100 of this chat were covered: only the
+        # remaining 150 are fetched-through (2 requests), then the chat is done
+        # and its partial entry is dropped.
+        b = _backup()
+        b._ensure_resweep_state()
+        b._resweep_partial[CHAT] = 100
+        b.db.get_message_ids_since = AsyncMock(return_value=list(range(1, 251)))
+        b.client.return_value = SimpleNamespace(updates=[])
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b.client.await_count == 2
+        sent = [call.args[0].id for call in b.client.await_args_list]
+        assert [len(chunk) for chunk in sent] == [100, 50]
+        assert CHAT in b._resweep_cycle_done
+        assert CHAT not in b._resweep_partial
+
+    async def test_done_chat_after_flood_not_counted_deferred(self):
+        # Gate order: a chat already covered this cycle is "done", not
+        # "deferred", even when encountered after the run flooded.
+        b = _backup()
+        b._ensure_resweep_state()
+        b._resweep_cycle_done.add(CHAT)
+        b._resweep_flooded = True
+        b._resweep_dialogs_deferred = 1
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_dialogs_deferred == 1  # unchanged
