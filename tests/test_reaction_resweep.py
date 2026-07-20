@@ -13,6 +13,7 @@ own session:
 - the piggyback reconcile inside ``_sync_deletions_and_edits``.
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+from telethon.errors import FloodWaitError
 from telethon.tl.types import PeerChannel, UpdateMessageReactions
 
 from src.config import Config
@@ -67,6 +69,12 @@ class TestReactionResweepConfig:
 
     def test_max_per_chat_floored_at_one(self):
         assert self._config(REACTION_RESWEEP_MAX_PER_CHAT="0").reaction_resweep_max_per_chat == 1
+
+    def test_batch_delay_default_and_clamp(self):
+        # #224: global inter-request spacing, default 2s, negative clamps to 0.
+        assert self._config().reaction_resweep_batch_delay_seconds == 2.0
+        assert self._config(REACTION_RESWEEP_BATCH_DELAY_SECONDS="7.5").reaction_resweep_batch_delay_seconds == 7.5
+        assert self._config(REACTION_RESWEEP_BATCH_DELAY_SECONDS="-1").reaction_resweep_batch_delay_seconds == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,11 +139,12 @@ class TestGetMessageIdsSince:
 # ---------------------------------------------------------------------------
 
 
-def _backup(days=7.0, max_per_chat=500):
+def _backup(days=7.0, max_per_chat=500, delay=0.0):
     b = TelegramBackup.__new__(TelegramBackup)
     b.config = MagicMock()
     b.config.reaction_resweep_days = days
     b.config.reaction_resweep_max_per_chat = max_per_chat
+    b.config.reaction_resweep_batch_delay_seconds = delay
     b.config.deletion_mode = "hard"
     b.db = AsyncMock()
     b.db.reconcile_reactions = AsyncMock(return_value="reconciled")
@@ -326,3 +335,126 @@ class TestPiggybackReconcile:
 
         await b._sync_deletions_and_edits(CHAT, MagicMock())
         b.db.reconcile_reactions.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# #224: burst-rate pacing, flood deferral, and the chat-keyed cycle cursor
+# ---------------------------------------------------------------------------
+
+
+class TestResweepPacing:
+    """getMessagesReactions floods accumulate ACROSS chats (#224): requests are
+    globally spaced, the first FloodWait defers the rest of the run (no retry
+    burn, no fallback onto a second bucket), and a persisted cycle cursor lets
+    the next run resume with the chats that were deferred."""
+
+    async def test_requests_paced_globally_across_chats(self, monkeypatch):
+        b = _backup(delay=10.0)
+        clock = {"t": 100.0}
+        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        sleeps = []
+
+        async def fake_sleep(s):
+            sleeps.append(round(s, 6))
+
+        monkeypatch.setattr("src.telegram_backup.asyncio.sleep", fake_sleep)
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.return_value = SimpleNamespace(updates=[])
+
+        await b._resweep_reactions(MagicMock(), CHAT)  # cold start: elapsed >> delay, no sleep
+        await b._resweep_reactions(MagicMock(), -200)  # immediately after: full delay owed
+
+        assert sleeps == [10.0]
+        assert b.client.await_count == 2
+
+    async def test_no_sleep_when_delay_disabled(self, monkeypatch):
+        b = _backup(delay=0.0)
+        sleeps = []
+
+        async def fake_sleep(s):
+            sleeps.append(s)
+
+        monkeypatch.setattr("src.telegram_backup.asyncio.sleep", fake_sleep)
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.return_value = SimpleNamespace(updates=[])
+        await b._resweep_reactions(MagicMock(), CHAT)
+        assert sleeps == []
+
+    async def test_flood_on_raw_defers_rest_of_run_without_fallback(self):
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1, 2])
+        b.client.side_effect = FloodWaitError(request=None, capture=60)
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_flooded is True
+        b.client.get_messages.assert_not_awaited()  # flood must NOT fall back (second bucket)
+        assert CHAT not in b._resweep_cycle_done  # deferred, not done
+
+        # Subsequent chats this run: no queries, no API calls — just counted.
+        b.db.get_message_ids_since.reset_mock()
+        await b._resweep_reactions(MagicMock(), -200)
+        b.db.get_message_ids_since.assert_not_awaited()
+        assert b._resweep_dialogs_deferred == 2
+
+    async def test_flood_on_fallback_also_defers(self, monkeypatch):
+        async def fake_sleep(_s):
+            return None
+
+        monkeypatch.setattr("src.telegram_backup.asyncio.sleep", fake_sleep)
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.side_effect = RuntimeError("peer unsupported")  # raw path → genuine non-flood error
+        b.client.get_messages = AsyncMock(side_effect=FloodWaitError(request=None, capture=60))
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_flooded is True
+        assert CHAT not in b._resweep_cycle_done
+
+    async def test_completed_chat_marked_and_skipped_within_cycle(self):
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.return_value = SimpleNamespace(updates=[])
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+        assert CHAT in b._resweep_cycle_done
+
+        b.db.get_message_ids_since.reset_mock()
+        b.client.reset_mock()
+        await b._resweep_reactions(MagicMock(), CHAT)  # same cycle: skipped entirely
+        b.db.get_message_ids_since.assert_not_awaited()
+        b.client.assert_not_awaited()
+
+    async def test_cycle_state_loads_persists_and_clears(self):
+        b = _backup()
+        b.db.get_metadata = AsyncMock(return_value="[123, 456]")
+        await b._load_resweep_cycle()
+        assert b._resweep_cycle_done == {123, 456}
+
+        b._resweep_flooded = True
+        b._resweep_cycle_done.add(789)
+        b._resweep_dialogs_deferred = 3
+        b.db.set_metadata = AsyncMock()
+        await b._finalize_resweep_cycle()
+        b.db.set_metadata.assert_awaited_once_with("reaction_resweep_cycle_done", json.dumps([123, 456, 789]))
+
+        b._resweep_flooded = False
+        b.db.set_metadata.reset_mock()
+        await b._finalize_resweep_cycle()  # clean run: cycle complete, cursor cleared
+        b.db.set_metadata.assert_awaited_once_with("reaction_resweep_cycle_done", "[]")
+
+    async def test_cycle_state_corrupt_metadata_tolerated(self):
+        b = _backup()
+        b.db.get_metadata = AsyncMock(return_value="{not json")
+        await b._load_resweep_cycle()  # must not raise
+        assert b._resweep_cycle_done == set()
+
+    async def test_cycle_state_ignored_when_resweep_disabled(self):
+        b = _backup(days=0)
+        b.db.get_metadata = AsyncMock()
+        b.db.set_metadata = AsyncMock()
+        await b._load_resweep_cycle()
+        await b._finalize_resweep_cycle()
+        b.db.get_metadata.assert_not_awaited()
+        b.db.set_metadata.assert_not_awaited()
