@@ -296,7 +296,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `REACTION_DEBOUNCE_SECONDS` | `1.5` | B | Coalesce a burst of reaction updates on the same message into one write |
 | `REACTION_RESWEEP_DAYS` | `0` | B | Re-check the last N days of messages per chat on every scheduled sweep to recover your own reactions (`0` disables). See [Reactions made by your own account](#reactions-made-by-your-own-account) |
 | `REACTION_RESWEEP_MAX_PER_CHAT` | `500` | B | Cap on messages re-checked per chat per sweep (≈5 API calls/chat/sweep at the default) |
-| `REACTION_RESWEEP_BATCH_DELAY_SECONDS` | `2` | B | Minimum spacing between the re-sweep's API requests, across chats (`0` disables). Smooths bursts; on the first FloodWait the run's remaining re-sweep defers to the next sweep and resumes where it left off |
+| `REACTION_RESWEEP_BATCH_DELAY_SECONDS` | `2` | B | Minimum spacing between the re-sweep's API requests, across chats (`0` disables). Smooths bursts; on a FloodWait the re-sweep pauses and resumes within the same run once the wait expires, deferring to the next sweep only if the wait outlives the run or floods repeat |
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |
