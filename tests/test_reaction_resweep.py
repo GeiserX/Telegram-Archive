@@ -345,9 +345,12 @@ class TestPiggybackReconcile:
 
 class TestResweepPacing:
     """getMessagesReactions floods accumulate ACROSS chats (#224): requests are
-    globally spaced, the first FloodWait defers the rest of the run (no retry
-    burn, no fallback onto a second bucket), and a persisted cycle cursor lets
-    the next run resume with the chats that were deferred."""
+    globally spaced; a FloodWait pauses the resweep (no sleep, no retry, no
+    fallback onto a second bucket) and it resumes within the same run once the
+    server-requested window elapses — deferring the remainder only when the
+    window outlives the run or after RESWEEP_MAX_FLOODS_PER_RUN floods. A
+    persisted cycle cursor (with mid-chat progress) lets the next run resume
+    with whatever was deferred."""
 
     async def test_requests_paced_globally_across_chats(self, monkeypatch):
         b = _backup(delay=10.0)
@@ -454,6 +457,54 @@ class TestResweepPacing:
         await b._resweep_reactions(MagicMock(), -400)
         b.db.get_message_ids_since.assert_not_awaited()
         assert b._resweep_dialogs_deferred == 4
+
+    async def test_flood_and_cooldown_logs_never_contain_chat_id(self, caplog, monkeypatch):
+        # PII guard for the flood/pause/resume log lines: seconds and counts
+        # only, never the chat id.
+        clock = {"t": 1000.0}
+        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.side_effect = [FloodWaitError(request=None, capture=50), SimpleNamespace(updates=[])]
+
+        with caplog.at_level(logging.INFO, logger="src.telegram_backup"):
+            await b._resweep_reactions(MagicMock(), CHAT)  # flood warning
+            await b._resweep_reactions(MagicMock(), -200)  # cooldown skip (silent)
+            clock["t"] = 1060.0
+            await b._resweep_reactions(MagicMock(), -300)  # resume info line
+
+        text = " ".join(r.getMessage() for r in caplog.records)
+        assert "FloodWait" in text
+        assert "resuming within this run" in text
+        for chat in (CHAT, -200, -300):
+            assert str(chat) not in text
+            assert str(abs(chat)) not in text
+
+    async def test_second_flood_on_same_chat_advances_partial_offset(self, monkeypatch):
+        # Flood on chunk 2, cool down, resume the SAME chat next run-slice, then
+        # flood again on its later chunk: the parked offset must advance, never
+        # reset — otherwise the chat re-fetches the same chunk forever.
+        clock = {"t": 1000.0}
+        monkeypatch.setattr("src.telegram_backup.time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=list(range(1, 401)))
+        b.client.side_effect = [
+            SimpleNamespace(updates=[]),  # chunk 1 (ids 1-100) OK
+            FloodWaitError(request=None, capture=10),  # chunk 2 floods
+        ]
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+        assert b._resweep_partial == {CHAT: 100}
+
+        clock["t"] = 1100.0  # cooldown elapsed
+        b.client.side_effect = [
+            SimpleNamespace(updates=[]),  # resumed chunk (offset 100..200) OK
+            FloodWaitError(request=None, capture=10),  # next chunk floods again
+        ]
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_partial == {CHAT: 200}  # advanced, not reset
+        assert CHAT not in b._resweep_cycle_done
 
     async def test_completed_chat_marked_and_skipped_within_cycle(self):
         b = _backup()

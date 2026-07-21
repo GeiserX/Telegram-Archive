@@ -1643,7 +1643,8 @@ class TelegramBackup:
             # No retry wrapper here: a FloodWait on this bucket means the whole
             # account+method budget is exhausted, so retrying (or falling back to
             # get_messages, a DIFFERENT bucket under the same pressure pattern)
-            # compounds the penalty — defer the rest of the run instead (#224).
+            # compounds the penalty — pause and resume within the run once the
+            # server-requested window elapses instead (#224).
             updates = None
             await self._resweep_pace()
             try:
