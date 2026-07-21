@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-archive"
-version = "7.25.1"
+version = "7.25.2"
 description = "Automated Telegram backup with Docker. Performs incremental backups of messages and media on a configurable schedule."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -44,12 +44,12 @@ dependencies = [
     "pywebpush>=2.3.0",
     "py-vapid>=1.9.4",
     "cryptography>=48.0.1",
-    "Pillow>=10.0.0",
+    "Pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]
 viewer = [
-    "Pillow>=10.4.0",  # v7.2.0: thumbnail generation
+    "Pillow>=12.3.0",  # v7.2.0: thumbnail generation
 ]
 dev = [
     "pytest>=7.0",
