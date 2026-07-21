@@ -90,6 +90,14 @@ MAX_FLOOD_RETRIES = _get_int_env("MAX_FLOOD_RETRIES", 5)
 MAX_FLOOD_WAIT_SECONDS = _get_int_env("MAX_FLOOD_WAIT_SECONDS", 3600)
 BACKOFF_MIN_SECONDS = _get_float_env("BACKOFF_MIN_SECONDS", 2.0)
 BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 300.0)
+
+# Re-sweep flood handling (#224): after a FloodWait the re-sweep pauses (nothing
+# sleeps, nothing retries) until the server-requested window plus this margin has
+# elapsed, then resumes within the same run. After this many floods in a single
+# run the remainder defers outright — repeated floods signal a degraded bucket
+# that should be left alone until the next scheduled run.
+RESWEEP_FLOOD_RESUME_MARGIN_SECONDS = 2.0
+RESWEEP_MAX_FLOODS_PER_RUN = 3
 FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 # Bounded re-fetch+retry for transient media errors (expired reference / location
 # unavailable). After this many download attempts the item is left for the next
@@ -1421,8 +1429,11 @@ class TelegramBackup:
         ``backup_all`` resets this at the start of every run; the lazy init keeps
         direct ``_backup_dialog`` callers (and tests built via ``__new__``) safe.
         """
-        if not hasattr(self, "_resweep_flooded"):
-            self._resweep_flooded = False
+        if not hasattr(self, "_resweep_flood_until"):
+            self._resweep_flood_until: float | None = None
+            self._resweep_flood_count = 0
+            self._resweep_hard_deferred = False
+            self._resweep_deferred_any = False
             self._resweep_last_request_ts: float | None = None
             self._resweep_dialogs_deferred = 0
             self._resweep_cycle_done: set[int] = set()
@@ -1443,6 +1454,44 @@ class TelegramBackup:
                 await asyncio.sleep(delay - elapsed)
         self._resweep_last_request_ts = time.monotonic()
 
+    def _register_resweep_flood(self, seconds: int, chat_id: int, covered: int, source: str) -> None:
+        """Record a re-sweep FloodWait: pause, then resume within the run (#224).
+
+        Nothing sleeps and nothing retries. The re-sweep goes quiet until the
+        server-requested window (plus ``RESWEEP_FLOOD_RESUME_MARGIN_SECONDS``)
+        has elapsed and then resumes with later chats in the same run — chats
+        reached while still cooling down skip to the next-run cursor, and the
+        flooded chat parks its mid-chat progress there too. Deferring entire
+        runs on the first flood over-corrected on small-bucket accounts (a
+        ~1-minute window turned into hours of cycle latency). After
+        ``RESWEEP_MAX_FLOODS_PER_RUN`` floods in one run the remainder defers
+        outright: repeated floods signal a degraded bucket that should be left
+        alone until the next scheduled run.
+        """
+        self._resweep_flood_count += 1
+        self._resweep_dialogs_deferred += 1
+        self._resweep_deferred_any = True
+        self._resweep_partial[chat_id] = covered
+        wait_s = max(0, seconds or 0)
+        if self._resweep_flood_count >= RESWEEP_MAX_FLOODS_PER_RUN:
+            self._resweep_hard_deferred = True
+            self._resweep_flood_until = None
+            logger.warning(
+                "Reaction resweep hit a %s FloodWait (%ss) — flood #%d this run; "
+                "deferring the rest of this run's resweep",
+                source,
+                wait_s,
+                self._resweep_flood_count,
+            )
+            return
+        self._resweep_flood_until = time.monotonic() + wait_s + RESWEEP_FLOOD_RESUME_MARGIN_SECONDS
+        logger.warning(
+            "Reaction resweep hit a %s FloodWait (%ss); pausing, will resume once it expires "
+            "(within this run if it ends sooner)",
+            source,
+            wait_s,
+        )
+
     async def _load_resweep_cycle(self) -> None:
         """Load the re-sweep cycle cursor for this run (#224).
 
@@ -1456,7 +1505,10 @@ class TelegramBackup:
         it is older than 48h (e.g. the feature was disabled and re-enabled weeks
         later): a stale "done" set would silently skip chats for a whole cycle.
         """
-        self._resweep_flooded = False
+        self._resweep_flood_until = None
+        self._resweep_flood_count = 0
+        self._resweep_hard_deferred = False
+        self._resweep_deferred_any = False
         self._resweep_last_request_ts = None
         self._resweep_dialogs_deferred = 0
         self._resweep_cycle_done = set()
@@ -1493,7 +1545,7 @@ class TelegramBackup:
             return
         self._ensure_resweep_state()
         try:
-            if self._resweep_flooded:
+            if self._resweep_deferred_any:
                 state = {
                     "saved_at": utcnow_naive().isoformat(),
                     "days": self.config.reaction_resweep_days,
@@ -1502,8 +1554,8 @@ class TelegramBackup:
                 }
                 await self.db.set_metadata("reaction_resweep_cycle_done", json.dumps(state))
                 logger.warning(
-                    "Reaction resweep deferred for %d dialogs after a FloodWait; "
-                    "%d dialogs are done this cycle and the rest resume next run",
+                    "Reaction resweep deferred %d dialogs to the next run after FloodWaits; "
+                    "%d dialogs are done this cycle",
                     self._resweep_dialogs_deferred,
                     len(self._resweep_cycle_done),
                 )
@@ -1524,12 +1576,15 @@ class TelegramBackup:
         aggregate, capped at ``REACTION_RESWEEP_MAX_PER_CHAT`` (default 500).
 
         Pacing (#224): getMessagesReactions has a burst-rate flood limit accumulated
-        ACROSS chats (~a handful of requests per minute), so requests are spaced
-        globally by ``REACTION_RESWEEP_BATCH_DELAY_SECONDS`` and, on the FIRST
-        FloodWait of a run, the remaining dialogs' re-sweep is deferred to the next
-        scheduled run (no retry-burn, no fallback onto a second rate bucket). A
-        chat-keyed cycle cursor persists which chats completed, so deferred chats
-        are picked up next run instead of being starved by the recency sort order.
+        ACROSS chats (bucket size varies wildly by account), so requests are spaced
+        globally by ``REACTION_RESWEEP_BATCH_DELAY_SECONDS``. On a FloodWait the
+        re-sweep pauses — nothing sleeps, nothing retries, no fallback onto a
+        second rate bucket — and resumes within the same run once the
+        server-requested window has elapsed; it defers the remainder to the next
+        scheduled run only when the window outlives the run or after
+        ``RESWEEP_MAX_FLOODS_PER_RUN`` floods. A chat-keyed cycle cursor persists
+        which chats completed (plus mid-chat progress), so deferred chats are
+        picked up next run instead of being starved by the recency sort order.
         PII: aggregate counts only, never ids/emoji.
         """
         from telethon.tl.functions.messages import GetMessagesReactionsRequest
@@ -1538,9 +1593,22 @@ class TelegramBackup:
         self._ensure_resweep_state()
         if chat_id in self._resweep_cycle_done:
             return  # covered earlier this cycle (checked first: done ≠ deferred)
-        if self._resweep_flooded:
+        if self._resweep_hard_deferred:
             self._resweep_dialogs_deferred += 1
+            self._resweep_deferred_any = True
             return
+        if self._resweep_flood_until is not None:
+            if time.monotonic() < self._resweep_flood_until:
+                # Cooling down after a FloodWait: this chat's re-sweep skips to
+                # the next-run cursor; the rest of the backup is unaffected.
+                self._resweep_dialogs_deferred += 1
+                self._resweep_deferred_any = True
+                return
+            # The server-requested window has fully elapsed: resume within this
+            # run (#224 follow-up — deferring whole runs over-corrected on
+            # small-bucket accounts, costing more coverage than the floods did).
+            self._resweep_flood_until = None
+            logger.info("Reaction resweep cooldown elapsed; resuming within this run")
 
         cutoff = utcnow_naive() - timedelta(days=self.config.reaction_resweep_days)
         ids = await self.db.get_message_ids_since(chat_id, cutoff, self.config.reaction_resweep_max_per_chat)
@@ -1582,14 +1650,7 @@ class TelegramBackup:
                 result = await self.client(GetMessagesReactionsRequest(peer=entity, id=chunk))
                 updates = getattr(result, "updates", []) or []
             except FloodWaitError as e:
-                self._resweep_flooded = True
-                self._resweep_dialogs_deferred += 1
-                self._resweep_partial[chat_id] = skip_n + i  # resume this chat here next run
-                logger.warning(
-                    "Reaction resweep hit a getMessagesReactions FloodWait (%ss); "
-                    "deferring the rest of this run's resweep",
-                    e.seconds,
-                )
+                self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "getMessagesReactions")
                 return
             except Exception as e:
                 # Raw request unsupported for this peer, or ids rejected (e.g. deleted
@@ -1620,20 +1681,14 @@ class TelegramBackup:
             # for missing ids (skip); a returned message with reactions=None is a
             # definitive empty snapshot (extract_reactions(None) == []) → reconcile to
             # zero. It draws on its own rate bucket, so it is paced identically and,
-            # exactly like the raw path, a FloodWait defers immediately — no sleeping
-            # into the live flood window, no retry. Other errors skip the chunk (the
-            # next cycle retries it).
+            # exactly like the raw path, a FloodWait pauses the re-sweep — no
+            # sleeping into the live flood window, no retry. Other errors skip the
+            # chunk (the next cycle retries it).
             await self._resweep_pace()
             try:
                 msgs = await self.client.get_messages(entity, ids=chunk)
             except FloodWaitError as e:
-                self._resweep_flooded = True
-                self._resweep_dialogs_deferred += 1
-                self._resweep_partial[chat_id] = skip_n + i  # resume this chat here next run
-                logger.warning(
-                    "Reaction resweep hit a get_messages FloodWait (%ss); deferring the rest of this run's resweep",
-                    e.seconds,
-                )
+                self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "get_messages")
                 return
             except Exception as e:
                 logger.debug("Reaction resweep fallback fetch failed: %s", type(e).__name__)
