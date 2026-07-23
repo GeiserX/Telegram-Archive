@@ -1036,10 +1036,15 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
         raise HTTPException(status_code=404, detail="File not found")
 
     # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely — let
-    # them cache like serve_thumbnail's output so avatar URLs aren't refetched
-    # on every page. Regular media keeps the default (no explicit caching).
-    headers = {"Cache-Control": "public, max-age=86400"} if path.startswith("avatars/") else None
-    return FileResponse(resolved, headers=headers)
+    # them cache like serve_thumbnail's output so avatar URLs aren't refetched on
+    # every page. The Cache-Control is set on the response after construction so
+    # the FileResponse(resolved) call is unchanged; the containment check above
+    # (reject ../absolute, resolve strict, is_relative_to media root) is the
+    # actual path-traversal protection.
+    response = FileResponse(resolved)
+    if path.startswith("avatars/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
