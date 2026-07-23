@@ -27,11 +27,15 @@ from telethon.tl.types import (
     Chat,
     InputPeerSelf,
     Message,
+    MessageActionChannelMigrateFrom,
+    MessageActionChatMigrateTo,
     MessageMediaContact,
     MessageMediaDocument,
     MessageMediaGeo,
     MessageMediaPhoto,
     MessageMediaPoll,
+    PeerChannel,
+    PeerChat,
     TextWithEntities,
     User,
 )
@@ -374,6 +378,10 @@ class TelegramBackup:
         # the run if the client lacks the required Telethon internals.
         self._parallel_downloader: ParallelDownloader | None = None
         self._parallel_download_disabled = False
+        # Marked ids of supergroups adopted after a group→supergroup migration
+        # (#228). Loaded from the metadata KV at the start of each backup_all run
+        # when FOLLOW_CHAT_MIGRATIONS is on; merged into the effective sweep scope.
+        self._followed_migration_ids: set[int] = set()
 
         logger.info("TelegramBackup initialized")
 
@@ -389,6 +397,154 @@ class TelegramBackup:
         This ensures IDs match what users see in Telegram and configure in env vars.
         """
         return get_peer_id(entity)
+
+    async def _load_followed_migrations(self) -> None:
+        """Load adopted-supergroup ids from the metadata KV (#228).
+
+        Populates ``self._followed_migration_ids`` from the ``followed_migrations``
+        metadata key (a JSON list of marked ids). Only consulted when
+        FOLLOW_CHAT_MIGRATIONS is on; when off the set stays empty so nothing is
+        treated as followed and the sweep only warns. Never raises — a missing or
+        malformed value degrades to "nothing followed yet".
+        """
+        self._followed_migration_ids = set()
+        if not self.config.follow_chat_migrations:
+            return
+        try:
+            raw = await self.db.get_metadata("followed_migrations")
+        except Exception as e:
+            logger.warning("Could not load followed migrations: %s", type(e).__name__)
+            return
+        if not raw:
+            return
+        try:
+            loaded = json.loads(raw)
+        except ValueError, TypeError:
+            logger.warning("Malformed followed_migrations metadata; ignoring")
+            return
+        if isinstance(loaded, list):
+            self._followed_migration_ids = {x for x in loaded if isinstance(x, int)}
+
+    def _is_followed_migration(self, chat_id: int) -> bool:
+        """True if ``chat_id`` was adopted via FOLLOW_CHAT_MIGRATIONS (#228)."""
+        return self.config.follow_chat_migrations and chat_id in self._followed_migration_ids
+
+    async def _reconcile_migrations(self, dialogs: list, backed_up_chat_ids: set[int]) -> None:
+        """Detect group→supergroup migrations and warn or follow them (#228).
+
+        Migration is invisible to the live handlers (Telethon surfaces the
+        ``MessageActionChatMigrateTo``/``ChannelMigrateFrom`` service message to
+        neither NewMessage nor ChatAction), so the scheduled sweep is the only
+        sound detection point. Two sources are combined:
+
+        * PRIMARY — the migrated basic group's ``Chat`` entity is still returned
+          in the dialog list and carries ``.migrated_to`` (an InputChannel).
+        * SECONDARY — a stored ``chat_migrate_to`` service marker, which covers
+          migrations that happened while the archiver was offline (the dead
+          basic group may no longer surface as a dialog).
+
+        For each new supergroup id NOT already captured this run / configured /
+        followed: when FOLLOW_CHAT_MIGRATIONS is on it is adopted (persisted to
+        the metadata KV and backed up immediately this run); otherwise a
+        count-only warning fires — re-emitted every run until acted on, so the
+        silent capture-stop can never go unnoticed. PII: counts only, never ids.
+        """
+        try:
+            migrations: dict[int, int] = {}
+
+            # PRIMARY: entities the sweep already fetched this run.
+            for dialog in dialogs:
+                entity = getattr(dialog, "entity", None)
+                migrated_to = getattr(entity, "migrated_to", None)
+                channel_id = getattr(migrated_to, "channel_id", None) if migrated_to is not None else None
+                if channel_id is None:
+                    continue
+                old_id = self._get_marked_id(entity)
+                migrations[old_id] = get_peer_id(PeerChannel(channel_id))
+
+            # SECONDARY: stored markers (migrations that happened while offline).
+            try:
+                for old_id, new_id in await self.db.get_migration_markers():
+                    migrations.setdefault(old_id, new_id)
+            except Exception as e:
+                logger.warning("Migration marker lookup failed: %s", type(e).__name__)
+
+            if not migrations:
+                return
+
+            # Ids the user already arranged to capture (explicit config) or
+            # explicitly opted out of (exclude lists take priority — no nag).
+            configured = (
+                self.config.chat_ids
+                | self.config.global_include_ids
+                | self.config.groups_include_ids
+                | self.config.channels_include_ids
+            )
+            excluded = (
+                self.config.global_exclude_ids | self.config.groups_exclude_ids | self.config.channels_exclude_ids
+            )
+
+            out_of_scope: set[int] = set()
+            for new_id in migrations.values():
+                if new_id in excluded:
+                    continue  # user opted the new supergroup out
+                if new_id in backed_up_chat_ids or new_id in configured:
+                    continue  # already in scope and captured
+                if self.config.follow_chat_migrations and new_id in self._followed_migration_ids:
+                    continue  # already adopted on a previous run
+                out_of_scope.add(new_id)
+
+            if not out_of_scope:
+                return
+
+            if self.config.follow_chat_migrations:
+                # Adopt: persist first (durable), then capture this run.
+                self._followed_migration_ids |= out_of_scope
+                try:
+                    await self.db.set_metadata("followed_migrations", json.dumps(sorted(self._followed_migration_ids)))
+                except Exception as e:
+                    logger.warning("Could not persist followed migrations: %s", type(e).__name__)
+                captured = 0
+                for new_id in out_of_scope:
+                    try:
+                        if await self._backup_followed_migration(new_id):
+                            backed_up_chat_ids.add(new_id)
+                            captured += 1
+                    except Exception as e:
+                        logger.warning("Could not capture a newly-followed supergroup: %s", type(e).__name__)
+                logger.info(
+                    "FOLLOW_CHAT_MIGRATIONS: adopted %d migrated supergroup(s), captured %d this run",
+                    len(out_of_scope),
+                    captured,
+                )
+            else:
+                logger.warning(
+                    "%d tracked group(s) migrated to a supergroup not in scope; capture stops for them "
+                    "until you add the new id to GROUPS_INCLUDE_CHAT_IDS or enable FOLLOW_CHAT_MIGRATIONS",
+                    len(out_of_scope),
+                )
+        except Exception as e:
+            logger.warning("Migration reconciliation failed: %s", type(e).__name__)
+
+    async def _backup_followed_migration(self, new_id: int) -> bool:
+        """Fetch and back up a newly-adopted supergroup this run (#228).
+
+        Returns True when the supergroup was fetched and backed up, False when it
+        is inaccessible (caught and count-only-logged so the sweep never crashes).
+        """
+        try:
+            entity = await call_with_flood_retry(self.client.get_entity, new_id)
+        except Exception as e:
+            logger.warning("Followed supergroup is inaccessible this run: %s", type(e).__name__)
+            return False
+
+        class _FollowedDialog:
+            def __init__(self, followed_entity):
+                self.entity = followed_entity
+                self.date = datetime.now()
+
+        await self._backup_dialog(_FollowedDialog(entity), is_archived=False)
+        return True
 
     @classmethod
     async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramBackup:
@@ -505,6 +661,12 @@ class TelegramBackup:
             # (which chats already completed after a deferred run — #224).
             await self._load_resweep_cycle()
 
+            # Load the set of supergroups we already adopted after a group→
+            # supergroup migration (#228) so they are treated as in-scope this
+            # run. Only when FOLLOW_CHAT_MIGRATIONS is on — when off nothing is
+            # ever persisted and this stays empty (warning-only behaviour).
+            await self._load_followed_migrations()
+
             # Whitelist mode: skip expensive get_dialogs() and fetch only the
             # specified chats directly.  For accounts with many dialogs the full
             # dialog fetch can hang indefinitely (see #95).
@@ -515,7 +677,9 @@ class TelegramBackup:
                 archived_dialogs = []
                 explicitly_excluded_chat_ids = set()
                 seen_chat_ids = set()
-                for cid in self.config.chat_ids:
+                # Adopted-migration supergroups (#228) are captured even in
+                # whitelist mode so a followed group keeps flowing after upgrade.
+                for cid in self.config.chat_ids | self._followed_migration_ids:
                     try:
                         entity = await call_with_flood_retry(self.client.get_entity, cid)
 
@@ -586,6 +750,10 @@ class TelegramBackup:
                     elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
                         # Chat should be backed up
                         filtered_dialogs.append(dialog)
+                    elif self._is_followed_migration(chat_id):
+                        # Adopted after a group→supergroup migration (#228): in
+                        # scope even though it is not in any user include list.
+                        filtered_dialogs.append(dialog)
 
                 # Fetch explicitly included chats that weren't in dialogs
                 # This handles cases where chats don't appear in the dialog list
@@ -596,7 +764,12 @@ class TelegramBackup:
                     | self.config.groups_include_ids
                     | self.config.channels_include_ids
                 )
-                missing_include_ids = all_include_ids - seen_chat_ids - explicitly_excluded_chat_ids
+                # Followed migrations (#228) are fetched explicitly too, so an
+                # adopted supergroup that no longer surfaces in the dialog list
+                # (e.g. not recently active) is still captured.
+                missing_include_ids = (
+                    (all_include_ids | self._followed_migration_ids) - seen_chat_ids - explicitly_excluded_chat_ids
+                )
 
                 if missing_include_ids:
                     logger.info(f"Fetching {len(missing_include_ids)} explicitly included chats not in regular dialogs")
@@ -711,7 +884,9 @@ class TelegramBackup:
                 is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
                 is_channel = isinstance(entity, Channel) and not entity.megagroup
 
-                if self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
+                if self.config.should_backup_chat(
+                    chat_id, is_user, is_group, is_channel, is_bot
+                ) or self._is_followed_migration(chat_id):
                     archived_to_backup.append(dialog)
 
             if archived_to_backup:
@@ -738,6 +913,12 @@ class TelegramBackup:
             # (#224) — directly after the dialog loops, so a later failure in
             # topics/folders/statistics cannot drop the cursor update.
             await self._finalize_resweep_cycle()
+
+            # Reconcile group→supergroup migrations (#228): warn (count-only)
+            # about tracked groups that migrated out of scope, and — when
+            # FOLLOW_CHAT_MIGRATIONS is on — adopt + capture the new supergroup.
+            # Guarded internally so it can never abort folders/stats below.
+            await self._reconcile_migrations(list(filtered_dialogs) + list(archived_to_backup), backed_up_chat_ids)
 
             # v6.2.0: Backup forum topics for forum-enabled chats.
             # Idempotent backstop to the early per-dialog fetch in _backup_dialog
@@ -1867,6 +2048,16 @@ class TelegramBackup:
             action_title = getattr(action, "title", None)
             if action_title is not None:
                 message_data["raw_data"]["new_title"] = self._text_with_entities_to_string(action_title)
+
+            # Group ↔ supergroup migration pointers (#228). MessageActionChatMigrateTo
+            # carries only ``.channel_id`` (no ``.title``), so the new supergroup id
+            # would otherwise be silently dropped; persist it in marked form so a
+            # later sweep can reconcile scope even if the migration happened while
+            # the archiver was offline. The reverse marker records the old group id.
+            if isinstance(action, MessageActionChatMigrateTo):
+                message_data["raw_data"]["migrate_to_id"] = get_peer_id(PeerChannel(action.channel_id))
+            elif isinstance(action, MessageActionChannelMigrateFrom):
+                message_data["raw_data"]["migrate_from_id"] = get_peer_id(PeerChat(action.chat_id))
 
             # Service messages carry no user-authored text, so synthesize the same
             # human-readable line the live listener stores. Only fill an empty text

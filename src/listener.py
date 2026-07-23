@@ -13,6 +13,7 @@ Telegram deletions never remove archived messages.
 """
 
 import asyncio
+import json
 import logging
 import os
 from collections import deque
@@ -396,10 +397,38 @@ class TelegramListener:
         try:
             chats = await self.db.get_all_chats()
             self._tracked_chat_ids = {chat["id"] for chat in chats}
+            # Merge supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228) so the
+            # new supergroup is tracked for real-time capture from listener start,
+            # even if its chat row is not persisted yet on the very first adoption.
+            self._tracked_chat_ids |= await self._load_followed_migration_ids()
             logger.info(f"Tracking {len(self._tracked_chat_ids)} chats for real-time updates")
         except Exception as e:
             logger.warning(f"Could not load tracked chats: {e}")
             self._tracked_chat_ids = set()
+
+    async def _load_followed_migration_ids(self) -> set[int]:
+        """Read adopted-supergroup ids from the metadata KV (#228).
+
+        Empty unless FOLLOW_CHAT_MIGRATIONS is on. Never raises — a missing or
+        malformed value degrades to an empty set.
+        """
+        if not getattr(self.config, "follow_chat_migrations", False):
+            return set()
+        try:
+            raw = await self.db.get_metadata("followed_migrations")
+        except Exception as e:
+            logger.warning(f"Could not load followed migrations: {type(e).__name__}")
+            return set()
+        if not raw:
+            return set()
+        try:
+            loaded = json.loads(raw)
+        except ValueError, TypeError:
+            logger.warning("Malformed followed_migrations metadata; ignoring")
+            return set()
+        if isinstance(loaded, list):
+            return {x for x in loaded if isinstance(x, int)}
+        return set()
 
     def _get_marked_id(self, entity_or_peer) -> int:
         """
