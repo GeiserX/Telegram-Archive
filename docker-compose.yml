@@ -55,6 +55,9 @@ services:
       GROUPS_EXCLUDE_CHAT_IDS: ${GROUPS_EXCLUDE_CHAT_IDS:-}
       CHANNELS_INCLUDE_CHAT_IDS: ${CHANNELS_INCLUDE_CHAT_IDS:-}
       CHANNELS_EXCLUDE_CHAT_IDS: ${CHANNELS_EXCLUDE_CHAT_IDS:-}
+      # Adopt the new supergroup id when a tracked basic group migrates (#228).
+      # Default false = warn only; true = follow + capture automatically.
+      # FOLLOW_CHAT_MIGRATIONS: ${FOLLOW_CHAT_MIGRATIONS:-false}
 
       # Database Configuration (v3.0+)
       # Option 1: DATABASE_URL (takes priority)

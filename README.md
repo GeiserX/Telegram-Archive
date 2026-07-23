@@ -284,6 +284,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `GROUPS_INCLUDE_CHAT_IDS` | - | B | Force-include specific groups |
 | `CHANNELS_EXCLUDE_CHAT_IDS` | - | B | Exclude specific channels |
 | `CHANNELS_INCLUDE_CHAT_IDS` | - | B | Force-include specific channels |
+| `FOLLOW_CHAT_MIGRATIONS` | `false` | B | Automatically adopt the new supergroup id when a tracked basic group is upgraded to a supergroup, so capture continues without editing include lists. When off, the sweep only warns. See [Group → supergroup migrations](#group--supergroup-migrations) |
 | **Real-time Listener** | | | See [Real-time Listener](#real-time-listener) below |
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
 | `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
@@ -407,6 +408,14 @@ For reactions on **older** messages, set `REACTION_RESWEEP_DAYS=N`: on every sch
 Telegram rate-limits `getMessagesReactions` by **burst rate across all chats** (the bucket size varies a lot between accounts — from a handful of requests to dozens), so the re-sweep paces itself: requests are spaced by `REACTION_RESWEEP_BATCH_DELAY_SECONDS` (default `2`, measured across chat boundaries — smoothing, deliberately not sized to make floods impossible). On a FloodWait the re-sweep pauses **without sleeping or retrying** and resumes within the same run once the server-requested window has elapsed; it defers the remainder to the next scheduled sweep only when that window outlives the run, or after repeated floods in one run (a degrading bucket is left alone). Completed chats — and the mid-chat progress of a chat too large for one burst window — are remembered per cycle, so the next scheduled sweep resumes approximately where the last one stopped (the window shifts between runs; the reconcile is idempotent, so overlap is harmless). Over at most a few sweeps every chat in the window gets covered, without ever fighting the rate limiter.
 
 Sizing tip: `REACTION_RESWEEP_MAX_PER_CHAT` decides how much of the flood bucket one chat may consume (each 100 messages ≈ one request). On accounts with a small bucket, a lower cap such as `100` spends ~1 request per chat and lets a single run reach every eligible chat; large caps favor deep per-chat coverage over per-run breadth.
+
+### Group → supergroup migrations
+
+When a basic Telegram group is upgraded to a supergroup (adding admins, joining it to a channel, exceeding the member limit, and similar), Telegram gives it a brand-new supergroup id. The old group keeps its history but receives no further messages. Telegram delivers the migration only as a service message that the real-time handlers never see, so without help the archive would silently stop capturing the conversation at the old id.
+
+**Always on — the warning.** Every scheduled backup checks whether any tracked group has migrated to a supergroup that is not in scope and logs a count-only warning, for example: `1 tracked group(s) migrated to a supergroup not in scope; capture stops for them until you add the new id to GROUPS_INCLUDE_CHAT_IDS or enable FOLLOW_CHAT_MIGRATIONS`. The warning repeats every run until you act, and — like all logs in this project — never includes chat ids, titles, or message content. Detection works both live (the migrated group is still visible in the dialog list) and after the fact (a stored migration marker), so migrations that happened while the archiver was offline are still caught.
+
+**Opt-in — follow the migration.** Set `FOLLOW_CHAT_MIGRATIONS=true` and the archiver adopts the new supergroup id automatically: it is remembered across runs and merged into the effective backup scope (so the sweep captures the supergroup even if it is not in your include lists) and into the listener's real-time tracking. The newly adopted supergroup is backed up in the same run it is discovered. Following is additive and idempotent — a supergroup you had already added to `GROUPS_INCLUDE_CHAT_IDS` is unaffected, and one you have explicitly excluded is left alone. When the flag is off nothing is persisted; only the warning fires.
 
 ### Mass Operation Protection
 

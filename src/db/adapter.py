@@ -13,6 +13,7 @@ import logging
 import os
 import secrets
 import shutil
+from collections.abc import Iterable
 from datetime import datetime
 from functools import wraps
 from typing import Any
@@ -462,6 +463,40 @@ class DatabaseAdapter:
             row = result.scalar_one_or_none()
             return row
 
+    async def get_migration_markers(self) -> list[tuple[int, int]]:
+        """Return stored group→supergroup migration pointers (#228).
+
+        Selects service messages whose ``raw_data.action_type`` is
+        ``chat_migrate_to`` and returns ``(old_chat_id, new_marked_id)`` pairs,
+        where ``new_marked_id`` is ``raw_data.migrate_to_id`` (already in marked
+        ``-100…`` form, written by ``_process_message``). SELECT-only; used to
+        reconcile scope for migrations that occurred while the archiver was
+        offline (the dead basic group may no longer surface as a dialog).
+
+        The ``LIKE`` clause is only a cheap prefilter — the authoritative match
+        is the Python-side ``json.loads`` — so the result is portable across the
+        SQLite and PostgreSQL backends without dialect-specific JSON operators.
+        PII: ids are returned to the caller for scope reconciliation only.
+        """
+        markers: list[tuple[int, int]] = []
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(Message.chat_id, Message.raw_data).where(Message.raw_data.like('%"chat_migrate_to"%'))
+            )
+            for chat_id, raw in result.all():
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError, TypeError:
+                    continue
+                if data.get("action_type") != "chat_migrate_to":
+                    continue
+                new_id = data.get("migrate_to_id")
+                if isinstance(new_id, int):
+                    markers.append((chat_id, new_id))
+        return markers
+
     # ========== Chat Operations ==========
 
     @retry_on_locked()
@@ -891,6 +926,25 @@ class DatabaseAdapter:
             await session.commit()
             logger.debug("Updated archived message text")
             return "applied"
+
+    async def sender_has_message_in_chats(self, sender_id: int, chat_ids: Iterable[int]) -> bool:
+        """Return True if sender_id authored at least one message in any of chat_ids.
+
+        SELECT-only membership probe used by the media ACL to decide whether a
+        viewer may fetch a member's avatar: a user avatar is served iff the
+        viewer can see a chat in which that user has spoken. Never logs ids.
+        """
+        chat_id_list = list(chat_ids)
+        if not chat_id_list:
+            return False
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Message.id)
+                .where(and_(Message.sender_id == sender_id, Message.chat_id.in_(chat_id_list)))
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.first() is not None
 
     async def backfill_is_outgoing(self, owner_id: int) -> None:
         """Backfill is_outgoing flag for messages sent by the owner."""
