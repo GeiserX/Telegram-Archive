@@ -27,6 +27,7 @@ from telethon.utils import get_peer_id
 
 from src.config import Config
 from src.db.adapter import DatabaseAdapter
+from src.listener import TelegramListener
 from src.telegram_backup import TelegramBackup
 
 
@@ -81,6 +82,9 @@ def _make_service_message(action, text=""):
 def _make_process_backup():
     backup = TelegramBackup.__new__(TelegramBackup)
     backup.config = MagicMock()
+    # Bare MagicMock attrs are truthy — pin should_skip_topic so a future
+    # topic-skip code path can't be silently short-circuited (documented pitfall).
+    backup.config.should_skip_topic = MagicMock(return_value=False)
     backup.db = AsyncMock()
     backup.client = AsyncMock()
     return backup
@@ -136,6 +140,12 @@ def _make_reconcile_backup(follow=False):
     cfg.global_exclude_ids = set()
     cfg.groups_exclude_ids = set()
     cfg.channels_exclude_ids = set()
+    # Default: the new supergroup is NOT in type-based scope (out of scope) unless
+    # a test opts it in. Real Config.should_backup_chat is exercised separately.
+    cfg.should_backup_chat = MagicMock(return_value=False)
+    # Pin should_skip_topic (bare MagicMock attrs are truthy) so a future
+    # topic-skip code path can't be silently short-circuited (documented pitfall).
+    cfg.should_skip_topic = MagicMock(return_value=False)
     backup.config = cfg
     backup.db = AsyncMock()
     backup.db.get_migration_markers = AsyncMock(return_value=[])
@@ -193,6 +203,19 @@ class TestReconcileMigrationsWarn(unittest.TestCase):
         backup.config.groups_include_ids = {new_id}
         with self.assertNoLogs(_LOGGER, level="WARNING"):
             _run(backup._reconcile_migrations([_migrated_dialog(555)], set()))
+
+    def test_suppressed_when_new_id_in_type_based_scope(self):
+        """All-groups mode: the migrated supergroup is type-in-scope, so no nag."""
+        backup = _make_reconcile_backup(follow=False)
+        backup._get_marked_id = MagicMock(return_value=-100)
+        # should_backup_chat True → the supergroup is captured naturally.
+        backup.config.should_backup_chat = MagicMock(return_value=True)
+        with self.assertNoLogs(_LOGGER, level="WARNING"):
+            _run(backup._reconcile_migrations([_migrated_dialog(555)], set()))
+        # Queried as a megagroup (is_group=True), not a broadcast channel.
+        _, kwargs = backup.config.should_backup_chat.call_args
+        self.assertTrue(kwargs.get("is_group"))
+        self.assertFalse(kwargs.get("is_channel"))
 
     def test_suppressed_when_new_id_explicitly_excluded(self):
         backup = _make_reconcile_backup(follow=False)
@@ -334,6 +357,221 @@ class TestFollowedMigrationScope(unittest.TestCase):
 # ===========================================================================
 # get_migration_markers adapter read (offline detection source)
 # ===========================================================================
+
+
+# ===========================================================================
+# FIX 1 / FIX 3(b) — listener processes followed supergroups in BOTH modes
+# ===========================================================================
+
+
+def _make_listener_config(*, follow, whitelist_mode=False, chat_ids=None):
+    """Config for the listener with follow_chat_migrations as a REAL bool.
+
+    (A MagicMock default would make follow_chat_migrations truthy and hide the
+    off-branch — the exact gap this covers.)
+    """
+    cfg = MagicMock()
+    cfg.api_id = 12345
+    cfg.api_hash = "test_hash"
+    cfg.phone = "+1234567890"
+    cfg.session_path = "/tmp/test_session"
+    cfg.validate_credentials = MagicMock()
+    cfg.global_include_ids = set()
+    cfg.private_include_ids = set()
+    cfg.groups_include_ids = set()
+    cfg.channels_include_ids = set()
+    cfg.whitelist_mode = whitelist_mode
+    cfg.chat_ids = chat_ids or set()
+    cfg.follow_chat_migrations = follow  # real bool, not MagicMock
+    cfg.listen_edits = True
+    cfg.listen_deletions = False
+    cfg.mass_operation_threshold = 10
+    cfg.mass_operation_window_seconds = 30
+    cfg.mass_operation_buffer_delay = 2.0
+    return cfg
+
+
+class TestListenerFollowScope(unittest.TestCase):
+    """A followed supergroup must be live-processed in whitelist AND type modes."""
+
+    def test_type_mode_tracks_and_processes_followed(self):
+        followed = get_peer_id(PeerChannel(555))
+        cfg = _make_listener_config(follow=True, whitelist_mode=False)
+        db = AsyncMock()
+        db.get_all_chats = AsyncMock(return_value=[{"id": -111}])
+        db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
+        listener = TelegramListener(cfg, db)
+        _run(listener._load_tracked_chats())
+        self.assertIn(followed, listener._tracked_chat_ids)
+        self.assertIn(followed, listener._followed_live)
+        self.assertTrue(listener._should_process_chat(followed))
+
+    def test_whitelist_mode_processes_followed(self):
+        """Whitelist mode ignores _tracked_chat_ids, so follow must ride _followed_live."""
+        followed = get_peer_id(PeerChannel(555))
+        cfg = _make_listener_config(follow=True, whitelist_mode=True, chat_ids={-999})
+        db = AsyncMock()
+        db.get_all_chats = AsyncMock(return_value=[])
+        db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
+        listener = TelegramListener(cfg, db)
+        _run(listener._load_tracked_chats())
+        self.assertIn(followed, listener._followed_live)
+        self.assertTrue(listener._should_process_chat(followed))  # via follow
+        self.assertTrue(listener._should_process_chat(-999))  # explicit whitelist
+        self.assertFalse(listener._should_process_chat(-12345))  # neither
+
+    def test_load_followed_off_short_circuits(self):
+        cfg = _make_listener_config(follow=False)
+        db = AsyncMock()
+        db.get_metadata = AsyncMock(return_value=json.dumps([-1]))
+        listener = TelegramListener(cfg, db)
+        self.assertEqual(_run(listener._load_followed_migration_ids()), set())
+        db.get_metadata.assert_not_awaited()
+
+    def test_load_followed_on_reads_metadata(self):
+        followed = get_peer_id(PeerChannel(555))
+        cfg = _make_listener_config(follow=True)
+        db = AsyncMock()
+        db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
+        listener = TelegramListener(cfg, db)
+        self.assertEqual(_run(listener._load_followed_migration_ids()), {followed})
+
+    def test_load_followed_malformed_degrades_to_empty(self):
+        cfg = _make_listener_config(follow=True)
+        db = AsyncMock()
+        db.get_metadata = AsyncMock(return_value="not json{")
+        listener = TelegramListener(cfg, db)
+        self.assertEqual(_run(listener._load_followed_migration_ids()), set())
+
+    def test_load_followed_missing_degrades_to_empty(self):
+        cfg = _make_listener_config(follow=True)
+        db = AsyncMock()
+        db.get_metadata = AsyncMock(return_value=None)
+        listener = TelegramListener(cfg, db)
+        self.assertEqual(_run(listener._load_followed_migration_ids()), set())
+
+
+# ===========================================================================
+# FIX 3(a) — a pre-populated followed id actually lands in the sweep's
+# backed-up dialogs (drives backup_all through the real injection points)
+# ===========================================================================
+
+
+class _Ent:
+    """Marked-id-carrying stand-in entity (not a User/Chat/Channel instance, so
+    the type-based filter classifies it as none-of-the-above)."""
+
+    def __init__(self, mid):
+        self.mid = mid
+
+
+def _make_sweep_backup(*, followed, whitelist_mode, chat_ids, main_dialogs, archived_dialogs):
+    backup = TelegramBackup.__new__(TelegramBackup)
+    cfg = MagicMock()
+    cfg.whitelist_mode = whitelist_mode
+    cfg.chat_ids = chat_ids
+    cfg.phone = "+1234567890"
+    cfg.priority_chat_ids = set()
+    cfg.global_include_ids = set()
+    cfg.private_include_ids = set()
+    cfg.groups_include_ids = set()
+    cfg.channels_include_ids = set()
+    cfg.global_exclude_ids = set()
+    cfg.groups_exclude_ids = set()
+    cfg.channels_exclude_ids = set()
+    cfg.follow_chat_migrations = True  # real bool so _is_followed_migration works
+    cfg.verify_media = False
+    # Nothing is in scope by type/include — only the follow path can pull ids in.
+    cfg.should_backup_chat = MagicMock(return_value=False)
+    backup.config = cfg
+
+    db = AsyncMock()
+    db.get_last_message_id = AsyncMock(return_value=0)
+    db.calculate_and_store_statistics = AsyncMock(
+        return_value={"chats": 1, "messages": 1, "media_files": 0, "total_size_mb": 0}
+    )
+    backup.db = db
+
+    client = AsyncMock()
+    me = MagicMock()
+    me.first_name = "T"
+    me.id = 1
+    client.get_me = AsyncMock(return_value=me)
+    client.start = AsyncMock()
+    client.get_entity = AsyncMock(side_effect=lambda cid: _Ent(cid))
+    backup.client = client
+
+    backup._followed_migration_ids = set(followed)  # PRE-POPULATED
+    backup._get_marked_id = MagicMock(side_effect=lambda e: e.mid)
+    backup._get_dialogs = AsyncMock(side_effect=lambda archived=False: archived_dialogs if archived else main_dialogs)
+    # Isolate scope injection: stub the surrounding orchestration.
+    backup._load_resweep_cycle = AsyncMock()
+    backup._load_followed_migrations = AsyncMock()  # no-op: keep the pre-populated set
+    backup._finalize_resweep_cycle = AsyncMock()
+    backup._reconcile_migrations = AsyncMock()
+    backup._backup_folders = AsyncMock()
+    backup._retry_pending_media_downloads = AsyncMock()
+    backup._backup_dialog = AsyncMock(return_value=0)
+    return backup
+
+
+def _backed_up_ids(backup):
+    return {call.args[0].entity.mid for call in backup._backup_dialog.call_args_list}
+
+
+class TestFollowedSweepInjection(unittest.TestCase):
+    """Prove followed ids reach _backup_dialog via all three injection points."""
+
+    def test_type_mode_elif_and_missing_include_fetch(self):
+        f_in = get_peer_id(PeerChannel(555))  # present in dialogs → type-filter elif
+        f_out = get_peer_id(PeerChannel(666))  # absent → missing_include explicit fetch
+        dialog_in = MagicMock()
+        dialog_in.entity = _Ent(f_in)
+        dialog_in.date = datetime(2024, 1, 1, 0, 0, 0)
+        backup = _make_sweep_backup(
+            followed={f_in, f_out},
+            whitelist_mode=False,
+            chat_ids=set(),
+            main_dialogs=[dialog_in],
+            archived_dialogs=[],
+        )
+        _run(backup.backup_all())
+        backed = _backed_up_ids(backup)
+        self.assertIn(f_in, backed)  # injection point: type-filter elif
+        self.assertIn(f_out, backed)  # injection point: missing_include fetch
+        # f_out was pulled in via an explicit get_entity fetch.
+        backup.client.get_entity.assert_any_await(f_out)
+
+    def test_whitelist_mode_union_fetch(self):
+        followed = get_peer_id(PeerChannel(555))
+        whitelisted = -999
+        backup = _make_sweep_backup(
+            followed={followed},
+            whitelist_mode=True,
+            chat_ids={whitelisted},
+            main_dialogs=[],
+            archived_dialogs=[],
+        )
+        _run(backup.backup_all())
+        backed = _backed_up_ids(backup)
+        self.assertIn(followed, backed)  # injection point: whitelist union
+        self.assertIn(whitelisted, backed)
+
+    def test_whitelist_followed_excluded_is_not_fetched(self):
+        """FIX 2 (low): the followed additions honor the exclude list in whitelist mode."""
+        followed = get_peer_id(PeerChannel(555))
+        backup = _make_sweep_backup(
+            followed={followed},
+            whitelist_mode=True,
+            chat_ids={-999},
+            main_dialogs=[],
+            archived_dialogs=[],
+        )
+        backup.config.groups_exclude_ids = {followed}
+        _run(backup.backup_all())
+        backed = _backed_up_ids(backup)
+        self.assertNotIn(followed, backed)  # excluded → not pulled in
+        self.assertIn(-999, backed)
 
 
 class TestGetMigrationMarkers(unittest.TestCase):

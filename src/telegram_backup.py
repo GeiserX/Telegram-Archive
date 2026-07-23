@@ -490,6 +490,12 @@ class TelegramBackup:
                     continue  # user opted the new supergroup out
                 if new_id in backed_up_chat_ids or new_id in configured:
                     continue  # already in scope and captured
+                # A migrated supergroup is always a megagroup, so ask the
+                # type-based filter directly: in all-groups mode (no include
+                # list) the new supergroup is naturally in scope and will be
+                # captured on its own, so warning about it would be spurious.
+                if self.config.should_backup_chat(new_id, is_user=False, is_group=True, is_channel=False, is_bot=False):
+                    continue
                 if self.config.follow_chat_migrations and new_id in self._followed_migration_ids:
                     continue  # already adopted on a previous run
                 out_of_scope.add(new_id)
@@ -679,7 +685,17 @@ class TelegramBackup:
                 seen_chat_ids = set()
                 # Adopted-migration supergroups (#228) are captured even in
                 # whitelist mode so a followed group keeps flowing after upgrade.
-                for cid in self.config.chat_ids | self._followed_migration_ids:
+                # Honor the exclude lists for the followed additions (the explicit
+                # CHAT_IDS whitelist itself is never exclude-filtered). Only touch
+                # the exclude sets when there is actually something followed.
+                followed_to_fetch = self._followed_migration_ids
+                if followed_to_fetch:
+                    followed_to_fetch = followed_to_fetch - (
+                        self.config.global_exclude_ids
+                        | self.config.groups_exclude_ids
+                        | self.config.channels_exclude_ids
+                    )
+                for cid in self.config.chat_ids | followed_to_fetch:
                     try:
                         entity = await call_with_flood_retry(self.client.get_entity, cid)
 

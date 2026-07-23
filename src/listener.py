@@ -256,6 +256,10 @@ class TelegramListener:
         self._owns_client = client is None  # Track if we created the client
         self._running = False
         self._tracked_chat_ids: set[int] = set()
+        # Supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228). Kept as a
+        # dedicated set (not just folded into _tracked_chat_ids) so whitelist
+        # mode — which ignores _tracked_chat_ids — can still process them.
+        self._followed_live: set[int] = set()
 
         # Zero-footprint mass operation protection
         self._protector = MassOperationProtector(
@@ -397,14 +401,17 @@ class TelegramListener:
         try:
             chats = await self.db.get_all_chats()
             self._tracked_chat_ids = {chat["id"] for chat in chats}
-            # Merge supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228) so the
-            # new supergroup is tracked for real-time capture from listener start,
-            # even if its chat row is not persisted yet on the very first adoption.
-            self._tracked_chat_ids |= await self._load_followed_migration_ids()
+            # Supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228): keep them in
+            # a dedicated set AND fold into the type-based tracked set, so the new
+            # supergroup is captured live from listener start (even before its chat
+            # row is persisted) in BOTH whitelist and type-based modes.
+            self._followed_live = await self._load_followed_migration_ids()
+            self._tracked_chat_ids |= self._followed_live
             logger.info(f"Tracking {len(self._tracked_chat_ids)} chats for real-time updates")
         except Exception as e:
             logger.warning(f"Could not load tracked chats: {e}")
             self._tracked_chat_ids = set()
+            self._followed_live = set()
 
     async def _load_followed_migration_ids(self) -> set[int]:
         """Read adopted-supergroup ids from the metadata KV (#228).
@@ -576,16 +583,19 @@ class TelegramListener:
         Two modes:
 
         MODE 1 - Whitelist Mode (CHAT_IDS is set):
-            Only process events for chats explicitly listed in CHAT_IDS.
+            Only process events for chats explicitly listed in CHAT_IDS, plus
+            any supergroup adopted via FOLLOW_CHAT_MIGRATIONS (#228).
 
         MODE 2 - Type-based Mode:
             Process if:
             - Chat is in our tracked list (backed up at least once), OR
             - Chat matches our backup filters (include lists)
         """
-        # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority
+        # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority. Followed
+        # migrations are added explicitly (not via _tracked_chat_ids, which
+        # whitelist mode ignores) so a migrated supergroup keeps flowing live.
         if self.config.whitelist_mode:
-            return chat_id in self.config.chat_ids
+            return chat_id in self.config.chat_ids or chat_id in self._followed_live
 
         # MODE 2: Type-based Mode
         # First, check if it's in our tracked chats

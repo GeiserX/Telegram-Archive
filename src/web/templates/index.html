@@ -1000,6 +1000,7 @@
                                         class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none"
                                         :style="{ background: getAvatarFill(msg) }">
                                         <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url"
+                                            loading="lazy"
                                             class="w-full h-full object-cover"
                                             @error="msg.sender_avatar_url = null" :alt="getSenderName(msg)">
                                         <template v-else>{{ getSenderInitials(msg) }}</template>
@@ -3373,14 +3374,11 @@
                         const raw = msg.raw_data
                         if (!raw) continue
                         if (raw.migrate_to_id != null) {
-                            return { direction: 'to', text: 'This group continues as a supergroup →' }
+                            return { text: 'This group continues as a supergroup →' }
                         }
                         if (raw.migrate_from_id != null) {
                             const title = raw.new_title
-                            return {
-                                direction: 'from',
-                                text: title ? `← Migrated from ${title}` : '← Migrated from a group',
-                            }
+                            return { text: title ? `← Migrated from ${title}` : '← Migrated from a group' }
                         }
                     }
                     return null
@@ -3922,24 +3920,28 @@
                     return `hsl(${hue}, 70%, 65%)`
                 }
 
-                // Sender avatar helpers (#229 group avatars). Memoized per sender_id
-                // to avoid recomputing initials/fill for every message in a run.
+                // Sender avatar helpers (#229 group avatars). Memoized to avoid
+                // recomputing initials/fill for every message in a run: the fill
+                // (color) keys on sender_id; the monogram keys on the resolved
+                // name string (post_author can differ per message for the same
+                // sender_id, so a sender_id key would be wrong for channels).
                 const _senderInitialsCache = new Map()
                 const _senderFillCache = new Map()
                 const senderKey = (msg) => String(msg.sender_id ?? msg.chat_id ?? 0)
 
-                // Up to 2 uppercased initials from the sender's first/last name.
-                // Deleted / nameless senders get '?' (NOT the getChatName
-                // 'Deleted Account' fallback — that would render 'DA').
+                // Up to 2 uppercased initials from the SAME name getSenderName
+                // resolves (post_author → first/last → username → User <id>), so
+                // the monogram matches the visible name label. Only '?' when
+                // getSenderName itself has nothing real (its 'Deleted Account'
+                // terminal) — never the 'DA' that string would otherwise yield.
                 const getSenderInitials = (msg) => {
-                    const key = senderKey(msg)
-                    if (_senderInitialsCache.has(key)) return _senderInitialsCache.get(key)
-                    const name = [msg.first_name, msg.last_name].filter(Boolean).join(' ').trim()
-                    let initials = '?'
-                    if (name) {
-                        initials = name.split(/\s+/).map(n => n[0]).join('').substring(0, 2).toUpperCase()
-                    }
-                    _senderInitialsCache.set(key, initials)
+                    const name = getSenderName(msg)
+                    if (!name || name === 'Deleted Account') return '?'
+                    const cached = _senderInitialsCache.get(name)
+                    if (cached !== undefined) return cached
+                    const initials =
+                        name.split(/\s+/).filter(Boolean).map(n => n[0]).join('').substring(0, 2).toUpperCase() || '?'
+                    _senderInitialsCache.set(name, initials)
                     return initials
                 }
 

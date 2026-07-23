@@ -1035,7 +1035,11 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(resolved)
+    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely — let
+    # them cache like serve_thumbnail's output so avatar URLs aren't refetched
+    # on every page. Regular media keeps the default (no explicit caching).
+    headers = {"Cache-Control": "public, max-age=86400"} if path.startswith("avatars/") else None
+    return FileResponse(resolved, headers=headers)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1394,6 +1398,13 @@ _avatar_cache: dict[int, str | None] = {}
 _avatar_cache_time: datetime | None = None
 AVATAR_CACHE_TTL_SECONDS = 300  # 5 minutes
 
+# Cache avatar membership verdicts to avoid a DB probe per avatar request.
+# Keyed by (avatar_user_id, frozenset(user_chat_ids)) — the verdict depends on
+# both. Mirrors the avatar-path cache's TTL sweep.
+_avatar_member_cache: dict[tuple[int, frozenset[int]], bool] = {}
+_avatar_member_cache_time: datetime | None = None
+AVATAR_MEMBER_CACHE_TTL_SECONDS = 300  # 5 minutes
+
 
 def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     """Get avatar path with caching."""
@@ -1443,9 +1454,11 @@ async def _avatar_user_visible_member(path: str, user: UserContext) -> bool:
     Runs the SELECT-only membership probe for the avatars/users/{user_id}_...
     case only, so the sync _enforce_media_acl can stay signature-stable. A user
     avatar is allowed iff the requested user has spoken in a chat the viewer is
-    authorized for. Returns False (no DB hit) for every other path, for
-    unrestricted viewers (ACL short-circuits anyway), and for ids already
-    directly allowed. Never logs ids.
+    authorized for. Returns True (no DB hit) when the id is already directly
+    allowed (a 1:1 chat the viewer can see); returns False (no DB hit) for every
+    other path and for unrestricted viewers (the ACL short-circuits anyway). On
+    any DB error the probe fails CLOSED (returns False → the avatar is denied).
+    Never logs ids.
     """
     parts = path.split("/")
     if len(parts) < 3 or parts[0] != "avatars" or parts[1] != "users":
@@ -1461,7 +1474,32 @@ async def _avatar_user_visible_member(path: str, user: UserContext) -> bool:
     if avatar_user_id in user_chat_ids:
         # Directly allowed as a 1:1 chat — no membership probe needed.
         return True
-    return await db.sender_has_message_in_chats(avatar_user_id, user_chat_ids)
+
+    # Cache the DB verdict (short TTL) so repeated avatar requests on a page
+    # don't each run the membership probe.
+    global _avatar_member_cache_time
+    now = datetime.utcnow()
+    if (
+        _avatar_member_cache_time
+        and (now - _avatar_member_cache_time).total_seconds() > AVATAR_MEMBER_CACHE_TTL_SECONDS
+    ):
+        _avatar_member_cache.clear()
+        _avatar_member_cache_time = None
+    cache_key = (avatar_user_id, frozenset(user_chat_ids))
+    if cache_key in _avatar_member_cache:
+        return _avatar_member_cache[cache_key]
+
+    try:
+        verdict = await db.sender_has_message_in_chats(avatar_user_id, user_chat_ids)
+    except Exception as exc:
+        # Fail closed: a transient DB error must deny the avatar (403), never
+        # surface as an uncaught 500. Log the exception class only (no ids).
+        logger.warning("Avatar membership probe failed (%s); denying avatar", exc.__class__.__name__)
+        return False
+    _avatar_member_cache[cache_key] = verdict
+    if _avatar_member_cache_time is None:
+        _avatar_member_cache_time = now
+    return verdict
 
 
 @app.get("/api/chats")
