@@ -845,8 +845,15 @@ def get_user_chat_ids(user: UserContext) -> set[int] | None:
     return user.allowed_chat_ids & master_filter
 
 
-def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False) -> None:
-    """Enforce chat-scoped access for a media URL path before serving bytes."""
+def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False, member_ok: bool = False) -> None:
+    """Enforce chat-scoped access for a media URL path before serving bytes.
+
+    member_ok is a pre-resolved membership verdict for user-avatar paths
+    (avatars/users/{user_id}_...): the async endpoints run the SELECT-only
+    probe and pass True when the requested user has spoken in a chat the
+    viewer is authorized for. It is only honored for the avatars/users/
+    branch; avatars/chats/ and regular media ACL are unchanged.
+    """
     user_chat_ids = get_user_chat_ids(user)
     if user_chat_ids is None:
         return
@@ -856,17 +863,26 @@ def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False)
         raise HTTPException(status_code=403, detail="Access denied")
 
     if parts[0] == "avatars":
-        # Avatar path: avatars/{users|chats}/{chat_id}_{photo_id}.jpg
+        # Avatar path: avatars/{users|chats}/{id}_{photo_id}.jpg
         if len(parts) < 3:
             raise HTTPException(status_code=403, detail="Access denied")
+        subfolder = parts[1]
         name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
         try:
-            avatar_chat_id = int(name.split("_")[0])
+            avatar_id = int(name.split("_")[0])
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied")
-        if avatar_chat_id not in user_chat_ids:
-            raise HTTPException(status_code=403, detail="Access denied")
-        return
+        # Direct grant: a chat avatar for an allowed chat, or a 1:1 contact
+        # avatar whose user id == the private chat id the viewer can see.
+        if avatar_id in user_chat_ids:
+            return
+        # avatars/users/{user_id}: the first segment is a USER id, not a chat
+        # id. Serve it when that user is a member of a visible chat (they have
+        # spoken in a chat the viewer is authorized for). member_ok carries
+        # that pre-resolved DB verdict from the endpoint.
+        if subfolder == "users" and member_ok:
+            return
+        raise HTTPException(status_code=403, detail="Access denied")
 
     try:
         media_chat_id = int(parts[0])
@@ -944,8 +960,11 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if user.no_download and not folder.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
-    # Early ACL check on requested path (prevents existence leakage)
-    _enforce_media_acl(f"{folder}/{filename}", user, thumbnail=True)
+    # Early ACL check on requested path (prevents existence leakage).
+    # Member avatars (avatars/users/) are gated by a visible-membership probe.
+    requested = f"{folder}/{filename}"
+    member_ok = await _avatar_user_visible_member(requested, user)
+    _enforce_media_acl(requested, user, thumbnail=True, member_ok=member_ok)
 
     from .thumbnails import ensure_thumbnail, resolve_cache_dir
 
@@ -960,7 +979,9 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     thumb_path, resolved_folder = result
     # Secondary ACL on resolved path if it differs (prevents bypass via legacy fallback)
     if resolved_folder != folder:
-        _enforce_media_acl(f"{resolved_folder}/{filename}", user, thumbnail=True)
+        resolved = f"{resolved_folder}/{filename}"
+        resolved_member_ok = await _avatar_user_visible_member(resolved, user)
+        _enforce_media_acl(resolved, user, thumbnail=True, member_ok=resolved_member_ok)
 
     return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
@@ -1007,12 +1028,23 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
 
     # ACL uses the original request path (chat folder), not the resolved symlink
     # target — symlinks into _shared/ don't carry chat folder context.
-    _enforce_media_acl(path, user)
+    # Member avatars (avatars/users/) are gated by a visible-membership probe.
+    member_ok = await _avatar_user_visible_member(path, user)
+    _enforce_media_acl(path, user, member_ok=member_ok)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(resolved)
+    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely — let
+    # them cache like serve_thumbnail's output so avatar URLs aren't refetched on
+    # every page. The Cache-Control is set on the response after construction so
+    # the FileResponse(resolved) call is unchanged; the containment check above
+    # (reject ../absolute, resolve strict, is_relative_to media root) is the
+    # actual path-traversal protection.
+    response = FileResponse(resolved)
+    if path.startswith("avatars/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1371,6 +1403,13 @@ _avatar_cache: dict[int, str | None] = {}
 _avatar_cache_time: datetime | None = None
 AVATAR_CACHE_TTL_SECONDS = 300  # 5 minutes
 
+# Cache avatar membership verdicts to avoid a DB probe per avatar request.
+# Keyed by (avatar_user_id, frozenset(user_chat_ids)) — the verdict depends on
+# both. Mirrors the avatar-path cache's TTL sweep.
+_avatar_member_cache: dict[tuple[int, frozenset[int]], bool] = {}
+_avatar_member_cache_time: datetime | None = None
+AVATAR_MEMBER_CACHE_TTL_SECONDS = 300  # 5 minutes
+
 
 def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     """Get avatar path with caching."""
@@ -1392,6 +1431,80 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
         _avatar_cache_time = datetime.utcnow()
 
     return avatar_path
+
+
+def _sender_avatar_url(sender_id: int | None) -> str | None:
+    """Resolve a per-message member avatar URL from files ALREADY on disk.
+
+    A member avatar exists only when a prior backup happened to download it
+    (in practice because the sender is also a 1:1 contact). Proactive
+    member-avatar download is intentionally deferred (slice 2b) — it is
+    flood-sensitive, so nothing here fetches arbitrary member photos. The
+    initials circle in the viewer is the always-available render; a served
+    file is a bonus. Returns None when no file is present.
+
+    User ids are positive and map to avatars/users/ (same folder + naming as a
+    private chat with that id), so the shared avatar cache resolves them with
+    no collision against negative group/channel chat ids.
+    """
+    if not sender_id or sender_id <= 0:
+        return None
+    avatar_path = _get_cached_avatar_path(sender_id, "private")
+    return f"/media/{avatar_path}" if avatar_path else None
+
+
+async def _avatar_user_visible_member(path: str, user: UserContext) -> bool:
+    """Pre-resolve whether an avatars/users/ path is for a visible member.
+
+    Runs the SELECT-only membership probe for the avatars/users/{user_id}_...
+    case only, so the sync _enforce_media_acl can stay signature-stable. A user
+    avatar is allowed iff the requested user has spoken in a chat the viewer is
+    authorized for. Returns True (no DB hit) when the id is already directly
+    allowed (a 1:1 chat the viewer can see); returns False (no DB hit) for every
+    other path and for unrestricted viewers (the ACL short-circuits anyway). On
+    any DB error the probe fails CLOSED (returns False → the avatar is denied).
+    Never logs ids.
+    """
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "avatars" or parts[1] != "users":
+        return False
+    user_chat_ids = get_user_chat_ids(user)
+    if user_chat_ids is None:
+        return False
+    name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
+    try:
+        avatar_user_id = int(name.split("_")[0])
+    except ValueError:
+        return False
+    if avatar_user_id in user_chat_ids:
+        # Directly allowed as a 1:1 chat — no membership probe needed.
+        return True
+
+    # Cache the DB verdict (short TTL) so repeated avatar requests on a page
+    # don't each run the membership probe.
+    global _avatar_member_cache_time
+    now = datetime.utcnow()
+    if (
+        _avatar_member_cache_time
+        and (now - _avatar_member_cache_time).total_seconds() > AVATAR_MEMBER_CACHE_TTL_SECONDS
+    ):
+        _avatar_member_cache.clear()
+        _avatar_member_cache_time = None
+    cache_key = (avatar_user_id, frozenset(user_chat_ids))
+    if cache_key in _avatar_member_cache:
+        return _avatar_member_cache[cache_key]
+
+    try:
+        verdict = await db.sender_has_message_in_chats(avatar_user_id, user_chat_ids)
+    except Exception as exc:
+        # Fail closed: a transient DB error must deny the avatar (403), never
+        # surface as an uncaught 500. Log the exception class only (no ids).
+        logger.warning("Avatar membership probe failed (%s); denying avatar", exc.__class__.__name__)
+        return False
+    _avatar_member_cache[cache_key] = verdict
+    if _avatar_member_cache_time is None:
+        _avatar_member_cache_time = now
+    return verdict
 
 
 @app.get("/api/chats")
@@ -1503,6 +1616,16 @@ async def get_messages(
             after_id=after_id,
             topic_id=topic_id,
         )
+        # Slice 2a: attach a member-avatar URL inferred from files already on
+        # disk (globbed via the shared avatar cache). Null when absent — the
+        # viewer falls back to the initials circle. No new DB column; proactive
+        # member-avatar download stays deferred (slice 2b, flood-sensitive).
+        # get_messages_paginated returns a list of message dicts; guard so an
+        # unexpected shape can never turn a read into a 500.
+        if isinstance(messages, list):
+            for message in messages:
+                if isinstance(message, dict):
+                    message["sender_avatar_url"] = _sender_avatar_url(message.get("sender_id"))
         if user.no_download:
             _strip_original_media_paths(messages)
         return messages
