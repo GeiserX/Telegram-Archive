@@ -785,6 +785,17 @@
                         </div>
                     </div>
 
+                    <!-- Group ↔ supergroup migration banner (#228). Display-only pointer;
+                         rendered only when the loaded messages carry the marker. -->
+                    <div v-if="migrationBanner && !showPinnedOnly"
+                        class="px-4 py-2 bg-blue-500/10 border-b border-blue-500/30 flex items-center gap-3 text-sm text-blue-200">
+                        <svg class="w-4 h-4 shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                        </svg>
+                        <span class="truncate">{{ migrationBanner.text }}</span>
+                    </div>
+
                     <!-- Pinned Message Banner (only shown in normal view, not in pinned-only view) -->
                     <!-- Click on message content → scroll to message + cycle to next -->
                     <!-- Click on pin icon (right side) → open pinned messages view -->
@@ -975,7 +986,25 @@
                                 </div>
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
-                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id" class="flex" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id" class="flex items-end gap-2" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                                <!-- Sender avatar gutter (#229): group + non-own only.
+                                     Circle renders at the run start (alongside the name);
+                                     an empty gutter keeps the rest of the run aligned. Shows
+                                     the on-disk member photo when present (slice 2a), else the
+                                     initials circle (always available, slice 1). NOTE:
+                                     proactive member-avatar download is intentionally deferred
+                                     (slice 2b, flood-sensitive) — only pre-existing files are
+                                     served, so initials are the primary render. -->
+                                <div v-if="isGroup && !isOwnMessage(msg)" class="w-8 shrink-0 self-end">
+                                    <div v-if="showSenderName(index)"
+                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none"
+                                        :style="{ background: getAvatarFill(msg) }">
+                                        <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url"
+                                            class="w-full h-full object-cover"
+                                            @error="msg.sender_avatar_url = null" :alt="getSenderName(msg)">
+                                        <template v-else>{{ getSenderInitials(msg) }}</template>
+                                    </div>
+                                </div>
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
@@ -3333,6 +3362,30 @@
                     return pinnedMessages.value[currentPinnedIndex.value] || pinnedMessages.value[0]
                 })
 
+                // Computed: group ↔ supergroup migration pointer (#228). The backup
+                // persists raw_data.migrate_to_id on the old chat's migrate service
+                // message, and raw_data.migrate_from_id (+ raw_data.new_title) on the
+                // new supergroup's channel_migrate_from message. Display-only: when a
+                // loaded message carries such a pointer we surface a lightweight
+                // banner; otherwise it degrades cleanly to null (no banner).
+                const migrationBanner = computed(() => {
+                    for (const msg of messages.value) {
+                        const raw = msg.raw_data
+                        if (!raw) continue
+                        if (raw.migrate_to_id != null) {
+                            return { direction: 'to', text: 'This group continues as a supergroup →' }
+                        }
+                        if (raw.migrate_from_id != null) {
+                            const title = raw.new_title
+                            return {
+                                direction: 'from',
+                                text: title ? `← Migrated from ${title}` : '← Migrated from a group',
+                            }
+                        }
+                    }
+                    return null
+                })
+
                 // Load all pinned messages for a chat
                 const loadPinnedMessages = async (chatId) => {
                     try {
@@ -3867,6 +3920,43 @@
                     const hue = getSenderColor(msg)
                     // Bright, vibrant color for name
                     return `hsl(${hue}, 70%, 65%)`
+                }
+
+                // Sender avatar helpers (#229 group avatars). Memoized per sender_id
+                // to avoid recomputing initials/fill for every message in a run.
+                const _senderInitialsCache = new Map()
+                const _senderFillCache = new Map()
+                const senderKey = (msg) => String(msg.sender_id ?? msg.chat_id ?? 0)
+
+                // Up to 2 uppercased initials from the sender's first/last name.
+                // Deleted / nameless senders get '?' (NOT the getChatName
+                // 'Deleted Account' fallback — that would render 'DA').
+                const getSenderInitials = (msg) => {
+                    const key = senderKey(msg)
+                    if (_senderInitialsCache.has(key)) return _senderInitialsCache.get(key)
+                    const name = [msg.first_name, msg.last_name].filter(Boolean).join(' ').trim()
+                    let initials = '?'
+                    if (name) {
+                        initials = name.split(/\s+/).map(n => n[0]).join('').substring(0, 2).toUpperCase()
+                    }
+                    _senderInitialsCache.set(key, initials)
+                    return initials
+                }
+
+                // Darker fill for the initials circle. Native top-lighter →
+                // bottom-darker gradient, but BOTH stops sit in the contrast-safe
+                // zone: hsl(h,65%,27%) → hsl(h,65%,18%) both clear white-text
+                // contrast >=4.5:1 (WCAG AA) on all 360 hues (verified: min 5.08
+                // and 8.94), so tall letters / anti-aliasing reaching the lighter
+                // corner stay legible. The name palette hsl(h,70%,65%), by
+                // contrast, fails on most hues — which is why the fill is separate.
+                const getAvatarFill = (msg) => {
+                    const key = senderKey(msg)
+                    if (_senderFillCache.has(key)) return _senderFillCache.get(key)
+                    const hue = getSenderColor(msg)
+                    const fill = `linear-gradient(135deg, hsl(${hue}, 65%, 27%), hsl(${hue}, 65%, 18%))`
+                    _senderFillCache.set(key, fill)
+                    return fill
                 }
 
                 const getPollPercentage = (msg, answer) => {
@@ -4550,6 +4640,7 @@
                     selectChat,
                     chatStats,
                     pinnedMessage,
+                    migrationBanner,
                     pinnedMessages,
                     currentPinnedIndex,
                     showPinnedOnly,
@@ -4669,6 +4760,8 @@
                     // Colors / avatars
                     getSenderStyle,
                     getSenderNameColor,
+                    getSenderInitials,
+                    getAvatarFill,
                     getPollPercentage,
                     isDeletedChat,
                     isAudioFile,
