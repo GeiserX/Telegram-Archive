@@ -904,10 +904,10 @@ class TestWhitelistModeBackup(unittest.TestCase):
             self.assertNotIn("987654321", message)
 
     def test_whitelist_fallback_sweep_suppressed_for_known_failed_ids(self):
-        """Ids that already failed a scan don't re-trigger one, but still get the cheap retry."""
+        """Ids that already failed a scan at this bound don't re-trigger one, but still get the cheap retry."""
         self.config.chat_ids = {987654321}
         self.config.whitelist_resolve_dialog_limit = 1000
-        self._wire_backup_run(metadata={"whitelist_unresolved_ids": "[987654321]"})
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": '{"limit": 1000, "ids": [987654321]}'})
         self.backup.client.get_entity = AsyncMock(side_effect=Exception("still failing"))
         self.backup.client.iter_dialogs = MagicMock()
 
@@ -916,13 +916,14 @@ class TestWhitelistModeBackup(unittest.TestCase):
         self.backup.client.iter_dialogs.assert_not_called()
         # First pass + cheap retry pass — the id must keep self-heal attempts.
         self.assertEqual(self.backup.client.get_entity.await_count, 2)
-        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", "[987654321]")
+        # Retained at its original proof bound (no scan ran this time).
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": [987654321]}')
 
     def test_whitelist_fallback_resolution_clears_known_failed(self):
         """A known-failed id that resolves on the retry pass leaves the persisted set."""
         self.config.chat_ids = {987654321}
         self.config.whitelist_resolve_dialog_limit = 1000
-        self._wire_backup_run(metadata={"whitelist_unresolved_ids": "[987654321]"})
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": '{"limit": 1000, "ids": [987654321]}'})
         entity = User(id=987654321)
         self.backup.client.get_entity = AsyncMock(side_effect=[Exception("cache cold"), entity])
         self.backup.client.iter_dialogs = MagicMock()
@@ -930,8 +931,154 @@ class TestWhitelistModeBackup(unittest.TestCase):
         self._run(self.backup.backup_all())
 
         self.backup.client.iter_dialogs.assert_not_called()
-        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", "[]")
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": []}')
         self.assertIn(entity, self._backed_up_entities())
+
+    def test_whitelist_fallback_raised_limit_rearms_scan(self):
+        """Raising WHITELIST_RESOLVE_DIALOG_LIMIT re-arms the scan for suppressed ids.
+
+        The persisted proof bound records how far the absence was proven; a
+        higher configured limit invalidates it — this is what makes the
+        warning's own advice actually work (review finding on #234).
+        """
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 2000
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": '{"limit": 1000, "ids": [987654321]}'})
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        dm_entity = User(id=987654321)
+        self.backup.client.iter_dialogs = MagicMock(
+            side_effect=lambda **kw: self._FakeDialogIter([MagicMock(id=987654321, entity=dm_entity)])
+        )
+
+        self._run(self.backup.backup_all())
+
+        self.backup.client.iter_dialogs.assert_called_once_with(limit=2000)
+        self.assertIn(dm_entity, self._backed_up_entities())
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 2000, "ids": []}')
+
+    def test_whitelist_fallback_legacy_list_metadata_rearms_scan(self):
+        """A legacy plain-list metadata value has no proof bound — the scan re-runs once."""
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": "[987654321]"})
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        self.backup.client.iter_dialogs = MagicMock(side_effect=lambda **kw: self._FakeDialogIter([]))
+
+        self._run(self.backup.backup_all())
+
+        self.backup.client.iter_dialogs.assert_called_once_with(limit=1000)
+        # Scan completed empty → absence now proven at the current bound.
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": [987654321]}')
+
+    def test_whitelist_fallback_aborted_scan_does_not_suppress_new_ids(self):
+        """A flood-aborted scan proves nothing — unfound NEW ids must stay sweep-eligible.
+
+        One unlucky first run must not permanently disarm the #234 fallback
+        (confirmed high-severity review finding).
+        """
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self._wire_backup_run()
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        self.backup.client.iter_dialogs = MagicMock(
+            side_effect=lambda **kw: self._FakeDialogIter([], error=FloodWaitError(request=None, capture=15))
+        )
+
+        self._run(self.backup.backup_all())
+
+        # Nothing new persisted: next run's scan must retry this id.
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 0, "ids": []}')
+
+    def test_whitelist_fallback_completed_scan_suppresses_missing_ids(self):
+        """A scan that ran to completion proves absence — the id is persisted at the current bound."""
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self._wire_backup_run()
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        self.backup.client.iter_dialogs = MagicMock(
+            side_effect=lambda **kw: self._FakeDialogIter([MagicMock(id=111, entity=User(id=111))])
+        )
+
+        self._run(self.backup.backup_all())
+
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": [987654321]}')
+
+    def test_whitelist_fallback_stale_suppressions_cleared_when_all_resolve(self):
+        """When every entry resolves directly, leftover suppressions are cleared.
+
+        Otherwise an id that goes cache-cold again later (session reset) would
+        be silently retry-only forever (review finding on #234).
+        """
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": '{"limit": 1000, "ids": [987654321]}'})
+        self.backup.client.get_entity = AsyncMock(return_value=User(id=987654321))
+        self.backup.client.iter_dialogs = MagicMock()
+
+        self._run(self.backup.backup_all())
+
+        self.backup.client.iter_dialogs.assert_not_called()
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": []}')
+
+    def test_whitelist_fallback_known_failed_resolved_by_rider_scan_drops_out(self):
+        """A scan triggered by a NEW id also rescues known-failed ids — and un-suppresses them."""
+        self.config.chat_ids = {987654321, 12345}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self._wire_backup_run(metadata={"whitelist_unresolved_ids": '{"limit": 1000, "ids": [987654321]}'})
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        old_dm = User(id=987654321)
+        new_dm = User(id=12345)
+        self.backup.client.iter_dialogs = MagicMock(
+            side_effect=lambda **kw: self._FakeDialogIter(
+                [MagicMock(id=987654321, entity=old_dm), MagicMock(id=12345, entity=new_dm)]
+            )
+        )
+
+        self._run(self.backup.backup_all())
+
+        entities = self._backed_up_entities()
+        self.assertIn(old_dm, entities)
+        self.assertIn(new_dm, entities)
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": []}')
+
+    def test_whitelist_fallback_followed_ids_not_persisted(self):
+        """Unresolvable followed-migration ids are never written to the suppression key.
+
+        They are not CHAT_IDS entries — the warning's operator guidance does not
+        apply to them — so they stay eligible for the next run's scan instead.
+        """
+        self.config.chat_ids = {987654321}
+        self.config.whitelist_resolve_dialog_limit = 1000
+        self.config.global_exclude_ids = set()
+        self.config.groups_exclude_ids = set()
+        self.config.channels_exclude_ids = set()
+        self._wire_backup_run(metadata={"followed_migrations": "[-1002000000001]"})
+        self.config.follow_chat_migrations = True
+        self.backup.client.get_entity = AsyncMock(side_effect=Exception("cache cold"))
+        self.backup.client.iter_dialogs = MagicMock(side_effect=lambda **kw: self._FakeDialogIter([]))
+
+        self._run(self.backup.backup_all())
+
+        # Scan completed: the configured id is proven-absent and persisted; the
+        # followed id failed too but must NOT appear in the suppression set.
+        self.backup.db.set_metadata.assert_any_call("whitelist_unresolved_ids", '{"limit": 1000, "ids": [987654321]}')
+
+    def test_load_whitelist_unresolved_malformed_metadata_degrades(self):
+        """Malformed/legacy/absent metadata degrades to (0, ...) and never raises."""
+
+        async def _load_with(raw):
+            self.backup.db.get_metadata = AsyncMock(return_value=raw)
+            return await self.backup._load_whitelist_unresolved()
+
+        self.assertEqual(self._run(_load_with(None)), (0, set()))
+        self.assertEqual(self._run(_load_with("not json at all {{{")), (0, set()))
+        self.assertEqual(self._run(_load_with('{"ids": "nope", "limit": "x"}')), (0, set()))
+        self.assertEqual(self._run(_load_with('{"limit": -5, "ids": [1, "junk", 2]}')), (0, {1, 2}))
+        self.assertEqual(self._run(_load_with("[7, 8]")), (0, {7, 8}))
+        self.assertEqual(
+            self._run(_load_with('{"limit": 500, "ids": [7]}')),
+            (500, {7}),
+        )
 
 
 class TestExtractTopicId(unittest.TestCase):

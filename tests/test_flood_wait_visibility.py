@@ -794,3 +794,63 @@ async def test_fetch_media_bytes_sets_flood_threshold_during_download(fake_db):
     assert result == "/tmp/media.part"
     assert observed == [60]
     assert client.flood_sleep_threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_restores_on_external_cancellation(fake_db):
+    """Cancellation mid-transfer (e.g. a wait_for timeout) still restores the threshold."""
+    import asyncio
+
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    entered = asyncio.Event()
+
+    async def _hold():
+        async with absorb_media_floods(client, 60):
+            entered.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(_hold())
+    await entered.wait()
+    assert client.flood_sleep_threshold == 60
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client.flood_sleep_threshold == 0
+    assert client._ta_media_flood_depth == 0
+
+
+def _make_media_backup():
+    """Minimal TelegramBackup for exercising _download_media_to_path directly."""
+    from src.telegram_backup import TelegramBackup
+
+    backup = TelegramBackup.__new__(TelegramBackup)
+    backup.config = MagicMock()  # non-int download_timeout_seconds → no wait_for bound
+    backup.db = AsyncMock()
+    backup.client = AsyncMock()
+    return backup
+
+
+@pytest.mark.asyncio
+async def test_download_media_valueerror_flood_exhaustion_logged(fake_db, caplog, tmp_path):
+    """Telethon's request-retries ValueError is surfaced as likely flood exhaustion (#232)."""
+    backup = _make_media_backup()
+    backup._fetch_media_bytes_bounded = AsyncMock(side_effect=ValueError("Request was unsuccessful 5 time(s)"))
+
+    with caplog.at_level(logging.WARNING, logger="src.telegram_backup"), pytest.raises(ValueError):
+        await backup._download_media_to_path(MagicMock(), str(tmp_path / "m.part"), 123, 42)
+
+    assert any("repeated in-request retries" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_download_media_foreign_valueerror_not_mislabeled(fake_db, caplog, tmp_path):
+    """A ValueError from anywhere else must not be labeled as flood exhaustion."""
+    backup = _make_media_backup()
+    backup._fetch_media_bytes_bounded = AsyncMock(side_effect=ValueError("unrelated parsing problem"))
+
+    with caplog.at_level(logging.WARNING, logger="src.telegram_backup"), pytest.raises(ValueError):
+        await backup._download_media_to_path(MagicMock(), str(tmp_path / "m.part"), 123, 42)
+
+    assert not any("repeated in-request retries" in r.getMessage() for r in caplog.records)

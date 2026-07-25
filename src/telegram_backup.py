@@ -311,8 +311,10 @@ async def absorb_media_floods(client, threshold):
     per-request threshold kwarg, so the client attribute is the only lever).
     Ref-counted so overlapping transfers (sweep + listener) restore correctly;
     the counter updates have no awaits between read and write, so the single-
-    threaded event loop keeps them atomic. No-ops for a non-positive or
-    non-int threshold (keeps MagicMock-config tests inert).
+    threaded event loop keeps them atomic. When contexts overlap, the FIRST
+    (outermost) threshold stays in effect — a nested different value is
+    deliberately ignored. No-ops for a non-positive or non-int threshold
+    (keeps MagicMock-config tests inert).
     """
     if not isinstance(threshold, int) or threshold <= 0:
         yield
@@ -486,31 +488,53 @@ class TelegramBackup:
         """True if ``chat_id`` was adopted via FOLLOW_CHAT_MIGRATIONS (#228)."""
         return self.config.follow_chat_migrations and chat_id in self._followed_migration_ids
 
-    async def _load_whitelist_unresolved(self) -> set[int]:
+    async def _load_whitelist_unresolved(self) -> tuple[int, set[int]]:
         """Load whitelist ids that already failed the #234 dialog-scan fallback.
 
-        Stored under the ``whitelist_unresolved_ids`` metadata key (a JSON list
-        of ids) so a dead CHAT_IDS entry (deleted account, typo) does not
-        re-trigger the bounded dialog scan on every run. Never raises — a
-        missing or malformed value degrades to "no known failures".
+        Stored under the ``whitelist_unresolved_ids`` metadata key as a JSON
+        object ``{"limit": N, "ids": [...]}`` so a dead CHAT_IDS entry (deleted
+        account, typo) does not re-trigger the bounded dialog scan on every
+        run. ``limit`` records the scan bound the absence was proven under:
+        callers must discard the suppression when the configured limit is now
+        HIGHER (a bigger scan may find the peer — this is what makes the
+        "raise WHITELIST_RESOLVE_DIALOG_LIMIT" advice in the warning actually
+        work). Returns ``(proof_limit, ids)``; never raises — a missing,
+        legacy-format, or malformed value degrades to ``(0, ids-if-parseable)``
+        and a zero proof-limit always invalidates.
         """
         try:
             raw = await self.db.get_metadata("whitelist_unresolved_ids")
         except Exception as e:
             logger.debug("Could not load unresolved whitelist ids (%s)", type(e).__name__)
-            return set()
+            return 0, set()
         if not isinstance(raw, str) or not raw:
-            return set()
+            return 0, set()
         try:
             data = json.loads(raw)
-            return {int(x) for x in data} if isinstance(data, list) else set()
         except ValueError, TypeError:
-            return set()
+            return 0, set()
+        if isinstance(data, dict):
+            ids = data.get("ids")
+            limit = data.get("limit")
+            return (
+                limit if isinstance(limit, int) and limit > 0 else 0,
+                {x for x in ids if isinstance(x, int)} if isinstance(ids, list) else set(),
+            )
+        if isinstance(data, list):  # legacy plain-list format: proof bound unknown
+            return 0, {x for x in data if isinstance(x, int)}
+        return 0, set()
 
-    async def _save_whitelist_unresolved(self, ids: set[int]) -> None:
-        """Persist the still-unresolvable whitelist ids (#234). Never raises."""
+    async def _save_whitelist_unresolved(self, ids: set[int], limit: int) -> None:
+        """Persist the still-unresolvable whitelist ids (#234). Never raises.
+
+        ``limit`` is the scan bound the ids' absence was proven under (see
+        ``_load_whitelist_unresolved``).
+        """
         try:
-            await self.db.set_metadata("whitelist_unresolved_ids", json.dumps(sorted(ids)))
+            await self.db.set_metadata(
+                "whitelist_unresolved_ids",
+                json.dumps({"limit": limit, "ids": sorted(ids)}),
+            )
         except Exception as e:
             logger.debug("Could not persist unresolved whitelist ids (%s)", type(e).__name__)
 
@@ -808,26 +832,40 @@ class TelegramBackup:
                 # (MagicMock ordering comparisons raise TypeError). Strictly
                 # best-effort: nothing below may escape the whitelist branch.
                 limit = getattr(self.config, "whitelist_resolve_dialog_limit", 0)
+                if isinstance(limit, int) and limit > 0:
+                    proof_limit, known_failed = await self._load_whitelist_unresolved()
+                    if limit > proof_limit:
+                        # The stored ids' absence was only proven under a smaller
+                        # scan bound — a bigger scan may find them. Discarding the
+                        # suppression here is what makes the warning's "raise
+                        # WHITELIST_RESOLVE_DIALOG_LIMIT" advice actually work.
+                        known_failed = set()
                 if unresolved and isinstance(limit, int) and limit > 0:
-                    known_failed = await self._load_whitelist_unresolved()
                     # Only NEW failures justify a scan — ids that already failed
-                    # one must not re-trigger a sweep every run. The running
-                    # sweep still matches ALL unresolved ids, incl. known-failed
-                    # ones: that extra coverage is free.
+                    # a COMPLETED scan at this bound must not re-trigger one
+                    # every run. The running sweep still matches ALL unresolved
+                    # ids, incl. known-failed ones: that extra coverage is free.
                     to_sweep = unresolved - known_failed
                     pending = set(unresolved)
                     resolved_in_sweep = 0
+                    # Only a sweep that ran to completion (iterator exhausted, or
+                    # every pending id found) PROVES absence up to `limit`. An
+                    # aborted sweep (flood/timeout/error) proves nothing — its
+                    # unfound ids must not be suppressed, or one unlucky run
+                    # would permanently disarm this fallback and reintroduce the
+                    # #234 silent skip.
+                    sweep_completed = False
                     if to_sweep:
                         logger.info(
                             "Whitelist: %d of %d configured chat(s) unresolved; "
                             "scanning up to %d dialogs to warm the entity cache (#234)",
-                            len(to_sweep),
+                            len(unresolved),
                             len(self.config.chat_ids | followed_to_fetch),
                             limit,
                         )
 
                         async def _sweep() -> None:
-                            nonlocal resolved_in_sweep
+                            nonlocal resolved_in_sweep, sweep_completed
                             # No folder/archived kwarg ON PURPOSE: with folder
                             # unspecified, Telethon returns ALL dialogs including
                             # archived ones — an unresolved DM may well be
@@ -843,7 +881,10 @@ class TelegramBackup:
                                     pending.discard(dialog.id)
                                     resolved_in_sweep += 1
                                     if not pending:
+                                        sweep_completed = True
                                         break
+                            else:
+                                sweep_completed = True
 
                         try:
                             await asyncio.wait_for(_sweep(), timeout=WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS)
@@ -881,10 +922,19 @@ class TelegramBackup:
                         except Exception:
                             still_failed.add(cid)
 
-                    # Persist exactly the post-retry still-failed set: resolved
-                    # ids drop out, ids removed from CHAT_IDS drop out next run,
-                    # and a still-failed id stays so it won't re-trigger sweeps.
-                    await self._save_whitelist_unresolved(still_failed)
+                    # Persist the suppression set. Resolved ids drop out either
+                    # way. New ids are added only when the sweep COMPLETED (their
+                    # absence is proven up to `limit`); after an abort only the
+                    # previously-proven ids are retained, at their original proof
+                    # bound. Followed-migration ids are never persisted: they are
+                    # not CHAT_IDS entries (the operator guidance below does not
+                    # apply to them) and an unresolvable one stays eligible for
+                    # the next run's scan instead.
+                    still_failed_config = still_failed & self.config.chat_ids
+                    if sweep_completed:
+                        await self._save_whitelist_unresolved(still_failed_config, limit)
+                    else:
+                        await self._save_whitelist_unresolved(still_failed_config & known_failed, proof_limit)
                     if resolved_in_sweep or resolved_in_retry:
                         logger.info(
                             "Whitelist: resolved %d of %d unresolved chat(s) (sweep %d, retry %d)",
@@ -893,7 +943,7 @@ class TelegramBackup:
                             resolved_in_sweep,
                             resolved_in_retry,
                         )
-                    if still_failed:
+                    if still_failed_config:
                         logger.warning(
                             "Whitelist: %d configured chat(s) remain unresolvable and were "
                             "skipped this run. A DM (positive user id) becomes resolvable once "
@@ -903,9 +953,15 @@ class TelegramBackup:
                             "remove it from CHAT_IDS. A dormant peer older than the newest %d "
                             "dialogs may need a higher WHITELIST_RESOLVE_DIALOG_LIMIT. "
                             "See issue #234.",
-                            len(still_failed),
+                            len(still_failed_config),
                             limit,
                         )
+                elif isinstance(limit, int) and limit > 0 and known_failed:
+                    # Everything resolved in the direct pass — clear stale
+                    # suppressions so an id that later goes cache-cold again
+                    # (e.g. after a session reset) gets a fresh scan instead of
+                    # being silently retry-only forever.
+                    await self._save_whitelist_unresolved(set(), limit)
 
             else:
                 # Type-based mode: fetch full dialog list and filter
@@ -2646,17 +2702,19 @@ class TelegramBackup:
                         attempt + 1,
                         MEDIA_REFRESH_MAX_ATTEMPTS,
                     )
-                except ValueError:
+                except ValueError as e:
                     # Telethon raises a bare ValueError ("Request was unsuccessful
                     # N time(s)") when one request exhausts its internal retry
                     # budget — e.g. >= request_retries FloodWaits absorbed inside
                     # a single chunk call, a failure mode that exists once
-                    # absorb_media_floods is active (#232).
-                    logger.warning(
-                        "Media download gave up after repeated in-request retries "
-                        "(likely sustained FloodWaits within one request); "
-                        "leaving it for a future backup run"
-                    )
+                    # absorb_media_floods is active (#232). Match its message so
+                    # unrelated ValueErrors are not mislabeled as flood exhaustion.
+                    if str(e).startswith("Request was unsuccessful"):
+                        logger.warning(
+                            "Media download gave up after repeated in-request retries "
+                            "(likely sustained FloodWaits within one request); "
+                            "leaving it for a future backup run"
+                        )
                     raise
             # Defensive: the loop returns on success or raises on the final attempt.
             raise FileReferenceExpiredError(request=None)
