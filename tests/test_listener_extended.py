@@ -711,6 +711,93 @@ class TestDownloadMedia:
         assert result is not None
         listener.client.download_media.assert_called_once()
 
+    @patch("os.path.exists", return_value=False)
+    @patch("os.makedirs")
+    @patch("os.path.lexists", return_value=False)
+    @patch("os.symlink")
+    @patch("os.path.relpath", return_value="../_shared/file.jpg")
+    async def test_download_media_absorbs_floods_dedup(
+        self, mock_relpath, mock_symlink, mock_lexists, mock_makedirs, mock_exists
+    ):
+        """#232: the dedup download closure runs under absorb_media_floods."""
+        from telethon.tl.types import MessageMediaPhoto
+
+        listener = self._make_listener(deduplicate_media=True, media_flood_sleep_threshold=60)
+        listener.client.flood_sleep_threshold = 0
+
+        msg = MagicMock()
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 123
+        media.photo.sizes = []
+        msg.media = media
+        msg.id = 1
+
+        downloaded = {"done": False}
+        observed = []
+
+        async def fake_download(*args, **kwargs):
+            observed.append(listener.client.flood_sleep_threshold)
+            downloaded["done"] = True
+            return "/tmp/test_media/_shared/123.jpg"
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
+
+        def exists(path):
+            if str(path).endswith("123.jpg") and "_shared" in str(path):
+                return downloaded["done"]
+            return False
+
+        mock_exists.side_effect = exists
+        with patch("src.message_utils.finalize_atomic_download", return_value="/tmp/test_media/_shared/123.jpg"):
+            result = await listener._download_media(msg, -100)
+        assert result is not None
+        # Threshold raised only for the download window, restored after.
+        assert observed == [60]
+        assert listener.client.flood_sleep_threshold == 0
+
+    @patch("os.path.exists", return_value=False)
+    @patch("os.makedirs")
+    async def test_download_media_absorbs_floods_no_dedup(self, mock_makedirs, mock_exists):
+        """#232: the direct (non-dedup) download runs under absorb_media_floods."""
+        from telethon.tl.types import MessageMediaPhoto
+
+        listener = self._make_listener(deduplicate_media=False, media_flood_sleep_threshold=60)
+        listener.client.flood_sleep_threshold = 0
+
+        msg = MagicMock()
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 123
+        media.photo.sizes = []
+        msg.media = media
+        msg.id = 1
+
+        downloaded = {"done": False}
+        observed = []
+
+        async def fake_download(*args, **kwargs):
+            observed.append(listener.client.flood_sleep_threshold)
+            downloaded["done"] = True
+            return os.path.normpath("/tmp/test_media/-100/123.jpg")
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
+
+        def exists(path):
+            if str(path).endswith("123.jpg") and "-100" in str(path):
+                return downloaded["done"]
+            return False
+
+        mock_exists.side_effect = exists
+        with patch(
+            "src.message_utils.finalize_atomic_download", return_value=os.path.normpath("/tmp/test_media/-100/123.jpg")
+        ):
+            result = await listener._download_media(msg, -100)
+        assert result is not None
+        # Threshold raised only for the download window, restored after.
+        assert observed == [60]
+        assert listener.client.flood_sleep_threshold == 0
+
     async def test_download_media_returns_none_on_exception(self):
         """Exception during download returns None instead of raising."""
         from telethon.tl.types import MessageMediaPhoto

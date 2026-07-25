@@ -690,3 +690,107 @@ async def test_call_with_flood_retry_gives_up_on_transient_error(fake_db):
         pytest.raises(OSError, match="disk failure"),
     ):
         await telegram_backup.call_with_flood_retry(broken_api, max_retries=3)
+
+
+# ---------------------------------------------------------------------------
+# Media flood absorption (#232): absorb_media_floods
+#
+# These pin OUR contract at the seam: the client-wide threshold is raised for
+# the duration of a media transfer and restored afterwards, while the global
+# client kwargs stay 0 (#124). The absorbed sleep itself happens inside
+# vendored Telethon and is not re-tested here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_sets_threshold_and_restores(fake_db):
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    async with absorb_media_floods(client, 60):
+        assert client.flood_sleep_threshold == 60
+    assert client.flood_sleep_threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_restores_on_exception(fake_db):
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with absorb_media_floods(client, 60):
+            raise RuntimeError("boom")
+    assert client.flood_sleep_threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_refcount_overlap(fake_db):
+    """Models a sweep download and a listener download overlapping on the
+    shared client: the threshold is only restored when the LAST one exits."""
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    cm_a = absorb_media_floods(client, 60)
+    cm_b = absorb_media_floods(client, 60)
+    await cm_a.__aenter__()
+    assert client.flood_sleep_threshold == 60
+    await cm_b.__aenter__()
+    assert client.flood_sleep_threshold == 60
+    await cm_a.__aexit__(None, None, None)
+    # B still holds the context — the threshold must NOT be restored yet.
+    assert client.flood_sleep_threshold == 60
+    await cm_b.__aexit__(None, None, None)
+    assert client.flood_sleep_threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_zero_threshold_noop(fake_db):
+    """Threshold 0 keeps the pre-#232 raise-immediately behavior untouched."""
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    async with absorb_media_floods(client, 0):
+        assert client.flood_sleep_threshold == 0
+    assert client.flood_sleep_threshold == 0
+    assert not hasattr(client, "_ta_media_flood_depth")
+    assert not hasattr(client, "_ta_media_flood_base")
+
+
+@pytest.mark.asyncio
+async def test_absorb_media_floods_non_int_threshold_noop(fake_db):
+    """A MagicMock threshold (auto-created config attr) must be inert."""
+    from src.telegram_backup import absorb_media_floods
+
+    client = SimpleNamespace(flood_sleep_threshold=0)
+    async with absorb_media_floods(client, MagicMock()):
+        assert client.flood_sleep_threshold == 0
+    assert client.flood_sleep_threshold == 0
+    assert not hasattr(client, "_ta_media_flood_depth")
+
+
+@pytest.mark.asyncio
+async def test_fetch_media_bytes_sets_flood_threshold_during_download(fake_db):
+    """_fetch_media_bytes raises the threshold for the download window only."""
+    from src.telegram_backup import TelegramBackup
+
+    backup = TelegramBackup.__new__(TelegramBackup)
+    config = MagicMock()
+    config.media_flood_sleep_threshold = 60
+    backup.config = config  # `is True` gate keeps MagicMock configs single-stream
+    backup.db = AsyncMock()
+
+    observed = []
+    client = SimpleNamespace(flood_sleep_threshold=0)
+
+    async def _download_media(message, tmp_path):
+        observed.append(client.flood_sleep_threshold)
+        return tmp_path
+
+    client.download_media = _download_media
+    backup.client = client
+
+    result = await backup._fetch_media_bytes(MagicMock(), "/tmp/media.part", 123)
+
+    assert result == "/tmp/media.part"
+    assert observed == [60]
+    assert client.flood_sleep_threshold == 0

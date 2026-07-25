@@ -11,6 +11,7 @@ import os
 import random
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient
@@ -18,6 +19,7 @@ from telethon.errors import (
     ChannelPrivateError,
     ChatForbiddenError,
     FileReferenceExpiredError,
+    FloodPremiumWaitError,
     FloodWaitError,
     RPCError,
     UserBannedInChannelError,
@@ -109,6 +111,9 @@ FLOOD_WAIT_LOG_THRESHOLD = _get_int_env("FLOOD_WAIT_LOG_THRESHOLD", 10)
 MEDIA_REFRESH_MAX_ATTEMPTS = _get_int_env("MEDIA_REFRESH_MAX_ATTEMPTS", 3)
 # Upper bound on a single message-refresh round-trip so it can never hang.
 MEDIA_REFRESH_TIMEOUT_SECONDS = _get_int_env("MEDIA_REFRESH_TIMEOUT_SECONDS", 120)
+# Hard wall-clock bound on the #234 whitelist dialog scan — the count limit alone
+# cannot prevent a wedged-connection hang, which is what #95 was about.
+WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS = 300
 
 
 def _media_retry_backoff_seconds(attempt: int) -> float:
@@ -127,7 +132,11 @@ def _is_non_retryable_media_op(exc: BaseException) -> bool:
     and backs off) and a per-operation ``TimeoutError`` (the outer loop decides).
 
     Keeping these out of ``call_with_flood_retry`` also means the per-operation
-    timeout never wraps — and so never cancels — its FloodWait sleeps.
+    timeout never wraps — and so never cancels — its FloodWait sleeps. One
+    caveat since #232: floods absorbed inside Telethon by ``absorb_media_floods``
+    (up to MEDIA_FLOOD_SLEEP_THRESHOLD seconds each) DO sleep inside the
+    per-operation timeout; only above-threshold floods still raise before the
+    timeout can cancel them.
     """
     return is_media_location_error(exc) or isinstance(exc, TimeoutError)
 
@@ -200,7 +209,7 @@ async def call_with_flood_retry(
     while True:
         try:
             return await coro_fn(*args, **kwargs)
-        except FloodWaitError as e:
+        except (FloodWaitError, FloodPremiumWaitError) as e:
             retries += 1
             if retries > max_retries:
                 logger.error(
@@ -282,12 +291,60 @@ async def call_with_flood_retry(
             await asyncio.sleep(sleep_duration)
 
 
+@asynccontextmanager
+async def absorb_media_floods(client, threshold):
+    """Temporarily raise the client's flood_sleep_threshold for a media transfer.
+
+    With the app-wide ``flood_sleep_threshold=0`` (#124) any mid-download
+    FloodWait aborts ``download_media`` entirely and the outer retry restarts
+    from byte 0, so a file whose transfer outlives one flood-free window can
+    never finish (#232). Inside this context Telethon absorbs floods up to
+    ``threshold`` seconds: it sleeps and re-issues the SAME chunk request, so
+    the transfer resumes at the current offset (Telethon logs each absorbed
+    sleep at INFO on its own logger). Floods above the threshold still raise
+    and follow the normal ``call_with_flood_retry`` path.
+
+    The threshold is a client-wide attribute and the client is shared with the
+    real-time listener, so a request that floods on another task while a media
+    transfer holds this context is absorbed too — a deliberate, bounded
+    dilution of #124's per-call visibility (Telethon's ``__call__`` drops its
+    per-request threshold kwarg, so the client attribute is the only lever).
+    Ref-counted so overlapping transfers (sweep + listener) restore correctly;
+    the counter updates have no awaits between read and write, so the single-
+    threaded event loop keeps them atomic. No-ops for a non-positive or
+    non-int threshold (keeps MagicMock-config tests inert).
+    """
+    if not isinstance(threshold, int) or threshold <= 0:
+        yield
+        return
+    depth = getattr(client, "_ta_media_flood_depth", 0)
+    if not isinstance(depth, int):
+        depth = 0  # Mock clients auto-create attributes; normalize to a real counter
+    if depth == 0:
+        client._ta_media_flood_base = client.flood_sleep_threshold
+        client.flood_sleep_threshold = threshold
+        logger.debug("Media flood absorption active (threshold=%ss)", threshold)
+    client._ta_media_flood_depth = depth + 1
+    try:
+        yield
+    finally:
+        # Re-read the live counter — using the value captured at entry would
+        # corrupt the count when transfers overlap (sweep + listener).
+        depth = client._ta_media_flood_depth - 1
+        client._ta_media_flood_depth = depth
+        if depth == 0:
+            client.flood_sleep_threshold = client._ta_media_flood_base
+            logger.debug("Media flood absorption restored")
+
+
 async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     """Wrap ``client.iter_messages`` so FloodWaitError is logged and retried.
 
     With ``flood_sleep_threshold=0`` on the client, every flood-wait bubbles up
-    as an exception. We log the wait and resume iteration from the last yielded
-    message id so progress isn't lost.
+    as an exception (media downloads are the one scoped exception: they raise
+    the threshold via ``absorb_media_floods`` for the transfer window — #232).
+    We log the wait and resume iteration from the last yielded message id so
+    progress isn't lost.
 
     Bounded retries: the inner ``while`` is capped at ``MAX_FLOOD_RETRIES``
     *consecutive* flood-waits without progress, and the counter resets every
@@ -316,7 +373,7 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     resume_from = max(resume_from, msg.id)
                 retries = 0
             return
-        except FloodWaitError as e:
+        except (FloodWaitError, FloodPremiumWaitError) as e:
             retries += 1
             if retries > MAX_FLOOD_RETRIES:
                 logger.error(
@@ -428,6 +485,34 @@ class TelegramBackup:
     def _is_followed_migration(self, chat_id: int) -> bool:
         """True if ``chat_id`` was adopted via FOLLOW_CHAT_MIGRATIONS (#228)."""
         return self.config.follow_chat_migrations and chat_id in self._followed_migration_ids
+
+    async def _load_whitelist_unresolved(self) -> set[int]:
+        """Load whitelist ids that already failed the #234 dialog-scan fallback.
+
+        Stored under the ``whitelist_unresolved_ids`` metadata key (a JSON list
+        of ids) so a dead CHAT_IDS entry (deleted account, typo) does not
+        re-trigger the bounded dialog scan on every run. Never raises — a
+        missing or malformed value degrades to "no known failures".
+        """
+        try:
+            raw = await self.db.get_metadata("whitelist_unresolved_ids")
+        except Exception as e:
+            logger.debug("Could not load unresolved whitelist ids (%s)", type(e).__name__)
+            return set()
+        if not isinstance(raw, str) or not raw:
+            return set()
+        try:
+            data = json.loads(raw)
+            return {int(x) for x in data} if isinstance(data, list) else set()
+        except ValueError, TypeError:
+            return set()
+
+    async def _save_whitelist_unresolved(self, ids: set[int]) -> None:
+        """Persist the still-unresolvable whitelist ids (#234). Never raises."""
+        try:
+            await self.db.set_metadata("whitelist_unresolved_ids", json.dumps(sorted(ids)))
+        except Exception as e:
+            logger.debug("Could not persist unresolved whitelist ids (%s)", type(e).__name__)
 
     async def _reconcile_migrations(self, dialogs: list, backed_up_chat_ids: set[int]) -> None:
         """Detect group→supergroup migrations and warn or follow them (#228).
@@ -695,20 +780,132 @@ class TelegramBackup:
                         | self.config.groups_exclude_ids
                         | self.config.channels_exclude_ids
                     )
+
+                class SimpleDialog:
+                    def __init__(self, entity):
+                        self.entity = entity
+                        self.date = datetime.now()
+
+                unresolved: set[int] = set()
                 for cid in self.config.chat_ids | followed_to_fetch:
                     try:
                         entity = await call_with_flood_retry(self.client.get_entity, cid)
-
-                        class SimpleDialog:
-                            def __init__(self, entity):
-                                self.entity = entity
-                                self.date = datetime.now()
-
                         filtered_dialogs.append(SimpleDialog(entity))
                         seen_chat_ids.add(cid)
                         logger.info("  → Fetched chat")
                     except Exception as e:
                         logger.warning(f"  → Could not fetch chat: {e}")
+                        unresolved.add(cid)
+
+                # Fallback for unresolved entries (#234): a bare positive user id
+                # (a DM) only resolves once the session has the peer's access_hash
+                # cached — channels get a hash-0 probe, users don't — so a DM the
+                # session has never "seen" silently never archives. One bounded
+                # iter_dialogs pass persists every seen entity's access_hash into
+                # the session (a permanent self-heal) and adopts matching dialogs
+                # directly. Guard order is load-bearing: `unresolved` first (most
+                # runs never get here), isinstance before any comparison
+                # (MagicMock ordering comparisons raise TypeError). Strictly
+                # best-effort: nothing below may escape the whitelist branch.
+                limit = getattr(self.config, "whitelist_resolve_dialog_limit", 0)
+                if unresolved and isinstance(limit, int) and limit > 0:
+                    known_failed = await self._load_whitelist_unresolved()
+                    # Only NEW failures justify a scan — ids that already failed
+                    # one must not re-trigger a sweep every run. The running
+                    # sweep still matches ALL unresolved ids, incl. known-failed
+                    # ones: that extra coverage is free.
+                    to_sweep = unresolved - known_failed
+                    pending = set(unresolved)
+                    resolved_in_sweep = 0
+                    if to_sweep:
+                        logger.info(
+                            "Whitelist: %d of %d configured chat(s) unresolved; "
+                            "scanning up to %d dialogs to warm the entity cache (#234)",
+                            len(to_sweep),
+                            len(self.config.chat_ids | followed_to_fetch),
+                            limit,
+                        )
+
+                        async def _sweep() -> None:
+                            nonlocal resolved_in_sweep
+                            # No folder/archived kwarg ON PURPOSE: with folder
+                            # unspecified, Telethon returns ALL dialogs including
+                            # archived ones — an unresolved DM may well be
+                            # archived (#234). Do NOT reuse _get_dialogs() here:
+                            # it pins folder=0/folder=1.
+                            async for dialog in self.client.iter_dialogs(limit=limit):
+                                if dialog.id in pending:
+                                    # The dialog already carries the entity
+                                    # get_entity would return — grab it directly
+                                    # and skip a second API call.
+                                    filtered_dialogs.append(SimpleDialog(dialog.entity))
+                                    seen_chat_ids.add(dialog.id)
+                                    pending.discard(dialog.id)
+                                    resolved_in_sweep += 1
+                                    if not pending:
+                                        break
+
+                        try:
+                            await asyncio.wait_for(_sweep(), timeout=WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS)
+                        except FloodWaitError, FloodPremiumWaitError:
+                            logger.warning(
+                                "Whitelist resolve: dialog scan hit a FloodWait; recovered %d chat(s) before stopping",
+                                resolved_in_sweep,
+                            )
+                        except TimeoutError:
+                            logger.warning(
+                                "Whitelist resolve: dialog scan timed out after %ss; recovered %d chat(s)",
+                                WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS,
+                                resolved_in_sweep,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Whitelist resolve: dialog scan failed (%s); recovered %d chat(s)",
+                                type(e).__name__,
+                                resolved_in_sweep,
+                            )
+
+                    # Cheap per-id retry — even when the sweep was suppressed:
+                    # the scan (or any other traffic, e.g. the listener caching
+                    # the sender of an incoming DM) may have warmed the entity
+                    # cache since the first pass, so a known-failed id
+                    # self-heals here permanently.
+                    still_failed: set[int] = set()
+                    resolved_in_retry = 0
+                    for cid in sorted(pending):
+                        try:
+                            entity = await call_with_flood_retry(self.client.get_entity, cid)
+                            filtered_dialogs.append(SimpleDialog(entity))
+                            seen_chat_ids.add(cid)
+                            resolved_in_retry += 1
+                        except Exception:
+                            still_failed.add(cid)
+
+                    # Persist exactly the post-retry still-failed set: resolved
+                    # ids drop out, ids removed from CHAT_IDS drop out next run,
+                    # and a still-failed id stays so it won't re-trigger sweeps.
+                    await self._save_whitelist_unresolved(still_failed)
+                    if resolved_in_sweep or resolved_in_retry:
+                        logger.info(
+                            "Whitelist: resolved %d of %d unresolved chat(s) (sweep %d, retry %d)",
+                            resolved_in_sweep + resolved_in_retry,
+                            len(unresolved),
+                            resolved_in_sweep,
+                            resolved_in_retry,
+                        )
+                    if still_failed:
+                        logger.warning(
+                            "Whitelist: %d configured chat(s) remain unresolvable and were "
+                            "skipped this run. A DM (positive user id) becomes resolvable once "
+                            "this account has seen the peer — message them once, add them to "
+                            "contacts, or run once without CHAT_IDS; it then self-heals "
+                            "permanently. If the entry is stale (deleted account or a typo), "
+                            "remove it from CHAT_IDS. A dormant peer older than the newest %d "
+                            "dialogs may need a higher WHITELIST_RESOLVE_DIALOG_LIMIT. "
+                            "See issue #234.",
+                            len(still_failed),
+                            limit,
+                        )
 
             else:
                 # Type-based mode: fetch full dialog list and filter
@@ -2361,6 +2558,13 @@ class TelegramBackup:
         never cancelled by the download timeout. A timed-out operation raises
         ``TimeoutError``, which ``_is_non_retryable_media_op`` lets propagate to
         the outer retry loop.
+
+        Caveat since #232: floods absorbed inside Telethon by
+        ``absorb_media_floods`` (up to MEDIA_FLOOD_SLEEP_THRESHOLD seconds each)
+        sleep INSIDE this timeout and count toward it; only above-threshold
+        floods still raise before the timeout can cancel them. When raising
+        MEDIA_FLOOD_SLEEP_THRESHOLD on flood-heavy accounts, raise
+        DOWNLOAD_TIMEOUT_SECONDS along with it.
         """
         coro = self._fetch_media_bytes(message, tmp_path, file_size)
         if timeout_val is None:
@@ -2428,7 +2632,9 @@ class TelegramBackup:
                 except TimeoutError:
                     if attempt >= last:
                         logger.error(
-                            "Media download timed out after %ss on attempt %d/%d; giving up for this run",
+                            "Media download timed out after %ss on attempt %d/%d; giving up for this run "
+                            "(absorbed FloodWait sleeps count toward DOWNLOAD_TIMEOUT_SECONDS — "
+                            "consider raising it on flood-heavy accounts)",
                             timeout,
                             attempt + 1,
                             MEDIA_REFRESH_MAX_ATTEMPTS,
@@ -2440,6 +2646,18 @@ class TelegramBackup:
                         attempt + 1,
                         MEDIA_REFRESH_MAX_ATTEMPTS,
                     )
+                except ValueError:
+                    # Telethon raises a bare ValueError ("Request was unsuccessful
+                    # N time(s)") when one request exhausts its internal retry
+                    # budget — e.g. >= request_retries FloodWaits absorbed inside
+                    # a single chunk call, a failure mode that exists once
+                    # absorb_media_floods is active (#232).
+                    logger.warning(
+                        "Media download gave up after repeated in-request retries "
+                        "(likely sustained FloodWaits within one request); "
+                        "leaving it for a future backup run"
+                    )
+                    raise
             # Defensive: the loop returns on success or raises on the final attempt.
             raise FileReferenceExpiredError(request=None)
         except BaseException:
@@ -2655,21 +2873,25 @@ class TelegramBackup:
         the single-stream ``client.download_media``. A parallel attempt that
         reports itself unavailable transparently falls back to single-stream for
         that file; FloodWait and other real errors propagate unchanged so the
-        caller's single retry budget governs them.
+        caller's single retry budget governs them. Runs under
+        ``absorb_media_floods`` (#232): floods up to MEDIA_FLOOD_SLEEP_THRESHOLD
+        seconds are absorbed in place by Telethon so the transfer resumes at the
+        current offset; larger floods still propagate.
         """
-        if self._should_parallelize(message, file_size):
-            if self._parallel_downloader is None:
-                self._parallel_downloader = ParallelDownloader(
-                    self.client,
-                    connections=self.config.parallel_download_connections,
-                    part_size=self.config.get_parallel_download_part_size_bytes(),
-                    max_file_size=self.config.get_max_media_size_bytes(),
-                )
-            try:
-                return await self._parallel_downloader.download_media(message, tmp_path)
-            except ParallelDownloadUnavailable as exc:
-                logger.info("Parallel download not applicable (%s); falling back to single-stream", exc)
-        return await self.client.download_media(message, tmp_path)
+        async with absorb_media_floods(self.client, getattr(self.config, "media_flood_sleep_threshold", 0)):
+            if self._should_parallelize(message, file_size):
+                if self._parallel_downloader is None:
+                    self._parallel_downloader = ParallelDownloader(
+                        self.client,
+                        connections=self.config.parallel_download_connections,
+                        part_size=self.config.get_parallel_download_part_size_bytes(),
+                        max_file_size=self.config.get_max_media_size_bytes(),
+                    )
+                try:
+                    return await self._parallel_downloader.download_media(message, tmp_path)
+                except ParallelDownloadUnavailable as exc:
+                    logger.info("Parallel download not applicable (%s); falling back to single-stream", exc)
+            return await self.client.download_media(message, tmp_path)
 
     def _get_media_size(self, media) -> int:
         """Get estimated size of media object in bytes."""
