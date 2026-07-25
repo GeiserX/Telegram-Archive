@@ -25,6 +25,9 @@ services:
       BACKUP_PATH: /data/backups
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
+      # Absorb mid-download FloodWaits up to N seconds so large files resume
+      # in place instead of restarting from byte 0 (issue #232). 0 disables.
+      # MEDIA_FLOOD_SLEEP_THRESHOLD: ${MEDIA_FLOOD_SLEEP_THRESHOLD:-60}
       BATCH_SIZE: ${BATCH_SIZE:-100}
       CHECKPOINT_INTERVAL: ${CHECKPOINT_INTERVAL:-1}
       # DEDUPLICATE_MEDIA: ${DEDUPLICATE_MEDIA:-true}
@@ -44,6 +47,9 @@ services:
       #   CHAT_TYPES: "private,groups,channels"  # All chats of these types
       # =======================================================================
       CHAT_IDS: ${CHAT_IDS:-}
+      # If a CHAT_IDS entry can't be resolved (typically a DM on a fresh
+      # session), scan up to N dialogs once to warm the entity cache (#234).
+      # WHITELIST_RESOLVE_DIALOG_LIMIT: ${WHITELIST_RESOLVE_DIALOG_LIMIT:-1000}
       CHAT_TYPES: ${CHAT_TYPES:-private,groups,channels}
 
       # Granular Filtering (only used in type-based mode)

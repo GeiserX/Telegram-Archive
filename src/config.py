@@ -94,7 +94,13 @@ def build_telegram_proxy_from_env() -> dict | None:
 
 
 def build_telegram_client_kwargs() -> dict:
-    """Build common Telethon client keyword arguments from environment configuration."""
+    """Build common Telethon client keyword arguments from environment configuration.
+
+    ``flood_sleep_threshold`` stays 0: media downloads temporarily raise the
+    client threshold via ``absorb_media_floods`` (#232,
+    MEDIA_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
+    visible in app logs (#124).
+    """
     kwargs: dict = {"flood_sleep_threshold": 0}
     proxy = build_telegram_proxy_from_env()
     if proxy is not None:
@@ -121,6 +127,10 @@ class Config:
         self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
+        # Absorb short mid-download FloodWaits (up to this many seconds) so the
+        # chunk stream resumes in place instead of restarting from byte 0;
+        # 0 = pre-7.27 raise-immediately behavior (#232).
+        self.media_flood_sleep_threshold = int(os.getenv("MEDIA_FLOOD_SLEEP_THRESHOLD", "60"))
         # Max usable filename-component length in BYTES for the media store. Default 143
         # keeps names writable on Synology/eCryptfs encrypted shares (whose filename-
         # encryption overhead caps components at ~143 bytes, not the usual 255); the temp
@@ -187,6 +197,9 @@ class Config:
         # When set, ONLY these chats are backed up - nothing else
         self.chat_ids = self._parse_id_list(os.getenv("CHAT_IDS", ""))
         self.whitelist_mode = len(self.chat_ids) > 0
+        # Bounded dialog scan warming the session entity cache when a whitelisted
+        # id cannot be resolved (typically a cache-cold DM); 0 disables (#234).
+        self.whitelist_resolve_dialog_limit = int(os.getenv("WHITELIST_RESOLVE_DIALOG_LIMIT", "1000"))
 
         # Type-based mode (only used if CHAT_IDS is not set)
         chat_types_env = os.environ.get("CHAT_TYPES")
@@ -754,7 +767,10 @@ class Config:
 
         ``flood_sleep_threshold=0`` forces Telethon to raise FloodWaitError
         instead of silently sleeping, so long waits become visible in the log
-        via ``iter_messages_with_flood_retry``.
+        via ``iter_messages_with_flood_retry``. Media downloads temporarily
+        raise the client threshold via ``absorb_media_floods`` (#232,
+        MEDIA_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
+        visible in app logs (#124).
         """
         kwargs: dict = {"flood_sleep_threshold": 0}
         if self.telegram_proxy is not None:

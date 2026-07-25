@@ -256,6 +256,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
 | `MEDIA_MAX_FILENAME_BYTES` | `143` | B | Usable filename byte budget for downloaded media. Raise to `255` on plain ext4/xfs; keep `143` for Synology/eCryptfs encrypted shares |
 | `MEDIA_MAX_DOWNLOAD_ATTEMPTS` | `5` | B | Stop retrying a file's download after this many failed attempts. Re-requesting the download resets the counter |
+| `MEDIA_FLOOD_SLEEP_THRESHOLD` | `60` | B | Mid-download FloodWaits up to this many seconds are absorbed in place so the transfer resumes instead of restarting from byte 0 (issue #232). `0` restores the old raise-immediately behavior. Absorbed pauses count toward `DOWNLOAD_TIMEOUT_SECONDS` |
 | `PARALLEL_DOWNLOAD_ENABLED` | `false` | B | Fetch large files over several connections to lift the single-stream speed cap (see below) |
 | `PARALLEL_DOWNLOAD_MIN_SIZE_MB` | `20` | B | Only files at least this large use the parallel path (min 1) |
 | `PARALLEL_DOWNLOAD_CONNECTIONS` | `4` | B | Concurrent connections per file (clamped 2–8) |
@@ -275,6 +276,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | **Chat Filtering** | | | See [Chat Filtering](#chat-filtering) below |
 | `CHAT_IDS` | - | B | **Whitelist mode**: backup ONLY these chats (ignores all other filters) |
+| `WHITELIST_RESOLVE_DIALOG_LIMIT` | `1000` | B | When a `CHAT_IDS` entry cannot be resolved (typically a DM on a fresh session), scan up to this many dialogs once to warm the entity cache — it then resolves permanently (issue #234). `0` disables |
 | `CHAT_TYPES` | `private,groups,channels` | B | **Type-based mode**: comma-separated chat types to backup |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | B | Exclude specific chats (any type) |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | B | Force-include specific chats (any type) |
@@ -372,6 +374,8 @@ CHANNELS_INCLUDE_CHAT_IDS=-1001234567890
 
 Find a chat's ID by forwarding a message to [@userinfobot](https://t.me/userinfobot).
 
+> **DMs in `CHAT_IDS`** — a positive user id only resolves after your session has "seen" that peer (Telegram requires a cached access hash for users; channels don't need one). On a fresh session an unseen DM would otherwise never archive. The backup handles this automatically: when a `CHAT_IDS` entry cannot be resolved, it scans up to `WHITELIST_RESOLVE_DIALOG_LIMIT` dialogs (default 1000, archived folders included) once to warm the cache, after which the id resolves permanently (issue #234). If an id still fails: message the peer once, add them to contacts, or run once without `CHAT_IDS`; for a dormant DM buried deeper than the newest 1000 dialogs, raise `WHITELIST_RESOLVE_DIALOG_LIMIT`.
+
 **Topic filtering** — For forum-enabled supergroups, you can exclude specific topics without excluding the entire chat using `SKIP_TOPIC_IDS`:
 
 ```bash
@@ -408,6 +412,10 @@ For reactions on **older** messages, set `REACTION_RESWEEP_DAYS=N`: on every sch
 Telegram rate-limits `getMessagesReactions` by **burst rate across all chats** (the bucket size varies a lot between accounts — from a handful of requests to dozens), so the re-sweep paces itself: requests are spaced by `REACTION_RESWEEP_BATCH_DELAY_SECONDS` (default `2`, measured across chat boundaries — smoothing, deliberately not sized to make floods impossible). On a FloodWait the re-sweep pauses **without sleeping or retrying** and resumes within the same run once the server-requested window has elapsed; it defers the remainder to the next scheduled sweep only when that window outlives the run, or after repeated floods in one run (a degrading bucket is left alone). Completed chats — and the mid-chat progress of a chat too large for one burst window — are remembered per cycle, so the next scheduled sweep resumes approximately where the last one stopped (the window shifts between runs; the reconcile is idempotent, so overlap is harmless). Over at most a few sweeps every chat in the window gets covered, without ever fighting the rate limiter.
 
 Sizing tip: `REACTION_RESWEEP_MAX_PER_CHAT` decides how much of the flood bucket one chat may consume (each 100 messages ≈ one request). On accounts with a small bucket, a lower cap such as `100` spends ~1 request per chat and lets a single run reach every eligible chat; large caps favor deep per-chat coverage over per-run breadth.
+
+#### FloodWaits during media downloads
+
+The client runs with `flood_sleep_threshold=0` so every rate limit surfaces in the logs instead of pausing silently. For media transfers that visibility used to be self-defeating: a FloodWait in the middle of a download aborted the file, and the retry restarted it from byte 0 — a file larger than one flood-free window could never finish. Media downloads (scheduled sweeps and the live listener alike) therefore absorb short floods in place: pauses up to `MEDIA_FLOOD_SLEEP_THRESHOLD` seconds (default 60) happen inside the transfer, which then resumes at its current offset (issue #232). Longer floods still surface and retry as before, and everything outside media transfers keeps the raise-immediately behavior for full log visibility. Absorbed pauses count toward `DOWNLOAD_TIMEOUT_SECONDS`, so raise both together on flood-heavy accounts; `MEDIA_FLOOD_SLEEP_THRESHOLD=0` restores the old behavior.
 
 ### Group → supergroup migrations
 

@@ -1419,3 +1419,66 @@ def _get_base_env(temp_dir: str) -> dict:
         "TELEGRAM_API_HASH": "abcdef",
         "TELEGRAM_PHONE": "+1234567890",
     }
+
+
+class TestMediaFloodSleepThreshold(unittest.TestCase):
+    """MEDIA_FLOOD_SLEEP_THRESHOLD (#232) parsing, and the #124 kwargs pin."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_default_is_60(self):
+        with patch.dict(os.environ, _get_base_env(self.temp_dir), clear=True):
+            config = Config()
+        self.assertEqual(config.media_flood_sleep_threshold, 60)
+
+    def test_env_override(self):
+        env = _get_base_env(self.temp_dir) | {"MEDIA_FLOOD_SLEEP_THRESHOLD": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.media_flood_sleep_threshold, 300)
+
+    def test_env_zero_restores_raise_immediately(self):
+        env = _get_base_env(self.temp_dir) | {"MEDIA_FLOOD_SLEEP_THRESHOLD": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.media_flood_sleep_threshold, 0)
+
+    def test_client_kwargs_keep_flood_sleep_threshold_zero(self):
+        """#124 pin: the media threshold must never leak into the client kwargs —
+        absorption is scoped to absorb_media_floods, not the whole client."""
+        env = _get_base_env(self.temp_dir) | {"MEDIA_FLOOD_SLEEP_THRESHOLD": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+            self.assertEqual(config.get_telegram_client_kwargs().get("flood_sleep_threshold"), 0)
+            self.assertEqual(build_telegram_client_kwargs().get("flood_sleep_threshold"), 0)
+
+
+class TestWhitelistResolveDialogLimit(unittest.TestCase):
+    """WHITELIST_RESOLVE_DIALOG_LIMIT (#234) parsing."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_default_is_1000(self):
+        with patch.dict(os.environ, _get_base_env(self.temp_dir), clear=True):
+            config = Config()
+        self.assertEqual(config.whitelist_resolve_dialog_limit, 1000)
+
+    def test_env_override(self):
+        env = _get_base_env(self.temp_dir) | {"WHITELIST_RESOLVE_DIALOG_LIMIT": "250"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.whitelist_resolve_dialog_limit, 250)
+
+    def test_env_zero_disables(self):
+        env = _get_base_env(self.temp_dir) | {"WHITELIST_RESOLVE_DIALOG_LIMIT": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.whitelist_resolve_dialog_limit, 0)
