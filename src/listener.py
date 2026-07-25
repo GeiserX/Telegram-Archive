@@ -51,7 +51,7 @@ from .message_utils import (
     utcnow_naive,
 )
 from .realtime import NotificationType, RealtimeNotifier
-from .telegram_backup import call_with_flood_retry
+from .telegram_backup import absorb_media_floods, call_with_flood_retry
 
 logger = logging.getLogger(__name__)
 
@@ -772,7 +772,8 @@ class TelegramListener:
                 os.makedirs(shared_dir, exist_ok=True)
 
                 async def _download_fn(tmp_path):
-                    return await call_with_flood_retry(self.client.download_media, message, tmp_path)
+                    async with absorb_media_floods(self.client, getattr(self.config, "media_flood_sleep_threshold", 0)):
+                        return await call_with_flood_retry(self.client.download_media, message, tmp_path)
 
                 shared_file_path, content_hash = await download_and_shard_media(
                     db=self.db,
@@ -794,7 +795,8 @@ class TelegramListener:
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
-                    actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
+                    async with absorb_media_floods(self.client, getattr(self.config, "media_flood_sleep_threshold", 0)):
+                        actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
                     file_path = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
