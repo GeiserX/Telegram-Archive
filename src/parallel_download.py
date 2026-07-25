@@ -35,7 +35,12 @@ import logging
 import os
 
 from telethon import utils
-from telethon.errors import FileMigrateError, FileReferenceExpiredError, FloodWaitError
+from telethon.errors import (
+    FileMigrateError,
+    FileReferenceExpiredError,
+    FloodPremiumWaitError,
+    FloodWaitError,
+)
 from telethon.network import MTProtoSender
 from telethon.tl import functions
 from telethon.tl.alltlobjects import LAYER
@@ -233,7 +238,7 @@ class ParallelDownloader:
             request = functions.upload.GetFileRequest(location, offset=offset, limit=self._part_size)
             try:
                 result = await self._client._call(sender, request)
-            except FloodWaitError:
+            except FloodWaitError, FloodPremiumWaitError:
                 # Must propagate unchanged so the caller's single flood budget
                 # (call_with_flood_retry) governs it — never a second backoff.
                 raise
