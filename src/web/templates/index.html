@@ -31,6 +31,10 @@
 
         html {
             background-color: #0f172a;
+            /* Stop iOS from auto-inflating text on rotate / in landscape,
+               which also silently widens content and can force h-scroll. */
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
         }
 
         body {
@@ -60,34 +64,56 @@
             background: #64748b;
         }
 
-        /* Message Bubbles */
+        /* Message Bubbles.
+           max-width is a PERCENTAGE of the message row (the flex container),
+           NOT of the viewport: the row already holds the avatar gutter + gap,
+           so a viewport-relative cap (the old calc(100vw - 32px)) let the
+           bubble sit AFTER the avatar and run off the right edge — clipping
+           the timestamp and any long content. A row-relative cap keeps
+           avatar + bubble inside the row on every width, and lets the bubble
+           shrink to fit an unbreakable token (min-width:0). */
         .message-bubble {
             display: inline-block;
-            max-width: calc(100vw - 32px);
-            /* 32px = padding lateral del contenedor */
+            max-width: 85%;
+            min-width: 0;
             width: auto;
             word-wrap: break-word;
             overflow-wrap: anywhere;
-            border-radius: 12px;
+            border-radius: 14px;
         }
 
         @media (min-width: 768px) {
             .message-bubble {
-                max-width: 600px;
+                /* Roomier reading column on desktop, still content-sized. */
+                max-width: min(72%, 600px);
             }
         }
 
+        /* Asymmetric corner pointing toward the sender — the native-app "tail"
+           cue: incoming bubbles tuck their bottom-left, outgoing their
+           bottom-right. */
+        .message-bubble.bubble-in {
+            border-bottom-left-radius: 4px;
+        }
+        .message-bubble.bubble-out {
+            border-bottom-right-radius: 4px;
+        }
 
+
+        html,
         body,
         #app {
-            max-width: 100vw;
+            max-width: 100%;
             overflow-x: hidden;
         }
 
-        /* Messages scroll container - fix mobile touch scrolling */
+        /* Messages scroll container - fix mobile touch scrolling.
+           overflow-x:hidden is defence-in-depth: content is already sized to
+           fit, but this guarantees the pane can only ever scroll vertically. */
         .messages-scroll {
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
+            overflow-x: hidden;
         }
 
         .message-bubble img,
@@ -243,6 +269,25 @@
         /* 3-item album: make first item span 2 rows */
         .album-grid .grid-cols-2:has(.album-item:nth-child(3):last-child) .album-item:first-child {
             grid-row: span 2;
+        }
+        /* Album never wider than its bubble on narrow screens. */
+        .album-grid {
+            width: 100%;
+        }
+
+        /* Message text: break even unbreakable tokens (long URLs, hashes) so
+           they wrap instead of forcing the bubble wider than its cap. */
+        .message-text {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* ---- Mobile polish (app-like feel) ---- */
+        @media (max-width: 767px) {
+            /* Comfortable reading rhythm, closer to the native apps. */
+            .message-text {
+                line-height: 1.45;
+            }
         }
     </style>
     <script>
@@ -1007,6 +1052,7 @@
                                     </div>
                                 </div>
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
+                                    :class="isOwnMessage(msg) ? 'bubble-out' : 'bubble-in'"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
