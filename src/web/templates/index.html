@@ -31,6 +31,10 @@
 
         html {
             background-color: #0f172a;
+            /* Stop iOS from auto-inflating text on rotate / in landscape,
+               which also silently widens content and can force h-scroll. */
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
         }
 
         body {
@@ -60,34 +64,56 @@
             background: #64748b;
         }
 
-        /* Message Bubbles */
+        /* Message Bubbles.
+           max-width is a PERCENTAGE of the message row (the flex container),
+           NOT of the viewport: the row already holds the avatar gutter + gap,
+           so a viewport-relative cap (the old calc(100vw - 32px)) let the
+           bubble sit AFTER the avatar and run off the right edge — clipping
+           the timestamp and any long content. A row-relative cap keeps
+           avatar + bubble inside the row on every width, and lets the bubble
+           shrink to fit an unbreakable token (min-width:0). */
         .message-bubble {
             display: inline-block;
-            max-width: calc(100vw - 32px);
-            /* 32px = padding lateral del contenedor */
+            max-width: 85%;
+            min-width: 0;
             width: auto;
             word-wrap: break-word;
             overflow-wrap: anywhere;
-            border-radius: 12px;
+            border-radius: 14px;
         }
 
         @media (min-width: 768px) {
             .message-bubble {
-                max-width: 600px;
+                /* Roomier reading column on desktop, still content-sized. */
+                max-width: min(72%, 600px);
             }
         }
 
+        /* Asymmetric corner pointing toward the sender — the native-app "tail"
+           cue: incoming bubbles tuck their bottom-left, outgoing their
+           bottom-right. */
+        .message-bubble.bubble-in {
+            border-bottom-left-radius: 4px;
+        }
+        .message-bubble.bubble-out {
+            border-bottom-right-radius: 4px;
+        }
 
+
+        html,
         body,
         #app {
-            max-width: 100vw;
+            max-width: 100%;
             overflow-x: hidden;
         }
 
-        /* Messages scroll container - fix mobile touch scrolling */
+        /* Messages scroll container - fix mobile touch scrolling.
+           overflow-x:hidden is defence-in-depth: content is already sized to
+           fit, but this guarantees the pane can only ever scroll vertically. */
         .messages-scroll {
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
+            overflow-x: hidden;
         }
 
         .message-bubble img,
@@ -101,21 +127,34 @@
         }
 
 
-        /* Date Separator */
+        /* Date Separator — floats/sticks at the top of the scroll pane while
+           that day's messages are in view, like the native apps. Works in the
+           flex-col-reverse message list: `top` is physical (unaffected by the
+           reversed direction), so the day's pill pins to the top and is pushed
+           up by the next-older day. pointer-events gate keeps only the pill
+           itself clickable (jump-to-date), not the full-width strip. */
         .date-separator {
             text-align: center;
             margin: 20px 0 10px 0;
+            position: sticky;
+            top: 6px;
+            z-index: 5;
+            pointer-events: none;
         }
 
         .date-separator span {
-            background-color: #334155;
+            background-color: rgba(30, 41, 59, 0.85);
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
             padding: 6px 16px;
             border-radius: 16px;
             font-size: 0.75rem;
-            color: #94a3b8;
+            color: #cbd5e1;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color 0.2s;
             display: inline-block;
+            pointer-events: auto;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
         }
 
         .date-separator span:hover {
@@ -243,6 +282,34 @@
         /* 3-item album: make first item span 2 rows */
         .album-grid .grid-cols-2:has(.album-item:nth-child(3):last-child) .album-item:first-child {
             grid-row: span 2;
+        }
+        /* Album never wider than its bubble on narrow screens. */
+        .album-grid {
+            width: 100%;
+        }
+
+        /* Message text: break even unbreakable tokens (long URLs, hashes) so
+           they wrap instead of forcing the bubble wider than its cap. */
+        .message-text {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* ---- Mobile polish (app-like feel) ---- */
+        @media (max-width: 767px) {
+            /* Comfortable reading rhythm, closer to the native apps. */
+            .message-text {
+                line-height: 1.45;
+            }
+            /* Guarantee a ~44px touch target on header icon buttons without
+               changing their visual (icon/padding) size. */
+            .tap-target {
+                min-width: 44px;
+                min-height: 44px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
         }
     </style>
     <script>
@@ -702,7 +769,7 @@
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
-                                class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
+                                class="tap-target md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M15 19l-7-7 7-7"></path>
@@ -765,7 +832,7 @@
 
                             <!-- Media Gallery Button -->
                             <button @click="showMediaGallery = true"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Shared Media Gallery">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -775,7 +842,7 @@
 
                             <!-- Export Button - always visible -->
                             <button @click="exportChat"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1007,6 +1074,7 @@
                                     </div>
                                 </div>
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
+                                    :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
@@ -1119,7 +1187,7 @@
 
                                         <!-- Audio / Voice Notes -->
                                         <div v-else-if="isAudioFile(msg)"
-                                            class="w-full min-w-[250px] max-w-md bg-gradient-to-r from-gray-800 to-gray-700 p-3 rounded-xl shadow-lg">
+                                            class="w-full min-w-0 max-w-md bg-gradient-to-r from-gray-800 to-gray-700 p-3 rounded-xl shadow-lg">
                                             <audio
                                                 controls
                                                 preload="metadata"
@@ -3854,6 +3922,18 @@
                     return olderMsg.sender_id !== currMsg.sender_id
                 }
 
+                const isRunEnd = (index) => {
+                    // flex-col-reverse: index 0 = newest (visual bottom). A run's
+                    // last (newest) bubble is the one whose NEWER neighbour
+                    // (index - 1, visually below) is a different sender — that's
+                    // where the native-app tail belongs. Stacked bubbles above it
+                    // stay fully rounded (no tail).
+                    const currMsg = sortedMessages.value[index]
+                    const newerMsg = sortedMessages.value[index - 1]
+                    if (!newerMsg) return true
+                    return newerMsg.sender_id !== currMsg.sender_id
+                }
+
                 const showDateSeparator = (index) => {
                     // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
                     // Show separator when this is the last message of a day (next message is different day)
@@ -4674,6 +4754,7 @@
                     getSenderName,
                     getForwardName,
                     showSenderName,
+                    isRunEnd,
                     showDateSeparator,
                     // Album support
                     getAlbumForMessage,
