@@ -127,21 +127,34 @@
         }
 
 
-        /* Date Separator */
+        /* Date Separator — floats/sticks at the top of the scroll pane while
+           that day's messages are in view, like the native apps. Works in the
+           flex-col-reverse message list: `top` is physical (unaffected by the
+           reversed direction), so the day's pill pins to the top and is pushed
+           up by the next-older day. pointer-events gate keeps only the pill
+           itself clickable (jump-to-date), not the full-width strip. */
         .date-separator {
             text-align: center;
             margin: 20px 0 10px 0;
+            position: sticky;
+            top: 6px;
+            z-index: 5;
+            pointer-events: none;
         }
 
         .date-separator span {
-            background-color: #334155;
+            background-color: rgba(30, 41, 59, 0.85);
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
             padding: 6px 16px;
             border-radius: 16px;
             font-size: 0.75rem;
-            color: #94a3b8;
+            color: #cbd5e1;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color 0.2s;
             display: inline-block;
+            pointer-events: auto;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
         }
 
         .date-separator span:hover {
@@ -287,6 +300,15 @@
             /* Comfortable reading rhythm, closer to the native apps. */
             .message-text {
                 line-height: 1.45;
+            }
+            /* Guarantee a ~44px touch target on header icon buttons without
+               changing their visual (icon/padding) size. */
+            .tap-target {
+                min-width: 44px;
+                min-height: 44px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
             }
         }
     </style>
@@ -747,7 +769,7 @@
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
-                                class="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
+                                class="tap-target md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M15 19l-7-7 7-7"></path>
@@ -810,7 +832,7 @@
 
                             <!-- Media Gallery Button -->
                             <button @click="showMediaGallery = true"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Shared Media Gallery">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -820,7 +842,7 @@
 
                             <!-- Export Button - always visible -->
                             <button @click="exportChat"
-                                class="p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
                                 title="Export Chat to JSON">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1052,7 +1074,7 @@
                                     </div>
                                 </div>
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
-                                    :class="isOwnMessage(msg) ? 'bubble-out' : 'bubble-in'"
+                                    :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
                                     <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
@@ -3900,6 +3922,18 @@
                     return olderMsg.sender_id !== currMsg.sender_id
                 }
 
+                const isRunEnd = (index) => {
+                    // flex-col-reverse: index 0 = newest (visual bottom). A run's
+                    // last (newest) bubble is the one whose NEWER neighbour
+                    // (index - 1, visually below) is a different sender — that's
+                    // where the native-app tail belongs. Stacked bubbles above it
+                    // stay fully rounded (no tail).
+                    const currMsg = sortedMessages.value[index]
+                    const newerMsg = sortedMessages.value[index - 1]
+                    if (!newerMsg) return true
+                    return newerMsg.sender_id !== currMsg.sender_id
+                }
+
                 const showDateSeparator = (index) => {
                     // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
                     // Show separator when this is the last message of a day (next message is different day)
@@ -4720,6 +4754,7 @@
                     getSenderName,
                     getForwardName,
                     showSenderName,
+                    isRunEnd,
                     showDateSeparator,
                     // Album support
                     getAlbumForMessage,
