@@ -353,6 +353,11 @@ class TestGroupAvatarRenderTemplate(unittest.TestCase):
     def test_avatar_gutter_is_group_and_non_own_only(self):
         self.assertIn('v-if="isGroup && !isOwnMessage(msg)"', self.html)
 
+    def test_imported_supergroups_are_treated_as_groups(self):
+        start = self.html.index("const isGroup = computed(() =>")
+        body = self.html[start : start + 400]
+        self.assertIn("'supergroup'", body)
+
     def test_photo_falls_back_to_initials_on_error(self):
         # Mirror the chat.avatar_url @error pattern: null the url so the
         # initials template renders instead.

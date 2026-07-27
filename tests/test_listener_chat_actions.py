@@ -94,7 +94,7 @@ def _build(**config_overrides):
     return listener, handlers[events.ChatAction], db
 
 
-def _service_msg(action, *, msg_id=MSG_ID, sender_id=ACTOR_ID, out=False, reply_to=None):
+def _service_msg(action, *, msg_id=MSG_ID, sender_id=ACTOR_ID, sender=None, out=False, reply_to=None):
     """A mock MessageService carrying a real id/date/action (reply_to=None).
 
     ``reply_to`` defaults to ``None`` to dodge the MagicMock truthiness pitfall
@@ -104,6 +104,7 @@ def _service_msg(action, *, msg_id=MSG_ID, sender_id=ACTOR_ID, out=False, reply_
         id=msg_id,
         action=action,
         sender_id=sender_id,
+        sender=sender,
         date=MSG_DATE,
         reply_to_msg_id=None,
         reply_to=reply_to,
@@ -161,6 +162,20 @@ class TestChatActionHandler:
         assert data["raw_data"]["action_type"] == "chat_joined_by_link"
         assert data["raw_data"]["action_type"] != "photo_removed"
         assert data["text"] == "Alice joined the group via invite link"
+
+    async def test_service_row_snapshots_actual_message_sender(self):
+        listener, handler, db = _build()
+        sender = _entity(first_name="  Admin", last_name="User  ", title=None, username="admin")
+        event = _event(
+            _service_msg(MessageActionChatJoinedByLink(inviter_id=0), sender=sender),
+            user_joined=True,
+            user_id=ACTOR_ID,
+        )
+
+        await handler(event)
+
+        data = db.insert_message.call_args[0][0]
+        assert data["sender_name"] == "Admin User"
 
     async def test_participant_only_event_writes_no_row(self):
         listener, handler, db = _build()

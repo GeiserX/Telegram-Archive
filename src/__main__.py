@@ -265,7 +265,7 @@ async def run_import(args) -> int:
         config = Config()
         setup_logging(config)
 
-        importer = await TelegramImporter.create(config.media_path)
+        importer = await TelegramImporter.create(config.media_path, config.max_filename_bytes)
         try:
             summary = await importer.run(
                 export_path=args.path,

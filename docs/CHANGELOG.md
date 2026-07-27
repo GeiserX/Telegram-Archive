@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.28.0] - 2026-07-27
+
+### Added
+- **Historical sender names are preserved per message.** New imports and captures store the sender label seen with the message instead of resolving every old message through a mutable user profile. Existing rows keep their current behavior, and a stored snapshot is filled once but never rewritten by later sweeps.
+- **Sender details are available from group avatars.** The dialog shows the archived name, a different latest-known profile name when available, and the numeric Telegram ID.
+
+### Fixed
+- **Telegram Desktop media imports are confined to the selected export and configured media directories.** Absolute paths, parent traversal, and escaping symlinks are rejected before files are read or written.
+- **Imports now honor `MEDIA_MAX_FILENAME_BYTES`** for long and multibyte media names, and one failed media copy is skipped without aborting the remaining message history.
+- **Imported supergroups show sender names and avatars** like live-captured groups.
+- **Message runs have compact spacing within one sender's sequence and a larger gap when the sender changes.**
+
+### Upgrade note
+- Migration `020` adds the nullable `messages.sender_name` snapshot column automatically. Existing messages are not backfilled.
+
 ## [7.23.0] - 2026-07-18
 
 ### Added

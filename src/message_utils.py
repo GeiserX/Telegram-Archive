@@ -18,6 +18,24 @@ def utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def sender_display_name(sender: object | None) -> str | None:
+    """Return a trimmed capture-time display name for a Telegram sender."""
+    if sender is None:
+        return None
+
+    first_name = getattr(sender, "first_name", None)
+    last_name = getattr(sender, "last_name", None)
+    name_parts = [value.strip() for value in (first_name, last_name) if isinstance(value, str) and value.strip()]
+    if name_parts:
+        return " ".join(name_parts)
+
+    for attribute in ("title", "username"):
+        value = getattr(sender, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def compute_directory_size(path: str) -> int:
     """Return total on-disk size (bytes) of regular files under `path`.
 

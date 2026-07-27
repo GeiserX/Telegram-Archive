@@ -1715,6 +1715,34 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         self.assertEqual(call_kwargs["chat_id"], 42)
         self.assertEqual(call_kwargs["sender_name"], "Alice")
 
+    async def test_push_prefers_archived_sender_snapshot(self) -> None:
+        mock_pm = MagicMock()
+        mock_pm.is_enabled = True
+        mock_pm.notify_new_message = AsyncMock(return_value=1)
+        web_main.push_manager = mock_pm
+        self.mock_db.get_chat_by_id = AsyncMock(return_value={"title": "Test Chat"})
+        self.mock_db.get_user_by_id = AsyncMock(return_value={"first_name": "Current Name"})
+
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
+            await web_main.handle_realtime_notification(
+                {
+                    "type": "new_message",
+                    "chat_id": 42,
+                    "data": {
+                        "message": {
+                            "id": 1,
+                            "text": "hello",
+                            "sender_id": 100,
+                            "sender_name": "Archived Name",
+                        }
+                    },
+                }
+            )
+
+        call_kwargs = mock_pm.notify_new_message.call_args.kwargs
+        self.assertEqual(call_kwargs["sender_name"], "Archived Name")
+        self.mock_db.get_user_by_id.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

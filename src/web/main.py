@@ -209,11 +209,15 @@ async def handle_realtime_notification(payload: dict):
             chat = await db.get_chat_by_id(chat_id) if db else None
             chat_title = chat.get("title", "Telegram") if chat else "Telegram"
 
-            sender_name = ""
-            if message.get("sender_id"):
+            snapshot_name = message.get("sender_name")
+            sender_name = snapshot_name.strip() if isinstance(snapshot_name, str) else ""
+            if not sender_name and message.get("sender_id"):
                 sender = await db.get_user_by_id(message.get("sender_id")) if db else None
                 if sender:
-                    sender_name = sender.get("first_name", "") or sender.get("username", "")
+                    sender_name = (
+                        f"{sender.get('first_name') or ''} {sender.get('last_name') or ''}".strip()
+                        or sender.get("username", "")
+                    )
 
             await push_manager.notify_new_message(
                 chat_id=chat_id,

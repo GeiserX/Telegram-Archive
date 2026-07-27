@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.telegram_import import (
     TelegramImporter,
@@ -147,40 +147,51 @@ class TestParseEditedDate(unittest.TestCase):
 class TestDetectMedia(unittest.TestCase):
     def test_photo(self):
         msg = {"photo": "photos/photo_1.jpg"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "photo")
         self.assertEqual(rel, "photos/photo_1.jpg")
         self.assertEqual(fname, "photo_1.jpg")
 
     def test_document(self):
         msg = {"file": "files/doc.pdf", "file_name": "document.pdf", "mime_type": "application/pdf"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "document")
         self.assertEqual(fname, "document.pdf")
 
     def test_video(self):
         msg = {"file": "videos/vid.mp4", "media_type": "video_file"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "video")
 
     def test_voice(self):
         msg = {"file": "voice/msg.ogg", "media_type": "voice_message"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "voice")
 
     def test_animation(self):
         msg = {"file": "animations/anim.mp4", "media_type": "animation"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "animation")
 
     def test_no_media(self):
-        media_type, rel, fname = _detect_media({}, Path("/tmp"))
+        media_type, rel, fname = _detect_media({})
         self.assertIsNone(media_type)
         self.assertIsNone(rel)
 
+    def test_non_string_paths_and_names_are_ignored_safely(self):
+        media_type, rel, fname = _detect_media({"photo": {"path": "photo.jpg"}})
+        self.assertIsNone(media_type)
+        self.assertIsNone(rel)
+        self.assertIsNone(fname)
+
+        media_type, rel, fname = _detect_media({"file": "files/doc.pdf", "file_name": {"unexpected": "value"}})
+        self.assertEqual(media_type, "document")
+        self.assertEqual(rel, "files/doc.pdf")
+        self.assertEqual(fname, "doc.pdf")
+
     def test_photo_takes_precedence(self):
         msg = {"photo": "photos/p.jpg", "file": "files/f.pdf"}
-        media_type, _, _ = _detect_media(msg, Path("/tmp"))
+        media_type, _, _ = _detect_media(msg)
         self.assertEqual(media_type, "photo")
 
 
@@ -347,6 +358,37 @@ class TestTelegramImporterRun(unittest.TestCase):
         db.upsert_chat.assert_called_once()
         db.insert_messages_batch.assert_called_once()
         db.update_sync_status.assert_called_once_with(42, 2, 2)
+        inserted = db.insert_messages_batch.call_args.args[0]
+        self.assertEqual(inserted[0]["sender_name"], "Alice")
+        self.assertEqual(inserted[1]["sender_name"], "Alice")
+
+    def test_service_message_uses_actor_snapshot_and_id(self):
+        self._write_export(
+            {
+                "name": "Test Chat",
+                "type": "private_supergroup",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": 1,
+                        "type": "service",
+                        "date": "2024-01-15T10:00:00",
+                        "actor": "Archived Admin",
+                        "actor_id": "channel123",
+                        "action": "pin_message",
+                    }
+                ],
+            }
+        )
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        self._run(importer.run(self.export_dir))
+
+        inserted = db.insert_messages_batch.call_args.args[0][0]
+        self.assertEqual(inserted["sender_name"], "Archived Admin")
+        self.assertEqual(inserted["sender_id"], -1000000000123)
 
     def test_import_with_media(self):
         photos_dir = os.path.join(self.export_dir, "photos")
@@ -390,6 +432,193 @@ class TestTelegramImporterRun(unittest.TestCase):
         self.assertEqual(media_call["message_id"], 1)
         self.assertTrue(Path(media_dir, "42").exists())
 
+    def test_import_rejects_media_outside_export_root(self):
+        outside_path = Path(self.temp_dir, "outside.jpg")
+        outside_path.write_bytes(b"outside")
+        self._write_export(
+            {
+                "name": "Chat",
+                "type": "personal_chat",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": 1,
+                        "type": "message",
+                        "date": "2024-01-15T10:00:00",
+                        "photo": "../outside.jpg",
+                    },
+                    {
+                        "id": 2,
+                        "type": "message",
+                        "date": "2024-01-15T10:01:00",
+                        "photo": str(outside_path),
+                    },
+                ],
+            }
+        )
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir))
+
+        self.assertEqual(summary["total_messages"], 2)
+        self.assertEqual(summary["total_media"], 0)
+        db.insert_media.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not supported")
+    def test_import_rejects_media_symlink_outside_export_root(self):
+        outside_path = Path(self.temp_dir, "outside.jpg")
+        outside_path.write_bytes(b"outside")
+        photos_dir = Path(self.export_dir, "photos")
+        photos_dir.mkdir()
+        os.symlink(outside_path, photos_dir / "linked.jpg")
+        self._write_export(
+            {
+                "name": "Chat",
+                "type": "personal_chat",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": 1,
+                        "type": "message",
+                        "date": "2024-01-15T10:00:00",
+                        "photo": "photos/linked.jpg",
+                    }
+                ],
+            }
+        )
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        summary = self._run(importer.run(self.export_dir))
+
+        self.assertEqual(summary["total_media"], 0)
+        db.insert_media.assert_not_called()
+
+    def test_import_sanitizes_and_budgets_media_filename(self):
+        files_dir = Path(self.export_dir, "files")
+        files_dir.mkdir()
+        (files_dir / "document.bin").write_bytes(b"document")
+        long_name = f"../../{'файл' * 80}.bin"
+        self._write_export(
+            {
+                "name": "Chat",
+                "type": "personal_chat",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": 1,
+                        "type": "message",
+                        "date": "2024-01-15T10:00:00",
+                        "file": "files/document.bin",
+                        "file_name": long_name,
+                    }
+                ],
+            }
+        )
+        media_dir = Path(self.temp_dir, "media")
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, str(media_dir), max_filename_bytes=143)
+
+        summary = self._run(importer.run(self.export_dir))
+
+        self.assertEqual(summary["total_media"], 1)
+        media_call = db.insert_media.call_args.args[0]
+        stored_name = media_call["file_name"]
+        self.assertNotIn("..", stored_name)
+        self.assertNotIn("/", stored_name)
+        self.assertLessEqual(len(stored_name.encode("utf-8")), 143)
+        stored_file = (media_dir / media_call["file_path"]).resolve()
+        self.assertTrue(stored_file.is_relative_to(media_dir.resolve()))
+        self.assertTrue(stored_file.is_file())
+
+    def test_import_continues_after_media_copy_failure(self):
+        files_dir = Path(self.export_dir, "files")
+        files_dir.mkdir()
+        (files_dir / "first.bin").write_bytes(b"first")
+        (files_dir / "second.bin").write_bytes(b"second")
+        self._write_export(
+            {
+                "name": "Chat",
+                "type": "personal_chat",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": msg_id,
+                        "type": "message",
+                        "date": f"2024-01-15T10:0{msg_id}:00",
+                        "file": f"files/{name}.bin",
+                        "file_name": f"{name}.bin",
+                    }
+                    for msg_id, name in ((1, "first"), (2, "second"))
+                ],
+            }
+        )
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        real_copy2 = shutil.copy2
+        copy_calls = 0
+
+        def fail_first_copy(source, destination):
+            nonlocal copy_calls
+            copy_calls += 1
+            if copy_calls == 1:
+                raise OSError("simulated copy failure")
+            return real_copy2(source, destination)
+
+        with patch("src.telegram_import.shutil.copy2", side_effect=fail_first_copy):
+            summary = self._run(importer.run(self.export_dir))
+
+        self.assertEqual(summary["total_messages"], 2)
+        self.assertEqual(summary["total_media"], 1)
+        db.insert_media.assert_awaited_once()
+        self.assertEqual(db.insert_media.call_args.args[0]["message_id"], 2)
+
+    def test_import_continues_after_malformed_media_filename(self):
+        files_dir = Path(self.export_dir, "files")
+        files_dir.mkdir()
+        (files_dir / "first.bin").write_bytes(b"first")
+        (files_dir / "second.bin").write_bytes(b"second")
+        self._write_export(
+            {
+                "name": "Chat",
+                "type": "personal_chat",
+                "id": 42,
+                "messages": [
+                    {
+                        "id": 1,
+                        "type": "message",
+                        "date": "2024-01-15T10:01:00",
+                        "file": "files/first.bin",
+                        "file_name": "invalid-\ud800.bin",
+                    },
+                    {
+                        "id": 2,
+                        "type": "message",
+                        "date": "2024-01-15T10:02:00",
+                        "file": "files/second.bin",
+                        "file_name": "second.bin",
+                    },
+                ],
+            }
+        )
+        db = AsyncMock()
+        db.get_chat_stats.return_value = {"messages": 0}
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+
+        with patch("src.telegram_import.BATCH_SIZE", 1):
+            summary = self._run(importer.run(self.export_dir))
+
+        self.assertEqual(summary["total_messages"], 2)
+        self.assertEqual(summary["total_media"], 1)
+        self.assertEqual(db.insert_messages_batch.await_count, 2)
+        db.insert_media.assert_awaited_once()
+        self.assertEqual(db.insert_media.call_args.args[0]["message_id"], 2)
+
     def test_skip_media_flag(self):
         photos_dir = os.path.join(self.export_dir, "photos")
         os.makedirs(photos_dir)
@@ -428,6 +657,29 @@ class TestTelegramImporterRun(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             self._run(importer.run(self.export_dir))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not supported")
+    def test_import_rejects_symlinked_result_json(self):
+        outside_result = Path(self.temp_dir, "outside-result.json")
+        outside_result.write_text(
+            json.dumps({"name": "Outside", "type": "personal_chat", "id": 42, "messages": []}),
+            encoding="utf-8",
+        )
+        os.symlink(outside_result, Path(self.export_dir, "result.json"))
+        importer = TelegramImporter(AsyncMock(), os.path.join(self.temp_dir, "media"))
+
+        with self.assertRaises(FileNotFoundError):
+            self._run(importer.run(self.export_dir))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are not supported")
+    def test_import_rejects_symlinked_messages_html(self):
+        outside_html = Path(self.temp_dir, "outside-messages.html")
+        outside_html.write_text(SAMPLE_HTML_MESSAGE, encoding="utf-8")
+        os.symlink(outside_html, Path(self.export_dir, "messages.html"))
+        importer = TelegramImporter(AsyncMock(), os.path.join(self.temp_dir, "media"))
+
+        with self.assertRaises(FileNotFoundError):
+            self._run(importer.run(self.export_dir, chat_id_override=42))
 
     def test_forwarded_message(self):
         self._write_export(
@@ -977,6 +1229,9 @@ class TestHtmlImportIntegration(unittest.TestCase):
         self.assertEqual(summary["details"][0]["chat_id"], -1001234567890)
         db.upsert_chat.assert_called_once()
         db.insert_messages_batch.assert_called_once()
+        inserted = db.insert_messages_batch.call_args.args[0][0]
+        self.assertEqual(inserted["sender_name"], "Alice")
+        self.assertIsNone(inserted["sender_id"])
 
     def test_html_import_dry_run(self):
         self._write_html(SAMPLE_HTML_MESSAGE)

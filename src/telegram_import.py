@@ -8,16 +8,17 @@ Supports two export formats:
 Both formats insert messages, users, and media into the existing database schema.
 """
 
+import asyncio
 import json
 import logging
 import re
 import shutil
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .db import DatabaseAdapter, close_database, get_adapter, init_database
-from .message_utils import utcnow_naive
+from .message_utils import build_media_filename, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def parse_from_id(from_id: str | None) -> int | None:
 
     Formats: "user123456789", "channel123456789", "group123456789"
     """
-    if not from_id:
+    if not isinstance(from_id, str) or not from_id:
         return None
     for prefix, multiplier in (("user", 1), ("channel", -1), ("group", -1)):
         if from_id.startswith(prefix):
@@ -85,6 +86,13 @@ def parse_from_id(from_id: str | None) -> int | None:
             except ValueError:
                 return None
     return None
+
+
+def _clean_sender_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 
 def derive_chat_id(export_id: int, export_type: str) -> int:
@@ -149,22 +157,54 @@ def parse_edited_date(msg: dict) -> datetime | None:
     return None
 
 
-def _detect_media(msg: dict, export_path: Path) -> tuple[str | None, str | None, str | None]:
+def _detect_media(msg: dict) -> tuple[str | None, str | None, str | None]:
     """Detect media type and file path from an export message.
 
     Returns (media_type, relative_path, original_filename).
     """
-    if "photo" in msg and msg["photo"]:
+    if isinstance(msg.get("photo"), str) and msg["photo"]:
         rel = msg["photo"]
         return "photo", rel, Path(rel).name
 
-    if "file" in msg and msg["file"]:
+    if isinstance(msg.get("file"), str) and msg["file"]:
         rel = msg["file"]
-        fname = msg.get("file_name") or Path(rel).name
-        media_type = MEDIA_TYPE_MAP.get(msg.get("media_type", ""), "document")
+        supplied_name = msg.get("file_name")
+        fname = supplied_name if isinstance(supplied_name, str) and supplied_name else Path(rel).name
+        supplied_type = msg.get("media_type", "")
+        media_type = MEDIA_TYPE_MAP.get(supplied_type, "document") if isinstance(supplied_type, str) else "document"
         return media_type, rel, fname
 
     return None, None, None
+
+
+def _resolve_export_media_path(export_root: Path, relative_path: str) -> Path | None:
+    """Resolve an export media reference without allowing it to leave the export root."""
+    # SECURITY-REVIEW: Export paths are untrusted and must remain below export_root.
+    if not isinstance(relative_path, str) or not relative_path:
+        return None
+
+    normalized = relative_path.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", normalized):
+        return None
+
+    relative = PurePosixPath(normalized)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+
+    try:
+        root = export_root.resolve(strict=True)
+        candidate = root
+        for part in relative.parts:
+            candidate /= part
+            if candidate.is_symlink():
+                return None
+        resolved = candidate.resolve(strict=True)
+    except OSError, RuntimeError, ValueError:
+        return None
+
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    return resolved
 
 
 def _build_service_text(msg: dict) -> str:
@@ -227,22 +267,40 @@ def parse_html_date(date_str: str) -> str | None:
         return None
 
 
+def _resolve_export_control_file(export_root: Path, candidate: Path) -> Path | None:
+    """Return a regular export control file only when it is contained and not a symlink."""
+    # SECURITY-REVIEW: result.json/messages*.html are controlled by the export artifact.
+    if candidate.is_symlink():
+        return None
+    try:
+        root = export_root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+    except OSError, RuntimeError, ValueError:
+        return None
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    return resolved
+
+
 def _find_html_files(path: Path) -> list[Path]:
     """Find and sort HTML message files in export directory.
 
     Returns sorted list: messages.html, messages2.html, messages3.html, ...
     """
     files: list[Path] = []
-    main = path / "messages.html"
-    if main.exists():
+    main = _resolve_export_control_file(path, path / "messages.html")
+    if main is not None:
         files.append(main)
 
     idx = 2
     while True:
-        f = path / f"messages{idx}.html"
-        if not f.exists():
+        candidate = path / f"messages{idx}.html"
+        if not candidate.exists() and not candidate.is_symlink():
             break
-        files.append(f)
+        html_file = _resolve_export_control_file(path, candidate)
+        if html_file is None:
+            break
+        files.append(html_file)
         idx += 1
 
     return files
@@ -505,15 +563,17 @@ def _parse_html_export(html_files: list[Path], export_path: Path) -> tuple[str, 
 class TelegramImporter:
     """Import Telegram Desktop exports into Telegram-Archive database."""
 
-    def __init__(self, db: DatabaseAdapter, media_path: str):
+    def __init__(self, db: DatabaseAdapter, media_path: str, max_filename_bytes: int = 143):
         self.db = db
         self.media_path = media_path
+        self.media_root = Path(media_path).resolve()
+        self.max_filename_bytes = max_filename_bytes
 
     @classmethod
-    async def create(cls, media_path: str) -> TelegramImporter:
+    async def create(cls, media_path: str, max_filename_bytes: int = 143) -> TelegramImporter:
         await init_database()
         db = await get_adapter()
-        return cls(db, media_path)
+        return cls(db, media_path, max_filename_bytes)
 
     async def close(self) -> None:
         await close_database()
@@ -531,11 +591,11 @@ class TelegramImporter:
         Auto-detects JSON (result.json) or HTML (messages.html) export format.
         Returns a summary dict with counts per chat.
         """
-        path = Path(export_path)
-        result_file = path / "result.json"
+        path = Path(export_path).resolve()
+        result_file = _resolve_export_control_file(path, path / "result.json")
         html_files = _find_html_files(path)
 
-        if result_file.exists():
+        if result_file is not None:
             logger.info(f"Reading {result_file}...")
             with open(result_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -650,13 +710,19 @@ class TelegramImporter:
             max_msg_id = max(max_msg_id, msg_id)
             msg_type = msg.get("type", "message")
 
-            sender_id = parse_from_id(msg.get("from_id"))
+            if msg_type == "service":
+                sender_name = _clean_sender_name(msg.get("actor")) or _clean_sender_name(msg.get("from"))
+                sender_id = parse_from_id(msg.get("actor_id") or msg.get("from_id"))
+            else:
+                sender_name = _clean_sender_name(msg.get("from"))
+                sender_id = parse_from_id(msg.get("from_id"))
+
             if sender_id and sender_id > 0 and sender_id not in seen_users and not dry_run:
                 seen_users.add(sender_id)
                 await self.db.upsert_user(
                     {
                         "id": sender_id,
-                        "first_name": msg.get("from", ""),
+                        "first_name": sender_name or "",
                     }
                 )
 
@@ -678,6 +744,7 @@ class TelegramImporter:
                 "id": msg_id,
                 "chat_id": chat_id,
                 "sender_id": sender_id,
+                "sender_name": sender_name,
                 "date": date,
                 "text": text,
                 "reply_to_msg_id": msg.get("reply_to_message_id"),
@@ -692,47 +759,61 @@ class TelegramImporter:
             msg_count += 1
 
             if not skip_media:
-                media_type, rel_path, orig_name = _detect_media(msg, export_path)
+                media_type, rel_path, orig_name = _detect_media(msg)
                 if media_type and rel_path:
-                    source = export_path / rel_path
-                    if source.exists():
-                        media_id = f"import_{chat_id}_{msg_id}"
-                        dest_dir = Path(self.media_path) / str(chat_id)
-                        dest_name = f"{media_id}_{orig_name}" if orig_name else f"{media_id}"
-                        dest_file = dest_dir / dest_name
-                        stored_path = f"{chat_id}/{dest_name}"
-
-                        media_data = {
-                            "id": media_id,
-                            "message_id": msg_id,
-                            "chat_id": chat_id,
-                            "type": media_type,
-                            "file_name": orig_name,
-                            "file_path": stored_path,
-                            "file_size": source.stat().st_size,
-                            "mime_type": msg.get("mime_type"),
-                            "width": msg.get("width"),
-                            "height": msg.get("height"),
-                            "duration": msg.get("duration_seconds"),
-                            "downloaded": True,
-                            "download_date": utcnow_naive(),
-                            "_source": str(source),
-                            "_dest": str(dest_file),
-                        }
-                        media_batch.append(media_data)
-                        media_count += 1
+                    source = _resolve_export_media_path(export_path, rel_path)
+                    if source is not None:
+                        media_data = None
+                        try:
+                            media_id = f"import_{chat_id}_{msg_id}"
+                            dest_dir = (self.media_root / str(chat_id)).resolve()
+                            original_name = orig_name or Path(rel_path.replace("\\", "/")).name
+                            dest_name = build_media_filename(media_id, original_name, self.max_filename_bytes)
+                            dest_file = dest_dir / dest_name
+                            resolved_dest = dest_file.resolve()
+                            if not resolved_dest.is_relative_to(self.media_root):
+                                logger.warning("Skipping imported media with an unsafe destination")
+                            else:
+                                file_size = source.stat().st_size
+                                stored_path = f"{chat_id}/{dest_name}"
+                                media_data = {
+                                    "id": media_id,
+                                    "message_id": msg_id,
+                                    "chat_id": chat_id,
+                                    "type": media_type,
+                                    "file_name": dest_name,
+                                    "file_path": stored_path,
+                                    "file_size": file_size,
+                                    "mime_type": msg.get("mime_type"),
+                                    "width": msg.get("width"),
+                                    "height": msg.get("height"),
+                                    "duration": msg.get("duration_seconds"),
+                                    "downloaded": True,
+                                    "download_date": utcnow_naive(),
+                                    "_source": str(source),
+                                    "_dest": str(resolved_dest),
+                                }
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            logger.warning(
+                                "Skipping imported media after an invalid path or filesystem error (%s)",
+                                type(exc).__name__,
+                            )
+                        if media_data is not None:
+                            media_batch.append(media_data)
+                            if dry_run:
+                                media_count += 1
                     else:
-                        logger.warning(f"Media file not found: {source}")
+                        logger.warning("Skipping imported media outside the export root or missing from the export")
 
             if len(batch) >= BATCH_SIZE:
                 if not dry_run:
-                    await self._flush_batch(batch, media_batch)
+                    media_count += await self._flush_batch(batch, media_batch)
                 batch.clear()
                 media_batch.clear()
                 logger.info(f"  Progress: {msg_count}/{len(messages)} messages")
 
         if batch and not dry_run:
-            await self._flush_batch(batch, media_batch)
+            media_count += await self._flush_batch(batch, media_batch)
 
         if not dry_run and msg_count > 0:
             await self.db.update_sync_status(chat_id, max_msg_id, msg_count)
@@ -752,17 +833,30 @@ class TelegramImporter:
         self,
         messages: list[dict[str, Any]],
         media: list[dict[str, Any]],
-    ) -> None:
+    ) -> int:
         """Flush a batch of messages and media to the database."""
         await self.db.insert_messages_batch(messages)
+        copied = 0
 
         for m in media:
             source = m.pop("_source")
             dest = m.pop("_dest")
 
             dest_path = Path(dest)
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            if not dest_path.exists():
-                shutil.copy2(source, dest)
+            # SECURITY-REVIEW: Re-check the untrusted import destination before filesystem writes.
+            try:
+                resolved_parent = dest_path.parent.resolve()
+                if not resolved_parent.is_relative_to(self.media_root) or dest_path.is_symlink():
+                    logger.warning("Skipping imported media with an unsafe destination")
+                    continue
+                resolved_parent.mkdir(parents=True, exist_ok=True)
+                if not dest_path.exists():
+                    await asyncio.to_thread(shutil.copy2, source, dest_path)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("Skipping imported media after a filesystem error (%s)", type(exc).__name__)
+                continue
 
             await self.db.insert_media(m)
+            copied += 1
+
+        return copied

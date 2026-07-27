@@ -114,6 +114,89 @@ async def test_fresh_insert_not_marked_deleted(sqlite_adapter):
 
 
 @pytest.mark.asyncio
+async def test_single_upsert_preserves_first_nonblank_sender_name(sqlite_adapter):
+    message_data = {
+        "id": 8,
+        "chat_id": 100,
+        "date": datetime(2026, 7, 27, 12, 0),
+        "text": "hello",
+        "sender_name": "  Original Name  ",
+    }
+    await sqlite_adapter.insert_message(message_data)
+    await sqlite_adapter.insert_message({**message_data, "sender_name": "Renamed User"})
+    await sqlite_adapter.insert_message({**message_data, "sender_name": "   "})
+    await sqlite_adapter.insert_message({key: value for key, value in message_data.items() if key != "sender_name"})
+
+    message = await _get_message(sqlite_adapter, 8, 100)
+    assert message.sender_name == "Original Name"
+
+
+@pytest.mark.asyncio
+async def test_single_upsert_fills_missing_sender_name_once(sqlite_adapter):
+    message_data = {
+        "id": 9,
+        "chat_id": 100,
+        "date": datetime(2026, 7, 27, 12, 1),
+        "text": "hello",
+    }
+    await sqlite_adapter.insert_message(message_data)
+    await sqlite_adapter.insert_message({**message_data, "sender_name": "First Snapshot"})
+    await sqlite_adapter.insert_message({**message_data, "sender_name": "Later Snapshot"})
+
+    message = await _get_message(sqlite_adapter, 9, 100)
+    assert message.sender_name == "First Snapshot"
+
+
+@pytest.mark.asyncio
+async def test_batch_upsert_fills_blank_sender_name_once(sqlite_adapter):
+    message_data = {
+        "id": 10,
+        "chat_id": 100,
+        "date": datetime(2026, 7, 27, 12, 2),
+        "text": "hello",
+        "sender_name": "",
+    }
+    await sqlite_adapter.insert_messages_batch([message_data])
+    await sqlite_adapter.insert_messages_batch([{**message_data, "sender_name": "Batch Snapshot"}])
+    await sqlite_adapter.insert_messages_batch([{**message_data, "sender_name": "Changed Later"}])
+
+    message = await _get_message(sqlite_adapter, 10, 100)
+    assert message.sender_name == "Batch Snapshot"
+
+
+@pytest.mark.asyncio
+async def test_sender_name_exposed_in_message_media_and_export_projections(sqlite_adapter):
+    message_data = {
+        "id": 11,
+        "chat_id": 200,
+        "sender_id": 501,
+        "date": datetime(2026, 7, 27, 12, 3),
+        "text": "hello",
+        "sender_name": "Captured Name",
+    }
+    await sqlite_adapter.insert_message(message_data)
+    await sqlite_adapter.upsert_user({"id": 501, "first_name": "Current", "last_name": "Name", "username": "current"})
+    await sqlite_adapter.insert_media(
+        {
+            "id": "media-11",
+            "message_id": 11,
+            "chat_id": 200,
+            "type": "photo",
+            "file_path": "/archive/photo.jpg",
+            "downloaded": True,
+        }
+    )
+
+    messages = await sqlite_adapter.get_messages_by_date_range(chat_id=200)
+    media = await sqlite_adapter.get_media_paginated(200)
+    exported = [row async for row in sqlite_adapter.get_messages_for_export(200)]
+
+    assert messages[0]["sender_name"] == "Captured Name"
+    assert media["items"][0]["sender_name"] == "Captured Name"
+    assert exported[0]["sender"]["name"] == "Captured Name"
+
+
+@pytest.mark.asyncio
 async def test_upsert_with_is_deleted_and_timestamp_sets_marker(sqlite_adapter):
     """An upsert whose payload carries is_deleted + deleted_at sets both on conflict."""
     deleted_at = datetime(2026, 6, 25, 13, 30)
