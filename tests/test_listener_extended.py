@@ -1417,6 +1417,7 @@ class TestOnNewMessageAdvanced:
         user_data = db.upsert_user.call_args[0][0]
         assert user_data["id"] == 111
         assert user_data["username"] == "testuser"
+        assert db.insert_message.call_args[0][0]["sender_name"] == "Test User"
 
     async def test_grouped_id_stored_in_raw_data(self):
         """When message has grouped_id, it is stored in raw_data."""
@@ -1616,6 +1617,7 @@ class TestOnNewMessageAdvanced:
         assert ws_message["first_name"] == "Test"
         assert ws_message["last_name"] == "User"
         assert ws_message["username"] == "testuser"
+        assert ws_message["sender_name"] == "Test User"
 
         # Nested media dict mirrors the insert_media call exactly (same id/type/file_path/
         # file_name; the unset fields insert_media defaults to None via .get() also stay None)
