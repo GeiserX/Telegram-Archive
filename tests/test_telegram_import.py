@@ -147,54 +147,51 @@ class TestParseEditedDate(unittest.TestCase):
 class TestDetectMedia(unittest.TestCase):
     def test_photo(self):
         msg = {"photo": "photos/photo_1.jpg"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "photo")
         self.assertEqual(rel, "photos/photo_1.jpg")
         self.assertEqual(fname, "photo_1.jpg")
 
     def test_document(self):
         msg = {"file": "files/doc.pdf", "file_name": "document.pdf", "mime_type": "application/pdf"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "document")
         self.assertEqual(fname, "document.pdf")
 
     def test_video(self):
         msg = {"file": "videos/vid.mp4", "media_type": "video_file"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "video")
 
     def test_voice(self):
         msg = {"file": "voice/msg.ogg", "media_type": "voice_message"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "voice")
 
     def test_animation(self):
         msg = {"file": "animations/anim.mp4", "media_type": "animation"}
-        media_type, rel, fname = _detect_media(msg, Path("/tmp"))
+        media_type, rel, fname = _detect_media(msg)
         self.assertEqual(media_type, "animation")
 
     def test_no_media(self):
-        media_type, rel, fname = _detect_media({}, Path("/tmp"))
+        media_type, rel, fname = _detect_media({})
         self.assertIsNone(media_type)
         self.assertIsNone(rel)
 
     def test_non_string_paths_and_names_are_ignored_safely(self):
-        media_type, rel, fname = _detect_media({"photo": {"path": "photo.jpg"}}, Path("/tmp"))
+        media_type, rel, fname = _detect_media({"photo": {"path": "photo.jpg"}})
         self.assertIsNone(media_type)
         self.assertIsNone(rel)
         self.assertIsNone(fname)
 
-        media_type, rel, fname = _detect_media(
-            {"file": "files/doc.pdf", "file_name": {"unexpected": "value"}},
-            Path("/tmp"),
-        )
+        media_type, rel, fname = _detect_media({"file": "files/doc.pdf", "file_name": {"unexpected": "value"}})
         self.assertEqual(media_type, "document")
         self.assertEqual(rel, "files/doc.pdf")
         self.assertEqual(fname, "doc.pdf")
 
     def test_photo_takes_precedence(self):
         msg = {"photo": "photos/p.jpg", "file": "files/f.pdf"}
-        media_type, _, _ = _detect_media(msg, Path("/tmp"))
+        media_type, _, _ = _detect_media(msg)
         self.assertEqual(media_type, "photo")
 
 
@@ -613,10 +610,12 @@ class TestTelegramImporterRun(unittest.TestCase):
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
 
-        summary = self._run(importer.run(self.export_dir))
+        with patch("src.telegram_import.BATCH_SIZE", 1):
+            summary = self._run(importer.run(self.export_dir))
 
         self.assertEqual(summary["total_messages"], 2)
         self.assertEqual(summary["total_media"], 1)
+        self.assertEqual(db.insert_messages_batch.await_count, 2)
         db.insert_media.assert_awaited_once()
         self.assertEqual(db.insert_media.call_args.args[0]["message_id"], 2)
 

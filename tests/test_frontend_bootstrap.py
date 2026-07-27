@@ -1,5 +1,6 @@
 """Regression tests for frontend boot-time failures."""
 
+import unittest
 from pathlib import Path
 
 INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
@@ -29,59 +30,56 @@ def test_media_gallery_close_reconnects_message_observer():
     assert watcher_body.index("await nextTick()") < watcher_body.rindex("setupMessagesScrollObserver()")
 
 
-def test_message_spacing_changes_at_sender_boundaries():
-    """Consecutive messages should be tighter than transitions between senders."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
+class TestSenderPresentation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert "gap-1 messages-scroll" not in html
-    assert "message-run-continue" in html
-    assert "message-run-break" in html
-    assert "const getSenderRunKey = (msg) =>" in html
-    assert "const isSenderBreak = (index) =>" in html
-    assert html.count("getSenderRunKey(") >= 6
-    assert "isSenderBreak," in html
+    def test_message_spacing_changes_at_sender_boundaries(self) -> None:
+        """Consecutive messages should be tighter than transitions between senders."""
+        self.assertNotIn("gap-1 messages-scroll", self.html)
+        self.assertIn("message-run-continue", self.html)
+        self.assertIn("message-run-break", self.html)
+        self.assertIn("const getSenderRunKey = (msg) =>", self.html)
+        self.assertIn("const isSenderBreak = (index) =>", self.html)
+        self.assertGreaterEqual(self.html.count("getSenderRunKey("), 4)
+        self.assertIn("return index > 0 && isRunEnd(index)", self.html)
+        self.assertIn("isSenderBreak,", self.html)
 
+    def test_sender_snapshot_precedes_current_profile_name(self) -> None:
+        """Archived names must not be rewritten in the UI by mutable user profiles."""
+        start = self.html.index("const getSenderName = (msg) =>")
+        end = self.html.index("const getCurrentSenderName = (msg) =>", start)
+        body = self.html[start:end]
 
-def test_sender_snapshot_precedes_current_profile_name():
-    """Archived names must not be rewritten in the UI by mutable user profiles."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
-    start = html.index("const getSenderName = (msg) =>")
-    end = html.index("const getCurrentSenderName = (msg) =>", start)
-    body = html[start:end]
+        self.assertIn("msg.raw_data.post_author", body)
+        self.assertIn("if (msg.sender_name) return msg.sender_name", body)
+        self.assertLess(body.index("msg.raw_data.post_author"), body.index("msg.sender_name"))
+        self.assertLess(body.index("msg.sender_name"), body.index("getCurrentSenderName(msg)"))
 
-    assert "msg.raw_data.post_author" in body
-    assert "if (msg.sender_name) return msg.sender_name" in body
-    assert body.index("msg.raw_data.post_author") < body.index("msg.sender_name")
-    assert body.index("msg.sender_name") < body.index("getCurrentSenderName(msg)")
+    def test_sender_avatar_opens_accessible_details_dialog(self) -> None:
+        """The run-start avatar exposes archived/current names and the numeric ID."""
+        self.assertIn('@click="openSenderInfo(msg, $event)"', self.html)
+        self.assertIn('role="dialog" aria-modal="true" aria-labelledby="sender-info-title"', self.html)
+        self.assertIn("senderInfoMessage.sender_name ? 'Archived name'", self.html)
+        self.assertIn("getCurrentSenderName(senderInfoMessage) ? 'Latest known name' : 'Name'", self.html)
+        self.assertIn("hasDifferentCurrentSenderName(senderInfoMessage)", self.html)
+        self.assertIn("senderInfoMessage.sender_id ?? 'Unknown'", self.html)
+        self.assertIn("event.key === 'Escape'", self.html)
+        self.assertIn("event.key !== 'Tab'", self.html)
+        self.assertIn("senderInfoDialog.value.querySelectorAll", self.html)
+        self.assertIn("senderInfoCloseBtn.value?.focus()", self.html)
+        self.assertIn("trigger?.focus()", self.html)
 
-
-def test_sender_avatar_opens_accessible_details_dialog():
-    """The run-start avatar exposes archived/current names and the numeric ID."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
-
-    assert '@click="openSenderInfo(msg, $event)"' in html
-    assert 'role="dialog" aria-modal="true" aria-labelledby="sender-info-title"' in html
-    assert "senderInfoMessage.sender_name ? 'Archived name' : 'Latest known name'" in html
-    assert "hasDifferentCurrentSenderName(senderInfoMessage)" in html
-    assert "senderInfoMessage.sender_id ?? 'Unknown'" in html
-    assert "event.key === 'Escape'" in html
-    assert "event.key !== 'Tab'" in html
-    assert "senderInfoDialog.value.querySelectorAll" in html
-    assert "senderInfoCloseBtn.value?.focus()" in html
-    assert "trigger?.focus()" in html
-
-
-def test_imported_document_display_name_hides_storage_prefix():
-    """Imported media IDs are storage details and should not appear in the gallery."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
-
-    start = html.index("const getMediaDisplayName = (media) =>")
-    end = html.index("const getDocumentDisplayName = (msg) =>", start)
-    body = html[start:end]
-    assert "media?.id" in body
-    assert "name.startsWith(storagePrefix)" in body
-    assert "name = name.slice(storagePrefix.length)" in body
-    assert "{{ getMediaDisplayName(item) }}" in html
+    def test_imported_document_display_name_hides_storage_prefix(self) -> None:
+        """Imported media IDs are storage details and should not appear in the gallery."""
+        start = self.html.index("const getMediaDisplayName = (media) =>")
+        end = self.html.index("const getDocumentDisplayName = (msg) =>", start)
+        body = self.html[start:end]
+        self.assertIn("media?.id", body)
+        self.assertIn("name.startsWith(storagePrefix)", body)
+        self.assertIn("name = name.slice(storagePrefix.length)", body)
+        self.assertIn("{{ getMediaDisplayName(item) }}", self.html)
 
 
 def test_message_versions_are_loaded_only_from_click_handler():

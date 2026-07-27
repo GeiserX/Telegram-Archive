@@ -1028,7 +1028,10 @@ class TelegramListener:
                 sender = message.sender
                 if sender is None:
                     try:
-                        sender = await event.get_sender()
+                        sender = await call_with_flood_retry(
+                            event.get_sender,
+                            non_retryable=lambda _exc: True,
+                        )
                     except Exception:
                         sender = None
 
@@ -1199,7 +1202,10 @@ class TelegramListener:
                     get_sender = getattr(msg, "get_sender", None)
                     if callable(get_sender):
                         try:
-                            sender = await get_sender()
+                            sender = await call_with_flood_retry(
+                                get_sender,
+                                non_retryable=lambda _exc: True,
+                            )
                         except Exception:
                             sender = None
 

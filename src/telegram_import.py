@@ -8,6 +8,7 @@ Supports two export formats:
 Both formats insert messages, users, and media into the existing database schema.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -156,7 +157,7 @@ def parse_edited_date(msg: dict) -> datetime | None:
     return None
 
 
-def _detect_media(msg: dict, export_path: Path) -> tuple[str | None, str | None, str | None]:
+def _detect_media(msg: dict) -> tuple[str | None, str | None, str | None]:
     """Detect media type and file path from an export message.
 
     Returns (media_type, relative_path, original_filename).
@@ -758,10 +759,11 @@ class TelegramImporter:
             msg_count += 1
 
             if not skip_media:
-                media_type, rel_path, orig_name = _detect_media(msg, export_path)
+                media_type, rel_path, orig_name = _detect_media(msg)
                 if media_type and rel_path:
                     source = _resolve_export_media_path(export_path, rel_path)
                     if source is not None:
+                        media_data = None
                         try:
                             media_id = f"import_{chat_id}_{msg_id}"
                             dest_dir = (self.media_root / str(chat_id)).resolve()
@@ -771,36 +773,35 @@ class TelegramImporter:
                             resolved_dest = dest_file.resolve()
                             if not resolved_dest.is_relative_to(self.media_root):
                                 logger.warning("Skipping imported media with an unsafe destination")
-                                continue
-                            file_size = source.stat().st_size
+                            else:
+                                file_size = source.stat().st_size
+                                stored_path = f"{chat_id}/{dest_name}"
+                                media_data = {
+                                    "id": media_id,
+                                    "message_id": msg_id,
+                                    "chat_id": chat_id,
+                                    "type": media_type,
+                                    "file_name": dest_name,
+                                    "file_path": stored_path,
+                                    "file_size": file_size,
+                                    "mime_type": msg.get("mime_type"),
+                                    "width": msg.get("width"),
+                                    "height": msg.get("height"),
+                                    "duration": msg.get("duration_seconds"),
+                                    "downloaded": True,
+                                    "download_date": utcnow_naive(),
+                                    "_source": str(source),
+                                    "_dest": str(resolved_dest),
+                                }
                         except (OSError, RuntimeError, ValueError) as exc:
                             logger.warning(
                                 "Skipping imported media after an invalid path or filesystem error (%s)",
                                 type(exc).__name__,
                             )
-                            continue
-                        stored_path = f"{chat_id}/{dest_name}"
-
-                        media_data = {
-                            "id": media_id,
-                            "message_id": msg_id,
-                            "chat_id": chat_id,
-                            "type": media_type,
-                            "file_name": dest_name,
-                            "file_path": stored_path,
-                            "file_size": file_size,
-                            "mime_type": msg.get("mime_type"),
-                            "width": msg.get("width"),
-                            "height": msg.get("height"),
-                            "duration": msg.get("duration_seconds"),
-                            "downloaded": True,
-                            "download_date": utcnow_naive(),
-                            "_source": str(source),
-                            "_dest": str(resolved_dest),
-                        }
-                        media_batch.append(media_data)
-                        if dry_run:
-                            media_count += 1
+                        if media_data is not None:
+                            media_batch.append(media_data)
+                            if dry_run:
+                                media_count += 1
                     else:
                         logger.warning("Skipping imported media outside the export root or missing from the export")
 
@@ -850,7 +851,7 @@ class TelegramImporter:
                     continue
                 resolved_parent.mkdir(parents=True, exist_ok=True)
                 if not dest_path.exists():
-                    shutil.copy2(source, dest_path)
+                    await asyncio.to_thread(shutil.copy2, source, dest_path)
             except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("Skipping imported media after a filesystem error (%s)", type(exc).__name__)
                 continue

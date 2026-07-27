@@ -1415,7 +1415,7 @@
                 <dl class="mt-4 space-y-3 text-sm">
                     <div>
                         <dt class="text-xs uppercase tracking-wide text-tg-muted">
-                            {{ senderInfoMessage.sender_name ? 'Archived name' : 'Latest known name' }}
+                            {{ senderInfoMessage.sender_name ? 'Archived name' : (getCurrentSenderName(senderInfoMessage) ? 'Latest known name' : 'Name') }}
                         </dt>
                         <dd class="mt-1 break-words text-white">{{ getSenderInfoName(senderInfoMessage) }}</dd>
                     </div>
@@ -4055,10 +4055,7 @@
                 const isSenderBreak = (index) => {
                     // The current row is visually above index - 1 under flex-col-reverse.
                     // Give a sender transition more space than messages in the same run.
-                    const currMsg = sortedMessages.value[index]
-                    const newerMsg = sortedMessages.value[index - 1]
-                    if (!newerMsg) return false
-                    return getSenderRunKey(newerMsg) !== getSenderRunKey(currMsg)
+                    return index > 0 && isRunEnd(index)
                 }
 
                 const showDateSeparator = (index) => {

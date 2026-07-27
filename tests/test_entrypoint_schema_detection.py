@@ -14,6 +14,8 @@ detection/stamping logic under test here.
 """
 
 import sqlite3
+import tempfile
+import unittest
 from pathlib import Path
 
 ENTRYPOINT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "entrypoint.sh"
@@ -122,27 +124,39 @@ def _stamped_version(db_path: Path) -> str:
     return row[0] if row else None
 
 
-def test_schema_through_018_stamps_018(tmp_path):
-    """A schema through 018 stamps at 018."""
-    db_path = tmp_path / "modern.db"
-    _seed_pre_alembic_db(db_path)
+class TestModernSchemaStamping(unittest.TestCase):
+    def test_schema_through_018_stamps_018(self) -> None:
+        """A schema through 018 stamps at 018."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "modern.db"
+            _seed_pre_alembic_db(db_path)
 
-    result = _run_stamping(db_path)
+            result = _run_stamping(db_path)
 
-    assert result["stamp_version"] == "018"
-    assert _stamped_version(db_path) == "018"
+            self.assertEqual(result["stamp_version"], "018")
+            self.assertEqual(_stamped_version(db_path), "018")
 
+    def test_schema_with_020_column_still_stamps_018(self) -> None:
+        """Current create_all() schema must run data-only 019 before guarded 020."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "current_create_all.db"
+            _seed_pre_alembic_db(db_path, include_020_sender_name=True)
 
-def test_schema_with_020_column_still_stamps_018(tmp_path):
-    """Current create_all() schema must run data-only 019 before guarded 020."""
-    db_path = tmp_path / "current_create_all.db"
-    _seed_pre_alembic_db(db_path, include_020_sender_name=True)
+            result = _run_stamping(db_path)
 
-    result = _run_stamping(db_path)
+            self.assertIs(result["has_020_sender_name"], True)
+            self.assertEqual(result["stamp_version"], "018")
+            self.assertEqual(_stamped_version(db_path), "018")
 
-    assert result["has_020_sender_name"] is True
-    assert result["stamp_version"] == "018"
-    assert _stamped_version(db_path) == "018"
+    def test_missing_018_artifacts_stamps_017(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "no_018_artifacts.db"
+            _seed_pre_alembic_db(db_path, omit_018_artifacts=True)
+
+            result = _run_stamping(db_path)
+
+            self.assertEqual(result["stamp_version"], "017")
+            self.assertEqual(_stamped_version(db_path), "017")
 
 
 def test_missing_017_index_stamps_016(tmp_path):
@@ -154,16 +168,6 @@ def test_missing_017_index_stamps_016(tmp_path):
 
     assert result["stamp_version"] == "016"
     assert _stamped_version(db_path) == "016"
-
-
-def test_missing_018_artifacts_stamps_017(tmp_path):
-    db_path = tmp_path / "no_018_artifacts.db"
-    _seed_pre_alembic_db(db_path, omit_018_artifacts=True)
-
-    result = _run_stamping(db_path)
-
-    assert result["stamp_version"] == "017"
-    assert _stamped_version(db_path) == "017"
 
 
 def test_missing_download_attempts_stamps_015(tmp_path):
@@ -251,11 +255,12 @@ def test_postgres_branch_checks_017_index_via_pg_indexes():
     assert "FROM pg_indexes" in _ENTRYPOINT_SOURCE
 
 
-def test_postgres_branch_detects_020_but_caps_stamp_at_018():
-    assert "has_020_sender_name" in _ENTRYPOINT_SOURCE
-    assert "column_name = 'sender_name'" in _ENTRYPOINT_SOURCE
-    assert "stamp_version = '019'" not in _ENTRYPOINT_SOURCE
-    assert "stamp_version = '020'" not in _ENTRYPOINT_SOURCE
+class TestPostgresMigration020Detection(unittest.TestCase):
+    def test_postgres_branch_detects_020_but_caps_stamp_at_018(self) -> None:
+        self.assertIn("has_020_sender_name", _ENTRYPOINT_SOURCE)
+        self.assertIn("column_name = 'sender_name'", _ENTRYPOINT_SOURCE)
+        self.assertNotIn("stamp_version = '019'", _ENTRYPOINT_SOURCE)
+        self.assertNotIn("stamp_version = '020'", _ENTRYPOINT_SOURCE)
 
 
 def test_postgres_branch_does_not_use_old_table_name():

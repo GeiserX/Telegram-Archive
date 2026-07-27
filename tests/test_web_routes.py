@@ -1715,7 +1715,7 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         self.assertEqual(call_kwargs["chat_id"], 42)
         self.assertEqual(call_kwargs["sender_name"], "Alice")
 
-    async def test_push_prefers_archived_sender_snapshot(self):
+    async def test_push_prefers_archived_sender_snapshot(self) -> None:
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=1)
