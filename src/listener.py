@@ -46,6 +46,7 @@ from .message_utils import (
     fallback_media_filename,
     finalize_atomic_download,
     sanitize_media_filename,
+    sender_display_name,
     service_action_type,
     service_message_text,
     utcnow_naive,
@@ -1024,18 +1025,25 @@ class TelegramListener:
                     }
                     await self.db.upsert_chat(chat_data)
 
+                sender = message.sender
+                if sender is None:
+                    try:
+                        sender = await event.get_sender()
+                    except Exception:
+                        sender = None
+
                 # Save sender information if available
                 # sender_user is kept for the WS notify payload below (mirrors the API row's
                 # flat first_name/last_name/username fields).
                 sender_user = None
-                if message.sender and isinstance(message.sender, User):
+                if sender and isinstance(sender, User):
                     user_data = {
-                        "id": message.sender.id,
-                        "username": message.sender.username,
-                        "first_name": message.sender.first_name,
-                        "last_name": message.sender.last_name,
-                        "phone": message.sender.phone,
-                        "is_bot": message.sender.bot,
+                        "id": sender.id,
+                        "username": sender.username,
+                        "first_name": sender.first_name,
+                        "last_name": sender.last_name,
+                        "phone": sender.phone,
+                        "is_bot": sender.bot,
                     }
                     await self.db.upsert_user(user_data)
                     sender_user = user_data
@@ -1044,6 +1052,7 @@ class TelegramListener:
                     "id": message.id,
                     "chat_id": chat_id,
                     "sender_id": message.sender_id,
+                    "sender_name": sender_display_name(sender),
                     "date": message.date,
                     "text": message.text or "",
                     "reply_to_msg_id": message.reply_to_msg_id if hasattr(message, "reply_to_msg_id") else None,
@@ -1185,6 +1194,15 @@ class TelegramListener:
                 # chat_edit_title, ...), derived from the MessageAction class name.
                 action_type = service_action_type(msg.action)
 
+                sender = getattr(msg, "sender", None)
+                if sender is None:
+                    get_sender = getattr(msg, "get_sender", None)
+                    if callable(get_sender):
+                        try:
+                            sender = await get_sender()
+                        except Exception:
+                            sender = None
+
                 # Metadata classification (Telethon 1.43 ChatAction semantics):
                 #   photo changed -> new_photo set AND photo is a Photo
                 #   photo removed -> new_photo set AND photo is None
@@ -1237,6 +1255,7 @@ class TelegramListener:
                     "id": msg.id,
                     "chat_id": chat_id,
                     "sender_id": msg.sender_id,
+                    "sender_name": sender_display_name(sender),
                     "date": msg.date,
                     "text": service_text or "",
                     "reply_to_msg_id": msg.reply_to_msg_id,

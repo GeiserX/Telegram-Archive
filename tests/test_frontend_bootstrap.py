@@ -29,6 +29,61 @@ def test_media_gallery_close_reconnects_message_observer():
     assert watcher_body.index("await nextTick()") < watcher_body.rindex("setupMessagesScrollObserver()")
 
 
+def test_message_spacing_changes_at_sender_boundaries():
+    """Consecutive messages should be tighter than transitions between senders."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "gap-1 messages-scroll" not in html
+    assert "message-run-continue" in html
+    assert "message-run-break" in html
+    assert "const getSenderRunKey = (msg) =>" in html
+    assert "const isSenderBreak = (index) =>" in html
+    assert html.count("getSenderRunKey(") >= 6
+    assert "isSenderBreak," in html
+
+
+def test_sender_snapshot_precedes_current_profile_name():
+    """Archived names must not be rewritten in the UI by mutable user profiles."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index("const getSenderName = (msg) =>")
+    end = html.index("const getCurrentSenderName = (msg) =>", start)
+    body = html[start:end]
+
+    assert "msg.raw_data.post_author" in body
+    assert "if (msg.sender_name) return msg.sender_name" in body
+    assert body.index("msg.raw_data.post_author") < body.index("msg.sender_name")
+    assert body.index("msg.sender_name") < body.index("getCurrentSenderName(msg)")
+
+
+def test_sender_avatar_opens_accessible_details_dialog():
+    """The run-start avatar exposes archived/current names and the numeric ID."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert '@click="openSenderInfo(msg, $event)"' in html
+    assert 'role="dialog" aria-modal="true" aria-labelledby="sender-info-title"' in html
+    assert "senderInfoMessage.sender_name ? 'Archived name' : 'Latest known name'" in html
+    assert "hasDifferentCurrentSenderName(senderInfoMessage)" in html
+    assert "senderInfoMessage.sender_id ?? 'Unknown'" in html
+    assert "event.key === 'Escape'" in html
+    assert "event.key !== 'Tab'" in html
+    assert "senderInfoDialog.value.querySelectorAll" in html
+    assert "senderInfoCloseBtn.value?.focus()" in html
+    assert "trigger?.focus()" in html
+
+
+def test_imported_document_display_name_hides_storage_prefix():
+    """Imported media IDs are storage details and should not appear in the gallery."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index("const getMediaDisplayName = (media) =>")
+    end = html.index("const getDocumentDisplayName = (msg) =>", start)
+    body = html[start:end]
+    assert "media?.id" in body
+    assert "name.startsWith(storagePrefix)" in body
+    assert "name = name.slice(storagePrefix.length)" in body
+    assert "{{ getMediaDisplayName(item) }}" in html
+
+
 def test_message_versions_are_loaded_only_from_click_handler():
     """Viewer message versions should be fetched lazily from the edited button."""
     html = INDEX_HTML.read_text(encoding="utf-8")

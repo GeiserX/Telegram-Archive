@@ -99,6 +99,14 @@
             border-bottom-right-radius: 4px;
         }
 
+        .message-run-continue {
+            margin-bottom: 2px;
+        }
+
+        .message-run-break {
+            margin-bottom: 10px;
+        }
+
 
         html,
         body,
@@ -1002,7 +1010,7 @@
                                             <i class="fas fa-file text-gray-400"></i>
                                         </div>
                                         <div class="flex-1 min-w-0">
-                                            <div class="text-sm text-white truncate">{{ item.file_name }}</div>
+                                            <div class="text-sm text-white truncate">{{ getMediaDisplayName(item) }}</div>
                                             <div class="text-xs text-gray-400">{{ formatFileSize(item.file_size) }} &middot; {{ formatMediaDate(item.message_date) }}</div>
                                         </div>
                                         <div class="flex items-center gap-2">
@@ -1038,7 +1046,7 @@
                     <!-- Messages - uses flex-col-reverse for instant scroll-to-bottom -->
                     <template v-else>
                     <div class="flex-1 relative min-h-0">
-                    <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse gap-1 messages-scroll" @scroll="handleScroll">
+                    <div ref="messagesContainer" class="h-full overflow-y-auto p-4 flex flex-col-reverse messages-scroll" @scroll="handleScroll">
                         <div v-if="loading && messages.length === 0" class="text-center py-4 text-tg-muted">
                             Loading messages...
                         </div>
@@ -1053,7 +1061,9 @@
                                 </div>
                             </div>
                             <!-- Regular Message (hide duplicate album messages - only show first in group) -->
-                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id" class="flex items-end gap-2" :class="isOwnMessage(msg) ? 'justify-end' : 'justify-start'">
+                            <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id"
+                                class="flex items-end gap-2"
+                                :class="[isOwnMessage(msg) ? 'justify-end' : 'justify-start', isSenderBreak(index) ? 'message-run-break' : 'message-run-continue']">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      Circle renders at the run start (alongside the name);
                                      an empty gutter keeps the rest of the run aligned. Shows
@@ -1063,15 +1073,17 @@
                                      (slice 2b, flood-sensitive) — only pre-existing files are
                                      served, so initials are the primary render. -->
                                 <div v-if="isGroup && !isOwnMessage(msg)" class="w-8 shrink-0 self-end">
-                                    <div v-if="showSenderName(index)"
-                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none"
+                                    <button v-if="showSenderName(index)" type="button"
+                                        @click="openSenderInfo(msg, $event)"
+                                        :aria-label="`Show sender details for ${getSenderName(msg)}`"
+                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none focus:outline-none focus:ring-2 focus:ring-blue-400"
                                         :style="{ background: getAvatarFill(msg) }">
                                         <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url"
                                             loading="lazy"
                                             class="w-full h-full object-cover"
                                             @error="msg.sender_avatar_url = null" :alt="getSenderName(msg)">
                                         <template v-else>{{ getSenderInitials(msg) }}</template>
-                                    </div>
+                                    </button>
                                 </div>
                                 <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
                                     :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
@@ -1384,6 +1396,39 @@
                     </button>
                 </div>
             </div>
+        </div>
+
+        <!-- Sender Details Dialog -->
+        <div v-if="senderInfoMessage"
+            class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+            @click.self="closeSenderInfo">
+            <section ref="senderInfoDialog" role="dialog" aria-modal="true" aria-labelledby="sender-info-title"
+                class="w-full max-w-sm rounded-xl border border-gray-700 bg-tg-sidebar p-5 shadow-2xl">
+                <header class="flex items-start justify-between gap-4">
+                    <h3 id="sender-info-title" class="text-base font-semibold text-white">Sender details</h3>
+                    <button ref="senderInfoCloseBtn" type="button" @click="closeSenderInfo"
+                        class="p-1 text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                        aria-label="Close sender details">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </header>
+                <dl class="mt-4 space-y-3 text-sm">
+                    <div>
+                        <dt class="text-xs uppercase tracking-wide text-tg-muted">
+                            {{ senderInfoMessage.sender_name ? 'Archived name' : 'Latest known name' }}
+                        </dt>
+                        <dd class="mt-1 break-words text-white">{{ getSenderInfoName(senderInfoMessage) }}</dd>
+                    </div>
+                    <div v-if="hasDifferentCurrentSenderName(senderInfoMessage)">
+                        <dt class="text-xs uppercase tracking-wide text-tg-muted">Latest known name</dt>
+                        <dd class="mt-1 break-words text-white">{{ getCurrentSenderName(senderInfoMessage) }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs uppercase tracking-wide text-tg-muted">Telegram ID</dt>
+                        <dd class="mt-1 font-mono text-white">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
+                    </div>
+                </dl>
+            </section>
         </div>
 
         <!-- Message Versions Drawer -->
@@ -1713,6 +1758,7 @@
                 const messages = ref([])
                 const messageVersionsByMessage = ref({})
                 const versionsMessage = ref(null)
+                const senderInfoMessage = ref(null)
                 const messageVersionsLoading = ref({})
                 const messageVersionsErrors = ref({})
                 // Per-message-keyed staleness counter (chatVersion is chat-scoped, so it
@@ -1720,6 +1766,9 @@
                 // chat apart — this needs its own key per message id instead).
                 const messageVersionsRequestSeq = ref({})
                 const versionsCloseBtn = ref(null)
+                const senderInfoDialog = ref(null)
+                const senderInfoCloseBtn = ref(null)
+                let senderInfoTrigger = null
                 const selectedChat = ref(null)
                 const searchQuery = ref('')
                 const messageSearchQuery = ref('')
@@ -3414,7 +3463,7 @@
                 }
 
                 const isGroup = computed(() => {
-                    return selectedChat.value && (selectedChat.value.type === 'group' || selectedChat.value.type === 'channel')
+                    return selectedChat.value && ['group', 'supergroup', 'channel'].includes(selectedChat.value.type)
                 })
 
                 // Per-chat statistics
@@ -3863,12 +3912,74 @@
                     if (msg.raw_data && msg.raw_data.post_author) {
                         return msg.raw_data.post_author
                     }
+                    if (msg.sender_name) return msg.sender_name
+                    const currentName = getCurrentSenderName(msg)
+                    if (currentName) return currentName
+                    if (msg.sender_id) return `User ${msg.sender_id}`
+                    return 'Deleted Account'
+                }
+
+                const getCurrentSenderName = (msg) => {
                     if (msg.first_name || msg.last_name) {
                         return `${msg.first_name || ''} ${msg.last_name || ''}`.trim()
                     }
                     if (msg.username) return msg.username
-                    if (msg.sender_id) return `User ${msg.sender_id}`
-                    return 'Deleted Account'
+                    return null
+                }
+
+                const getSenderInfoName = (msg) => {
+                    return msg.sender_name || getCurrentSenderName(msg) || getSenderName(msg)
+                }
+
+                const hasDifferentCurrentSenderName = (msg) => {
+                    const currentName = getCurrentSenderName(msg)
+                    return !!msg.sender_name && !!currentName && currentName !== msg.sender_name
+                }
+
+                const handleSenderInfoKeydown = (event) => {
+                    if (!senderInfoMessage.value) return
+                    if (event.key === 'Escape') {
+                        closeSenderInfo()
+                        return
+                    }
+                    if (event.key !== 'Tab' || !senderInfoDialog.value) return
+
+                    const focusable = Array.from(senderInfoDialog.value.querySelectorAll(
+                        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                    ))
+                    if (focusable.length === 0) {
+                        event.preventDefault()
+                        return
+                    }
+
+                    const first = focusable[0]
+                    const last = focusable[focusable.length - 1]
+                    if (!senderInfoDialog.value.contains(document.activeElement)) {
+                        event.preventDefault()
+                        const target = event.shiftKey ? last : first
+                        target.focus()
+                    } else if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault()
+                        last.focus()
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault()
+                        first.focus()
+                    }
+                }
+
+                const openSenderInfo = (msg, event) => {
+                    senderInfoMessage.value = msg
+                    senderInfoTrigger = event?.currentTarget || null
+                    document.addEventListener('keydown', handleSenderInfoKeydown)
+                    nextTick(() => senderInfoCloseBtn.value?.focus())
+                }
+
+                const closeSenderInfo = () => {
+                    senderInfoMessage.value = null
+                    document.removeEventListener('keydown', handleSenderInfoKeydown)
+                    const trigger = senderInfoTrigger
+                    senderInfoTrigger = null
+                    nextTick(() => trigger?.focus())
                 }
 
                 // Get name for forwarded message source
@@ -3909,6 +4020,13 @@
                     window.open(url, '_blank')
                 }
 
+                const getSenderRunKey = (msg) => {
+                    // HTML imports can have no numeric sender ID, while snapshots
+                    // can change across history. Group by both identity and the
+                    // name actually rendered for this message.
+                    return `${msg.sender_id ?? 'unknown'}:${getSenderName(msg)}`
+                }
+
                 const showSenderName = (index) => {
                     // With flex-col-reverse: index 0 = newest (bottom), higher index = older (top)
                     // Show sender name at TOP of each sender's sequence (oldest message from sender)
@@ -3919,7 +4037,7 @@
                     // Last message (oldest, at top) always shows name
                     if (!olderMsg) return true
 
-                    return olderMsg.sender_id !== currMsg.sender_id
+                    return getSenderRunKey(olderMsg) !== getSenderRunKey(currMsg)
                 }
 
                 const isRunEnd = (index) => {
@@ -3931,7 +4049,16 @@
                     const currMsg = sortedMessages.value[index]
                     const newerMsg = sortedMessages.value[index - 1]
                     if (!newerMsg) return true
-                    return newerMsg.sender_id !== currMsg.sender_id
+                    return getSenderRunKey(newerMsg) !== getSenderRunKey(currMsg)
+                }
+
+                const isSenderBreak = (index) => {
+                    // The current row is visually above index - 1 under flex-col-reverse.
+                    // Give a sender transition more space than messages in the same run.
+                    const currMsg = sortedMessages.value[index]
+                    const newerMsg = sortedMessages.value[index - 1]
+                    if (!newerMsg) return false
+                    return getSenderRunKey(newerMsg) !== getSenderRunKey(currMsg)
                 }
 
                 const showDateSeparator = (index) => {
@@ -4267,23 +4394,30 @@
                     return `/media/${folder}/${filename}`
                 }
 
-                const getDocumentDisplayName = (msg) => {
+                const getMediaDisplayName = (media) => {
                     // Prefer file name from media table when available
-                    let name = msg.media?.file_name || ''
+                    let name = media?.file_name || ''
 
                     // Fallback to filename from path
-                    if (!name && msg.media?.file_path) {
-                        name = msg.media?.file_path.split(/[/\\]/).pop()
+                    if (!name && media?.file_path) {
+                        name = media.file_path.split(/[/\\]/).pop()
                     }
 
                     if (!name) {
                         return 'document'
                     }
 
+                    const storagePrefix = media?.id ? `${media.id}_` : ''
+                    if (storagePrefix && name.startsWith(storagePrefix)) {
+                        name = name.slice(storagePrefix.length)
+                    }
+
                     // Old backups may prefix message_id (e.g. 12345_original.png) – strip that prefix
                     const withoutPrefix = name.replace(/^[0-9]+_/, '')
                     return withoutPrefix || name
                 }
+
+                const getDocumentDisplayName = (msg) => getMediaDisplayName(msg.media)
 
                 const isImageDocument = (msg) => {
                     const name = (msg.media?.file_name || msg.media?.file_path || '').toString().toLowerCase()
@@ -4714,6 +4848,9 @@
                     messages,
                     versionsMessage,
                     versionsCloseBtn,
+                    senderInfoMessage,
+                    senderInfoDialog,
+                    senderInfoCloseBtn,
                     sortedMessages,
                     searchQuery,
                     messageSearchQuery,
@@ -4752,9 +4889,16 @@
                     searchMessages,
                     isOwnMessage,
                     getSenderName,
+                    getCurrentSenderName,
+                    getSenderInfoName,
+                    hasDifferentCurrentSenderName,
+                    openSenderInfo,
+                    closeSenderInfo,
                     getForwardName,
+                    getSenderRunKey,
                     showSenderName,
                     isRunEnd,
+                    isSenderBreak,
                     showDateSeparator,
                     // Album support
                     getAlbumForMessage,
@@ -4779,6 +4923,7 @@
                     formatLastBackupTime,
                     formatReactionEmoji,
                     getMediaUrl,
+                    getMediaDisplayName,
                     getDocumentDisplayName,
                     isImageDocument,
                     handleImageError,

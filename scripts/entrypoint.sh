@@ -157,6 +157,17 @@ if has_tables and not has_alembic:
     \"\"\")
     has_018_reaction_removed_at = has_018_removed_at_col and cur.fetchone()[0]
 
+    # Check artifact from migration 020: messages.sender_name column. Migration
+    # 019 is data-only, so even schemas created from current ORM metadata must be
+    # stamped at 018 and run both 019 and guarded/idempotent 020.
+    cur.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'sender_name'
+        );
+    \"\"\")
+    has_020_sender_name = cur.fetchone()[0]
+
     # Check artifact from migration 014: messages soft-delete marker columns
     cur.execute(\"\"\"
         SELECT
@@ -277,9 +288,9 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone()[0]
 
     # Determine which version to stamp based on existing schema
-    # Migration 019 is a data-only cleanup (deletes phantom chat-action rows) with
-    # no detectable schema artifact, so it is intentionally absent from this ladder;
-    # alembic upgrade head always runs it (idempotent) after stamping at 018.
+    # Migration 019 is a data-only cleanup with no detectable schema artifact.
+    # A schema with the 020 column was created from current ORM metadata, but it
+    # must still stamp at 018 so Alembic runs 019 before guarded/idempotent 020.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
@@ -420,6 +431,10 @@ if has_tables and not has_alembic:
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_reactions_chat_message'\")
     has_018_reaction_removed_at = ('removed_at' in reaction_columns) and (cur.fetchone() is not None)
 
+    # Migration 020 is schema-only, but migration 019 before it is data-only and
+    # must still run for databases created from current ORM metadata.
+    has_020_sender_name = 'sender_name' in msg_columns
+
     # Check all artifacts from migration 010: viewer_tokens, app_settings, viewer_accounts.no_download
     cur.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='viewer_tokens'\")
     has_010_tokens = cur.fetchone() is not None
@@ -459,9 +474,8 @@ if has_tables and not has_alembic:
     has_push_subs = cur.fetchone() is not None
 
     # Determine which version to stamp based on existing schema
-    # Migration 019 is a data-only cleanup (deletes phantom chat-action rows) with
-    # no detectable schema artifact, so it is intentionally absent from this ladder;
-    # alembic upgrade head always runs it (idempotent) after stamping at 018.
+    # Even when the 020 artifact exists, cap the stamp at 018 so migration 019
+    # runs before guarded/idempotent migration 020.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:

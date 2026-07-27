@@ -64,6 +64,8 @@ def _run_stamping(db_path: Path) -> dict:
 def _seed_pre_alembic_db(
     db_path: Path,
     *,
+    include_020_sender_name: bool = False,
+    omit_018_artifacts: bool = False,
     omit_017_index: bool = False,
     omit_016_download_attempts: bool = False,
     omit_015_message_versions: bool = False,
@@ -80,12 +82,21 @@ def _seed_pre_alembic_db(
     conn.execute("CREATE TABLE chats (id INTEGER PRIMARY KEY)")
 
     messages_cols = ["id INTEGER PRIMARY KEY", "chat_id INTEGER"]
+    if include_020_sender_name:
+        messages_cols.append("sender_name TEXT")
     if not omit_014_soft_delete:
         messages_cols += ["is_deleted BOOLEAN", "deleted_at TEXT"]
     conn.execute(f"CREATE TABLE messages ({', '.join(messages_cols)})")
 
     if not omit_017_index:
         conn.execute("CREATE INDEX idx_messages_chat_id_id ON messages (chat_id, id)")
+
+    reaction_cols = ["id INTEGER PRIMARY KEY", "message_id INTEGER", "chat_id INTEGER"]
+    if not omit_018_artifacts:
+        reaction_cols.append("removed_at TEXT")
+    conn.execute(f"CREATE TABLE reactions ({', '.join(reaction_cols)})")
+    if not omit_018_artifacts:
+        conn.execute("CREATE INDEX idx_reactions_chat_message ON reactions (chat_id, message_id)")
 
     if not omit_015_message_versions:
         conn.execute("CREATE TABLE message_versions (id INTEGER PRIMARY KEY)")
@@ -111,15 +122,27 @@ def _stamped_version(db_path: Path) -> str:
     return row[0] if row else None
 
 
-def test_fully_modern_schema_stamps_017(tmp_path):
-    """create_all() shape: soft-delete cols + message_versions + download_attempts + 017 index."""
+def test_schema_through_018_stamps_018(tmp_path):
+    """A schema through 018 stamps at 018."""
     db_path = tmp_path / "modern.db"
     _seed_pre_alembic_db(db_path)
 
     result = _run_stamping(db_path)
 
-    assert result["stamp_version"] == "017"
-    assert _stamped_version(db_path) == "017"
+    assert result["stamp_version"] == "018"
+    assert _stamped_version(db_path) == "018"
+
+
+def test_schema_with_020_column_still_stamps_018(tmp_path):
+    """Current create_all() schema must run data-only 019 before guarded 020."""
+    db_path = tmp_path / "current_create_all.db"
+    _seed_pre_alembic_db(db_path, include_020_sender_name=True)
+
+    result = _run_stamping(db_path)
+
+    assert result["has_020_sender_name"] is True
+    assert result["stamp_version"] == "018"
+    assert _stamped_version(db_path) == "018"
 
 
 def test_missing_017_index_stamps_016(tmp_path):
@@ -131,6 +154,16 @@ def test_missing_017_index_stamps_016(tmp_path):
 
     assert result["stamp_version"] == "016"
     assert _stamped_version(db_path) == "016"
+
+
+def test_missing_018_artifacts_stamps_017(tmp_path):
+    db_path = tmp_path / "no_018_artifacts.db"
+    _seed_pre_alembic_db(db_path, omit_018_artifacts=True)
+
+    result = _run_stamping(db_path)
+
+    assert result["stamp_version"] == "017"
+    assert _stamped_version(db_path) == "017"
 
 
 def test_missing_download_attempts_stamps_015(tmp_path):
@@ -216,6 +249,13 @@ def test_postgres_branch_checks_message_versions_table():
 def test_postgres_branch_checks_017_index_via_pg_indexes():
     assert "idx_messages_chat_id_id" in _ENTRYPOINT_SOURCE
     assert "FROM pg_indexes" in _ENTRYPOINT_SOURCE
+
+
+def test_postgres_branch_detects_020_but_caps_stamp_at_018():
+    assert "has_020_sender_name" in _ENTRYPOINT_SOURCE
+    assert "column_name = 'sender_name'" in _ENTRYPOINT_SOURCE
+    assert "stamp_version = '019'" not in _ENTRYPOINT_SOURCE
+    assert "stamp_version = '020'" not in _ENTRYPOINT_SOURCE
 
 
 def test_postgres_branch_does_not_use_old_table_name():
