@@ -1709,6 +1709,42 @@ class TestProcessMessage(unittest.TestCase):
 
         self.backup.db.upsert_user.assert_awaited_once()
 
+    def test_sender_name_snapshot_prefers_trimmed_first_and_last_name(self):
+        msg = self._make_message(80)
+        sender = MagicMock()
+        sender.first_name = "  Ada "
+        sender.last_name = " Lovelace  "
+        sender.title = "Channel Title"
+        sender.username = "ada"
+        msg.sender = sender
+
+        result = self._run(self.backup._process_message(msg, 100))
+
+        self.assertEqual(result["sender_name"], "Ada Lovelace")
+
+    def test_sender_name_snapshot_falls_back_to_title_then_username(self):
+        title_msg = self._make_message(81)
+        title_sender = MagicMock()
+        title_sender.first_name = None
+        title_sender.last_name = " "
+        title_sender.title = "  News Channel "
+        title_sender.username = "news"
+        title_msg.sender = title_sender
+
+        username_msg = self._make_message(82)
+        username_sender = MagicMock()
+        username_sender.first_name = None
+        username_sender.last_name = None
+        username_sender.title = " "
+        username_sender.username = "  archived_user "
+        username_msg.sender = username_sender
+
+        title_result = self._run(self.backup._process_message(title_msg, 100))
+        username_result = self._run(self.backup._process_message(username_msg, 100))
+
+        self.assertEqual(title_result["sender_name"], "News Channel")
+        self.assertEqual(username_result["sender_name"], "archived_user")
+
     def test_reactions_extracted_with_emoticon(self):
         """Reactions with emoticon emoji are extracted correctly."""
         msg = self._make_message(9)
