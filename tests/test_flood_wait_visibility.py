@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telethon.errors import FloodWaitError
+from telethon.errors import ChatIdInvalidError, FloodWaitError, PeerIdInvalidError
 
 
 def _patch_db_module(monkeypatch):
@@ -690,6 +690,30 @@ async def test_call_with_flood_retry_gives_up_on_transient_error(fake_db):
         pytest.raises(OSError, match="disk failure"),
     ):
         await telegram_backup.call_with_flood_retry(broken_api, max_retries=3)
+
+
+@pytest.mark.parametrize("error_type", [ChatIdInvalidError, PeerIdInvalidError])
+@pytest.mark.asyncio
+async def test_call_with_flood_retry_rejects_terminal_peer_errors_immediately(fake_db, error_type):
+    """Permanent peer identifiers must not consume transient retry delays."""
+    from src import telegram_backup
+
+    attempts = 0
+
+    async def invalid_peer():
+        nonlocal attempts
+        attempts += 1
+        raise error_type(request=MagicMock())
+
+    sleep = AsyncMock()
+    with (
+        patch.object(telegram_backup.asyncio, "sleep", sleep),
+        pytest.raises(error_type),
+    ):
+        await telegram_backup.call_with_flood_retry(invalid_peer, max_retries=5)
+
+    assert attempts == 1
+    sleep.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
