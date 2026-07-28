@@ -2254,7 +2254,7 @@ async def get_message_dates(
             headers={"Cache-Control": "private, no-store"},
         )
     except Exception as e:
-        logger.error("Error fetching message dates")
+        logger.error("Error fetching message dates (%s)", type(e).__name__)
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
