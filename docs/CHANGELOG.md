@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.29.0] - 2026-07-28
+
+### Added
+- **Historical jump windows now paginate in both directions.** Scrolling toward newer messages repeatedly loads forward pages and automatically returns to live updates when the current tail is reached. Topic scope, stale requests, and transient failures remain isolated.
+- **Jump to Date now marks days containing archived messages.** Month availability is timezone- and topic-aware, uses the existing message-date index on SQLite and PostgreSQL, and leaves empty days selectable.
+
+### Fixed
+- **The Jump to Date month selector is readable in dark mode** on native browser dropdowns, including Windows Chromium.
+- **Calendar navigation is accessible and race-safe.** The dialog supports keyboard focus and Escape, announces loading/errors/nearest-date jumps, works on short mobile viewports, and ignores cancelled or superseded date requests.
+
+### Notes
+- No database migration or configuration change is required.
+
 ## [7.28.0] - 2026-07-27
 
 ### Added

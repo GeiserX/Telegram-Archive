@@ -196,3 +196,11 @@ Loop: `/research! → /implement! → /review-pr! → (back to research)` · sol
 - **#244 GO with scope cuts.** Add binary dots for message-bearing days; keep empty days selectable (official clients do). No heatmap, count UI, previews, schema migration, server cache, or custom calendar. Use one portable statement of 28–31 index-backed day-existence probes with UTC half-open ranges; pass active topic and fix the existing topic/date lookup mismatch.
 - Official-client nuance: iOS/Android/Desktop mainly decorate media days, not every text-message day, but all provide themed calendar navigation and anchored history that remains pageable. Binary message-day dots are a useful archive-specific extension, not exact parity.
 - Acceptance plan: regression-first tests; three production files for #244 (`adapter.py`, `main.py`, `index.html`), frontend-only #242/#243, then full review/deslop/release loop.
+
+### 2026-07-28 — implementation + review complete; v7.29.0 ready for PR
+- Built bidirectional detached-window pagination, dark Flatpickr month controls, topic/timezone-aware message-day dots, and topic-aware nearest-date navigation. No migration or new dependency.
+- Review rounds found and fixed: preserved-pane topic scope, forward failure retry loops/dead state, date-jump cancellation/latest-intent races, unsafe boundary-year 500s, calendar dialog keyboard/focus gaps, mobile/short-viewport clipping, invisible loading/failure state, and nearest-date ambiguity.
+- Added executable Node regressions that run the shipped `loadNewerMessages`, retry, and `jumpToDate` functions with deferred fetches; static wiring tests remain as structural guards.
+- Bounded AI-slop pass on changed files: no dead code, duplicate abstraction, speculative framework, or removable wrapper remained. The state counters correspond to distinct cancellation domains; the dependency-free Node extractor is justified by the inline Vue architecture.
+- Post-deslop evidence: **2441 passed / 0 failed + 150 subtests**, executable JS behavior **3 passed**, Ruff check/format clean, `git diff --check` clean, Alembic head unchanged at `020`, version declarations and lockfile synchronized at `7.29.0`.
+- Three independent completion reviews approved with zero remaining medium-or-higher findings. Tally: **0 closed / 3 open**; next is PR → green CI → merge → release → replies/closure.
