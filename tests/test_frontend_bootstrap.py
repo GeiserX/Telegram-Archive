@@ -278,7 +278,7 @@ def test_jump_to_message_resets_history_pagination():
     """Replacing the message window should rebuild history pagination from that window."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
 
     assert "const myVersion = ++chatVersion" in jump_body
@@ -296,7 +296,7 @@ def test_jump_window_suppresses_realtime_poll():
     """A jump-to-message window pauses the offset=0 poll so it can't snap to newest (#213)."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
     refresh_start = html.index("const checkForNewMessages = async () =>")
     refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
@@ -329,7 +329,7 @@ def test_jump_window_fetches_context_and_scrolls_to_target():
     """The jump loads history + after-context scoped to the topic and scrolls to the target (#213)."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
 
     # Exclusive bound keeps the target as the newest row of the history half.
@@ -406,7 +406,8 @@ def test_jump_to_date_routes_through_window_loader():
     date_start = html.index("const jumpToDate = async () =>")
     date_body = html[date_start : html.index("// Admin panel", date_start)]
 
-    assert "await loadMessagesAroundId(message.id)" in date_body
+    assert "await loadMessagesAroundId(" in date_body
+    assert "message.id," in date_body
     # The 20-page fill-gap loop (failed for targets >1000 messages back) is gone.
     assert "fillGap" not in html
     assert "maxIterations" not in date_body
@@ -476,6 +477,8 @@ def test_topic_filter_mirrors_backend_default():
 
     assert "reply_to_top_id ?? GENERAL_TOPIC_ID" in belongs_body
     assert "const GENERAL_TOPIC_ID = 1" in html
+    assert "const topicId = activeTopicId()" in belongs_body
+    assert "currentNav.value" not in belongs_body
 
 
 def test_load_messages_handles_auth_expiry():
@@ -536,7 +539,7 @@ def test_toast_exists_and_is_wired_into_jump_failure_path():
     assert "toastMessage," in html
     assert "showToast," in html
 
-    jump_start = html.index("const loadMessagesAroundId = async (messageId) =>")
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
     jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
     assert "showToast('Could not load messages around that message')" in jump_body
     # Both the primary-fetch !res.ok branch and a thrown network error must toast.
@@ -620,3 +623,328 @@ def test_reaction_ws_case_patches_message_reactions():
     assert "reactionMsg.reactions = data.reactions" in reaction_body
     # The reactions block renders the aggregate shape the server sends.
     assert 'v-for="reaction in msg.reactions"' in html
+
+
+def test_detached_window_loads_newer_pages_with_independent_state():
+    """Detached windows must paginate toward the live tail without touching older pagination."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'ref="loadNewerSentinel"' in html
+    assert "const loadNewerSentinel = ref(null)" in html
+    assert "const hasMoreNewer = ref(false)" in html
+    assert "const loadingNewer = ref(false)" in html
+    assert "let newestMessageId = null" in html
+    assert "let messagesNewerObserver = null" in html
+
+    loader_start = html.index("const loadNewerMessages = async () =>")
+    loader_body = html[loader_start : html.index("const searchMessages = async () =>", loader_start)]
+    assert "loadingNewer.value || newerLoadError.value || !hasMoreNewer.value" in loader_body
+    assert "after_id=${newestMessageId}" in loader_body
+    assert "${topicParam}" in loader_body
+    assert loader_body.count("chatVersion !== myVersion") >= 2
+    assert "upsertMessages(newMessages)" in loader_body
+    assert "newestMessageId = newest.id" in loader_body
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+    assert "newestMessageId = newestLoadedMessageId()" in jump_body
+    assert "hasMoreNewer.value = !afterFetchComplete || afterRows.length === windowLimit" in jump_body
+
+    assert '@click="jumpToReply(msg.reply_to_msg_id)"' in html
+    reply_start = html.index("const jumpToReply = async (msgId) =>")
+    reply_body = html[reply_start : html.index("const calendarAvailabilityKey", reply_start)]
+    assert "findMessageElement(msgId)" in reply_body
+    assert "await loadMessagesAroundId(msgId)" in reply_body
+
+
+def test_newer_sentinel_and_live_tail_transition_are_independent():
+    """The visual-bottom observer should page newer rows, then resume realtime at the tail."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    observer_start = html.index("const setupMessagesScrollObserver = () =>")
+    observer_body = html[observer_start : html.index("// Stats data", observer_start)]
+    assert "messagesScrollObserver = new IntersectionObserver" in observer_body
+    assert "messagesNewerObserver = new IntersectionObserver" in observer_body
+    assert "loadMessages()" in observer_body
+    assert "loadNewerMessages()" in observer_body
+    assert "loadMoreSentinel.value" in observer_body
+    assert "loadNewerSentinel.value" in observer_body
+
+    loader_start = html.index("const loadNewerMessages = async () =>")
+    loader_body = html[loader_start : html.index("const searchMessages = async () =>", loader_start)]
+    assert "if (newMessages.length < limit)" in loader_body
+    assert "hasMoreNewer.value = false" in loader_body
+    assert "viewingPinnedWindow.value = false" in loader_body
+    assert "startMessageRefresh()" in loader_body
+
+    reset_start = html.index("const resetMessagePagination = () =>")
+    reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
+    assert "hasMoreNewer.value = false" in reset_body
+    assert "loadingNewer.value = false" in reset_body
+    assert "newestMessageId = null" in reset_body
+
+
+def test_flatpickr_month_select_has_dark_native_colors():
+    """The native Flatpickr month select and its options must remain readable in dark mode."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert ".flatpickr-monthDropdown-months {" in html
+    assert "color-scheme: dark;" in html
+    assert ".flatpickr-monthDropdown-month {" in html
+    assert "background: #334155 !important;" in html
+    assert "color: #e2e8f0 !important;" in html
+
+
+def test_date_picker_fetches_month_availability_and_marks_days():
+    """Calendar open/month/year changes fetch availability and decorate, never disable, dates."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const calendarAvailabilityCache = new Map()" in html
+    assert "let calendarAvailabilityRequestSeq = 0" in html
+    assert "const loadCalendarAvailability = async (year, month) =>" in html
+    assert "/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}" in html
+    assert "onOpen:" in html
+    assert "onMonthChange:" in html
+    assert "onYearChange:" in html
+    assert "loadCalendarAvailability(instance.currentYear, instance.currentMonth)" in html
+    assert "onDayCreate:" in html
+    assert "calendar-available-date" in html
+    assert "calendar-availability-dot" in html
+    assert "dayElem.setAttribute('aria-label'" in html
+    assert "dayElem.title =" in html
+    assert "disable:" not in html[html.index("flatpickr(datePickerInput.value") : html.index("const closeDatePicker")]
+
+
+def test_calendar_availability_is_topic_scoped_stale_safe_and_fail_open():
+    """Availability cache writes must be scoped and stale responses ignored; failures leave days enabled."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    availability_start = html.index("const loadCalendarAvailability = async (year, month) =>")
+    availability_body = html[availability_start : html.index("const openDatePicker", availability_start)]
+    assert "calendarAvailabilityKey(chatId, topicId, timezone, monthKey)" in availability_body
+    assert "url += `&topic_id=${topicId}`" in availability_body
+    assert availability_body.count("requestSeq !== calendarAvailabilityRequestSeq") >= 2
+    assert "calendarAvailableDates.value = null" in availability_body
+    assert "catch (e)" in availability_body
+    assert "flatpickrInstance.redraw()" in availability_body
+
+    assert "calendarAvailabilityCache.clear()" in html
+    assert "calendarAvailabilityRequestSeq++" in html
+
+
+def test_date_picker_uses_viewer_timezone_and_topic_for_date_jump():
+    """Today and both date endpoints must use the viewer timezone and active topic."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    picker_start = html.index("const openDatePicker = (initialDate) =>")
+    picker_body = html[picker_start : html.index("const closeDatePicker", picker_start)]
+    assert "moment.tz(viewerTimezone.value).format('YYYY-MM-DD')" in picker_body
+    assert "maxDate: viewerToday" in picker_body
+    assert "maxDate: 'today'" not in picker_body
+
+    jump_start = html.index("const jumpToDate = async () =>")
+    jump_body = html[jump_start : html.index("// Admin panel", jump_start)]
+    assert "let dateUrl =" in jump_body
+    assert "dateUrl += `&topic_id=${topicIdAtStart}`" in jump_body
+    assert "const topicIdAtStart = activeTopicId()" in jump_body
+
+
+def test_pane_topic_scope_survives_sidebar_navigation():
+    """Sidebar navigation must not silently change the topic still displayed in the message pane."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const selectedPaneTopic = ref(null)" in html
+    active_start = html.index("const activeTopicId = () =>")
+    active_body = html[active_start : html.index("// Contract mirror", active_start)]
+    assert "selectedPaneTopic.value?.id" in active_body
+    assert "currentNav.value" not in active_body
+
+    topic_start = html.index("const selectTopic = async (chat, topic) =>")
+    topic_body = html[topic_start : html.index("const activeTab = computed", topic_start)]
+    assert "selectedPaneTopic.value = topic" in topic_body
+    assert topic_body.index("selectedPaneTopic.value = topic") < topic_body.index("await loadMessages()")
+
+    chat_start = html.index("const selectChat = async (chat) =>")
+    chat_body = html[chat_start : html.index("const startMessageRefresh", chat_start)]
+    assert "selectedPaneTopic.value = null" in chat_body
+
+    back_start = html.index("const navigateBack = () =>")
+    back_body = html[back_start : html.index("const loadFolders", back_start)]
+    assert "selectedPaneTopic.value" not in back_body
+    assert "Main panel keeps showing current topic messages" in back_body
+
+    assert ":class=\"{'bg-tg-active': selectedPaneTopic?.id === topic.id}\"" in html
+    assert '<template v-if="selectedPaneTopic?.title">' in html
+
+
+def test_all_pane_requests_use_retained_topic_scope():
+    """Forward/history/poll/calendar/date requests must all read the pane topic, not sidebar state."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
+    jump_body = html[jump_start : html.index("watch(showMediaGallery", jump_start)]
+    refresh_start = html.index("const checkForNewMessages = async () =>")
+    refresh_body = html[refresh_start : html.index("const loadMessages = async () =>", refresh_start)]
+    load_start = html.index("const loadMessages = async () =>")
+    load_body = html[load_start : html.index("const loadNewerMessages", load_start)]
+    newer_start = html.index("const loadNewerMessages = async () =>")
+    newer_body = html[newer_start : html.index("const retryNewerMessages", newer_start)]
+
+    assert "const topicId = activeTopicId()" in jump_body
+    assert "const topicId = activeTopicId()" in refresh_body
+    assert "const topicId = activeTopicId()" in load_body
+    assert "const topicId = activeTopicId()" in newer_body
+    assert "currentNav.value" not in jump_body
+    assert "currentNav.value" not in refresh_body
+    assert "currentNav.value" not in load_body
+
+    availability_start = html.index("const loadCalendarAvailability = async (year, month) =>")
+    availability_body = html[availability_start : html.index("const handleDatePickerKeydown", availability_start)]
+    assert "const topicId = activeTopicId()" in availability_body
+    assert "url += `&topic_id=${topicId}`" in availability_body
+
+    by_date_start = html.index("const jumpToDate = async () =>")
+    by_date_body = html[by_date_start : html.index("// Admin panel", by_date_start)]
+    assert "const topicIdAtStart = activeTopicId()" in by_date_body
+    assert "dateUrl += `&topic_id=${topicIdAtStart}`" in by_date_body
+
+
+def test_newer_failure_pauses_observer_and_exposes_retry():
+    """Forward failures must preserve the cursor/page and require an explicit retry."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const newerLoadError = ref('')" in html
+    assert "let newerLoadRequestSeq = 0" in html
+    assert 'v-else-if="newerLoadError"' in html
+    assert '@click="retryNewerMessages"' in html
+    assert "Could not load newer messages." in html
+
+    observer_start = html.index("messagesNewerObserver = new IntersectionObserver")
+    observer_body = html[observer_start : html.index("// Observe each independent edge", observer_start)]
+    assert "!newerLoadError.value" in observer_body
+
+    loader_start = html.index("const loadNewerMessages = async () =>")
+    loader_body = html[loader_start : html.index("const retryNewerMessages", loader_start)]
+    catch_body = loader_body[loader_body.index("} catch (e) {") : loader_body.index("} finally {")]
+    assert "newerLoadError.value = 'Could not load newer messages.'" in catch_body
+    assert "hasMoreNewer.value = false" not in catch_body
+    assert "requestSeq === newerLoadRequestSeq" in loader_body
+    assert "newerLoadError.value = ''" in loader_body
+
+    retry_start = html.index("const retryNewerMessages = () =>")
+    retry_body = html[retry_start : html.index("const searchMessages", retry_start)]
+    assert "newerLoadError.value = ''" in retry_body
+    assert "loadNewerMessages()" in retry_body
+
+    reset_start = html.index("const resetMessagePagination = () =>")
+    reset_body = html[reset_start : html.index("// Mirrors backend coalesce", reset_start)]
+    assert "newerLoadError.value = ''" in reset_body
+    assert "newerLoadRequestSeq++" in reset_body
+    assert "loadingNewer.value = false" in reset_body
+
+
+def test_date_picker_dialog_accessibility_and_mobile_calendar():
+    """The custom calendar must be keyboard-accessible and used consistently on mobile."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert ".date-separator button {" in html
+    assert '<button type="button" @click="openDatePicker(msg.date)"' in html
+    assert 'role="dialog" aria-modal="true" aria-labelledby="date-picker-title"' in html
+    assert 'id="date-picker-title"' in html
+    assert 'aria-label="Close date picker"' in html
+    assert 'aria-label="Date to jump to"' in html
+    assert "disableMobile: true" in html
+    assert "appendTo: datePickerDialog.value" in html
+
+    handler_start = html.index("const handleDatePickerKeydown = (event) =>")
+    handler_body = html[handler_start : html.index("const openDatePicker", handler_start)]
+    assert "event.key === 'Escape'" in handler_body
+    assert "event.key !== 'Tab'" in handler_body
+    assert "datePickerDialog.value.querySelectorAll" in handler_body
+    assert "event.preventDefault()" in handler_body
+
+    open_start = html.index("const openDatePicker = (initialDate) =>")
+    open_body = html[open_start : html.index("const closeDatePicker", open_start)]
+    assert "document.activeElement instanceof HTMLElement" in open_body
+    assert "document.addEventListener('keydown', handleDatePickerKeydown)" in open_body
+    assert "datePickerInput.value?.focus()" in open_body
+
+    close_start = html.index("const closeDatePicker = (invalidateJump = true) =>")
+    close_body = html[close_start : html.index("const jumpToDate", close_start)]
+    assert "if (invalidateJump) dateJumpRequestSeq++" in close_body
+    assert "document.removeEventListener('keydown', handleDatePickerKeydown)" in close_body
+    assert "trigger?.isConnected" in close_body
+    assert "trigger.focus()" in close_body
+    assert 'role="status" aria-live="polite" aria-atomic="true"' in html
+    assert "@media (max-height: 700px)" in html
+    assert "max-height: calc(100dvh - 2rem)" in html
+    assert "overflow-y-auto" in html
+
+
+def test_calendar_status_deduplicates_requests_and_fails_open_visibly():
+    """Month hooks share one request and expose loading/failure without disabling dates."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const calendarAvailabilityLoading = ref(false)" in html
+    assert "const calendarAvailabilityError = ref('')" in html
+    assert "const calendarAvailabilityInFlight = new Set()" in html
+    assert "let calendarAvailabilityActiveKey = null" in html
+    assert 'v-if="calendarAvailabilityLoading" role="status" aria-live="polite"' in html
+    assert 'v-else-if="calendarAvailabilityError" role="status" aria-live="polite"' in html
+    assert "Availability unavailable; all dates remain selectable." in html
+
+    availability_start = html.index("const loadCalendarAvailability = async (year, month) =>")
+    availability_body = html[availability_start : html.index("const handleDatePickerKeydown", availability_start)]
+    assert "calendarAvailabilityInFlight.has(cacheKey)" in availability_body
+    assert "calendarAvailabilityInFlight.add(cacheKey)" in availability_body
+    assert "calendarAvailabilityInFlight.delete(cacheKey)" in availability_body
+    assert "calendarAvailabilityActiveKey = cacheKey" in availability_body
+    assert "calendarAvailabilityActiveKey !== cacheKey" in availability_body
+    assert "calendarAvailabilityLoading.value = true" in availability_body
+    assert "calendarAvailabilityLoading.value = false" in availability_body
+    assert (
+        "calendarAvailabilityError.value = 'Availability unavailable; all dates remain selectable.'"
+        in availability_body
+    )
+    assert "disable:" not in html[html.index("flatpickr(datePickerInput.value") : html.index("const closeDatePicker")]
+
+
+def test_empty_date_nearest_result_warns_before_navigation():
+    """An undotted date resolving to another local day should explain the nearest-date jump."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    jump_start = html.index("const jumpToDate = async () =>")
+    jump_body = html[jump_start : html.index("// Admin panel", jump_start)]
+    assert "const selectedDateHadAvailability =" in jump_body
+    assert "calendarAvailableDates.value?.has(selectedDateAtStart) === true" in jump_body
+    assert (
+        "const messageLocalDate = moment.utc(message.date).tz(viewerTimezone.value).format('YYYY-MM-DD')" in jump_body
+    )
+    assert "if (!selectedDateHadAvailability && messageLocalDate !== selectedDateAtStart)" in jump_body
+    toast = "showToast(`No messages on ${selectedDateAtStart}; showing nearest message on ${messageLocalDate}.`)"
+    assert toast in jump_body
+    response_body = jump_body[jump_body.index("const message = await res.json()") :]
+    assert response_body.index(toast) < response_body.index("closeDatePicker(false)")
+
+
+def test_date_jump_latest_intent_wins_and_cancellation_propagates_to_window_load():
+    """Closing or replacing a date jump must invalidate every later async stage."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "let dateJumpRequestSeq = 0" in html
+    open_start = html.index("const openDatePicker = (initialDate) =>")
+    open_body = html[open_start : html.index("const closeDatePicker", open_start)]
+    assert "dateJumpRequestSeq++" in open_body
+
+    jump_start = html.index("const jumpToDate = async () =>")
+    jump_body = html[jump_start : html.index("// Admin panel", jump_start)]
+    assert "const jumpRequestSeq = ++dateJumpRequestSeq" in jump_body
+    assert jump_body.count("jumpRequestSeq !== dateJumpRequestSeq") >= 4
+    assert "closeDatePicker(false)" in jump_body
+    assert "() => jumpRequestSeq === dateJumpRequestSeq" in jump_body
+
+    window_start = html.index("const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
+    window_body = html[window_start : html.index("watch(showMediaGallery", window_start)]
+    assert "const isCurrentIntent = () =>" in window_body
+    assert "!externalGuard || externalGuard()" in window_body
+    assert window_body.count("if (!isCurrentIntent()) return") >= 6

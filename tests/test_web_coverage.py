@@ -18,7 +18,7 @@ try:
     from src.web import main as web_main
 
     _WEB_AVAILABLE = True
-except Exception:
+except ImportError:
     _WEB_AVAILABLE = False
     web_main = None  # type: ignore[assignment]
 
@@ -26,7 +26,7 @@ try:
     from httpx import ASGITransport, AsyncClient
 
     _HTTPX_AVAILABLE = True
-except Exception:
+except ImportError:
     _HTTPX_AVAILABLE = False
 
 try:
@@ -34,7 +34,7 @@ try:
     from src.web.push import PushNotificationManager
 
     _PUSH_AVAILABLE = True
-except Exception:
+except ImportError:
     _PUSH_AVAILABLE = False
     push_mod = None  # type: ignore[assignment]
     PushNotificationManager = None  # type: ignore[assignment, misc]
@@ -64,6 +64,7 @@ def _mock_db():
     db.get_metadata = AsyncMock(return_value=None)
     db.get_chat_stats = AsyncMock(return_value={})
     db.find_message_by_date_with_joins = AsyncMock(return_value=None)
+    db.get_message_dates = AsyncMock(return_value=[])
     db.get_message_versions_by_date_range = AsyncMock(return_value=[])
 
     async def _no_versions(*args, **kwargs):
@@ -1604,12 +1605,19 @@ class TestEndpointDbErrors(_MasterTestBase):
             resp = await client.get("/api/chats/1/messages/by-date?date=2025-01-01")
         self.assertEqual(resp.status_code, 500)
 
-    async def test_message_by_date_invalid_timezone_fallback(self):
-        """get_message_by_date falls back to UTC for invalid timezone."""
-        self.mock_db.find_message_by_date_with_joins = AsyncMock(return_value={"id": 1})
+    async def test_message_dates_db_connection_error(self):
+        """get_message_dates returns 503 on DB connection errors."""
+        self.mock_db.get_message_dates = AsyncMock(side_effect=OSError("conn"))
         async with self._client() as client:
-            resp = await client.get("/api/chats/1/messages/by-date?date=2025-01-01&timezone=Invalid/Zone")
-        self.assertEqual(resp.status_code, 200)
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-03&timezone=UTC")
+        self.assertEqual(resp.status_code, 503)
+
+    async def test_message_dates_generic_error(self):
+        """get_message_dates returns 500 on generic DB errors."""
+        self.mock_db.get_message_dates = AsyncMock(side_effect=RuntimeError("bug"))
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-03&timezone=UTC")
+        self.assertEqual(resp.status_code, 500)
 
     async def test_export_db_connection_error(self):
         """export_chat returns 503 on DB connection error."""

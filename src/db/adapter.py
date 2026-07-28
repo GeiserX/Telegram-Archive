@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -2113,7 +2113,41 @@ class DatabaseAdapter:
 
             return messages
 
-    async def find_message_by_date_with_joins(self, chat_id: int, target_date: datetime) -> dict[str, Any] | None:
+    async def get_message_dates(
+        self,
+        chat_id: int,
+        day_ranges: list[tuple[str, datetime, datetime]],
+        topic_id: int | None = None,
+    ) -> list[str]:
+        """Return the requested local-calendar dates that contain messages."""
+        if not day_ranges:
+            return []
+
+        branches = []
+        for day, utc_start, utc_end in day_ranges:
+            conditions = [
+                Message.chat_id == chat_id,
+                Message.date >= utc_start,
+                Message.date < utc_end,
+            ]
+            if topic_id is not None:
+                conditions.append(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
+            branches.append(
+                select(literal(day).label("day")).where(
+                    exists(select(1).where(*conditions)),
+                )
+            )
+
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(union_all(*branches))
+            return sorted(set(result.scalars().all()))
+
+    async def find_message_by_date_with_joins(
+        self,
+        chat_id: int,
+        target_date: datetime,
+        topic_id: int | None = None,
+    ) -> dict[str, Any] | None:
         """
         Find message by date with full user/media joins for web viewer.
 
@@ -2122,6 +2156,7 @@ class DatabaseAdapter:
         Args:
             chat_id: Chat ID
             target_date: Target date to find message for
+            topic_id: Optional forum topic ID to filter messages by thread
 
         Returns:
             Message dictionary with user and media info, or None
@@ -2147,6 +2182,8 @@ class DatabaseAdapter:
                 .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
                 .where(Message.chat_id == chat_id)
             )
+            if topic_id is not None:
+                base_stmt = base_stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
             # Try on or after target date
             stmt = base_stmt.where(Message.date >= target_date).order_by(Message.date.asc()).limit(1)

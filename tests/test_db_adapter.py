@@ -3311,6 +3311,28 @@ class TestFindMessageByDateWithJoins:
         assert result["id"] == 1
 
     @pytest.mark.asyncio
+    async def test_topic_filter_applies_to_all_fallback_queries(self):
+        """Every nearest-message fallback stays within the selected topic."""
+        db_manager, mock_session = _make_mock_db_manager()
+        adapter = DatabaseAdapter(db_manager)
+
+        empty = MagicMock()
+        empty.first.return_value = None
+        mock_session.execute.return_value = empty
+
+        result = await adapter.find_message_by_date_with_joins(
+            100,
+            datetime(2025, 1, 1),
+            topic_id=7,
+        )
+
+        assert result is None
+        assert mock_session.execute.await_count == 3
+        for call in mock_session.execute.await_args_list:
+            sql = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+            assert "coalesce(messages.reply_to_top_id, 1) = 7" in sql
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_chat_has_no_messages(self):
         """find_message_by_date_with_joins returns None for empty chat."""
         db_manager, mock_session = _make_mock_db_manager()

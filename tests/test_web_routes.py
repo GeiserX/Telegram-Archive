@@ -10,6 +10,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
@@ -17,7 +18,7 @@ try:
     from src.web import main as web_main
 
     _WEB_AVAILABLE = True
-except Exception:
+except ImportError:
     _WEB_AVAILABLE = False
     web_main = None  # type: ignore[assignment]
 
@@ -25,7 +26,7 @@ try:
     from httpx import ASGITransport, AsyncClient
 
     _HTTPX_AVAILABLE = True
-except Exception:
+except ImportError:
     _HTTPX_AVAILABLE = False
 
 
@@ -57,6 +58,7 @@ def _mock_db():
     db.get_metadata = AsyncMock(return_value=None)
     db.get_chat_stats = AsyncMock(return_value={})
     db.find_message_by_date_with_joins = AsyncMock(return_value=None)
+    db.get_message_dates = AsyncMock(return_value=[])
     db.get_all_viewer_accounts = AsyncMock(return_value=[])
     db.get_viewer_by_username = AsyncMock(return_value=None)
     db.get_viewer_account = AsyncMock(return_value=None)
@@ -798,6 +800,160 @@ class TestMessageByDateEndpoint(_WebTestBase):
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages/by-date?date=2025-06-15&timezone=Europe/Madrid")
         self.assertEqual(resp.status_code, 200)
+
+    async def test_forwards_topic_id_and_timezone_adjusted_date(self):
+        """get_message_by_date forwards topic filtering without changing nearest-message lookup."""
+        self.mock_db.find_message_by_date_with_joins = AsyncMock(return_value={"id": 1})
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/by-date?date=2025-06-15&timezone=Europe/Madrid&topic_id=77")
+        self.assertEqual(resp.status_code, 200)
+        self.mock_db.find_message_by_date_with_joins.assert_awaited_once_with(
+            1,
+            datetime(2025, 6, 14, 22),
+            77,
+        )
+
+    async def test_rejects_explicit_invalid_timezone(self):
+        """get_message_by_date returns 400 instead of silently using UTC."""
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/by-date?date=2025-01-01&timezone=Invalid/Zone")
+        self.assertEqual(resp.status_code, 400)
+        self.mock_db.find_message_by_date_with_joins.assert_not_awaited()
+
+    async def test_rejects_unsafe_year_before_timezone_conversion(self):
+        async with self._client() as client:
+            minimum = await client.get("/api/chats/1/messages/by-date?date=0001-01-01&timezone=Etc/GMT-14")
+            maximum = await client.get("/api/chats/1/messages/by-date?date=9999-12-31&timezone=Etc/GMT%2B12")
+        self.assertEqual(minimum.status_code, 400)
+        self.assertEqual(maximum.status_code, 400)
+        self.mock_db.find_message_by_date_with_joins.assert_not_awaited()
+
+
+# ============================================================================
+# Message dates API
+# ============================================================================
+
+
+@_skip_unless_web
+class TestMessageDatesEndpoint(_WebTestBase):
+    """Test /api/chats/{chat_id}/messages/dates endpoint."""
+
+    async def test_returns_contract_with_utc_spillover_and_topic(self):
+        self.mock_db.get_message_dates = AsyncMock(return_value=["2026-03-01", "2026-03-31"])
+        async with self._client() as client:
+            resp = await client.get("/api/chats/42/messages/dates?month=2026-03&timezone=Asia/Tokyo&topic_id=17")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {
+                "month": "2026-03",
+                "timezone": "Asia/Tokyo",
+                "topic_id": 17,
+                "dates": ["2026-03-01", "2026-03-31"],
+            },
+        )
+        self.assertEqual(resp.headers["cache-control"], "private, no-store")
+
+        chat_id, day_ranges, topic_id = self.mock_db.get_message_dates.call_args.args
+        self.assertEqual(chat_id, 42)
+        self.assertEqual(topic_id, 17)
+        self.assertEqual(len(day_ranges), 31)
+        self.assertEqual(
+            day_ranges[0],
+            ("2026-03-01", datetime(2026, 2, 28, 15), datetime(2026, 3, 1, 15)),
+        )
+        self.assertEqual(
+            day_ranges[-1],
+            ("2026-03-31", datetime(2026, 3, 30, 15), datetime(2026, 3, 31, 15)),
+        )
+
+    async def test_builds_spring_dst_day_with_23_hour_bounds(self):
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-03&timezone=America/New_York")
+
+        self.assertEqual(resp.status_code, 200)
+        day_ranges = self.mock_db.get_message_dates.call_args.args[1]
+        self.assertEqual(
+            day_ranges[7],
+            ("2026-03-08", datetime(2026, 3, 8, 5), datetime(2026, 3, 9, 4)),
+        )
+
+    async def test_builds_fall_dst_day_with_25_hour_bounds(self):
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-11&timezone=America/New_York")
+
+        self.assertEqual(resp.status_code, 200)
+        day_ranges = self.mock_db.get_message_dates.call_args.args[1]
+        self.assertEqual(
+            day_ranges[0],
+            ("2026-11-01", datetime(2026, 11, 1, 4), datetime(2026, 11, 2, 5)),
+        )
+
+    async def test_rejects_non_round_trip_month(self):
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-3&timezone=UTC")
+        self.assertEqual(resp.status_code, 400)
+        self.mock_db.get_message_dates.assert_not_awaited()
+
+    async def test_rejects_unsafe_boundary_years(self):
+        async with self._client() as client:
+            minimum = await client.get("/api/chats/1/messages/dates?month=0001-01&timezone=Pacific/Kiritimati")
+            maximum = await client.get("/api/chats/1/messages/dates?month=9999-12&timezone=Etc/GMT%2B12")
+        self.assertEqual(minimum.status_code, 400)
+        self.assertEqual(maximum.status_code, 400)
+        self.mock_db.get_message_dates.assert_not_awaited()
+
+    async def test_supports_safe_year_bounds_and_december_rollover(self):
+        async with self._client() as client:
+            minimum = await client.get("/api/chats/1/messages/dates?month=0002-01&timezone=UTC")
+            maximum = await client.get("/api/chats/1/messages/dates?month=9998-12&timezone=UTC")
+
+        self.assertEqual(minimum.status_code, 200)
+        self.assertEqual(maximum.status_code, 200)
+        minimum_ranges = self.mock_db.get_message_dates.call_args_list[0].args[1]
+        maximum_ranges = self.mock_db.get_message_dates.call_args_list[1].args[1]
+        self.assertEqual(minimum_ranges[0][0], "0002-01-01")
+        self.assertEqual(
+            maximum_ranges[-1],
+            ("9998-12-31", datetime(9998, 12, 31), datetime(9999, 1, 1)),
+        )
+
+    async def test_rejects_invalid_and_overlong_timezones(self):
+        async with self._client() as client:
+            invalid = await client.get("/api/chats/1/messages/dates?month=2026-03&timezone=Invalid/Zone")
+            overlong = await client.get(
+                "/api/chats/1/messages/dates",
+                params={"month": "2026-03", "timezone": "A" * 256},
+            )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(overlong.status_code, 400)
+        self.mock_db.get_message_dates.assert_not_awaited()
+
+    async def test_denies_chat_before_database_query(self):
+        web_main.AUTH_ENABLED = True
+        token = "dates-restricted"
+        web_main._sessions[token] = web_main.SessionData(
+            username="viewer",
+            role="viewer",
+            allowed_chat_ids={100},
+        )
+        async with self._client() as client:
+            resp = await client.get(
+                "/api/chats/999/messages/dates?month=0001-01&timezone=Invalid/Zone",
+                cookies={"viewer_auth": token},
+            )
+        self.assertEqual(resp.status_code, 403)
+        self.mock_db.get_message_dates.assert_not_awaited()
+
+    async def test_returns_empty_dates(self):
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages/dates?month=2026-02&timezone=UTC")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {"month": "2026-02", "timezone": "UTC", "topic_id": None, "dates": []},
+        )
 
 
 # ============================================================================
