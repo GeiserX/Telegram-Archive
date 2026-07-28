@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.29.1] - 2026-07-28
+
+### Fixed
+- **Invalid or permanently unavailable peer identifiers no longer consume transient retry delays.** Terminal Telegram peer errors now fail immediately, allowing whitelist-based backup sweeps to skip stale entries and continue without repeated exponential waits.
+
 ## [7.29.0] - 2026-07-28
 
 ### Added

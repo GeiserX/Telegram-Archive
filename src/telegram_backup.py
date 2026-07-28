@@ -18,9 +18,11 @@ from telethon import TelegramClient
 from telethon.errors import (
     ChannelPrivateError,
     ChatForbiddenError,
+    ChatIdInvalidError,
     FileReferenceExpiredError,
     FloodPremiumWaitError,
     FloodWaitError,
+    PeerIdInvalidError,
     RPCError,
     UserBannedInChannelError,
 )
@@ -256,6 +258,8 @@ async def call_with_flood_retry(
                     FileReferenceExpiredError,
                     ChannelPrivateError,
                     ChatForbiddenError,
+                    ChatIdInvalidError,
+                    PeerIdInvalidError,
                     UserBannedInChannelError,
                 ),
             ):
