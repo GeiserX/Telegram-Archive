@@ -150,13 +150,15 @@
             pointer-events: none;
         }
 
-        .date-separator span {
+        .date-separator button {
             background-color: rgba(30, 41, 59, 0.85);
             -webkit-backdrop-filter: blur(6px);
             backdrop-filter: blur(6px);
+            border: 0;
             padding: 6px 16px;
             border-radius: 16px;
             font-size: 0.75rem;
+            font-family: inherit;
             color: #cbd5e1;
             cursor: pointer;
             transition: background-color 0.2s;
@@ -165,7 +167,7 @@
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
         }
 
-        .date-separator span:hover {
+        .date-separator button:hover {
             background-color: #475569;
             color: #cbd5e1;
         }
@@ -183,6 +185,17 @@
         }
 
         .flatpickr-month {
+            color: #e2e8f0 !important;
+        }
+
+        .flatpickr-calendar .flatpickr-monthDropdown-months {
+            color-scheme: dark;
+            background: #334155 !important;
+            color: #e2e8f0 !important;
+        }
+
+        .flatpickr-calendar .flatpickr-monthDropdown-month {
+            background: #334155 !important;
             color: #e2e8f0 !important;
         }
 
@@ -214,6 +227,38 @@
 
         .flatpickr-day.today:hover {
             background: #475569 !important;
+        }
+
+        @media (max-height: 700px) {
+            .date-picker-dialog {
+                max-height: calc(100dvh - 2rem);
+                overflow-y: auto;
+            }
+
+            .date-picker-dialog .flatpickr-calendar {
+                position: static !important;
+                margin-top: 0.5rem;
+            }
+        }
+
+        .flatpickr-day.calendar-available-date {
+            position: relative;
+        }
+
+        .flatpickr-day .calendar-availability-dot {
+            position: absolute;
+            bottom: 3px;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            border-radius: 9999px;
+            background: #60a5fa;
+            transform: translateX(-50%);
+            pointer-events: none;
+        }
+
+        .flatpickr-day.selected .calendar-availability-dot {
+            background: #dbeafe;
         }
 
         /* Scroll to Bottom Button */
@@ -612,7 +657,7 @@
                         <div v-else v-for="topic in topics" :key="topic.id"
                             @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, topic)"
                             class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
-                            :class="{'bg-tg-active': currentNav.topicId === topic.id}">
+                            :class="{'bg-tg-active': selectedPaneTopic?.id === topic.id}">
                             <!-- Topic icon -->
                             <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
                                 :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
@@ -804,8 +849,8 @@
                             <div class="min-w-0 flex-1 max-w-[180px] sm:max-w-xs">
                                 <h2 class="font-bold text-base sm:text-lg truncate">{{ getChatName(selectedChat) }}</h2>
                                 <p class="text-xs text-tg-muted truncate">
-                                    <template v-if="currentNav.type === 'chat' && currentNav.topicTitle">
-                                        # {{ currentNav.topicTitle }}
+                                    <template v-if="selectedPaneTopic?.title">
+                                        # {{ selectedPaneTopic.title }}
                                     </template>
                                     <template v-else>{{ selectedChat.type }}</template>
                                 </p>
@@ -1051,6 +1096,22 @@
                             Loading messages...
                         </div>
 
+                        <!-- In flex-col-reverse the first children are the visual bottom (newer edge). -->
+                        <div v-if="loadingNewer" role="status" aria-live="polite"
+                            class="text-center py-2 text-tg-muted text-xs">
+                            Loading newer messages...
+                        </div>
+                        <div v-else-if="newerLoadError" role="status" aria-live="polite"
+                            class="flex items-center justify-center gap-2 py-2 text-xs text-amber-300">
+                            <span>{{ newerLoadError }}</span>
+                            <button type="button" @click="retryNewerMessages"
+                                class="rounded bg-gray-700 px-2 py-1 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                Retry
+                            </button>
+                        </div>
+                        <div v-if="hasMoreNewer && !loadingNewer && !newerLoadError && messages.length > 0"
+                            ref="loadNewerSentinel" class="h-1"></div>
+
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
                             <!-- v6.0.0: Service type moved to raw_data.service_type -->
@@ -1095,7 +1156,7 @@
                                     </div>
 
                                     <!-- Reply Context -->
-                                    <div v-if="msg.reply_to_msg_id" @click="scrollToMessage(msg.reply_to_msg_id)"
+                                    <div v-if="msg.reply_to_msg_id" @click="jumpToReply(msg.reply_to_msg_id)"
                                         class="border-l-2 border-blue-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2 cursor-pointer hover:bg-black/30 transition">
                                         <div class="font-semibold text-blue-400 mb-0.5">Reply to</div>
                                         <div class="truncate opacity-70">{{ msg.reply_to_text || 'Message' }}</div>
@@ -1327,7 +1388,10 @@
 
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
                             <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
-                                <span @click="openDatePicker(msg.date)">{{ formatDateFull(msg.date) }}</span>
+                                <button type="button" @click="openDatePicker(msg.date)"
+                                    :aria-label="`Open date picker for ${formatDateFull(msg.date)}`">
+                                    {{ formatDateFull(msg.date) }}
+                                </button>
                             </div>
                         </template>
 
@@ -1368,13 +1432,15 @@
 
         <!-- Date Picker Modal -->
         <div v-if="showDatePickerModal"
-            class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
             @click.self="closeDatePicker">
-            <div class="bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+            <section ref="datePickerDialog" role="dialog" aria-modal="true" aria-labelledby="date-picker-title"
+                class="date-picker-dialog my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-bold text-white">Jump to Date</h3>
-                    <button @click="closeDatePicker"
-                        class="text-gray-400 hover:text-white transition p-1">
+                    <h3 id="date-picker-title" class="text-xl font-bold text-white">Jump to Date</h3>
+                    <button type="button" @click="closeDatePicker"
+                        aria-label="Close date picker"
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1382,8 +1448,17 @@
                 </div>
                 <div class="mb-4">
                     <input ref="datePickerInput" type="text"
+                        aria-label="Date to jump to"
                         class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Select a date">
+                    <p v-if="calendarAvailabilityLoading" role="status" aria-live="polite"
+                        class="mt-2 text-xs text-tg-muted">
+                        Checking dates with messages...
+                    </p>
+                    <p v-else-if="calendarAvailabilityError" role="status" aria-live="polite"
+                        class="mt-2 text-xs text-amber-300">
+                        {{ calendarAvailabilityError }}
+                    </p>
                 </div>
                 <div class="flex gap-2 justify-end">
                     <button @click="closeDatePicker"
@@ -1395,7 +1470,7 @@
                         Jump
                     </button>
                 </div>
-            </div>
+            </section>
         </div>
 
         <!-- Sender Details Dialog -->
@@ -1743,7 +1818,7 @@
         </div>
 
         <!-- Toast notification for background failures -->
-        <div v-if="toastMessage"
+        <div v-if="toastMessage" role="status" aria-live="polite" aria-atomic="true"
             class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
             {{ toastMessage }}
         </div>
@@ -1770,6 +1845,7 @@
                 const senderInfoCloseBtn = ref(null)
                 let senderInfoTrigger = null
                 const selectedChat = ref(null)
+                const selectedPaneTopic = ref(null)
                 const searchQuery = ref('')
                 const messageSearchQuery = ref('')
                 const loading = ref(false)
@@ -1780,6 +1856,7 @@
                 const messagesContainer = ref(null)
                 const scrollAnchor = ref(null)
                 const loadMoreSentinel = ref(null)
+                const loadNewerSentinel = ref(null)
                 const isAuthenticated = ref(false)
                 const authRequired = ref(false)
                 const authCheckFailed = ref(false)  // True if auth check request failed
@@ -1798,9 +1875,19 @@
                 const listenerActive = ref(false)  // Whether real-time listener is active
                 const viewerTimezone = ref('Europe/Madrid')  // Default timezone, will be updated from config
                 const showDatePickerModal = ref(false)
+                const datePickerDialog = ref(null)
                 const datePickerInput = ref(null)
                 const selectedDate = ref(null)
                 let flatpickrInstance = null
+                let datePickerTrigger = null
+                const calendarAvailableDates = ref(null)
+                const calendarAvailabilityLoading = ref(false)
+                const calendarAvailabilityError = ref('')
+                const calendarAvailabilityCache = new Map()
+                const calendarAvailabilityInFlight = new Set()
+                let calendarAvailabilityRequestSeq = 0
+                let calendarAvailabilityActiveKey = null
+                let dateJumpRequestSeq = 0
                 const showScrollToBottom = ref(false)
 
                 // Media Gallery state (v7.10.0)
@@ -1849,6 +1936,7 @@
                 const infiniteScrollSentinel = ref(null)
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
+                let messagesNewerObserver = null  // Observer for detached-window newer pages
                 // Two idioms share chatVersion: `++chatVersion` invalidates other in-flight
                 // work (view entries/jumps) so their post-await guards discard themselves,
                 // while a bare capture (`const myVersion = chatVersion`) is a passive read
@@ -1880,6 +1968,10 @@
 
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
+                const activeTopicId = () => {
+                    const topicId = selectedPaneTopic.value?.id
+                    return !topicId || topicId === 'all' ? null : topicId
+                }
 
                 // Contract mirror — keep in sync with src/db/adapter.py get_messages_paginated:
                 // ORDER BY date DESC, id DESC; cursor (date < before_date OR (date = before_date AND id < before_id));
@@ -1928,6 +2020,11 @@
                 // monotonically older).
                 let oldestMessageCursor = null
                 let loadFailureStreak = 0
+                const hasMoreNewer = ref(false)
+                const loadingNewer = ref(false)
+                const newerLoadError = ref('')
+                let newestMessageId = null
+                let newerLoadRequestSeq = 0
                 // True while the view is a detached jump-to-message window (loadMessagesAroundId)
                 // that does NOT contain the live tail. The realtime poll fetches the latest page
                 // (offset=0) and would upsert it in and snap the view back to newest, so the poll
@@ -1974,11 +2071,36 @@
                     }
                 }
 
+                const newestLoadedMessageId = () => {
+                    let newestId = null
+                    for (const msg of messages.value) {
+                        const id = Number(msg?.id)
+                        if (Number.isFinite(id) && (newestId === null || id > newestId)) newestId = id
+                    }
+                    return newestId
+                }
+
+                const resetCalendarAvailability = () => {
+                    calendarAvailabilityRequestSeq++
+                    calendarAvailabilityCache.clear()
+                    calendarAvailabilityInFlight.clear()
+                    calendarAvailabilityActiveKey = null
+                    calendarAvailableDates.value = null
+                    calendarAvailabilityLoading.value = false
+                    calendarAvailabilityError.value = ''
+                }
+
                 const resetMessagePagination = () => {
                     page.value = 0
                     hasMore.value = true
                     oldestMessageCursor = null
                     loadFailureStreak = 0
+                    hasMoreNewer.value = false
+                    loadingNewer.value = false
+                    newerLoadError.value = ''
+                    newestMessageId = null
+                    newerLoadRequestSeq++
+                    resetCalendarAvailability()
                     // Every openChat/openTopic/search entry loads a tail-inclusive view through
                     // here, so clear the pinned-window flag (loadMessagesAroundId re-sets it after
                     // its own reset). This also re-enables the realtime poll.
@@ -1989,11 +2111,11 @@
                 }
 
                 // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
-                // Non-forum chats never set nav.topicId, so the filter is bypassed (returns true).
+                // Non-forum chats and the synthetic "all" topic leave activeTopicId null.
                 const messageBelongsToCurrentTopic = (msg) => {
-                    const nav = currentNav.value
-                    if (nav.type !== 'chat' || !nav.topicId || nav.topicId === 'all') return true
-                    return Number(msg?.reply_to_top_id ?? GENERAL_TOPIC_ID) === Number(nav.topicId)
+                    const topicId = activeTopicId()
+                    if (topicId == null) return true
+                    return Number(msg?.reply_to_top_id ?? GENERAL_TOPIC_ID) === Number(topicId)
                 }
 
                 // In-place merge keyed by message id. Preserves row object identity so long-lived
@@ -2332,6 +2454,7 @@
                     // Push topic chat view onto nav stack
                     navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
                     selectedChat.value = chat
+                    selectedPaneTopic.value = topic
                     messages.value = []
                     resetMessagePagination()
                     messageSearchQuery.value = ''
@@ -2381,6 +2504,9 @@
                     if (messagesScrollObserver) {
                         messagesScrollObserver.disconnect()
                     }
+                    if (messagesNewerObserver) {
+                        messagesNewerObserver.disconnect()
+                    }
 
                     messagesScrollObserver = new IntersectionObserver(
                         (entries) => {
@@ -2395,10 +2521,26 @@
                         }
                     )
 
-                    // Observe the sentinel when it's in DOM
+                    messagesNewerObserver = new IntersectionObserver(
+                        (entries) => {
+                            if (entries[0].isIntersecting && hasMoreNewer.value &&
+                                !loadingNewer.value && !newerLoadError.value) {
+                                loadNewerMessages()
+                            }
+                        },
+                        {
+                            root: messagesContainer.value,
+                            rootMargin: '200px'
+                        }
+                    )
+
+                    // Observe each independent edge sentinel when it is in the DOM.
                     nextTick(() => {
                         if (loadMoreSentinel.value) {
                             messagesScrollObserver.observe(loadMoreSentinel.value)
+                        }
+                        if (loadNewerSentinel.value) {
+                            messagesNewerObserver.observe(loadNewerSentinel.value)
                         }
                     })
                 }
@@ -3258,35 +3400,35 @@
                     return (bytes / (1024 * 1024)).toFixed(1) + ' MiB'
                 }
 
-                const loadMessagesAroundId = async (messageId) => {
+                const loadMessagesAroundId = async (messageId, externalGuard = null) => {
                     if (!selectedChat.value) return
                     // Same stale-response idiom as selectChat/selectTopic: bump chatVersion so
                     // in-flight polls/loads for the previous view discard themselves, and re-check
                     // after every await so a stale jump can never overwrite another view's pane or
                     // wipe its pagination state. loading also gates concurrent sentinel loads.
                     const myVersion = ++chatVersion
+                    const isCurrentIntent = () => {
+                        return chatVersion === myVersion && (!externalGuard || externalGuard())
+                    }
                     loading.value = true
                     try {
                         const windowLimit = 50
                         // Scope both window fetches to the active forum topic like every other
                         // messages fetch — without it a topic view jumps into cross-topic rows.
-                        let topicParam = ''
-                        const nav = currentNav.value
-                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
-                            topicParam = `&topic_id=${nav.topicId}`
-                        }
+                        const topicId = activeTopicId()
+                        const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
                         // before_id is an exclusive bound, so +1 keeps the target itself as the
                         // newest row of the history half of the window.
                         const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
                             credentials: 'include'
                         })
-                        if (chatVersion !== myVersion) return
+                        if (!isCurrentIntent()) return
                         if (!res.ok) {
                             showToast('Could not load messages around that message')
                             return
                         }
                         const data = await res.json()
-                        if (chatVersion !== myVersion) return
+                        if (!isCurrentIntent()) return
                         const windowRows = data.messages || data
                         // After-context so the target can sit centered with history on both
                         // sides (Telegram-style). Best-effort: without it the target still
@@ -3297,29 +3439,36 @@
                             const afterRes = await fetch(`/api/chats/${selectedChat.value.id}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
                                 credentials: 'include'
                             })
-                            if (chatVersion !== myVersion) return
+                            if (!isCurrentIntent()) return
                             if (afterRes.ok) {
                                 const afterData = await afterRes.json()
-                                if (chatVersion !== myVersion) return
+                                if (!isCurrentIntent()) return
                                 afterRows = afterData.messages || afterData
                                 afterFetchComplete = true
                             }
                         } catch (e) {
                             console.warn('[Jump] after-context fetch failed, showing history-only window', e)
                         }
+                        if (!isCurrentIntent()) return
                         messages.value = [...afterRows, ...windowRows]
                         resetMessagePagination()
+                        newestMessageId = newestLoadedMessageId()
+                        hasMoreNewer.value = !afterFetchComplete || afterRows.length === windowLimit
                         // A short after-page proves the window already reaches the newest
                         // message — stay live. Otherwise (full page, or the after-fetch
                         // failed and we can't know) the view is detached from the live tail:
                         // pause the realtime poll/WS upserts that would snap it back to
                         // newest (#213). Cleared when a tail-inclusive view is re-established.
                         viewingPinnedWindow.value = !(afterFetchComplete && afterRows.length < windowLimit)
+                        if (!viewingPinnedWindow.value) {
+                            startMessageRefresh()
+                        }
                         await nextTick()
-                        if (chatVersion !== myVersion) return
+                        if (!isCurrentIntent()) return
                         setupMessagesScrollObserver()
                         scrollToMessage(messageId)
                     } catch (e) {
+                        if (!isCurrentIntent()) return
                         console.error('[Jump] Failed to load messages around id', e)
                         showToast('Could not load messages around that message')
                     } finally {
@@ -3331,6 +3480,9 @@
                         await nextTick()
                         if (messagesScrollObserver && loadMoreSentinel.value) {
                             messagesScrollObserver.observe(loadMoreSentinel.value)
+                        }
+                        if (messagesNewerObserver && loadNewerSentinel.value) {
+                            messagesNewerObserver.observe(loadNewerSentinel.value)
                         }
                     }
                 }
@@ -3576,6 +3728,7 @@
                     loading.value = false  // Reset gate so loadMessages can proceed
 
                     selectedChat.value = chat
+                    selectedPaneTopic.value = null
                     messages.value = []
                     resetMessagePagination()
                     messageSearchQuery.value = ''
@@ -3625,10 +3778,9 @@
                         // Get latest messages (just first page)
                         // v6.2.12: Include topic_id filter when viewing a forum topic
                         let refreshUrl = `/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`
-                        const nav = currentNav.value
-                        // 'all' is the synthetic "view all messages" entry — no topic filter.
-                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
-                            refreshUrl += `&topic_id=${nav.topicId}`
+                        const topicId = activeTopicId()
+                        if (topicId != null) {
+                            refreshUrl += `&topic_id=${topicId}`
                         }
                         const res = await fetch(refreshUrl, {
                             credentials: 'include'
@@ -3719,10 +3871,10 @@
                         const limit = 50
                         let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}`
 
-                        // v6.2.0: Add topic_id filter if viewing a topic
-                        const nav = currentNav.value
-                        if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
-                            url += `&topic_id=${nav.topicId}`
+                        // v6.2.0: Add topic_id filter if the displayed pane is scoped to a topic.
+                        const topicId = activeTopicId()
+                        if (topicId != null) {
+                            url += `&topic_id=${topicId}`
                         }
 
                         // Use cursor-based pagination (faster) instead of offset
@@ -3745,8 +3897,8 @@
                             url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                             // Also pass topic_id for search within a topic
-                            if (nav.type === 'chat' && nav.topicId && nav.topicId !== 'all') {
-                                url += `&topic_id=${nav.topicId}`
+                            if (topicId != null) {
+                                url += `&topic_id=${topicId}`
                             }
                         }
 
@@ -3804,6 +3956,73 @@
                             messagesScrollObserver.observe(loadMoreSentinel.value)
                         }
                     }
+                }
+
+                const loadNewerMessages = async () => {
+                    if (loadingNewer.value || newerLoadError.value || !hasMoreNewer.value ||
+                        !selectedChat.value || newestMessageId == null) return
+
+                    const requestSeq = ++newerLoadRequestSeq
+                    const myVersion = chatVersion
+                    const chatId = selectedChat.value.id
+                    const topicId = activeTopicId()
+                    const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
+                    loadingNewer.value = true
+                    try {
+                        const limit = 50
+                        const res = await fetch(
+                            `/api/chats/${chatId}/messages?after_id=${newestMessageId}&limit=${limit}${topicParam}`,
+                            { credentials: 'include' }
+                        )
+                        if (requestSeq !== newerLoadRequestSeq || chatVersion !== myVersion ||
+                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                        if (!res.ok) {
+                            if (res.status === 401) {
+                                isAuthenticated.value = false
+                            }
+                            throw new Error(`Newer message fetch failed: ${res.status}`)
+                        }
+
+                        const data = await res.json()
+                        if (requestSeq !== newerLoadRequestSeq || chatVersion !== myVersion ||
+                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                        const newMessages = data.messages || data
+                        newerLoadError.value = ''
+                        upsertMessages(newMessages)
+                        const newest = newMessages.reduce((latest, msg) => {
+                            const id = Number(msg?.id)
+                            if (!Number.isFinite(id)) return latest
+                            return latest === null || id > latest.id ? { id } : latest
+                        }, null)
+                        if (newest) {
+                            newestMessageId = newest.id
+                        }
+
+                        if (newMessages.length < limit) {
+                            hasMoreNewer.value = false
+                            viewingPinnedWindow.value = false
+                            startMessageRefresh()
+                        }
+                    } catch (e) {
+                        if (requestSeq === newerLoadRequestSeq && chatVersion === myVersion &&
+                            selectedChat.value?.id === chatId && activeTopicId() === topicId) {
+                            newerLoadError.value = 'Could not load newer messages.'
+                        }
+                        console.error('Failed to load newer messages', e)
+                    } finally {
+                        if (requestSeq === newerLoadRequestSeq) {
+                            loadingNewer.value = false
+                            await nextTick()
+                            if (!newerLoadError.value && messagesNewerObserver && loadNewerSentinel.value) {
+                                messagesNewerObserver.observe(loadNewerSentinel.value)
+                            }
+                        }
+                    }
+                }
+
+                const retryNewerMessages = () => {
+                    newerLoadError.value = ''
+                    loadNewerMessages()
                 }
 
                 const searchMessages = async () => {
@@ -4570,36 +4789,186 @@
                     })
                 }
 
+                const jumpToReply = async (msgId) => {
+                    if (findMessageElement(msgId)) {
+                        scrollToMessage(msgId)
+                        return
+                    }
+                    await loadMessagesAroundId(msgId)
+                }
+
+                const calendarAvailabilityKey = (chatId, topicId, timezone, monthKey) => {
+                    return `${chatId}:${topicId ?? 'all'}:${timezone}:${monthKey}`
+                }
+
+                const loadCalendarAvailability = async (year, month) => {
+                    if (!selectedChat.value) return
+
+                    const chatId = selectedChat.value.id
+                    const topicId = activeTopicId()
+                    const timezone = viewerTimezone.value
+                    const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`
+                    const cacheKey = calendarAvailabilityKey(chatId, topicId, timezone, monthKey)
+                    calendarAvailabilityActiveKey = cacheKey
+                    const cachedDates = calendarAvailabilityCache.get(cacheKey)
+                    if (cachedDates) {
+                        calendarAvailableDates.value = cachedDates
+                        calendarAvailabilityLoading.value = false
+                        calendarAvailabilityError.value = ''
+                        if (flatpickrInstance) flatpickrInstance.redraw()
+                        return
+                    }
+                    if (calendarAvailabilityInFlight.has(cacheKey)) {
+                        calendarAvailabilityLoading.value = true
+                        calendarAvailabilityError.value = ''
+                        return
+                    }
+
+                    calendarAvailabilityInFlight.add(cacheKey)
+                    const requestSeq = calendarAvailabilityRequestSeq
+                    const myVersion = chatVersion
+                    calendarAvailableDates.value = null
+                    calendarAvailabilityLoading.value = true
+                    calendarAvailabilityError.value = ''
+                    try {
+                        let url = `/api/chats/${chatId}/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}`
+                        if (topicId != null) {
+                            url += `&topic_id=${topicId}`
+                        }
+                        const res = await fetch(url, { credentials: 'include' })
+                        if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
+                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                        if (!res.ok) {
+                            if (res.status === 401) isAuthenticated.value = false
+                            throw new Error(`Calendar availability fetch failed: ${res.status}`)
+                        }
+
+                        const data = await res.json()
+                        if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
+                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                        const dates = new Set(
+                            Array.isArray(data.dates)
+                                ? data.dates.filter(date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))
+                                : []
+                        )
+                        calendarAvailabilityCache.set(cacheKey, dates)
+                        if (calendarAvailabilityActiveKey !== cacheKey) return
+                        calendarAvailableDates.value = dates
+                        calendarAvailabilityError.value = ''
+                        if (flatpickrInstance) flatpickrInstance.redraw()
+                    } catch (e) {
+                        if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
+                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId ||
+                            calendarAvailabilityActiveKey !== cacheKey) return
+                        // Availability is advisory: an endpoint failure must leave every day selectable.
+                        calendarAvailableDates.value = null
+                        calendarAvailabilityError.value = 'Availability unavailable; all dates remain selectable.'
+                        if (flatpickrInstance) flatpickrInstance.redraw()
+                        console.warn('[Calendar] Date availability unavailable', e)
+                    } finally {
+                        if (requestSeq === calendarAvailabilityRequestSeq) {
+                            calendarAvailabilityInFlight.delete(cacheKey)
+                            if (calendarAvailabilityActiveKey === cacheKey) {
+                                calendarAvailabilityLoading.value = false
+                            }
+                        }
+                    }
+                }
+
+                const handleDatePickerKeydown = (event) => {
+                    if (!showDatePickerModal.value) return
+                    if (event.key === 'Escape') {
+                        closeDatePicker()
+                        return
+                    }
+                    if (event.key !== 'Tab' || !datePickerDialog.value) return
+
+                    const focusable = Array.from(datePickerDialog.value.querySelectorAll(
+                        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                    ))
+                    if (focusable.length === 0) {
+                        event.preventDefault()
+                        return
+                    }
+                    const first = focusable[0]
+                    const last = focusable[focusable.length - 1]
+                    if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault()
+                        last.focus()
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault()
+                        first.focus()
+                    }
+                }
+
                 const openDatePicker = (initialDate) => {
                     if (!selectedChat.value) return
 
+                    dateJumpRequestSeq++
+                    datePickerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+                    resetCalendarAvailability()
                     selectedDate.value = initialDate ? moment.utc(initialDate).tz(viewerTimezone.value).format('YYYY-MM-DD') : null
                     showDatePickerModal.value = true
+                    document.addEventListener('keydown', handleDatePickerKeydown)
 
                     nextTick(() => {
                         if (datePickerInput.value && !flatpickrInstance) {
+                            const viewerToday = moment.tz(viewerTimezone.value).format('YYYY-MM-DD')
                             flatpickrInstance = flatpickr(datePickerInput.value, {
                                 dateFormat: 'Y-m-d',
-                                defaultDate: selectedDate.value || new Date(),
-                                maxDate: 'today',
+                                defaultDate: selectedDate.value || viewerToday,
+                                maxDate: viewerToday,
                                 theme: 'dark',
+                                disableMobile: true,
+                                appendTo: datePickerDialog.value,
                                 onChange: (selectedDates, dateStr) => {
                                     selectedDate.value = dateStr
+                                },
+                                onOpen: (selectedDates, dateStr, instance) => {
+                                    loadCalendarAvailability(instance.currentYear, instance.currentMonth)
+                                },
+                                onMonthChange: (selectedDates, dateStr, instance) => {
+                                    loadCalendarAvailability(instance.currentYear, instance.currentMonth)
+                                },
+                                onYearChange: (selectedDates, dateStr, instance) => {
+                                    loadCalendarAvailability(instance.currentYear, instance.currentMonth)
+                                },
+                                onDayCreate: (selectedDates, dateStr, instance, dayElem) => {
+                                    const dateKey = instance.formatDate(dayElem.dateObj, 'Y-m-d')
+                                    if (!calendarAvailableDates.value?.has(dateKey) ||
+                                        dayElem.classList.contains('calendar-available-date')) return
+                                    dayElem.classList.add('calendar-available-date')
+                                    const cue = `${dayElem.getAttribute('aria-label') || dateKey}, messages available`
+                                    dayElem.setAttribute('aria-label', cue)
+                                    dayElem.title = 'Messages available'
+                                    const dot = document.createElement('span')
+                                    dot.className = 'calendar-availability-dot'
+                                    dot.setAttribute('aria-hidden', 'true')
+                                    dayElem.appendChild(dot)
                                 }
                             })
                         } else if (flatpickrInstance && selectedDate.value) {
                             flatpickrInstance.setDate(selectedDate.value, false)
                         }
+                        datePickerInput.value?.focus()
                     })
                 }
 
-                const closeDatePicker = () => {
+                const closeDatePicker = (invalidateJump = true) => {
+                    if (invalidateJump) dateJumpRequestSeq++
                     showDatePickerModal.value = false
+                    document.removeEventListener('keydown', handleDatePickerKeydown)
+                    resetCalendarAvailability()
                     if (flatpickrInstance) {
                         flatpickrInstance.destroy()
                         flatpickrInstance = null
                     }
                     selectedDate.value = null
+                    const trigger = datePickerTrigger
+                    datePickerTrigger = null
+                    nextTick(() => {
+                        if (trigger?.isConnected) trigger.focus()
+                    })
                 }
 
                 const jumpToDate = async () => {
@@ -4607,19 +4976,28 @@
 
                     // Capture chat ID to detect if user switches chats during async operations
                     const chatIdAtStart = selectedChat.value.id
+                    const topicIdAtStart = activeTopicId()
+                    const dateRequestVersion = chatVersion
+                    const selectedDateAtStart = selectedDate.value
+                    const selectedDateHadAvailability = calendarAvailableDates.value?.has(selectedDateAtStart) === true
+                    const jumpRequestSeq = ++dateJumpRequestSeq
 
                     try {
                         // Fetch message for the selected date
                         // Pass timezone so backend can convert the displayed date to correct UTC bounds
                         const tz = encodeURIComponent(viewerTimezone.value)
-                        const res = await fetch(
-                            `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDate.value}&timezone=${tz}`,
-                            { credentials: 'include' }
-                        )
+                        let dateUrl = `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDateAtStart}&timezone=${tz}`
+                        if (topicIdAtStart != null) {
+                            dateUrl += `&topic_id=${topicIdAtStart}`
+                        }
+                        const res = await fetch(dateUrl, { credentials: 'include' })
+                        if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
+                            selectedChat.value?.id !== chatIdAtStart ||
+                            activeTopicId() !== topicIdAtStart) return
 
                         if (!res.ok) {
                             if (res.status === 404) {
-                                closeDatePicker()
+                                closeDatePicker(false)
                                 showToast('No messages found for this date')
                                 return
                             }
@@ -4627,7 +5005,14 @@
                         }
 
                         const message = await res.json()
-                        closeDatePicker()
+                        if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
+                            selectedChat.value?.id !== chatIdAtStart ||
+                            activeTopicId() !== topicIdAtStart) return
+                        const messageLocalDate = moment.utc(message.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                        if (!selectedDateHadAvailability && messageLocalDate !== selectedDateAtStart) {
+                            showToast(`No messages on ${selectedDateAtStart}; showing nearest message on ${messageLocalDate}.`)
+                        }
+                        closeDatePicker(false)
 
                         // Abort if user switched chats while waiting for response
                         if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
@@ -4638,6 +5023,8 @@
                         const existingIndex = sortedMessages.value.findIndex(m => m.id === message.id)
                         if (existingIndex !== -1) {
                             await nextTick()
+                            if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
+                                selectedChat.value?.id !== chatIdAtStart || activeTopicId() !== topicIdAtStart) return
                             scrollToMessage(message.id)
                             return
                         }
@@ -4648,10 +5035,14 @@
                         // than ~1000 messages never got their gap filled, and the realtime
                         // poll's near-bottom autoscroll could snap the view back to the
                         // tail mid-fill.
-                        await loadMessagesAroundId(message.id)
+                        await loadMessagesAroundId(
+                            message.id,
+                            () => jumpRequestSeq === dateJumpRequestSeq
+                        )
                     } catch (e) {
+                        if (jumpRequestSeq !== dateJumpRequestSeq) return
                         console.error('Error jumping to date:', e)
-                        closeDatePicker()
+                        closeDatePicker(false)
                         showToast('Failed to jump to date. Please try again.')
                     }
                 }
@@ -4842,6 +5233,7 @@
                     chats,
                     filteredChats,
                     selectedChat,
+                    selectedPaneTopic,
                     messages,
                     versionsMessage,
                     versionsCloseBtn,
@@ -4939,6 +5331,7 @@
                     isLightboxVideo,
                     linkifyText,
                     scrollToMessage,
+                    jumpToReply,
                     messagesContainer,
                     scrollAnchor,
                     handleScroll,
@@ -5002,6 +5395,7 @@
                     loadingMoreChats,
                     infiniteScrollSentinel,
                     loadMoreSentinel,
+                    loadNewerSentinel,
                     // Search
                     searchResults,
                     searchLoading,
@@ -5022,7 +5416,10 @@
                     viewerTimezone,
                     // Date picker
                     showDatePickerModal,
+                    datePickerDialog,
                     datePickerInput,
+                    calendarAvailabilityLoading,
+                    calendarAvailabilityError,
                     openDatePicker,
                     closeDatePicker,
                     jumpToDate,
@@ -5032,6 +5429,10 @@
                     scrollToLatest,
                     // Message pagination
                     hasMore,
+                    hasMoreNewer,
+                    loadingNewer,
+                    newerLoadError,
+                    retryNewerMessages,
                     loadMoreMessages,
                     // Notifications (v5.0)
                     notificationsEnabled,
