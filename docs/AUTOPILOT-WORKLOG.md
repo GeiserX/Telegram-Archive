@@ -204,3 +204,10 @@ Loop: `/research! → /implement! → /review-pr! → (back to research)` · sol
 - Bounded AI-slop pass on changed files: no dead code, duplicate abstraction, speculative framework, or removable wrapper remained. The state counters correspond to distinct cancellation domains; the dependency-free Node extractor is justified by the inline Vue architecture.
 - Post-deslop evidence: **2441 passed / 0 failed + 150 subtests**, executable JS behavior **3 passed**, Ruff check/format clean, `git diff --check` clean, Alembic head unchanged at `020`, version declarations and lockfile synchronized at `7.29.0`.
 - Three independent completion reviews approved with zero remaining medium-or-higher findings. Tally: **0 closed / 3 open**; next is PR → green CI → merge → release → replies/closure.
+
+### 2026-07-28 — calendar parity loop shipped as v7.29.0
+- PR #245 passed Tests, Ruff, CodeQL, GitGuardian, Codecov, Docker dev build, and CodeRabbit; the only review nit (safe exception-class diagnostics) was fixed and the final rerun stayed green.
+- Squash-merged as `6aa0706`; all main-branch workflows passed, including backup/viewer image publication and dependency graph.
+- Tag `v7.29.0` published successfully. GitHub Release, Docker Publish, and Docker Publish Viewer all completed successfully.
+- #242, #243, and #244 each received a factual thank-you/test invitation and were closed after the release was live.
+- Final tally: **3 closed / 0 open**. All PRD stories pass; no migration, configuration change, or unresolved deferred question remains.
