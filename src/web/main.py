@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -2127,6 +2127,7 @@ async def get_message_by_date(
     user: UserContext = Depends(require_auth),
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     timezone: str = Query(None, description="Timezone for date interpretation (e.g., 'Europe/Madrid')"),
+    topic_id: int | None = None,
 ):
     """
     Find the first message on or after a specific date for navigation.
@@ -2136,34 +2137,124 @@ async def get_message_by_date(
     if user_chat_ids is not None and chat_id not in user_chat_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    try:
-        # Use provided timezone, fall back to config, then UTC
-        tz_str = timezone or config.viewer_timezone or "UTC"
+    if timezone is not None:
+        if len(timezone) > 255:
+            raise HTTPException(status_code=400, detail="Invalid timezone")
         try:
-            user_tz = ZoneInfo(tz_str)
-        except Exception:
-            logger.warning(f"Invalid timezone '{tz_str}', falling back to UTC")
+            user_tz = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError, ValueError:
+            raise HTTPException(status_code=400, detail="Invalid timezone")
+    else:
+        try:
+            user_tz = ZoneInfo(config.viewer_timezone or "UTC")
+        except ZoneInfoNotFoundError, ValueError:
             user_tz = UTC
 
+    try:
         # Parse date string (YYYY-MM-DD) as a date in the user's timezone
         naive_date = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    if not 2 <= naive_date.year <= 9998:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    try:
         # Create timezone-aware datetime at start of day in user's timezone
         local_start_of_day = naive_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=user_tz)
         # Convert to UTC for database query
         target_date = local_start_of_day.astimezone(UTC).replace(tzinfo=None)
+    except OverflowError, ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-        message = await db.find_message_by_date_with_joins(chat_id, target_date)
+    try:
+        message = await db.find_message_by_date_with_joins(chat_id, target_date, topic_id)
 
         if not message:
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
         return message
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error finding message by date: {e}", exc_info=True)
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/chats/{chat_id}/messages/dates")
+async def get_message_dates(
+    chat_id: int,
+    user: UserContext = Depends(require_auth),
+    month: str = Query(..., description="Month in YYYY-MM format"),
+    timezone: str = Query(..., description="IANA timezone"),
+    topic_id: int | None = None,
+):
+    """Return the local calendar dates containing messages in a month."""
+    user_chat_ids = get_user_chat_ids(user)
+    if user_chat_ids is not None and chat_id not in user_chat_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        month_start = datetime.strptime(month, "%Y-%m")
+    except OverflowError, ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+    if f"{month_start.year:04d}-{month_start.month:02d}" != month or not 2 <= month_start.year <= 9998:
+        raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+
+    if len(timezone) > 255:
+        raise HTTPException(status_code=400, detail="Invalid timezone")
+    try:
+        user_tz = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError, ValueError:
+        raise HTTPException(status_code=400, detail="Invalid timezone")
+
+    try:
+        if month_start.month == 12:
+            next_month = datetime(month_start.year + 1, 1, 1)
+        else:
+            next_month = datetime(month_start.year, month_start.month + 1, 1)
+
+        day_ranges: list[tuple[str, datetime, datetime]] = []
+        current_day = month_start
+        while current_day < next_month:
+            following_day = current_day + timedelta(days=1)
+            local_start = datetime(
+                current_day.year,
+                current_day.month,
+                current_day.day,
+                tzinfo=user_tz,
+            )
+            local_end = datetime(
+                following_day.year,
+                following_day.month,
+                following_day.day,
+                tzinfo=user_tz,
+            )
+            day_ranges.append(
+                (
+                    f"{current_day.year:04d}-{current_day.month:02d}-{current_day.day:02d}",
+                    local_start.astimezone(UTC).replace(tzinfo=None),
+                    local_end.astimezone(UTC).replace(tzinfo=None),
+                )
+            )
+            current_day = following_day
+    except OverflowError, ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+
+    try:
+        dates = await db.get_message_dates(chat_id, day_ranges, topic_id)
+        return JSONResponse(
+            content={
+                "month": month,
+                "timezone": timezone,
+                "topic_id": topic_id,
+                "dates": dates,
+            },
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except Exception as e:
+        logger.error("Error fetching message dates (%s)", type(e).__name__)
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
