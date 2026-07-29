@@ -5298,6 +5298,11 @@
                 const AUDIO_QUEUE_MAX_PAGES = 10
 
                 let audioQueueRequestId = 0      // stale-result guard
+                // Ownership of the in-flight flag, deliberately SEPARATE from the
+                // staleness id: teardown bumps that id without starting a fetch, so
+                // keying the flag on it leaks (the finally then never matches) and
+                // head-of-queue paging dies for the session.
+                let audioQueueFetchSeq = 0
                 let audioQueueCursor = null      // media id of the OLDEST item fetched so far
                 let audioQueueHasOlder = false
                 let audioQueueFetching = false
@@ -5375,6 +5380,7 @@
                     // track shows up puts EVERY possible next track in hand.
                     if (!track || track.chatId == null || noDownload.value) return
                     const requestId = ++audioQueueRequestId
+                    const fetchToken = ++audioQueueFetchSeq
                     audioQueueFetching = true
                     const collected = []
                     let cursor = null
@@ -5396,7 +5402,7 @@
                         // The seeded window queue stays in place — today's behaviour.
                         return
                     } finally {
-                        if (requestId === audioQueueRequestId) audioQueueFetching = false
+                        if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false
                     }
                     // The user may have started another track (or another chat) while
                     // these pages were in flight; those results belong to nobody now.
@@ -5412,6 +5418,7 @@
                     const track = audioTrack.value
                     if (!track || audioQueueFetching || !audioQueueHasOlder || !audioQueueCursor) return false
                     const requestId = ++audioQueueRequestId
+                    const fetchToken = ++audioQueueFetchSeq
                     audioQueueFetching = true
                     let data
                     try {
@@ -5419,7 +5426,7 @@
                     } catch (e) {
                         return false  // paging failure ≠ playback failure, see above
                     } finally {
-                        if (requestId === audioQueueRequestId) audioQueueFetching = false
+                        if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false
                     }
                     if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false
                     const items = Array.isArray(data?.items) ? data.items : []
@@ -5519,6 +5526,11 @@
                     audioQueue.value = []
                     // Bumping the request id makes any in-flight queue page stale.
                     audioQueueRequestId += 1
+                    // ...and release the in-flight flag: the page still resolving no
+                    // longer owns anything, and leaving it set would block every later
+                    // head-of-queue fetch.
+                    audioQueueFetchSeq += 1
+                    audioQueueFetching = false
                     audioQueueCursor = null
                     audioQueueHasOlder = false
                     audioIsPlaying.value = false

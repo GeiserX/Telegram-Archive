@@ -1492,3 +1492,25 @@ def test_audio_queue_keeps_voice_and_music_on_separate_types():
     # Fetched descriptors inherit that kind, so a merged queue stays single-class.
     tracks_body = _setup_slice(html, "const audioTracksFromMediaItems = (items, track) =>")
     assert "audioTrackFromMediaItem(item, track.kind, track.chatName)" in tracks_body
+
+
+def test_audio_queue_in_flight_flag_cannot_leak():
+    """#254: closing the player mid-fetch must not disable paging forever.
+
+    The in-flight flag is owned by its own sequence, NOT by the staleness id:
+    teardown bumps the staleness id without starting a fetch, so a `finally`
+    keyed on that id never matches and the flag stays set — after which
+    extendAudioQueueOlder bails on every later call and head-of-queue
+    "previous" silently stops paging for the rest of the session.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "let audioQueueFetchSeq = 0" in html
+    # Both fetch paths release the flag by ownership token, not by request id.
+    assert html.count("if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false") == 2
+    assert "if (requestId === audioQueueRequestId) audioQueueFetching = false" not in html
+
+    # Teardown releases it outright.
+    close_start = html.index("const closeAudioPlayer = () =>")
+    close_body = html[close_start : html.index("\n                const ", close_start + 10)]
+    assert "audioQueueFetching = false" in close_body
