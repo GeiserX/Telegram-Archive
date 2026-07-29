@@ -1047,3 +1047,79 @@ def test_floating_date_handles_the_top_of_history():
     assert "best = best || firstBelow" in update_body
     # The newest loaded message must NOT be used to resolve that case.
     assert "sortedMessages.value[0]" not in update_body
+
+
+def test_sender_details_dialog_shows_a_large_avatar():
+    """#240: the popup renders the already-resolved photo at a readable size."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index('<section ref="senderInfoDialog"')
+    body = html[start : html.index("</section>", start)]
+
+    # Big circle, above the definition list.
+    assert "w-20 h-20 rounded-full" in body
+    assert body.index("w-20 h-20 rounded-full") < body.index('<dl class="mt-4 space-y-3 text-sm">')
+
+    # Same photo the message row resolved, with a fallback on load failure.
+    assert 'v-if="senderInfoMessage.sender_avatar_url"' in body
+    assert '@error="senderInfoMessage.sender_avatar_url = null"' in body
+
+    # Fallback reuses the existing initials + deterministic gradient helpers.
+    assert "getSenderInitials(senderInfoMessage)" in body
+    assert "getAvatarFill(senderInfoMessage)" in body
+
+    # Decorative only: it must not become a focusable child of the dialog's Tab trap.
+    avatar = body[body.index("w-20 h-20 rounded-full") : body.index('<dl class="mt-4 space-y-3 text-sm">')]
+    assert "<button" not in avatar
+    assert "<a " not in avatar
+
+
+def test_private_chat_header_avatar_opens_sender_details():
+    """#240: the 1:1 header photo is the counterpart, so it opens the same popup."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index('<button v-if="selectedChat?.type === \'private\'" type="button"')
+    body = html[start : html.index("</button>", start)]
+
+    # Real <button> => native Enter/Space activation.
+    assert body.startswith('<button v-if="selectedChat?.type === \'private\'" type="button"')
+    # $event must be forwarded or openSenderInfo cannot restore focus on close.
+    assert '@click="openSenderInfoFromChat(selectedChat, $event)"' in body
+    assert ":aria-label=" in body
+    assert "getChatName(selectedChat)" in body
+    assert "focus:ring-2 focus:ring-blue-400" in body
+
+    # Groups/channels keep the non-interactive circle (that photo is the group, not a sender).
+    assert "<div v-else" in html[html.index("</button>", start) :][:400]
+
+    # The original message-row call site stays an independent second trigger.
+    assert '@click="openSenderInfo(msg, $event)"' in html
+
+
+def test_chat_header_sender_trigger_maps_chat_fields_to_message_shape():
+    """#240: chats carry id/avatar_url, the dialog reads sender_id/sender_avatar_url."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index("const openSenderInfoFromChat = (chat, event) =>")
+    body = html[start : html.index("}, event)", start)]
+
+    assert "sender_id: chat.id" in body
+    assert "sender_avatar_url: chat.avatar_url" in body
+    assert "sender_name: null" in body
+    assert "first_name: chat.first_name" in body
+    assert "last_name: chat.last_name" in body
+    assert "username: chat.username" in body
+
+    # Must be exposed to the template.
+    assert "openSenderInfoFromChat," in html
+
+
+def test_chat_header_avatar_button_is_not_a_tap_target():
+    """.tap-target forces 44px minimums on mobile and would deform the 40px circle."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index('<button v-if="selectedChat?.type === \'private\'" type="button"')
+    body = html[start : html.index("</button>", start)]
+
+    assert "tap-target" not in body
+    assert "aspect-square" in body
