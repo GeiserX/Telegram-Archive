@@ -948,3 +948,81 @@ def test_date_jump_latest_intent_wins_and_cancellation_propagates_to_window_load
     assert "const isCurrentIntent = () =>" in window_body
     assert "!externalGuard || externalGuard()" in window_body
     assert window_body.count("if (!isCurrentIntent()) return") >= 6
+
+
+def test_date_separators_are_not_individually_sticky():
+    """Regression for #249.
+
+    Every ``.date-separator`` is a direct child of the one scroll container, so
+    making each one ``position: sticky`` pinned them all at the same offset —
+    CSS Position L3 §3.4: "Multiple sticky positioned boxes in the same
+    container are offset independently, and therefore might overlap". That
+    stacked several pills showing contradictory dates, and whichever painted
+    last looked "frozen". The day indicator must instead be a single element.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    separator_css_start = html.index(".date-separator {")
+    separator_css = html[separator_css_start : html.index("}", separator_css_start)]
+    assert "position: sticky" not in separator_css
+
+    # ...and no other rule may reintroduce per-day stickiness.
+    assert "position: sticky" not in html
+
+
+def test_floating_date_pill_is_a_single_element_outside_the_scroller():
+    """The pill must live outside the message list, so only one can ever exist."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert html.count('class="floating-date-pill"') == 1
+    # Rendered after the scroll container closes (the container ends with the scrollAnchor).
+    assert html.index('class="floating-date-pill"') > html.index('<div ref="scrollAnchor">')
+    # Accessible as a heading rather than a live region: it changes on every
+    # scroll, and announcing that would flood screen readers.
+    assert 'role="heading" aria-level="5"' in html
+    assert "aria-live" not in html.split('class="floating-date-pill"')[1][:400]
+
+
+def test_floating_date_pill_is_guarded_and_clickable():
+    """Empty lists and the pinned-only view must not render a day indicator."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    pill_start = html.index('v-if="floatingDateLabel')
+    pill_block = html[pill_start : html.index("</div>", pill_start)]
+    assert "!showPinnedOnly" in pill_block
+    assert "sortedMessages.length > 0" in pill_block
+    # Clicking still opens the date picker for the day being viewed.
+    assert "openDatePicker(floatingDateIso)" in pill_block
+
+
+def test_floating_date_recomputes_on_scroll_and_on_list_changes():
+    """#249: scroll alone is not enough.
+
+    Appending an older page to a ``flex-col-reverse`` list changes the content
+    above the viewport WITHOUT firing a scroll event, and jump windows replace
+    the array outright — so a scroll-only pill goes stale exactly after
+    pagination. Both triggers must stay wired.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    scroll_start = html.index("const handleScroll = (e) =>")
+    # End at the next sibling declaration (same indentation), not the first
+    # nested `const` inside the handler body.
+    scroll_body = html[scroll_start : html.index("\n                const ", scroll_start + 10)]
+    assert "queueFloatingDateUpdate()" in scroll_body
+
+    watch_start = html.index("watch(sortedMessages,")
+    watch_body = html[watch_start : html.index("})", watch_start)]
+    assert "updateFloatingDate" in watch_body
+
+    # The scroll path must be coalesced to one recompute per frame.
+    queue_start = html.index("const queueFloatingDateUpdate = () =>")
+    queue_body = html[queue_start : html.index("// Stats data", queue_start)]
+    assert "requestAnimationFrame" in queue_body
+    assert "floatingDateFramePending" in queue_body
+
+    # The day is derived from the separators (O(days)), never from every message row.
+    update_start = html.index("const updateFloatingDate = () =>")
+    update_body = html[update_start : html.index("const queueFloatingDateUpdate", update_start)]
+    assert "querySelectorAll('.date-separator')" in update_body
+    assert "[data-msg-id]" not in update_body

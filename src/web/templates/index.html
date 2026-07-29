@@ -141,15 +141,39 @@
            reversed direction), so the day's pill pins to the top and is pushed
            up by the next-older day. pointer-events gate keeps only the pill
            itself clickable (jump-to-date), not the full-width strip. */
+        /* Inline per-day separator. Deliberately NOT position:sticky (#249): every
+           separator is a direct child of the one scroll container, so they all share
+           a single containing block and nothing ever evicts them — per CSS Position
+           L3 §3.4 "Multiple sticky positioned boxes in the same container are offset
+           independently, and therefore might overlap", which stacked N pinned pills
+           showing contradictory dates. The floating pill below is a single element
+           driven by an IntersectionObserver instead. */
         .date-separator {
             text-align: center;
             margin: 20px 0 10px 0;
-            position: sticky;
-            top: 6px;
-            z-index: 5;
+        }
+
+        /* Single floating day indicator, overlaid on the scroller (Telegram Android /
+           Signal Desktop model: a separate overlay reading the topmost visible day,
+           rather than making each separator sticky). Permanently visible while a chat
+           has messages — the official apps fade it after idle, but this archive viewer
+           optimises for orientation while reading, per the reporter's request. */
+        .floating-date-pill {
+            position: absolute;
+            top: 10px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            z-index: 6;
             pointer-events: none;
         }
 
+        .floating-date-pill button {
+            pointer-events: auto;
+        }
+
+        .floating-date-pill button,
         .date-separator button {
             background-color: rgba(30, 41, 59, 0.85);
             -webkit-backdrop-filter: blur(6px);
@@ -1386,8 +1410,11 @@
                                 </div>
                             </div>
 
-                            <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually) -->
-                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator">
+                            <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually).
+                                 data-date-* feed the floating day pill (#249): the pill observes these
+                                 markers and reads the day of whichever one is topmost in the viewport. -->
+                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator"
+                                :data-date-label="formatDateFull(msg.date)" :data-date-iso="msg.date">
                                 <button type="button" @click="openDatePicker(msg.date)"
                                     :aria-label="`Open date picker for ${formatDateFull(msg.date)}`">
                                     {{ formatDateFull(msg.date) }}
@@ -1408,6 +1435,19 @@
                         </div>
 
                         <div ref="scrollAnchor"></div>
+                    </div>
+
+                    <!-- Floating day indicator (#249). Sits OUTSIDE the scroll container so it
+                         is one element, never one-per-day; its label tracks the topmost visible
+                         day via updateFloatingDate. role=heading (not aria-live) so it is
+                         reachable by heading navigation without announcing on every scroll tick. -->
+                    <div v-if="floatingDateLabel && !showPinnedOnly && sortedMessages.length > 0"
+                        class="floating-date-pill">
+                        <button type="button" role="heading" aria-level="5"
+                            @click="floatingDateIso && openDatePicker(floatingDateIso)"
+                            :aria-label="`Currently viewing ${floatingDateLabel} — open date picker`">
+                            {{ floatingDateLabel }}
+                        </button>
                     </div>
 
                     <!-- Scroll to Bottom Button -->
@@ -1937,6 +1977,11 @@
                 let infiniteScrollObserver = null
                 let messagesScrollObserver = null  // Observer for loading older messages
                 let messagesNewerObserver = null  // Observer for detached-window newer pages
+                // Floating day indicator (#249): one pill reading the topmost visible day.
+                let floatingDateFramePending = false
+                const FLOATING_DATE_TRIP_PX = 60  // how far below the scrollport top still counts as "current"
+                const floatingDateLabel = ref('')
+                const floatingDateIso = ref(null)
                 // Two idioms share chatVersion: `++chatVersion` invalidates other in-flight
                 // work (view entries/jumps) so their post-await guards discard themselves,
                 // while a bare capture (`const myVersion = chatVersion`) is a passive read
@@ -2542,6 +2587,73 @@
                         if (loadNewerSentinel.value) {
                             messagesNewerObserver.observe(loadNewerSentinel.value)
                         }
+                    })
+
+                    nextTick(updateFloatingDate)
+                }
+
+                // --- Floating day indicator (#249) ---------------------------------
+                // One pill, not one sticky separator per day: sticky siblings sharing a
+                // single containing block all pin at once and overlap (CSS Position L3
+                // §3.4 "Multiple sticky positioned boxes in the same container are offset
+                // independently, and therefore might overlap"), which stacked N pills
+                // showing contradictory dates. Instead each `.date-separator` is a passive
+                // marker and the day is derived from geometry: the marker closest above
+                // the top of the scrollport is the day the viewport is currently inside.
+                //
+                // Recomputed from TWO triggers, because neither alone is sufficient:
+                //   * scroll (rAF-coalesced) — the common case;
+                //   * the sortedMessages watch — pagination in a flex-col-reverse list
+                //     changes content above the viewport WITHOUT firing a scroll event,
+                //     and jump windows replace the array outright.
+                // An IntersectionObserver "trip line" was tried and rejected: a fast or
+                // programmatic scroll can move a marker from below the band to above it
+                // with no change in intersection state, so no callback fires and the pill
+                // silently freezes. Reading rects is O(days) (tens at most), not O(messages).
+                const updateFloatingDate = () => {
+                    const container = messagesContainer.value
+                    if (!container) return
+                    const containerTop = container.getBoundingClientRect().top
+                    let best = null
+                    let bestTop = -Infinity
+                    // Scan every separator, not just the ones the observer currently reports
+                    // as intersecting: a separator that has scrolled above the trip line is
+                    // exactly the one we want (it is the day the viewport is inside), but it
+                    // no longer intersects the thin observation band. One rect read per day
+                    // (tens at most), not per message.
+                    for (const marker of container.querySelectorAll('.date-separator')) {
+                        const top = marker.getBoundingClientRect().top - containerTop
+                        if (top <= FLOATING_DATE_TRIP_PX && top > bestTop) {
+                            bestTop = top
+                            best = marker
+                        }
+                    }
+                    // Before the first separator scrolls under the trip line (i.e. at the
+                    // newest end) fall back to the newest loaded message's own day.
+                    if (!best) {
+                        const newest = sortedMessages.value[0]
+                        if (!newest) {
+                            floatingDateLabel.value = ''
+                            floatingDateIso.value = null
+                            return
+                        }
+                        floatingDateLabel.value = formatDateFull(newest.date)
+                        floatingDateIso.value = newest.date
+                        return
+                    }
+                    floatingDateLabel.value = best.dataset.dateLabel || ''
+                    floatingDateIso.value = best.dataset.dateIso || null
+                }
+
+                // Coalesce to one recompute per animation frame: `scroll` fires far more
+                // often than the answer can change, and this runs on the mobile-sized
+                // list the v7.27.1 work optimised.
+                const queueFloatingDateUpdate = () => {
+                    if (floatingDateFramePending) return
+                    floatingDateFramePending = true
+                    requestAnimationFrame(() => {
+                        floatingDateFramePending = false
+                        updateFloatingDate()
                     })
                 }
 
@@ -3626,6 +3738,18 @@
                 const currentPinnedIndex = ref(0)  // Which pinned message is currently shown in banner
                 const showPinnedOnly = ref(false)  // Whether we're in "pinned messages only" view
 
+                // Keep the floating day pill (#249) attached to the separators that actually
+                // exist. Pagination in a flex-col-reverse list changes content above the
+                // viewport WITHOUT firing a scroll event, and jump windows replace the array
+                // outright, so re-observing on list changes — not on scroll — is what keeps
+                // the pill from going stale.
+                // Placement note: this watch eagerly evaluates `sortedMessages`, which reads
+                // `showPinnedOnly`, so it must be declared after it (same
+                // state-before-watcher rule as the media gallery refs).
+                watch(sortedMessages, () => {
+                    nextTick(updateFloatingDate)
+                }, { flush: 'post' })
+
                 // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
                     if (pinnedMessages.value.length === 0) return null
@@ -4049,6 +4173,9 @@
                     if (scrollTop > -STICK_TO_BOTTOM_PX) {
                         unseenMessageCount.value = 0
                     }
+
+                    // Keep the floating day pill in step with the viewport (#249).
+                    queueFloatingDateUpdate()
                 }
 
                 // Manual load more function (fallback for when infinite scroll doesn't trigger)
@@ -5289,6 +5416,9 @@
                     isRunEnd,
                     isSenderBreak,
                     showDateSeparator,
+                    // Floating day indicator (#249)
+                    floatingDateLabel,
+                    floatingDateIso,
                     // Album support
                     getAlbumForMessage,
                     isFirstInAlbum,
