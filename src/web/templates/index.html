@@ -5312,6 +5312,10 @@
                 // not happen here.
                 const audioQueueTypes = (kind) => kind === 'voice' ? 'voice' : 'audio'
 
+                // In-flight queue request, so teardown can abort it instead of leaving
+                // a response to land on a player the user has already closed.
+                let audioQueueAbort = null
+
                 const fetchAudioQueuePage = async (chatId, kind, beforeId) => {
                     const params = new URLSearchParams({
                         types: audioQueueTypes(kind),
@@ -5320,10 +5324,20 @@
                     // Cursor is the composite media id of the last item seen; the
                     // endpoint pages backwards in time from it.
                     if (beforeId) params.set('before_id', beforeId)
+                    audioQueueAbort?.abort()
+                    const controller = new AbortController()
+                    audioQueueAbort = controller
                     const res = await fetch(`/api/chats/${chatId}/media?${params}`, {
-                        credentials: 'include'
+                        credentials: 'include',
+                        signal: controller.signal
                     })
-                    if (!res.ok) throw new Error('Failed to load audio queue page')
+                    if (!res.ok) {
+                        // Carry the status: 401/403/429/5xx must not be mistaken for
+                        // "no older media", which is what an empty item list means.
+                        const error = new Error(`Audio queue page failed (${res.status})`)
+                        error.status = res.status
+                        throw error
+                    }
                     return await res.json()
                 }
 
@@ -5416,7 +5430,13 @@
                 const extendAudioQueueOlder = async () => {
                     // One page older, on demand, for "previous" at the head of the queue.
                     const track = audioTrack.value
-                    if (!track || audioQueueFetching || !audioQueueHasOlder || !audioQueueCursor) return false
+                    // Three DIFFERENT states; collapsing them is the very bug this
+                    // path exists to avoid. A page already on its way is not the end
+                    // of the queue, and reporting it as such makes a second
+                    // "previous" press restart the track before that page lands.
+                    if (!track) return 'aborted'
+                    if (audioQueueFetching) return 'pending'
+                    if (!audioQueueHasOlder || !audioQueueCursor) return 'exhausted'
                     const requestId = ++audioQueueRequestId
                     const fetchToken = ++audioQueueFetchSeq
                     audioQueueFetching = true
@@ -5424,21 +5444,28 @@
                     try {
                         data = await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)
                     } catch (e) {
-                        return false  // paging failure ≠ playback failure, see above
+                        // A transport failure is NOT the end of the queue. Collapsing the
+                        // two makes "previous" restart the track on a 401/403/429 as if
+                        // the user had reached the oldest message. Keep audioQueueHasOlder
+                        // set so a later press retries, and surface it — while never
+                        // touching the playback failure counter (paging ≠ playback).
+                        if (e?.name === 'AbortError') return 'aborted'
+                        audioError.value = 'Could not load older audio. Try again.'
+                        return 'error'
                     } finally {
                         if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false
                     }
-                    if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false
+                    if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return 'aborted'
                     const items = Array.isArray(data?.items) ? data.items : []
                     if (!items.length) {
-                        audioQueueHasOlder = false
-                        return false
+                        audioQueueHasOlder = false   // genuinely nothing older
+                        return 'exhausted'
                     }
                     audioQueueCursor = items[items.length - 1].id
                     audioQueueHasOlder = !!data.has_more
                     const before = audioQueue.value.length
                     audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(items, track))
-                    return audioQueue.value.length > before
+                    return audioQueue.value.length > before ? 'extended' : 'exhausted'
                 }
 
                 const currentAudioQueueIndex = () => {
@@ -5466,10 +5493,11 @@
                 const playPrevAudio = async () => {
                     if (playAdjacentAudio(-1)) return
                     // At the head of the queue: one more page of older audio, on demand.
-                    if (await extendAudioQueueOlder() && playAdjacentAudio(-1)) return
-                    // Restart the current track when there is nothing older, the way
-                    // every media player treats "previous".
-                    seekAudioTo(0)
+                    const outcome = await extendAudioQueueOlder()
+                    if (outcome === 'extended' && playAdjacentAudio(-1)) return
+                    // Only restart when we actually know there is nothing older. A failed
+                    // or aborted page must not masquerade as the start of the queue.
+                    if (outcome === 'exhausted') seekAudioTo(0)
                 }
 
                 const playAudioMessage = (msg) => {
@@ -5531,6 +5559,8 @@
                     // head-of-queue fetch.
                     audioQueueFetchSeq += 1
                     audioQueueFetching = false
+                    audioQueueAbort?.abort()
+                    audioQueueAbort = null
                     audioQueueCursor = null
                     audioQueueHasOlder = false
                     audioIsPlaying.value = false
