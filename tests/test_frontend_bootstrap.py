@@ -1434,7 +1434,9 @@ def test_audio_queue_discards_results_for_a_superseded_track():
 
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
     assert "const requestId = ++audioQueueRequestId" in older_body
-    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false" in older_body
+    # Tri-state outcome since the follow-up: the stale guard yields 'aborted',
+    # which playPrevAudio must not treat as "reached the oldest message".
+    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return 'aborted'" in older_body
     assert older_body.index("!audioQueueBelongsToTrack(track)") < older_body.index("audioQueue.value = mergeAudioQueue")
 
     # Closing the player invalidates whatever is still in flight.
@@ -1461,7 +1463,7 @@ def test_audio_queue_fetch_failure_does_not_halt_auto_advance():
     assert "} catch (e) {" in extend_body
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
     assert "} catch (e) {" in older_body
-    assert "return false  // paging failure" in older_body
+    assert "return 'error'" in older_body  # paging failure, explicitly not end-of-queue
 
     # The window-derived queue is seeded before the fetch is even started, so a
     # failure leaves playback exactly where it is today.
@@ -1514,3 +1516,55 @@ def test_audio_queue_in_flight_flag_cannot_leak():
     close_start = html.index("const closeAudioPlayer = () =>")
     close_body = html[close_start : html.index("\n                const ", close_start + 10)]
     assert "audioQueueFetching = false" in close_body
+
+
+class TestAudioQueuePagingOutcomes(unittest.TestCase):
+    """#254 follow-up: paging outcomes must stay distinguishable."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _slice(self, declaration: str) -> str:
+        start = self.html.index(declaration)
+        return self.html[start : self.html.index("\n                const ", start + 10)]
+
+    def test_transport_failure_is_not_end_of_queue(self) -> None:
+        """401/403/429/5xx must not read as "no older audio".
+
+        fetchAudioQueuePage only checked res.ok, so any error collapsed into the
+        same falsy result as an exhausted cursor and "previous" restarted the
+        current track as though the oldest message had been reached.
+        """
+        fetch_body = self._slice("const fetchAudioQueuePage = async (chatId, kind, beforeId) =>")
+        self.assertIn("error.status = res.status", fetch_body)
+        # Stale pages are aborted rather than landing on a closed player.
+        self.assertIn("new AbortController()", fetch_body)
+        self.assertIn("signal: controller.signal", fetch_body)
+
+        older_body = self._slice("const extendAudioQueueOlder = async () =>")
+        self.assertIn("return 'error'", older_body)
+        self.assertIn("return 'exhausted'", older_body)
+        self.assertIn("if (e?.name === 'AbortError') return 'aborted'", older_body)
+        # Paging failure must never halt playback.
+        self.assertNotIn("audioConsecutiveFailures", older_body)
+
+    def test_in_flight_page_is_not_reported_as_exhausted(self) -> None:
+        """A page already on its way is not the end of the queue.
+
+        Returning 'exhausted' while a fetch is in flight makes a second
+        "previous" press restart the track before that page lands.
+        """
+        older_body = self._slice("const extendAudioQueueOlder = async () =>")
+        self.assertIn("if (audioQueueFetching) return 'pending'", older_body)
+        # The three guard states stay separate rather than collapsing into one.
+        self.assertIn("if (!track) return 'aborted'", older_body)
+        self.assertIn("if (!audioQueueHasOlder || !audioQueueCursor) return 'exhausted'", older_body)
+
+        prev_body = self._slice("const playPrevAudio = async () =>")
+        # Restart only on a known-exhausted queue — never on error, abort or pending.
+        self.assertIn("if (outcome === 'exhausted') seekAudioTo(0)", prev_body)
+
+    def test_teardown_aborts_the_in_flight_page(self) -> None:
+        close_body = self._slice("const closeAudioPlayer = () =>")
+        self.assertIn("audioQueueAbort?.abort()", close_body)
