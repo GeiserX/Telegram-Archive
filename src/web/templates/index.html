@@ -315,6 +315,38 @@
             height: 24px;
         }
 
+        /* Global audio playbar (#250). Docked to the BOTTOM edge rather than the top
+           (where Telegram Web puts it): this viewer is read-only, so the bottom strip
+           is free, while the top of the message pane already carries the chat header,
+           the pinned-message banner and the floating day pill. z-index sits in the
+           41-49 band — above the message list and the scroll FAB (10), below the
+           modals/lightbox (50) and the toast (9999). */
+        .audio-playbar {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 45;
+            background: rgba(30, 41, 59, 0.97);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid #334155;
+            box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
+        }
+
+        .audio-playbar input[type="range"] {
+            accent-color: #3b82f6;
+        }
+
+        /* Keep the newest bubbles and the scroll FAB clear of the docked bar. */
+        .audio-player-open .messages-scroll {
+            padding-bottom: 80px;
+        }
+
+        .audio-player-open .scroll-to-bottom-btn {
+            bottom: 92px;
+        }
+
         /* Loading Spinner (Telegram-style) */
         .loading-spinner {
             width: 24px;
@@ -1310,21 +1342,36 @@
                                             class="rounded-lg max-h-64 max-w-full object-cover cursor-pointer hover:opacity-90 transition"
                                             @click="openMedia(msg)" @error="handleImageError($event, msg)">
 
-                                        <!-- Audio / Voice Notes -->
+                                        <!-- Audio / Voice Notes (#250). The bubble owns no media element of
+                                             its own — it only delegates to the single app-wide player, so
+                                             playback survives chat switches and jump-window rebuilds. -->
                                         <div v-else-if="isAudioFile(msg)"
                                             class="w-full min-w-0 max-w-md bg-gradient-to-r from-gray-800 to-gray-700 p-3 rounded-xl shadow-lg">
-                                            <audio
-                                                controls
-                                                preload="metadata"
-                                                class="w-full"
-                                                style="height: 40px; min-height: 40px;"
-                                                :src="getMediaUrl(msg)"
-                                                @error="console.error('Audio load error:', getMediaUrl(msg))">
-                                                Your browser does not support audio playback.
-                                            </audio>
-                                            <div class="flex items-center gap-2 mt-2 text-xs text-gray-400">
-                                                <span>🎵</span>
-                                                <span class="truncate">{{ getDocumentDisplayName(msg) }}</span>
+                                            <div class="flex items-center gap-3">
+                                                <button type="button" @click.stop="playAudioMessage(msg)"
+                                                    :disabled="noDownload"
+                                                    :aria-label="(isPlayingAudioMessage(msg) ? 'Pause ' : 'Play ') + getDocumentDisplayName(msg)"
+                                                    class="w-10 h-10 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                                    <svg v-if="isPlayingAudioMessage(msg)" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                                        <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
+                                                    </svg>
+                                                    <svg v-else class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                                                        <path d="M8 5v14l11-7z"/>
+                                                    </svg>
+                                                </button>
+                                                <div class="min-w-0 flex-1">
+                                                    <div class="flex items-center gap-2 text-xs text-gray-300">
+                                                        <span>🎵</span>
+                                                        <span class="truncate">{{ getDocumentDisplayName(msg) }}</span>
+                                                    </div>
+                                                    <div class="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
+                                                        <span v-if="msg.media?.duration">{{ formatAudioTime(msg.media.duration) }}</span>
+                                                        <span v-if="isCurrentAudioMessage(msg)" class="text-blue-400">
+                                                            {{ audioIsPlaying ? 'Now playing' : 'Paused' }}
+                                                        </span>
+                                                        <span v-else-if="noDownload">Playback disabled</span>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -1897,6 +1944,77 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Global audio playbar (#250). Rendered here, at app-shell level and outside
+             the per-chat message pane, so it survives chat switches; the media element
+             it drives is a single JS-owned HTMLAudioElement created in setup(). -->
+        <div v-if="audioTrack && !noDownload" class="audio-playbar px-3 py-2"
+            role="region" aria-label="Audio player">
+            <div class="max-w-5xl mx-auto flex items-center gap-2 sm:gap-3">
+                <button type="button" @click="playPrevAudio()" aria-label="Previous audio message"
+                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+                    </svg>
+                </button>
+                <button type="button" @click="toggleAudioPlayback()"
+                    :aria-label="audioIsPlaying ? 'Pause audio' : 'Play audio'"
+                    class="w-10 h-10 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    <svg v-if="audioIsPlaying" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
+                    </svg>
+                    <svg v-else class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                </button>
+                <button type="button" @click="playNextAudio()" aria-label="Next audio message"
+                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/>
+                    </svg>
+                </button>
+
+                <div class="flex-1 min-w-0">
+                    <button type="button" @click="focusAudioTrackMessage()"
+                        :aria-label="'Go to message from ' + audioTrack.sender"
+                        class="block w-full text-left truncate rounded px-1 hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        <span class="text-sm text-white">{{ audioTrack.sender }}</span>
+                        <span class="text-[11px] text-tg-muted ml-2">
+                            {{ audioTrack.chatName }}<template v-if="audioTrack.date"> · {{ formatTime(audioTrack.date) }}</template>
+                        </span>
+                    </button>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span class="text-[11px] text-tg-muted w-10 text-right shrink-0">{{ formatAudioTime(audioCurrentTime) }}</span>
+                        <input type="range" min="0" step="0.1" :max="audioSeekMax" :value="audioCurrentTime"
+                            @input="seekAudioTo($event.target.value)"
+                            aria-label="Seek within audio"
+                            class="flex-1 h-1 cursor-pointer">
+                        <span class="text-[11px] text-tg-muted w-10 shrink-0">{{ formatAudioTime(audioDuration) }}</span>
+                    </div>
+                </div>
+
+                <div role="group" aria-label="Playback speed" class="hidden sm:flex items-center gap-1">
+                    <button v-for="rate in audioSpeeds" :key="rate" type="button" @click="setAudioSpeed(rate)"
+                        :aria-pressed="currentAudioSpeed === rate"
+                        :aria-label="'Playback speed ' + rate + 'x'"
+                        :class="currentAudioSpeed === rate ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10'"
+                        class="text-[11px] px-2 py-1 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        {{ rate }}x
+                    </button>
+                </div>
+
+                <button type="button" @click="closeAudioPlayer()" aria-label="Close audio player"
+                    class="p-2 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <p v-if="audioStatusMessage" role="status" aria-live="polite"
+                class="max-w-5xl mx-auto mt-1 text-[11px] text-amber-300">
+                {{ audioStatusMessage }}
+            </p>
         </div>
 
         <!-- Toast notification for background failures -->
@@ -4990,6 +5108,343 @@
                     await loadMessagesAroundId(msgId)
                 }
 
+                // ---------------------------------------------------------------
+                // Global audio player (#250)
+                //
+                // ONE HTMLAudioElement drives every voice note and music file in the
+                // app. It is deliberately not an element per bubble, and not an
+                // element in the template at all:
+                //   * loadMessagesAroundId REPLACES messages.value wholesale, so any
+                //     player rendered inside the message v-for is destroyed mid-track
+                //     by an ordinary jump-to-message;
+                //   * iOS grants playback authorisation per element per user gesture,
+                //     so reusing the element the user already tapped is what lets
+                //     auto-advance start the next track without a fresh tap.
+                // ---------------------------------------------------------------
+                const audioSpeeds = [0.5, 1, 1.5, 2]
+                const AUDIO_MAX_FAILURES = 2
+
+                const audioTrack = ref(null)        // descriptor of the loaded track (own copy of the metadata)
+                const audioQueue = ref([])          // descriptors, oldest -> newest
+                const audioIsPlaying = ref(false)
+                const audioCurrentTime = ref(0)
+                const audioDuration = ref(0)
+                const audioBlocked = ref(false)     // play() refused by the autoplay policy
+                const audioError = ref('')
+                const audioAutoAdvanceHalted = ref(false)
+                let audioConsecutiveFailures = 0
+
+                // Voice notes and music keep independent speeds, like the official
+                // clients (Telegram Android stores playbackSpeed / musicPlaybackSpeed).
+                const audioSpeedStorageKey = (kind) => kind === 'voice' ? 'audio_speed_voice' : 'audio_speed_music'
+
+                const readStoredAudioSpeed = (kind) => {
+                    try {
+                        const raw = parseFloat(localStorage.getItem(audioSpeedStorageKey(kind)))
+                        return audioSpeeds.includes(raw) ? raw : 1
+                    } catch (e) {
+                        return 1  // storage can throw in private mode
+                    }
+                }
+
+                const audioSpeedByKind = ref({
+                    voice: readStoredAudioSpeed('voice'),
+                    music: readStoredAudioSpeed('music'),
+                })
+
+                const audioEngine = new Audio()
+                audioEngine.preload = 'metadata'
+
+                const audioMediaKind = (msg) => msg.media?.type === 'voice' ? 'voice' : 'music'
+
+                const audioMessageChatId = (msg) => msg.chat_id ?? selectedChat.value?.id ?? null
+
+                const audioTrackFromMessage = (msg) => ({
+                    id: msg.id,
+                    chatId: audioMessageChatId(msg),
+                    chatName: selectedChat.value ? getChatName(selectedChat.value) : '',
+                    url: getMediaUrl(msg),
+                    sender: getSenderName(msg),
+                    date: msg.date,
+                    duration: msg.media?.duration ?? null,
+                    kind: audioMediaKind(msg),
+                })
+
+                const isCurrentAudioMessage = (msg) => {
+                    const track = audioTrack.value
+                    return !!track && track.id === msg.id && track.chatId === audioMessageChatId(msg)
+                }
+
+                const isPlayingAudioMessage = (msg) => isCurrentAudioMessage(msg) && audioIsPlaying.value
+
+                const currentAudioSpeed = computed(() => {
+                    const kind = audioTrack.value ? audioTrack.value.kind : 'voice'
+                    return audioSpeedByKind.value[kind] || 1
+                })
+
+                const audioSeekMax = computed(() => {
+                    const seconds = audioDuration.value || (audioTrack.value?.duration ?? 0)
+                    return seconds > 0 ? seconds : 1
+                })
+
+                const audioStatusMessage = computed(() => {
+                    if (audioBlocked.value) return 'Playback was blocked by the browser — press play to start.'
+                    if (audioAutoAdvanceHalted.value) return 'Several files failed to load — auto-advance stopped.'
+                    if (audioError.value) return audioError.value
+                    return ''
+                })
+
+                const formatAudioTime = (seconds) => {
+                    const total = Math.max(0, Math.floor(Number(seconds) || 0))
+                    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+                }
+
+                const syncAudioMediaSession = () => {
+                    if (!('mediaSession' in navigator)) return
+                    navigator.mediaSession.playbackState = audioTrack.value
+                        ? (audioIsPlaying.value ? 'playing' : 'paused')
+                        : 'none'
+                }
+
+                const updateAudioMediaSessionMetadata = () => {
+                    if (!('mediaSession' in navigator) || typeof MediaMetadata !== 'function') return
+                    const track = audioTrack.value
+                    if (!track) {
+                        navigator.mediaSession.metadata = null
+                        return
+                    }
+                    navigator.mediaSession.metadata = new MediaMetadata({
+                        title: track.sender || 'Audio message',
+                        artist: track.chatName || '',
+                    })
+                }
+
+                const handleAudioLoadFailure = () => {
+                    audioConsecutiveFailures += 1
+                    audioIsPlaying.value = false
+                    audioError.value = 'This audio could not be played.'
+                    if (audioConsecutiveFailures >= AUDIO_MAX_FAILURES) {
+                        // Stop walking the queue: with a broken media path every advance
+                        // is another failed request across the whole chat.
+                        audioAutoAdvanceHalted.value = true
+                    }
+                }
+
+                const loadAudioTrack = (track) => {
+                    if (!track || !track.url || noDownload.value) return
+                    audioTrack.value = track
+                    audioError.value = ''
+                    audioBlocked.value = false
+                    audioCurrentTime.value = 0
+                    audioDuration.value = 0
+                    const rate = audioSpeedByKind.value[track.kind] || 1
+                    audioEngine.pause()
+                    // TRAP: the WHATWG media load algorithm resets playbackRate to
+                    // defaultPlaybackRate on every src change, so the chosen rate has to
+                    // be planted in defaultPlaybackRate BEFORE load() and re-applied on
+                    // loadedmetadata — otherwise each new track silently drops to 1x.
+                    audioEngine.defaultPlaybackRate = rate
+                    audioEngine.src = track.url
+                    audioEngine.load()
+                    updateAudioMediaSessionMetadata()
+                    startAudioPlayback()
+                }
+
+                const startAudioPlayback = () => {
+                    const started = audioEngine.play()
+                    if (!started || typeof started.catch !== 'function') return
+                    started.catch((err) => {
+                        const name = err && err.name
+                        // AbortError just means a newer load()/skip superseded this play.
+                        if (name === 'AbortError') return
+                        if (name === 'NotAllowedError') {
+                            // Autoplay policy refused it — never stall silently, show a
+                            // paused state the user can tap.
+                            audioBlocked.value = true
+                            audioIsPlaying.value = false
+                            syncAudioMediaSession()
+                            return
+                        }
+                        handleAudioLoadFailure()
+                    })
+                }
+
+                const buildAudioQueue = (msg) => {
+                    // Same type class only: voice notes and music are separate queues,
+                    // so a voice run never rolls into a music file. Confined to the
+                    // already-loaded window of this chat, oldest -> newest.
+                    const kind = audioMediaKind(msg)
+                    const chatId = audioMessageChatId(msg)
+                    return sortedMessages.value
+                        .filter(m => isAudioFile(m) && audioMediaKind(m) === kind && audioMessageChatId(m) === chatId)
+                        .map(m => audioTrackFromMessage(m))
+                        .reverse()
+                }
+
+                const currentAudioQueueIndex = () => {
+                    const track = audioTrack.value
+                    if (!track) return -1
+                    return audioQueue.value.findIndex(t => t.id === track.id && t.chatId === track.chatId)
+                }
+
+                const playAdjacentAudio = (step) => {
+                    // Advances only inside the already-loaded window and stops at its
+                    // edge: pagination is driven by two IntersectionObservers, and having
+                    // playback drive it too would double-fetch and race their in-flight
+                    // guards.
+                    const index = currentAudioQueueIndex()
+                    if (index < 0) return false
+                    const next = audioQueue.value[index + step]
+                    if (!next) return false
+                    loadAudioTrack(next)
+                    return true
+                }
+
+                const playNextAudio = () => playAdjacentAudio(1)
+
+                const playPrevAudio = () => {
+                    // Restart the current track when there is nothing older, the way
+                    // every media player treats "previous".
+                    if (!playAdjacentAudio(-1)) seekAudioTo(0)
+                }
+
+                const playAudioMessage = (msg) => {
+                    if (noDownload.value) return
+                    if (isCurrentAudioMessage(msg)) {
+                        toggleAudioPlayback()
+                        return
+                    }
+                    audioConsecutiveFailures = 0
+                    audioAutoAdvanceHalted.value = false
+                    audioQueue.value = buildAudioQueue(msg)
+                    loadAudioTrack(audioTrackFromMessage(msg))
+                }
+
+                const toggleAudioPlayback = () => {
+                    if (!audioTrack.value) return
+                    if (audioEngine.paused) {
+                        audioBlocked.value = false
+                        startAudioPlayback()
+                    } else {
+                        audioEngine.pause()
+                    }
+                }
+
+                const seekAudioTo = (value) => {
+                    const seconds = Number(value)
+                    if (!audioTrack.value || !isFinite(seconds)) return
+                    const limit = isFinite(audioEngine.duration) ? audioEngine.duration : seconds
+                    audioEngine.currentTime = Math.max(0, Math.min(seconds, limit))
+                    audioCurrentTime.value = audioEngine.currentTime
+                }
+
+                const setAudioSpeed = (rate) => {
+                    const kind = audioTrack.value ? audioTrack.value.kind : 'voice'
+                    audioSpeedByKind.value = { ...audioSpeedByKind.value, [kind]: rate }
+                    try {
+                        localStorage.setItem(audioSpeedStorageKey(kind), String(rate))
+                    } catch (e) { /* storage unavailable (private mode) — speed stays session-only */ }
+                    audioEngine.defaultPlaybackRate = rate
+                    audioEngine.playbackRate = rate
+                }
+
+                const closeAudioPlayer = () => {
+                    audioEngine.pause()
+                    audioEngine.removeAttribute('src')
+                    audioEngine.load()  // release the decoder / in-flight range requests
+                    audioTrack.value = null
+                    audioQueue.value = []
+                    audioIsPlaying.value = false
+                    audioCurrentTime.value = 0
+                    audioDuration.value = 0
+                    audioBlocked.value = false
+                    audioError.value = ''
+                    audioAutoAdvanceHalted.value = false
+                    audioConsecutiveFailures = 0
+                    updateAudioMediaSessionMetadata()
+                    syncAudioMediaSession()
+                }
+
+                const focusAudioTrackMessage = async () => {
+                    const track = audioTrack.value
+                    if (!track) return
+                    if (track.chatId != null && track.chatId !== (selectedChat.value?.id ?? null)) {
+                        const chat = chats.value.find(c => c.id === track.chatId)
+                        if (!chat) return
+                        await selectChat(chat)
+                    }
+                    scrollToMessage(track.id)
+                }
+
+                // Listeners are attached ONCE to the shared element, never per track.
+                audioEngine.addEventListener('loadedmetadata', () => {
+                    audioDuration.value = isFinite(audioEngine.duration)
+                        ? audioEngine.duration
+                        : (audioTrack.value?.duration || 0)
+                    // Re-apply the rate: the load algorithm has just reset playbackRate
+                    // to defaultPlaybackRate (see the trap note in loadAudioTrack).
+                    audioEngine.playbackRate = audioTrack.value
+                        ? (audioSpeedByKind.value[audioTrack.value.kind] || 1)
+                        : 1
+                    audioConsecutiveFailures = 0
+                    audioError.value = ''
+                })
+
+                audioEngine.addEventListener('timeupdate', () => {
+                    audioCurrentTime.value = audioEngine.currentTime
+                })
+
+                audioEngine.addEventListener('play', () => {
+                    audioIsPlaying.value = true
+                    audioBlocked.value = false
+                    syncAudioMediaSession()
+                })
+
+                audioEngine.addEventListener('pause', () => {
+                    audioIsPlaying.value = false
+                    syncAudioMediaSession()
+                })
+
+                audioEngine.addEventListener('ended', () => {
+                    audioIsPlaying.value = false
+                    if (audioAutoAdvanceHalted.value || !playNextAudio()) {
+                        audioCurrentTime.value = 0
+                        syncAudioMediaSession()
+                    }
+                })
+
+                audioEngine.addEventListener('error', () => {
+                    if (!audioTrack.value) return  // teardown clears src, which is not a failure
+                    handleAudioLoadFailure()
+                    if (!audioAutoAdvanceHalted.value) playNextAudio()
+                })
+
+                // OS / lock-screen / media-key control, feature-detected.
+                const audioMediaSessionActions = {
+                    play: () => { if (!audioIsPlaying.value) toggleAudioPlayback() },
+                    pause: () => { if (audioIsPlaying.value) toggleAudioPlayback() },
+                    previoustrack: () => playPrevAudio(),
+                    nexttrack: () => playNextAudio(),
+                }
+
+                if ('mediaSession' in navigator) {
+                    for (const [action, handler] of Object.entries(audioMediaSessionActions)) {
+                        // Unsupported actions throw NotSupportedError; register each on its own.
+                        try {
+                            navigator.mediaSession.setActionHandler(action, handler)
+                        } catch (e) { /* action not supported by this browser */ }
+                    }
+                }
+
+                // Reserve room under the message pane (and lift the scroll FAB) only while
+                // the bar is docked. The flag goes on <body>: #app is the mount CONTAINER,
+                // so a :class binding written on it is never part of the template and is
+                // silently ignored. Declared after audioTrack/noDownload, per this file's
+                // watch-placement rule.
+                watch(audioTrack, (track) => {
+                    document.body.classList.toggle('audio-player-open', !!track && !noDownload.value)
+                })
+
                 const calendarAvailabilityKey = (chatId, topicId, timezone, monthKey) => {
                     return `${chatId}:${topicId ?? 'all'}:${timezone}:${monthKey}`
                 }
@@ -5527,6 +5982,26 @@
                     isLightboxImage,
                     isLightboxVideo,
                     linkifyText,
+                    // Global audio player (#250)
+                    audioTrack,
+                    audioIsPlaying,
+                    audioCurrentTime,
+                    audioDuration,
+                    audioSeekMax,
+                    audioSpeeds,
+                    currentAudioSpeed,
+                    audioStatusMessage,
+                    formatAudioTime,
+                    isCurrentAudioMessage,
+                    isPlayingAudioMessage,
+                    playAudioMessage,
+                    toggleAudioPlayback,
+                    playNextAudio,
+                    playPrevAudio,
+                    seekAudioTo,
+                    setAudioSpeed,
+                    closeAudioPlayer,
+                    focusAudioTrackMessage,
                     scrollToMessage,
                     jumpToReply,
                     messagesContainer,

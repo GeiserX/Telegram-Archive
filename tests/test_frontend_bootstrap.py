@@ -1123,3 +1123,196 @@ def test_chat_header_avatar_button_is_not_a_tap_target():
 
     assert "tap-target" not in body
     assert "aspect-square" in body
+
+
+# --- Global audio player (#250) -------------------------------------------------
+
+
+def _setup_slice(html: str, declaration: str) -> str:
+    """Return one top-level ``const`` body from the root Vue ``setup()``.
+
+    Setup-scope declarations are indented 16 spaces, so the next such line is
+    the end of the current one; nested declarations are indented deeper and do
+    not terminate the slice.
+    """
+    start = html.index(declaration)
+    return html[start : html.index("\n                const ", start + len(declaration))]
+
+
+def test_audio_playback_uses_a_single_shared_element():
+    """#250: no per-message player may exist.
+
+    ``loadMessagesAroundId`` replaces ``messages.value`` wholesale, so a player
+    rendered inside the message ``v-for`` is destroyed mid-track by an ordinary
+    jump. The bubble must only delegate to the app-wide engine.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    # Zero markup players: the engine is a JS-owned HTMLAudioElement.
+    assert html.count("<audio") == 0
+    assert "<audio controls" not in html
+    assert html.count("new Audio()") == 1
+
+    # The bubble branch now delegates.
+    audio_branch_start = html.index('v-else-if="isAudioFile(msg)"')
+    audio_branch = html[audio_branch_start : audio_branch_start + 2500]
+    assert 'type="button"' in audio_branch
+    assert "playAudioMessage(msg)" in audio_branch
+    assert ":aria-label=" in audio_branch
+
+
+def test_audio_engine_and_playbar_live_outside_the_message_loop():
+    """The engine and its bar must survive chat switches and list rebuilds."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    # The element is created in setup(), not in the template.
+    engine_index = html.index("const audioEngine = new Audio()")
+    assert engine_index > html.index("createApp({")
+
+    # A single playbar, rendered after the message scroll container closes.
+    assert html.count('class="audio-playbar') == 1
+    assert html.index('class="audio-playbar') > html.index('<div ref="scrollAnchor">')
+
+    # z-index band: above the message list / scroll FAB (10), below modals (50).
+    playbar_css = html[html.index(".audio-playbar {") : html.index(".audio-playbar input")]
+    z_index = int(playbar_css.split("z-index:")[1].split(";")[0].strip())
+    assert 41 <= z_index <= 49
+
+    # The layout flag must NOT be a :class on #app — that div is the mount
+    # CONTAINER, so bindings written on it are never part of the template and are
+    # silently dropped (verified in a browser: the class never appeared).
+    assert ":class=\"{ 'audio-player-open'" not in html
+    assert "document.body.classList.toggle('audio-player-open'" in html
+
+
+def test_audio_playback_rate_survives_a_track_change():
+    """#250: the media load algorithm resets ``playbackRate`` on every ``src`` change.
+
+    Without planting the rate in ``defaultPlaybackRate`` before ``load()`` AND
+    re-applying it once metadata arrives, every new track silently falls back to
+    1x while the UI still shows the chosen speed.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    load_body = _setup_slice(html, "const loadAudioTrack = (track) =>")
+    assert load_body.index("audioEngine.defaultPlaybackRate = rate") < load_body.index("audioEngine.src = track.url")
+    assert load_body.index("audioEngine.src = track.url") < load_body.index("audioEngine.load()")
+
+    meta_start = html.index("audioEngine.addEventListener('loadedmetadata'")
+    meta_body = html[meta_start : html.index("audioEngine.addEventListener('timeupdate'", meta_start)]
+    assert "audioEngine.playbackRate = audioTrack.value" in meta_body
+
+
+def test_audio_ended_advances_and_errors_halt_after_repeated_failures():
+    """Auto-advance must chain tracks, but a broken media path must not be walked."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    ended_start = html.index("audioEngine.addEventListener('ended'")
+    ended_body = html[ended_start : html.index("audioEngine.addEventListener('error'", ended_start)]
+    assert "playNextAudio()" in ended_body
+    assert "audioAutoAdvanceHalted.value" in ended_body
+
+    error_start = html.index("audioEngine.addEventListener('error'")
+    error_body = html[error_start : html.index("const audioMediaSessionActions", error_start)]
+    assert "handleAudioLoadFailure()" in error_body
+    assert "if (!audioAutoAdvanceHalted.value) playNextAudio()" in error_body
+
+    assert "const AUDIO_MAX_FAILURES = 2" in html
+    failure_body = _setup_slice(html, "const handleAudioLoadFailure = () =>")
+    assert "audioConsecutiveFailures += 1" in failure_body
+    assert "audioConsecutiveFailures >= AUDIO_MAX_FAILURES" in failure_body
+    assert "audioAutoAdvanceHalted.value = true" in failure_body
+
+
+def test_audio_play_rejection_distinguishes_blocked_from_aborted():
+    """``play()`` rejects for two very different reasons and must not be swallowed."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    body = _setup_slice(html, "const startAudioPlayback = () =>")
+    # Fast skipping aborts the pending play — benign, ignored.
+    assert "if (name === 'AbortError') return" in body
+    # Autoplay policy — surfaced as a tap-to-play state, never a silent stall.
+    assert "name === 'NotAllowedError'" in body
+    assert "audioBlocked.value = true" in body
+    # Anything else is a real load failure.
+    assert "handleAudioLoadFailure()" in body
+    assert "audioStatusMessage" in html
+
+
+def test_audio_speed_is_persisted_per_media_type():
+    """Voice speed and music speed are independent and survive a reload."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "const audioSpeeds = [0.5, 1, 1.5, 2]" in html
+    key_body = _setup_slice(html, "const audioSpeedStorageKey = (kind) =>")
+    assert "'audio_speed_voice'" in key_body
+    assert "'audio_speed_music'" in key_body
+
+    restore_body = _setup_slice(html, "const readStoredAudioSpeed = (kind) =>")
+    assert "localStorage.getItem(audioSpeedStorageKey(kind))" in restore_body
+
+    set_body = _setup_slice(html, "const setAudioSpeed = (rate) =>")
+    assert "localStorage.setItem(audioSpeedStorageKey(kind), String(rate))" in set_body
+    # The kind comes from the playing track, so music never overwrites voice.
+    assert "audioTrack.value ? audioTrack.value.kind : 'voice'" in set_body
+
+
+def test_audio_player_is_gated_on_no_download():
+    """no_download viewers 403 on every /media GET — never offer or queue playback."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'v-if="audioTrack && !noDownload"' in html
+
+    play_body = _setup_slice(html, "const playAudioMessage = (msg) =>")
+    assert "if (noDownload.value) return" in play_body
+
+    load_body = _setup_slice(html, "const loadAudioTrack = (track) =>")
+    assert "noDownload.value" in load_body
+
+    audio_branch_start = html.index('v-else-if="isAudioFile(msg)"')
+    audio_branch = html[audio_branch_start : audio_branch_start + 2500]
+    assert ':disabled="noDownload"' in audio_branch
+
+
+def test_audio_media_session_is_feature_detected():
+    """OS / lock-screen controls must be optional, never a hard dependency."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "'mediaSession' in navigator" in html
+    assert "typeof MediaMetadata !== 'function'" in html
+    assert "new MediaMetadata(" in html
+
+    actions_start = html.index("const audioMediaSessionActions = {")
+    actions_body = html[actions_start : html.index("if ('mediaSession' in navigator) {", actions_start)]
+    for action in ("play:", "pause:", "previoustrack:", "nexttrack:"):
+        assert action in actions_body
+    # Unsupported actions throw, so each registration is independent.
+    assert "navigator.mediaSession.setActionHandler(action, handler)" in html
+    assert "navigator.mediaSession.playbackState" in html
+
+
+def test_audio_auto_advance_does_not_drive_pagination():
+    """Deferred by design (#250).
+
+    Two IntersectionObservers already auto-fire the older/newer page loads. A
+    player that also drove them would double-fetch and race ``loadingNewer`` /
+    ``newerLoadError`` / ``chatVersion``, so advancing stops at the edge of the
+    already-loaded window.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    advance_body = _setup_slice(html, "const playAdjacentAudio = (step) =>")
+    assert "loadMessages" not in advance_body
+    assert "loadNewerMessages" not in advance_body
+    assert "audioQueue.value[index + step]" in advance_body
+
+    ended_start = html.index("audioEngine.addEventListener('ended'")
+    ended_body = html[ended_start : html.index("audioEngine.addEventListener('error'", ended_start)]
+    assert "loadMessages" not in ended_body
+    assert "loadNewerMessages" not in ended_body
+
+    # The queue is a snapshot of copied metadata, not references into messages.value.
+    queue_body = _setup_slice(html, "const buildAudioQueue = (msg) =>")
+    assert "audioTrackFromMessage(m)" in queue_body
+    # Voice and music never share a queue.
+    assert "audioMediaKind(m) === kind" in queue_body
