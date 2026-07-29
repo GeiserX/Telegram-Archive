@@ -852,7 +852,35 @@
                                         d="M15 19l-7-7 7-7"></path>
                                 </svg>
                             </button>
-                            <div
+                            <!-- Header avatar (#240). In a 1:1 chat the photo IS the
+                                 counterpart, so it opens the same "Sender details"
+                                 dialog the group message avatars use. Groups/channels
+                                 keep the plain non-interactive circle: there the photo
+                                 is the GROUP picture, and the dialog would show the
+                                 group title and a -100… id, which is not a sender.
+                                 No .tap-target here — its 44px mobile minimum would
+                                 stretch this fixed 40px aspect-square into an ellipse. -->
+                            <button v-if="selectedChat?.type === 'private'" type="button"
+                                @click="openSenderInfoFromChat(selectedChat, $event)"
+                                :aria-label="`Show details for ${getChatName(selectedChat)}`"
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
+                                    class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
+                                    :alt="getChatName(selectedChat)">
+                                <template v-else-if="isDeletedChat(selectedChat)">
+                                    <svg class="w-6 h-6 opacity-80" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M5 21a7 7 0 0114 0" />
+                                    </svg>
+                                </template>
+                                <template v-else>
+                                    {{ getInitials(selectedChat) }}
+                                </template>
+                            </button>
+                            <div v-else
                                 class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
                                     class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
@@ -1527,6 +1555,20 @@
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </header>
+                <!-- Larger version of the photo the row avatar already resolved (#240).
+                     Decorative on purpose: not a button/link, so it stays out of the
+                     Tab trap and never opens a modal-over-modal lightbox. alt is empty
+                     because the name it would announce is already the next thing read
+                     out of the <dl> below — a non-empty alt would just duplicate it. -->
+                <div class="mt-4 flex justify-center">
+                    <div class="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-2xl font-bold text-white select-none"
+                        :style="{ background: getAvatarFill(senderInfoMessage) }">
+                        <img v-if="senderInfoMessage.sender_avatar_url" :src="senderInfoMessage.sender_avatar_url"
+                            class="w-full h-full object-cover"
+                            @error="senderInfoMessage.sender_avatar_url = null" alt="">
+                        <template v-else>{{ getSenderInitials(senderInfoMessage) }}</template>
+                    </div>
+                </div>
                 <dl class="mt-4 space-y-3 text-sm">
                     <div>
                         <dt class="text-xs uppercase tracking-wide text-tg-muted">
@@ -4331,6 +4373,27 @@
                     nextTick(() => trigger?.focus())
                 }
 
+                // Adapter for the 1:1 header avatar (#240). A chat is NOT message-shaped:
+                // it carries `id` and `avatar_url`, while the dialog reads `sender_id` and
+                // `sender_avatar_url` — passing the raw chat straight through would render
+                // "Telegram ID: Unknown" and a blank avatar. In a private chat `chat.id` IS
+                // the counterpart's Telegram user id and its photo resolves to the same file
+                // a message's sender avatar would. `sender_name` is null on purpose: it is a
+                // per-message archival snapshot chats never have, so the dialog falls back to
+                // the current name and correctly hides the "Latest known name" duplicate row.
+                const openSenderInfoFromChat = (chat, event) => {
+                    if (!chat) return
+                    openSenderInfo({
+                        sender_id: chat.id,
+                        sender_name: null,
+                        first_name: chat.first_name,
+                        last_name: chat.last_name,
+                        username: chat.username,
+                        sender_avatar_url: chat.avatar_url,
+                        raw_data: null,
+                    }, event)
+                }
+
                 // Get name for forwarded message source
                 const getForwardName = (msg) => {
                     // First check raw_data for the resolved name
@@ -5412,6 +5475,7 @@
                     getSenderInfoName,
                     hasDifferentCurrentSenderName,
                     openSenderInfo,
+                    openSenderInfoFromChat,
                     closeSenderInfo,
                     getForwardName,
                     getSenderRunKey,
