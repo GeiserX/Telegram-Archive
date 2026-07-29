@@ -5430,7 +5430,13 @@
                 const extendAudioQueueOlder = async () => {
                     // One page older, on demand, for "previous" at the head of the queue.
                     const track = audioTrack.value
-                    if (!track || audioQueueFetching || !audioQueueHasOlder || !audioQueueCursor) return 'exhausted'
+                    // Three DIFFERENT states; collapsing them is the very bug this
+                    // path exists to avoid. A page already on its way is not the end
+                    // of the queue, and reporting it as such makes a second
+                    // "previous" press restart the track before that page lands.
+                    if (!track) return 'aborted'
+                    if (audioQueueFetching) return 'pending'
+                    if (!audioQueueHasOlder || !audioQueueCursor) return 'exhausted'
                     const requestId = ++audioQueueRequestId
                     const fetchToken = ++audioQueueFetchSeq
                     audioQueueFetching = true
