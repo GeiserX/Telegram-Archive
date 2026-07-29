@@ -5271,14 +5271,167 @@
 
                 const buildAudioQueue = (msg) => {
                     // Same type class only: voice notes and music are separate queues,
-                    // so a voice run never rolls into a music file. Confined to the
-                    // already-loaded window of this chat, oldest -> newest.
+                    // so a voice run never rolls into a music file. This is only the
+                    // SEED, taken from the already-loaded window of this chat so the
+                    // queue is usable on the click itself; extendAudioQueueFromMedia
+                    // then grows it past that window. Oldest -> newest.
                     const kind = audioMediaKind(msg)
                     const chatId = audioMessageChatId(msg)
                     return sortedMessages.value
                         .filter(m => isAudioFile(m) && audioMediaKind(m) === kind && audioMessageChatId(m) === chatId)
                         .map(m => audioTrackFromMessage(m))
                         .reverse()
+                }
+
+                // ---------------------------------------------------------------
+                // Queue paging (#254)
+                //
+                // The queue is paged from the media endpoint, which is a SEPARATE
+                // cursor from the message pane: the pane's two IntersectionObservers
+                // own their own fetches, and a second driver poking them would
+                // double-fetch and race their in-flight guards. The player therefore
+                // never calls the pane's loaders and keeps every descriptor it needs
+                // in its own state, so a chat switch (which empties messages.value)
+                // cannot invalidate the queue.
+                // ---------------------------------------------------------------
+                const AUDIO_QUEUE_PAGE_SIZE = 50
+                const AUDIO_QUEUE_MAX_PAGES = 10
+
+                let audioQueueRequestId = 0      // stale-result guard
+                let audioQueueCursor = null      // media id of the OLDEST item fetched so far
+                let audioQueueHasOlder = false
+                let audioQueueFetching = false
+
+                // Voice and music are queried separately — the endpoint would happily
+                // return both in one call ("voice,audio"), which is exactly what must
+                // not happen here.
+                const audioQueueTypes = (kind) => kind === 'voice' ? 'voice' : 'audio'
+
+                const fetchAudioQueuePage = async (chatId, kind, beforeId) => {
+                    const params = new URLSearchParams({
+                        types: audioQueueTypes(kind),
+                        limit: String(AUDIO_QUEUE_PAGE_SIZE),
+                    })
+                    // Cursor is the composite media id of the last item seen; the
+                    // endpoint pages backwards in time from it.
+                    if (beforeId) params.set('before_id', beforeId)
+                    const res = await fetch(`/api/chats/${chatId}/media?${params}`, {
+                        credentials: 'include'
+                    })
+                    if (!res.ok) throw new Error('Failed to load audio queue page')
+                    return await res.json()
+                }
+
+                const audioTrackFromMediaItem = (item, kind, chatName) => ({
+                    id: item.message_id,
+                    chatId: item.chat_id,
+                    chatName,
+                    url: item.media_url || '',
+                    sender: item.sender_name || 'Deleted Account',
+                    date: item.message_date,
+                    duration: item.duration ?? null,
+                    kind,
+                })
+
+                const audioTracksFromMediaItems = (items, track) => items
+                    // no_download viewers get no media_url, and paths outside the media
+                    // root are stripped server-side: an entry with no URL is unplayable.
+                    .filter(item => item && item.media_url && item.message_id != null)
+                    .map(item => audioTrackFromMediaItem(item, track.kind, track.chatName))
+
+                const audioTrackTime = (track) => {
+                    const ms = Date.parse(track.date || '')
+                    return isFinite(ms) ? ms : 0
+                }
+
+                const mergeAudioQueue = (tracks) => {
+                    // The seed descriptors win on collision: they carry the richer
+                    // sender resolution the message shape allows.
+                    const byKey = new Map()
+                    for (const t of [...audioQueue.value, ...tracks]) {
+                        const key = `${t.chatId}:${t.id}`
+                        if (!byKey.has(key)) byKey.set(key, t)
+                    }
+                    return [...byKey.values()].sort((a, b) => {
+                        const delta = audioTrackTime(a) - audioTrackTime(b)
+                        return delta !== 0 ? delta : (Number(a.id) || 0) - (Number(b.id) || 0)
+                    })
+                }
+
+                const audioQueueBelongsToTrack = (track) => {
+                    // A queue is valid for one (chat, kind) pair. Voice notes are short
+                    // enough that auto-advance can move to the NEXT track while the pages
+                    // are still in flight — that track shares the queue, so the result is
+                    // still wanted. A different chat or class, or a closed player, is what
+                    // makes it stale; a track the USER started instead is caught by the
+                    // request id, which only a new playback session bumps.
+                    const current = audioTrack.value
+                    return !!current && current.chatId === track.chatId && current.kind === track.kind
+                }
+
+                const extendAudioQueueFromMedia = async (track) => {
+                    // Playback advances forward in time while the endpoint pages
+                    // backwards from the newest item, so paging back until the playing
+                    // track shows up puts EVERY possible next track in hand.
+                    if (!track || track.chatId == null || noDownload.value) return
+                    const requestId = ++audioQueueRequestId
+                    audioQueueFetching = true
+                    const collected = []
+                    let cursor = null
+                    let hasOlder = false
+                    try {
+                        for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++) {
+                            const data = await fetchAudioQueuePage(track.chatId, track.kind, cursor)
+                            const items = Array.isArray(data?.items) ? data.items : []
+                            if (!items.length) break
+                            collected.push(...items)
+                            cursor = items[items.length - 1].id
+                            hasOlder = !!data.has_more
+                            // Found the playing track, or there is nothing older left.
+                            if (items.some(item => item.message_id === track.id) || !hasOlder) break
+                        }
+                    } catch (e) {
+                        // A queue page that fails to load is NOT a playback failure: it
+                        // must never touch audioConsecutiveFailures / audioAutoAdvanceHalted.
+                        // The seeded window queue stays in place — today's behaviour.
+                        return
+                    } finally {
+                        if (requestId === audioQueueRequestId) audioQueueFetching = false
+                    }
+                    // The user may have started another track (or another chat) while
+                    // these pages were in flight; those results belong to nobody now.
+                    if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return
+                    if (!collected.length) return
+                    audioQueueCursor = cursor
+                    audioQueueHasOlder = hasOlder
+                    audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(collected, track))
+                }
+
+                const extendAudioQueueOlder = async () => {
+                    // One page older, on demand, for "previous" at the head of the queue.
+                    const track = audioTrack.value
+                    if (!track || audioQueueFetching || !audioQueueHasOlder || !audioQueueCursor) return false
+                    const requestId = ++audioQueueRequestId
+                    audioQueueFetching = true
+                    let data
+                    try {
+                        data = await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)
+                    } catch (e) {
+                        return false  // paging failure ≠ playback failure, see above
+                    } finally {
+                        if (requestId === audioQueueRequestId) audioQueueFetching = false
+                    }
+                    if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false
+                    const items = Array.isArray(data?.items) ? data.items : []
+                    if (!items.length) {
+                        audioQueueHasOlder = false
+                        return false
+                    }
+                    audioQueueCursor = items[items.length - 1].id
+                    audioQueueHasOlder = !!data.has_more
+                    const before = audioQueue.value.length
+                    audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(items, track))
+                    return audioQueue.value.length > before
                 }
 
                 const currentAudioQueueIndex = () => {
@@ -5288,10 +5441,11 @@
                 }
 
                 const playAdjacentAudio = (step) => {
-                    // Advances only inside the already-loaded window and stops at its
-                    // edge: pagination is driven by two IntersectionObservers, and having
-                    // playback drive it too would double-fetch and race their in-flight
-                    // guards.
+                    // Pure walk over the player's own queue. It stays synchronous and
+                    // never touches the message pane's pagination: those fetches are
+                    // driven by two IntersectionObservers, and a second driver would
+                    // double-fetch and race their in-flight guards. Reaching the end of
+                    // the queue means the end of the chat's audio of this kind.
                     const index = currentAudioQueueIndex()
                     if (index < 0) return false
                     const next = audioQueue.value[index + step]
@@ -5302,10 +5456,13 @@
 
                 const playNextAudio = () => playAdjacentAudio(1)
 
-                const playPrevAudio = () => {
+                const playPrevAudio = async () => {
+                    if (playAdjacentAudio(-1)) return
+                    // At the head of the queue: one more page of older audio, on demand.
+                    if (await extendAudioQueueOlder() && playAdjacentAudio(-1)) return
                     // Restart the current track when there is nothing older, the way
                     // every media player treats "previous".
-                    if (!playAdjacentAudio(-1)) seekAudioTo(0)
+                    seekAudioTo(0)
                 }
 
                 const playAudioMessage = (msg) => {
@@ -5316,8 +5473,14 @@
                     }
                     audioConsecutiveFailures = 0
                     audioAutoAdvanceHalted.value = false
+                    audioQueueCursor = null
+                    audioQueueHasOlder = false
                     audioQueue.value = buildAudioQueue(msg)
-                    loadAudioTrack(audioTrackFromMessage(msg))
+                    const track = audioTrackFromMessage(msg)
+                    // Start on the user gesture, THEN grow the queue: awaiting the fetch
+                    // first would spend the gesture and hand iOS a blocked play().
+                    loadAudioTrack(track)
+                    extendAudioQueueFromMedia(track)
                 }
 
                 const toggleAudioPlayback = () => {
@@ -5354,6 +5517,10 @@
                     audioEngine.load()  // release the decoder / in-flight range requests
                     audioTrack.value = null
                     audioQueue.value = []
+                    // Bumping the request id makes any in-flight queue page stale.
+                    audioQueueRequestId += 1
+                    audioQueueCursor = null
+                    audioQueueHasOlder = false
                     audioIsPlaying.value = false
                     audioCurrentTime.value = 0
                     audioDuration.value = 0

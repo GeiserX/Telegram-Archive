@@ -1139,6 +1139,11 @@ def _setup_slice(html: str, declaration: str) -> str:
     return html[start : html.index("\n                const ", start + len(declaration))]
 
 
+def _code_only(body: str) -> str:
+    """Drop whole-line ``//`` comments: some assertions are about code, not prose."""
+    return "\n".join(line for line in body.splitlines() if not line.strip().startswith("//"))
+
+
 def test_audio_playback_uses_a_single_shared_element():
     """#250: no per-message player may exist.
 
@@ -1316,3 +1321,174 @@ def test_audio_auto_advance_does_not_drive_pagination():
     assert "audioTrackFromMessage(m)" in queue_body
     # Voice and music never share a queue.
     assert "audioMediaKind(m) === kind" in queue_body
+
+
+# --- Pagination-aware audio queue (#254) ---------------------------------------
+
+_AUDIO_QUEUE_DECLARATIONS = (
+    "const fetchAudioQueuePage = async (chatId, kind, beforeId) =>",
+    "const extendAudioQueueFromMedia = async (track) =>",
+    "const extendAudioQueueOlder = async () =>",
+)
+
+
+def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
+    """#254: the queue grows from the media endpoint's own cursor, not the pane's.
+
+    Playback runs oldest -> newest while ``/media`` pages newest -> oldest, so
+    paging back until the playing track appears puts every possible next track in
+    hand. The walk must be capped so a huge chat cannot spin forever.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatId, kind, beforeId) =>")
+    assert "`/api/chats/${chatId}/media?${params}`" in fetch_body
+    assert "types: audioQueueTypes(kind)," in fetch_body
+    assert "limit: String(AUDIO_QUEUE_PAGE_SIZE)," in fetch_body
+    # The cursor is the composite media id of the last item seen.
+    assert "params.set('before_id', beforeId)" in fetch_body
+    assert "credentials: 'include'" in fetch_body
+
+    assert "const AUDIO_QUEUE_PAGE_SIZE = 50" in html
+    assert "const AUDIO_QUEUE_MAX_PAGES = 10" in html
+
+    extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
+    assert "for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++)" in extend_body
+    assert "await fetchAudioQueuePage(track.chatId, track.kind, cursor)" in extend_body
+    assert "cursor = items[items.length - 1].id" in extend_body
+    # Stop as soon as the playing track is in hand, or nothing older is left.
+    assert "items.some(item => item.message_id === track.id) || !hasOlder" in extend_body
+    # Hitting the cap keeps whatever was fetched instead of failing.
+    assert "audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(collected, track))" in extend_body
+
+    # "Previous" at the head of the queue pages one more time from the same cursor.
+    older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
+    assert "await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)" in older_body
+    prev_body = _setup_slice(html, "const playPrevAudio = async () =>")
+    assert "await extendAudioQueueOlder()" in prev_body
+    assert "seekAudioTo(0)" in prev_body
+
+
+def test_audio_queue_extension_never_drives_message_pagination():
+    """#254 is only safe because the player owns a SEPARATE cursor.
+
+    The pane's older/newer pages are fetched by two IntersectionObservers. A
+    player that also called those loaders would double-fetch and race
+    ``loading`` / ``loadingNewer`` / ``newerLoadError`` / ``chatVersion``.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    advance_declarations = _AUDIO_QUEUE_DECLARATIONS + (
+        "const playAdjacentAudio = (step) =>",
+        "const playNextAudio = () => playAdjacentAudio(1)",
+        "const playPrevAudio = async () =>",
+        "const playAudioMessage = (msg) =>",
+    )
+    for declaration in advance_declarations:
+        body = _setup_slice(html, declaration)
+        assert "loadMessages" not in body, declaration
+        assert "loadNewerMessages" not in body, declaration
+        assert "messagesScrollObserver" not in body, declaration
+        assert "messagesNewerObserver" not in body, declaration
+
+    ended_start = html.index("audioEngine.addEventListener('ended'")
+    ended_body = html[ended_start : html.index("audioEngine.addEventListener('error'", ended_start)]
+    assert "loadMessages" not in ended_body
+    assert "loadNewerMessages" not in ended_body
+
+    # Auto-advance itself stays a synchronous walk over the player's own queue,
+    # so the 'ended' handler can still branch on its boolean result.
+    assert "const playNextAudio = () => playAdjacentAudio(1)" in html
+    advance_body = _setup_slice(html, "const playAdjacentAudio = (step) =>")
+    assert "audioQueue.value[index + step]" in advance_body
+
+    # The queue holds copied descriptors, so emptying messages.value on a chat
+    # switch cannot invalidate it.
+    item_body = _setup_slice(html, "const audioTrackFromMediaItem = (item, kind, chatName) =>")
+    assert "id: item.message_id," in item_body
+    assert "chatId: item.chat_id," in item_body
+    assert "url: item.media_url || ''," in item_body
+
+
+def test_audio_queue_discards_results_for_a_superseded_track():
+    """A page that lands after the user started something else belongs to nobody.
+
+    Two guards, because they catch different things: the request id is bumped by
+    each new playback session (and by closing the player), while the (chat, kind)
+    check catches a chat switch. Auto-advance within the same queue is NOT stale
+    — voice notes are short enough to advance mid-fetch.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    guard_body = _setup_slice(html, "const audioQueueBelongsToTrack = (track) =>")
+    assert "current.chatId === track.chatId" in guard_body
+    assert "current.kind === track.kind" in guard_body
+
+    extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
+    assert "const requestId = ++audioQueueRequestId" in extend_body
+    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return" in extend_body
+    # The guard runs before anything is written back to the queue.
+    assert extend_body.index("!audioQueueBelongsToTrack(track)") < extend_body.index(
+        "audioQueue.value = mergeAudioQueue"
+    )
+
+    older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
+    assert "const requestId = ++audioQueueRequestId" in older_body
+    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false" in older_body
+    assert older_body.index("!audioQueueBelongsToTrack(track)") < older_body.index("audioQueue.value = mergeAudioQueue")
+
+    # Closing the player invalidates whatever is still in flight.
+    close_body = _setup_slice(html, "const closeAudioPlayer = () =>")
+    assert "audioQueueRequestId += 1" in close_body
+    assert "audioQueueCursor = null" in close_body
+
+
+def test_audio_queue_fetch_failure_does_not_halt_auto_advance():
+    """A failed queue page and a failed MEDIA load are different failure modes.
+
+    Only the latter may count towards ``AUDIO_MAX_FAILURES``; a queue fetch that
+    fails must degrade to the already-loaded window, silently.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    for declaration in _AUDIO_QUEUE_DECLARATIONS:
+        body = _code_only(_setup_slice(html, declaration))
+        assert "audioConsecutiveFailures" not in body, declaration
+        assert "audioAutoAdvanceHalted" not in body, declaration
+        assert "handleAudioLoadFailure" not in body, declaration
+
+    extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
+    assert "} catch (e) {" in extend_body
+    older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
+    assert "} catch (e) {" in older_body
+    assert "return false  // paging failure" in older_body
+
+    # The window-derived queue is seeded before the fetch is even started, so a
+    # failure leaves playback exactly where it is today.
+    play_body = _setup_slice(html, "const playAudioMessage = (msg) =>")
+    assert play_body.index("audioQueue.value = buildAudioQueue(msg)") < play_body.index(
+        "extendAudioQueueFromMedia(track)"
+    )
+    # ...and the fetch is not awaited, so it cannot spend the user gesture that
+    # authorises playback on iOS.
+    assert "await extendAudioQueueFromMedia(track)" not in play_body
+
+
+def test_audio_queue_keeps_voice_and_music_on_separate_types():
+    """Voice notes and music are separate queues, so they are separate queries."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    types_body = _setup_slice(html, "const audioQueueTypes = (kind) =>")
+    assert "kind === 'voice' ? 'voice' : 'audio'" in types_body
+    # Never the combined filter the media gallery uses.
+    assert "'voice,audio'" not in types_body
+
+    # Every page request is keyed on the playing track's own kind.
+    extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
+    assert "fetchAudioQueuePage(track.chatId, track.kind, cursor)" in extend_body
+    older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
+    assert "fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)" in older_body
+
+    # Fetched descriptors inherit that kind, so a merged queue stays single-class.
+    tracks_body = _setup_slice(html, "const audioTracksFromMediaItems = (items, track) =>")
+    assert "audioTrackFromMediaItem(item, track.kind, track.chatName)" in tracks_body
