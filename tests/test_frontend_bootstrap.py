@@ -1434,7 +1434,9 @@ def test_audio_queue_discards_results_for_a_superseded_track():
 
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
     assert "const requestId = ++audioQueueRequestId" in older_body
-    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return false" in older_body
+    # Tri-state outcome since the follow-up: the stale guard yields 'aborted',
+    # which playPrevAudio must not treat as "reached the oldest message".
+    assert "if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return 'aborted'" in older_body
     assert older_body.index("!audioQueueBelongsToTrack(track)") < older_body.index("audioQueue.value = mergeAudioQueue")
 
     # Closing the player invalidates whatever is still in flight.
@@ -1461,7 +1463,7 @@ def test_audio_queue_fetch_failure_does_not_halt_auto_advance():
     assert "} catch (e) {" in extend_body
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
     assert "} catch (e) {" in older_body
-    assert "return false  // paging failure" in older_body
+    assert "return 'error'" in older_body  # paging failure, explicitly not end-of-queue
 
     # The window-derived queue is seeded before the fetch is even started, so a
     # failure leaves playback exactly where it is today.
@@ -1514,3 +1516,41 @@ def test_audio_queue_in_flight_flag_cannot_leak():
     close_start = html.index("const closeAudioPlayer = () =>")
     close_body = html[close_start : html.index("\n                const ", close_start + 10)]
     assert "audioQueueFetching = false" in close_body
+
+
+def test_audio_queue_paging_errors_are_not_end_of_queue():
+    """#254 follow-up: a failed page must not look like "no older audio".
+
+    fetchAudioQueuePage only checked res.ok, so 401/403/429/5xx collapsed into
+    the same falsy result as an exhausted cursor — and "previous" then restarted
+    the current track as though the user had reached the oldest message, with no
+    indication anything had failed.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    fetch_start = html.index("const fetchAudioQueuePage = async (chatId, kind, beforeId) =>")
+    fetch_body = html[fetch_start : html.index("\n                const ", fetch_start + 10)]
+    # The HTTP status is carried on the error so callers can tell transport
+    # failure from an empty page.
+    assert "error.status = res.status" in fetch_body
+    # Stale pages are aborted rather than left to land on a closed player.
+    assert "new AbortController()" in fetch_body
+    assert "signal: controller.signal" in fetch_body
+
+    older_start = html.index("const extendAudioQueueOlder = async () =>")
+    older_body = html[older_start : html.index("\n                const ", older_start + 10)]
+    assert "return 'error'" in older_body          # transport failure
+    assert "return 'exhausted'" in older_body      # genuinely nothing older
+    assert "return 'extended'" in older_body or "'extended' : 'exhausted'" in older_body
+    assert "if (e?.name === 'AbortError') return 'aborted'" in older_body
+    # A paging failure must still never halt playback.
+    assert "audioConsecutiveFailures" not in older_body
+
+    prev_start = html.index("const playPrevAudio = async () =>")
+    prev_body = html[prev_start : html.index("\n                const ", prev_start + 10)]
+    # Restart only on a known-exhausted queue, never on error/abort.
+    assert "if (outcome === 'exhausted') seekAudioTo(0)" in prev_body
+
+    close_start = html.index("const closeAudioPlayer = () =>")
+    close_body = html[close_start : html.index("\n                const ", close_start + 10)]
+    assert "audioQueueAbort?.abort()" in close_body
