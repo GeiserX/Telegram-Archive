@@ -1539,8 +1539,8 @@ def test_audio_queue_paging_errors_are_not_end_of_queue():
 
     older_start = html.index("const extendAudioQueueOlder = async () =>")
     older_body = html[older_start : html.index("\n                const ", older_start + 10)]
-    assert "return 'error'" in older_body          # transport failure
-    assert "return 'exhausted'" in older_body      # genuinely nothing older
+    assert "return 'error'" in older_body  # transport failure
+    assert "return 'exhausted'" in older_body  # genuinely nothing older
     assert "return 'extended'" in older_body or "'extended' : 'exhausted'" in older_body
     assert "if (e?.name === 'AbortError') return 'aborted'" in older_body
     # A paging failure must still never halt playback.
