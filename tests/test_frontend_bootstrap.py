@@ -1026,3 +1026,24 @@ def test_floating_date_recomputes_on_scroll_and_on_list_changes():
     update_body = html[update_start : html.index("const queueFloatingDateUpdate", update_start)]
     assert "querySelectorAll('.date-separator')" in update_body
     assert "[data-msg-id]" not in update_body
+
+
+def test_floating_date_handles_the_top_of_history():
+    """#249: being above every separator is not the same as being at the newest end.
+
+    A separator sits above its own day's messages, so normally the current day is
+    the separator closest ABOVE the trip line. At the very start of history the
+    viewport is above every separator; resolving that to the newest message would
+    print today's date while the oldest day is on screen — the same wrong-date
+    symptom, moved to the top boundary. It must resolve to the first separator
+    BELOW the line instead.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    update_start = html.index("const updateFloatingDate = () =>")
+    update_body = html[update_start : html.index("const queueFloatingDateUpdate", update_start)]
+
+    assert "firstBelow" in update_body
+    assert "best = best || firstBelow" in update_body
+    # The newest loaded message must NOT be used to resolve that case.
+    assert "sortedMessages.value[0]" not in update_body

@@ -2614,31 +2614,34 @@
                     const container = messagesContainer.value
                     if (!container) return
                     const containerTop = container.getBoundingClientRect().top
+                    // A separator sits directly ABOVE its own day's messages, so the day the
+                    // viewport is inside is the separator closest above the trip line.
+                    // One rect read per day (tens at most), never per message.
                     let best = null
                     let bestTop = -Infinity
-                    // Scan every separator, not just the ones the observer currently reports
-                    // as intersecting: a separator that has scrolled above the trip line is
-                    // exactly the one we want (it is the day the viewport is inside), but it
-                    // no longer intersects the thin observation band. One rect read per day
-                    // (tens at most), not per message.
+                    // Only reached when the viewport is above EVERY separator, i.e. at the
+                    // very start of history: then the day on screen is the one whose
+                    // separator is first BELOW the line (the oldest loaded day). Resolving
+                    // that case to "newest message" would show today's date while reading
+                    // the oldest day — the same wrong-date symptom, moved to the top edge.
+                    let firstBelow = null
+                    let firstBelowTop = Infinity
                     for (const marker of container.querySelectorAll('.date-separator')) {
                         const top = marker.getBoundingClientRect().top - containerTop
-                        if (top <= FLOATING_DATE_TRIP_PX && top > bestTop) {
-                            bestTop = top
-                            best = marker
+                        if (top <= FLOATING_DATE_TRIP_PX) {
+                            if (top > bestTop) {
+                                bestTop = top
+                                best = marker
+                            }
+                        } else if (top < firstBelowTop) {
+                            firstBelowTop = top
+                            firstBelow = marker
                         }
                     }
-                    // Before the first separator scrolls under the trip line (i.e. at the
-                    // newest end) fall back to the newest loaded message's own day.
+                    best = best || firstBelow
                     if (!best) {
-                        const newest = sortedMessages.value[0]
-                        if (!newest) {
-                            floatingDateLabel.value = ''
-                            floatingDateIso.value = null
-                            return
-                        }
-                        floatingDateLabel.value = formatDateFull(newest.date)
-                        floatingDateIso.value = newest.date
+                        floatingDateLabel.value = ''
+                        floatingDateIso.value = null
                         return
                     }
                     floatingDateLabel.value = best.dataset.dateLabel || ''
