@@ -6441,10 +6441,6 @@
                     linkifyText,
                     // Global audio player (#250)
                     audioTrack,
-                    // The queue itself is exposed so the #257 hole guard is OBSERVABLE
-                    // from outside: adopting a paged walk replaces it, refusing one
-                    // leaves the seeded window untouched. No debug-only hook.
-                    audioQueue,
                     audioIsPlaying,
                     audioCurrentTime,
                     audioDuration,

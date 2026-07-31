@@ -1453,6 +1453,18 @@ def _encode_media_path(path: str) -> str:
     request never reaches /media/{path:path} (#258). Encoding per segment (rather
     than the whole string) keeps the folder/filename structure routable; Starlette
     decodes the path before the traversal guard in serve_media sees it.
+
+    Applied to avatar paths too, even though ``_find_avatar_path`` builds them
+    from ``{chat_id}_{photo_id}.jpg`` and cannot itself produce a reserved
+    character: the name is whatever the glob found on disk, so encoding keeps a
+    single rule for everything served under /media/ rather than two.
+
+    The viewer builds the same URLs client-side with ``encodeURIComponent`` per
+    segment. The two agree on every character that matters here (both encode
+    "#", "?", "/" and space) and differ only on ``!*'()``, which ``quote`` escapes
+    and ``encodeURIComponent`` leaves literal — both spellings decode to the same
+    path server-side, so they resolve to the same file and differ only as cache
+    keys.
     """
     return "/".join(quote(segment, safe="") for segment in path.split("/"))
 
@@ -1763,10 +1775,13 @@ async def get_chat_media(
 
             parts = file_path.split("/", 1)
             if len(parts) == 2:
-                folder, filename = parts
+                # The split only gates on "has a folder component" and reads the
+                # extension; the URL below re-uses ``file_path`` itself, which is
+                # exactly ``folder/filename``.
+                filename = parts[1]
                 ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
                 if ext in THUMBNAIL_EXTENSIONS:
-                    item["thumb_url"] = f"/media/thumb/200/{_encode_media_path(f'{folder}/{filename}')}"
+                    item["thumb_url"] = f"/media/thumb/200/{_encode_media_path(file_path)}"
                 else:
                     item["thumb_url"] = None
             else:

@@ -458,6 +458,16 @@ def extract_media_attributes(media: object) -> dict[str, Any]:
     are what produced the bug: live-captured voice notes rendered without their
     duration while the same note captured by the sweep showed it.
 
+    THE RETURNED KEY SET IS A CONTRACT: exactly ``file_size``, ``mime_type``,
+    ``width``, ``height``, ``duration`` — every key always present, value ``None``
+    when unknown. Both callers spread it into a ``media`` row and then OVERRIDE
+    ``file_size`` with the on-disk byte count (the sweep re-assigns it after the
+    spread, the listener mutates the dict before spreading); the other four are
+    taken as returned. Adding or renaming a key here silently changes what those
+    rows write, so ``TestExtractMediaAttributes`` pins the key set — extend both
+    callers and that test together. ``file_size`` is Telegram's DECLARED size and
+    is the value that survives only when no file was written.
+
     ``mime_type`` is read off ``media.document`` (the ``MessageMediaDocument``
     wrapper itself has no ``mime_type``; the sweep's old ``getattr(media, ...)``
     read therefore always yielded ``None``). Photo dimensions and ``file_size``
@@ -516,7 +526,7 @@ def extract_media_attributes(media: object) -> dict[str, Any]:
 _MEDIA_STORAGE_PREFIX_RE = re.compile(r"^(?:import_-?[0-9]+_[0-9]+_|[0-9]+_)")
 
 
-def media_display_filename(stored_name: str, media_id: str | None = None) -> str:
+def media_display_filename(stored_name: str) -> str:
     """Turn a stored media basename back into the name the user recognises.
 
     Media is stored under a uniqueness-prefixed name (``<file_id>_holiday.jpg``),
@@ -525,13 +535,14 @@ def media_display_filename(stored_name: str, media_id: str | None = None) -> str
     the prefix (``getMediaDisplayName`` in index.html); this is the server-side
     twin so a forced download saves ``holiday.jpg`` rather than the storage name.
 
-    Produces the same name the viewer shows, in the same two steps: strip
-    ``<media_id>_`` when the caller knows the media id, then strip one leading run
-    of digits followed by ``_``. The extra ``import_<chat>_<msg>_`` alternation
-    stands in for the media id when the caller has none — the viewer always holds
-    ``media.id`` and removes that prefix with it, while ``serve_media`` only has a
-    URL path, so without the alternation an imported file would save as
-    ``import_-1001_5_report.pdf`` while the gallery labels it ``report.pdf``.
+    Takes only the basename, because the only caller (``serve_media``) only has a
+    URL path — it never holds ``Media.id``. That is why the pattern carries an
+    explicit ``import_<chat>_<msg>_`` alternation: the viewer strips that prefix
+    using the media id it already has, and without the alternation an imported
+    file would save as ``import_-1001_5_report.pdf`` while the gallery labels it
+    ``report.pdf``. Every prefix any ingest path actually writes is covered —
+    ``build_media_filename`` emits ``<file_id>_`` and the importer emits
+    ``import_<chat>_<msg>_``.
 
     At most one prefix is removed, so ``77_2026_report.pdf`` keeps the second one
     and yields ``2026_report.pdf``. A name whose ORIGINAL first component is
@@ -541,12 +552,7 @@ def media_display_filename(stored_name: str, media_id: str | None = None) -> str
     is the point of this function. Returns ``stored_name`` unchanged when nothing
     matches or stripping would leave an empty name.
     """
-    name = stored_name
-    if media_id:
-        prefix = f"{media_id}_"
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-    name = _MEDIA_STORAGE_PREFIX_RE.sub("", name, count=1)
+    name = _MEDIA_STORAGE_PREFIX_RE.sub("", stored_name, count=1)
     return name or stored_name
 
 

@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import and_, case, delete, exists, func, literal, or_, select, text, union_all, update
+from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -1121,7 +1121,15 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def insert_media(self, media_data: dict[str, Any]) -> None:
-        """Insert a media file record."""
+        """Insert (or upsert) a media file record.
+
+        Contract for the ``downloaded`` key: include it whenever the caller
+        actually observed the download outcome (True after a successful write,
+        False after a skip/failure it is willing to have retried), and OMIT it
+        when the caller cannot know whether a file is on disk. An omitted key
+        means "leave the stored flag alone" on conflict and 0 on a fresh insert —
+        see the comment on the conflict clause below.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 "id": media_data["id"],
@@ -1153,8 +1161,8 @@ class DatabaseAdapter:
             #     download_date of a file that is still on disk.
             # COALESCE only falls back on NULL, so a real value still overwrites a
             # real value: a re-download to a new path DOES update file_path.
-            # The one deliberate clear path is ``mark_media_for_redownload`` — a
-            # separate UPDATE — so nothing needs insert_media to null these.
+            # (``mark_media_for_redownload`` is a separate UPDATE that clears these
+            # deliberately; it currently has no production caller, only tests.)
             update_values = dict(values)
             for column in (
                 "file_name",
@@ -1169,17 +1177,26 @@ class DatabaseAdapter:
             ):
                 update_values[column] = func.coalesce(getattr(stmt.excluded, column), getattr(Media, column))
             # ``downloaded`` is a flag, not a value: 0 is a real value, so COALESCE
-            # cannot protect it. It is sticky instead — once a file is on disk (and
-            # the COALESCEs above keep its path), a later failed attempt must not
-            # report it as missing. Staying 1 hides nothing: a file that really is
-            # gone is re-found by verify_and_repair_media, which stats the disk for
-            # every ``downloaded=1 OR file_path IS NOT NULL`` row. The old null-out
-            # was what hid it — it dropped the row out of that scan, and for the
-            # over-size skip (whose file_size is a real, over-limit number) out of
-            # the pending-download retry too, leaving the file orphaned on disk.
-            # Written as a CASE because two-argument max()/GREATEST is not portable
-            # across SQLite and PostgreSQL (PostgreSQL's max() is an aggregate).
-            update_values["downloaded"] = case((stmt.excluded.downloaded == 1, 1), else_=Media.downloaded)
+            # cannot express "this writer has no opinion" for it. The KEY'S PRESENCE
+            # in ``media_data`` does instead:
+            #   - present -> the writer observed the outcome, so write it. A failed
+            #     download therefore sets 0 again and the row returns to
+            #     ``get_pending_media_downloads``, which ``_retry_pending_media_downloads``
+            #     drains on EVERY backup cycle. That is the only always-on recovery
+            #     path: ``TelegramBackup._verify_and_redownload_media`` (the disk-stat
+            #     scan) runs only when VERIFY_MEDIA is on, and it defaults to false.
+            #     Pinning the flag at 1 stranded such a row forever, pointing at a
+            #     file that is gone.
+            #   - absent -> the writer knows nothing about what is on disk, so keep
+            #     the stored flag. ``_process_media``'s over-size skip is the one
+            #     such writer: the file may already be on disk from a run with a
+            #     higher MAX_MEDIA_SIZE, and flipping it to 0 would hide it from the
+            #     gallery (``get_media_paginated`` filters ``downloaded == 1``)
+            #     without ever retrying it (``get_pending_media_downloads`` excludes
+            #     its over-limit file_size).
+            # A fresh INSERT still lands 0 for an absent key — nothing is downloaded.
+            if "downloaded" not in media_data:
+                update_values["downloaded"] = Media.downloaded
             stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_values)
 
             await session.execute(stmt)

@@ -1,6 +1,8 @@
 """Regression tests for frontend boot-time failures."""
 
+import inspect
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -8,9 +10,16 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from src.message_utils import service_action_type, service_message_text
+
 INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
 
 NODE = shutil.which("node")
+
+try:  # Telethon is archived; keep the cross-check optional rather than a hard dep.
+    from telethon.tl import types as telethon_types
+except Exception:  # pragma: no cover - exercised only where telethon is absent
+    telethon_types = None
 
 
 def _setup_slice(html: str, declaration: str) -> str:
@@ -1777,12 +1786,19 @@ const scenario = async (pages) => {
         self.assertIsNone(out["badCursor"]["cursor"])
         self.assertFalse(out["badCursor"]["hasOlder"])
 
-    def test_the_queue_itself_is_observable_from_the_setup_object(self) -> None:
-        """String assertions cannot prove the guard works — a harness must be
-        able to watch the queue. ``audioQueue`` is an existing reactive ref, so
-        it is exported instead of adding any debug-only hook."""
-        self.assertIn("\n                    audioQueue,\n", self.html)
+    def test_the_guard_is_verified_without_shipping_any_observation_hook(self) -> None:
+        """The queue is watched by EXECUTING the real helpers, not by exporting it.
+
+        ``test_walk_outcomes_executed_against_both_kinds_of_empty_page`` lifts
+        the declarations verbatim and supplies its own ``audioQueue`` ref, so the
+        shipped template needs no debug hook AND no ``setup()`` export: nothing
+        in the markup consumes ``audioQueue``, and an entry in the returned
+        object that no template expression reads is dead surface that reads as
+        if the UI depended on it. If a template expression ever does need it,
+        export it and drop the second assertion.
+        """
         self.assertNotIn("window.__dbg", self.html)
+        self.assertNotIn("\n                    audioQueue,\n", self.html)
 
     def test_track_change_does_not_double_request_the_file(self) -> None:
         """Assigning ``src`` already invokes the media load algorithm.
@@ -2140,6 +2156,179 @@ class TestServiceMessageSenderTrigger(unittest.TestCase):
         self.assertNotIn(".replace(", body)
 
 
+def _stub_action(class_name: str) -> Any:
+    """An object whose CLASS NAME is ``class_name``.
+
+    ``service_message_text`` and ``service_action_type`` branch on
+    ``type(action).__name__`` and read only ``.title``, so a bare stub drives
+    the real backend wording without pinning Telethon constructor signatures.
+    ``test_every_mapped_action_names_a_real_telethon_action`` is what proves the
+    names are not invented.
+    """
+    return type(class_name, (), {})()
+
+
+# The backend's curated wording set, read out of the function itself: every
+# ``if name == "MessageAction..."`` branch in ``service_message_text``. Parsed
+# rather than hand-listed so ADDING a branch server-side without mirroring it in
+# index.html fails this file instead of silently drifting.
+_SERVER_ACTION_CLASSES = tuple(
+    dict.fromkeys(re.findall(r'name == "(MessageAction[A-Za-z]+)"', inspect.getsource(service_message_text)))
+)
+_SERVER_ACTION_TYPES = {service_action_type(_stub_action(name)): name for name in _SERVER_ACTION_CLASSES}
+
+_SERVICE_WORDING_DECLARATIONS = (
+    "const SERVICE_PREDICATES = {",
+    "const SERVICE_TITLE_PREDICATES = {",
+    "const SERVICE_UNKNOWN_SUBJECT = {",
+    "const getSenderName = (msg) =>",
+    "const getCurrentSenderName = (msg) =>",
+    "const serviceRawData = (msg) =>",
+    "const serviceActionType = (msg) =>",
+    "const serviceActorIsSender = (msg) =>",
+    "const serviceMessagePredicate = (msg) =>",
+    "const serviceMessageView = (msg) =>",
+)
+
+# Distinctive on purpose: a sentence-shaped actor name would hide a wording bug
+# where one side happens to read the same as the other.
+_ACTOR_NAME = "Ada Lovelace"
+_NEW_TITLE = "Analytical Engine"
+
+
+class TestServiceMessageWordingParity(unittest.TestCase):
+    """#259 DRIFT GUARD: the client's wording IS the backend's wording.
+
+    #259 happened because the same sentences existed in two places with nothing
+    tying them together. The render-time fallback in index.html re-states them a
+    THIRD time (as literal JS strings), so this test executes the real client
+    helpers and compares every rendered sentence against
+    ``message_utils.service_message_text`` — the two copies cannot drift without
+    a red test.
+
+    THE ONE DELIBERATE DIVERGENCE is asserted here too rather than excluded:
+    ``chat_add_user`` / ``chat_delete_user`` render "Someone ..." client-side.
+    The subject of those two sentences is the AFFECTED user, and only
+    ``service_type`` / ``action_type`` are persisted — the affected user is not,
+    so the sender (the admin who acted) must never be named as the joiner or
+    leaver. That is exactly the backend's own unknown-actor form, so parity here
+    means "matches ``service_message_text(action, actor_name=None)``" while the
+    rest mean "matches it with the row's sender".
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _render_client(self, action_types: tuple[str, ...]) -> dict[str, Any]:
+        """EXECUTE the template's own service-pill helpers under node."""
+        rows = [
+            {
+                "id": index + 1,
+                "text": "",  # pre-7.28.0 rows: no materialised wording
+                "sender_id": 7,
+                "sender_name": _ACTOR_NAME,
+                "raw_data": {
+                    "service_type": "service",
+                    "action_type": action_type,
+                    "new_title": _NEW_TITLE,
+                },
+            }
+            for index, action_type in enumerate(action_types)
+        ]
+        epilogue = f"""
+const rows = {json.dumps(rows)}
+const rendered = {{}}
+const clickable = {{}}
+for (const row of rows) {{
+    const view = serviceMessageView(row)
+    rendered[row.raw_data.action_type] = view.actor + view.tail
+    clickable[row.raw_data.action_type] = view.clickable
+}}
+console.log(JSON.stringify({{
+    rendered,
+    clickable,
+    named: Object.keys(SERVICE_PREDICATES),
+    titled: Object.keys(SERVICE_TITLE_PREDICATES),
+    unknown: Object.keys(SERVICE_UNKNOWN_SUBJECT),
+}}))
+"""
+        return _run_setup_program(self.html, _SERVICE_WORDING_DECLARATIONS, "", epilogue)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_client_covers_exactly_the_backend_wording_set(self) -> None:
+        """Neither side may gain (or lose) an action without the other."""
+        result = self._render_client(())
+        client_types = set(result["named"]) | set(result["titled"]) | set(result["unknown"])
+        self.assertEqual(client_types, set(_SERVER_ACTION_TYPES))
+        # The three client maps are disjoint: an action rendered both with and
+        # without its actor would resolve by lookup order, not by intent.
+        self.assertEqual(
+            len(result["named"]) + len(result["titled"]) + len(result["unknown"]),
+            len(client_types),
+        )
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_every_rendered_sentence_matches_the_backend_verbatim(self) -> None:
+        result = self._render_client(tuple(_SERVER_ACTION_TYPES))
+        unknown_subject = set(result["unknown"])
+
+        for action_type, class_name in _SERVER_ACTION_TYPES.items():
+            with self.subTest(action_type=action_type):
+                action = _stub_action(class_name)
+                action.title = _NEW_TITLE
+                if action_type in unknown_subject:
+                    # DELIBERATE DIVERGENCE (see the class docstring): the
+                    # affected user is not persisted, so the client renders the
+                    # backend's unknown-actor form with the default flags.
+                    expected = service_message_text(action, actor_name=None)
+                else:
+                    expected = service_message_text(action, actor_name=_ACTOR_NAME)
+                self.assertEqual(result["rendered"][action_type], expected)
+                # Only a sentence whose subject IS the sender may open the
+                # sender popup.
+                self.assertEqual(result["clickable"][action_type], action_type not in unknown_subject)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_unknown_subject_actions_never_render_the_stored_variant_wording(self) -> None:
+        """``affected_left`` / ``affected_joined_self`` are NOT persisted.
+
+        The backend reads them off the live Telethon event; a stored row keeps
+        neither, so "left"/"joined" can never be reconstructed at render time.
+        The default (``was removed`` / ``was added``) is the only honest choice,
+        and this pins that the client did not pick the variant wording instead.
+        """
+        result = self._render_client(("chat_add_user", "chat_delete_user"))
+        added = _stub_action("MessageActionChatAddUser")
+        removed = _stub_action("MessageActionChatDeleteUser")
+
+        self.assertEqual(
+            result["rendered"]["chat_add_user"],
+            service_message_text(added, actor_name=None, affected_joined_self=False),
+        )
+        self.assertNotEqual(
+            result["rendered"]["chat_add_user"],
+            service_message_text(added, actor_name=None, affected_joined_self=True),
+        )
+        self.assertEqual(
+            result["rendered"]["chat_delete_user"],
+            service_message_text(removed, actor_name=None, affected_left=False),
+        )
+        self.assertNotEqual(
+            result["rendered"]["chat_delete_user"],
+            service_message_text(removed, actor_name=None, affected_left=True),
+        )
+        # And the sender is never named in either sentence.
+        for action_type in ("chat_add_user", "chat_delete_user"):
+            self.assertNotIn(_ACTOR_NAME, result["rendered"][action_type])
+
+    @unittest.skipUnless(telethon_types, "telethon is required for the class-name cross-check")
+    def test_every_mapped_action_names_a_real_telethon_action(self) -> None:
+        """The tags are derived from Telethon class names, so they must exist."""
+        for class_name in _SERVER_ACTION_CLASSES:
+            self.assertTrue(hasattr(telethon_types, class_name), class_name)
+
+
 class TestPlaybarDate(unittest.TestCase):
     """#262: the playbar showed a time with no date."""
 
@@ -2181,6 +2370,49 @@ class TestAudioBubbleDownload(unittest.TestCase):
         self.assertIn('v-if="!noDownload && getMediaUrl(msg)"', bubble)
         self.assertIn(":href=\"getMediaUrl(msg) + '?download=1'\"", bubble)
         self.assertIn(':download="getDocumentDisplayName(msg)"', bubble)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_the_url_term_of_the_guard_is_load_bearing(self) -> None:
+        """``getMediaUrl(msg)`` in the ``v-if`` is NOT a dead term.
+
+        The bubble renders on ``isAudioFile(msg)``, which is satisfied by
+        ``media.type`` alone — and a media row exists with ``type`` set but NO
+        ``file_path`` whenever the file was never written: an oversized voice
+        note (``_process_media`` returns ``downloaded: False`` with no path once
+        it exceeds ``MAX_MEDIA_SIZE``) or a row still queued for the pending
+        -media retry loop (``downloaded=0``, ``file_path`` NULL). The adapter
+        emits ``msg.media`` for every row whose ``media_type`` is set, so those
+        rows reach the client verbatim and ``getMediaUrl`` returns ``''``.
+
+        Without the term the anchor would render ``href="?download=1"`` — a link
+        to the viewer page itself, offered as if the audio were downloadable.
+        """
+        rows = [
+            # Oversized voice note: typed, never written.
+            {"id": 1, "media": {"id": "7_1_voice", "type": "voice", "file_path": None}},
+            # Pending download of an audio document, name known, file not there.
+            {"id": 2, "media": {"id": "7_2_audio", "type": "audio", "file_name": "note.ogg", "file_path": None}},
+            # Downloaded: both terms true, anchor renders.
+            {"id": 3, "media": {"id": "7_3_voice", "type": "voice", "file_path": "/data/media/7/7_3_voice.ogg"}},
+        ]
+        verdicts = _run_setup_helpers(
+            self.html,
+            (
+                "const getMediaUrl = (msg) =>",
+                "const getMediaDisplayName = (media) =>",
+                "const getDocumentDisplayName = (msg) =>",
+                "const isAudioFile = (msg) =>",
+            ),
+            f"{json.dumps(rows)}.map(m => [isAudioFile(m), getMediaUrl(m)])",
+        )
+        self.assertEqual(
+            verdicts,
+            [
+                [True, ""],
+                [True, ""],
+                [True, "/media/7/7_3_voice.ogg"],
+            ],
+        )
 
     def test_download_is_not_inside_the_sm_only_playbar_group(self) -> None:
         """The playbar speed group is ``hidden sm:flex``.

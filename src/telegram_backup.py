@@ -2788,13 +2788,20 @@ class TelegramBackup:
 
         if file_size > max_size:
             logger.debug(f"Skipping large media file: {file_size / 1024 / 1024:.2f} MB")
+            # No ``downloaded`` key on purpose: nothing was attempted, so this row
+            # knows nothing about what is on disk. Per insert_media's contract an
+            # omitted key means "keep the stored flag" (0 on a fresh insert), which
+            # stops a lowered MAX_MEDIA_SIZE from marking an already-downloaded file
+            # as missing — it would vanish from the gallery and never be retried,
+            # since the over-limit file_size below excludes it from
+            # get_pending_media_downloads. Callers that test the outcome use
+            # ``.get("downloaded")``, so an absent key still reads as "not downloaded".
             return {
                 "id": media_id,
                 "type": media_type,
                 "message_id": message.id,
                 "chat_id": chat_id,
                 "file_size": file_size,
-                "downloaded": False,
             }
 
         # Download media (with optional global deduplication)

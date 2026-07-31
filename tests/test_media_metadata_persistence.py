@@ -68,6 +68,12 @@ def _photo_media(*sizes):
     return media
 
 
+def _plain_size(width=320, height=240, size=8000):
+    from telethon.tl.types import PhotoSize
+
+    return PhotoSize(type="m", w=width, h=height, size=size)
+
+
 def _message(msg_id, media):
     msg = MagicMock()
     msg.id = msg_id
@@ -200,6 +206,21 @@ class TestExtractMediaAttributes(unittest.TestCase):
             {"file_size": None, "mime_type": None, "width": None, "height": None, "duration": None},
         )
 
+    def test_returned_key_set_is_the_pinned_contract(self):
+        """Both callers spread this dict into a media row, so the key set is a contract.
+
+        Adding/renaming a key silently changes what the sweep and the listener
+        write (and which one of them then overrides ``file_size``). Pin it for
+        every media shape, not just the empty one.
+        """
+        expected = {"file_size", "mime_type", "width", "height", "duration"}
+        for media in (_video_media(), _photo_media(), _photo_media(_plain_size())):
+            self.assertEqual(set(extract_media_attributes(media)), expected)
+
+    def test_file_size_is_telegrams_declared_size_not_a_disk_size(self):
+        """The collision both callers resolve: this value is overridden on-disk."""
+        self.assertEqual(extract_media_attributes(_video_media(size=90000))["file_size"], 90000)
+
 
 class TestMediaDisplayFilename(unittest.TestCase):
     """Server-side twin of the viewer's getMediaDisplayName."""
@@ -209,9 +230,6 @@ class TestMediaDisplayFilename(unittest.TestCase):
 
     def test_strips_the_import_media_id_prefix(self):
         self.assertEqual(media_display_filename("import_-1001_5_report.pdf"), "report.pdf")
-
-    def test_strips_an_explicit_media_id_prefix(self):
-        self.assertEqual(media_display_filename("-1001_5_photo_shot.jpg", media_id="-1001_5_photo"), "shot.jpg")
 
     def test_strips_at_most_one_prefix(self):
         """Only the FIRST component can be lost — the second digit run survives."""
@@ -337,11 +355,42 @@ class TestSweepPreservesLiveCapturedMetadata:
         assert stored.file_size == 90000
         assert stored.content_hash == "hash123"
         assert stored.download_date is not None
-        # A failed attempt must not un-download a file whose path we just kept.
-        assert stored.downloaded == 1
+
+    async def test_failed_download_leaves_the_row_retryable(self, adapter):
+        """A row whose file is gone must return to the pending-download queue.
+
+        The except branch of ``_process_media`` reports ``downloaded: False``, and
+        that is the ONLY always-on recovery signal: ``_retry_pending_media_downloads``
+        drains ``get_pending_media_downloads`` every cycle, while the disk-stat
+        scan ``_verify_and_redownload_media`` is gated on VERIFY_MEDIA (default
+        false). Pinning the flag at 1 stranded the row pointing at a missing file.
+        """
+        media_id = f"{CHAT_ID}_7_video"
+        await adapter.insert_media(self._listener_row(media_id, _video_media()))
+
+        await adapter.insert_media(
+            {
+                "id": media_id,
+                "message_id": 7,
+                "chat_id": CHAT_ID,
+                "type": "video",
+                "downloaded": False,
+            }
+        )
+
+        stored = await _media_row(adapter, media_id)
+        assert stored.downloaded == 0
+        pending = await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5)
+        assert [row["id"] for row in pending] == [media_id]
 
     async def test_oversize_skip_row_does_not_strand_an_already_downloaded_file(self, adapter):
-        """Lowering MAX_MEDIA_SIZE makes the sweep emit a not-downloaded row for a stored file."""
+        """Lowering MAX_MEDIA_SIZE must not un-download a file that is already stored.
+
+        The skip row never attempted a download, so it states no ``downloaded``
+        outcome at all and the stored flag is kept. Flipping it to 0 would hide the
+        file from the gallery (``get_media_paginated`` filters ``downloaded == 1``)
+        while the retry queue skips it for being over the limit — orphaned on disk.
+        """
         media_id = f"{CHAT_ID}_7_video"
         listener_row = self._listener_row(media_id, _video_media())
         await adapter.insert_media(listener_row)
@@ -349,7 +398,7 @@ class TestSweepPreservesLiveCapturedMetadata:
         backup = _make_backup(self.media_root)
         backup.config.get_max_media_size_bytes = MagicMock(return_value=1)
         skip_row = await backup._process_media(_message(7, _video_media()), CHAT_ID)
-        assert skip_row["downloaded"] is False
+        assert "downloaded" not in skip_row
         await adapter.insert_media(skip_row)
 
         stored = await _media_row(adapter, media_id)
@@ -357,6 +406,22 @@ class TestSweepPreservesLiveCapturedMetadata:
         assert stored.file_path == listener_row["file_path"]
         # The one thing the skip row DOES know is the real size — a value overwrites.
         assert stored.file_size == skip_row["file_size"]
+
+    async def test_oversize_skip_row_is_never_retried(self, adapter):
+        """Even as a first sighting (flag 0), its over-limit size keeps it out of the queue."""
+        backup = _make_backup(self.media_root)
+        backup.config.get_max_media_size_bytes = MagicMock(return_value=1)
+        skip_row = await backup._process_media(_message(7, _video_media(size=90000)), CHAT_ID)
+        await adapter.insert_media(skip_row)
+
+        stored = await _media_row(adapter, skip_row["id"])
+        assert stored.downloaded == 0
+        assert stored.file_size == 90000
+        assert await adapter.get_pending_media_downloads(1, 5) == []
+        # Positive control: raise the limit and the very same row IS retryable.
+        assert [row["id"] for row in await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5)] == [
+            skip_row["id"]
+        ]
 
     async def test_redownload_to_a_new_path_still_updates_the_row(self, adapter):
         """Positive control: COALESCE only falls back on NULL, it never pins a value."""
@@ -399,10 +464,10 @@ class TestSweepPreservesLiveCapturedMetadata:
         assert stored.download_date is None
 
     async def test_upsert_compiles_on_both_dialects(self):
-        """Two-argument ``max(a, b)`` is SQLite-only — the sticky flag must compile on psycopg2 too."""
+        """The conflict clause must compile identically on SQLite and psycopg2."""
         from sqlalchemy.dialects import postgresql, sqlite
 
-        for dialect in (sqlite.dialect(), postgresql.psycopg2.dialect()):
+        async def _compiled(media_data, dialect):
             db_manager = MagicMock()
             db_manager._is_sqlite = dialect.name == "sqlite"
 
@@ -412,12 +477,18 @@ class TestSweepPreservesLiveCapturedMetadata:
             async_ctx.__aexit__ = AsyncMock(return_value=False)
             db_manager.async_session_factory.return_value = async_ctx
 
-            await DatabaseAdapter(db_manager).insert_media({"id": "m1", "type": "photo", "downloaded": False})
+            await DatabaseAdapter(db_manager).insert_media(media_data)
+            return str(session.execute.await_args[0][0].compile(dialect=dialect))
 
-            sql = str(session.execute.await_args[0][0].compile(dialect=dialect))
-            assert "coalesce(excluded.file_path, media.file_path)" in sql
-            assert "CASE WHEN (excluded.downloaded" in sql
-            assert "max(" not in sql
+        for dialect in (sqlite.dialect(), postgresql.psycopg2.dialect()):
+            stated = await _compiled({"id": "m1", "type": "photo", "downloaded": False}, dialect)
+            assert "coalesce(excluded.file_path, media.file_path)" in stated
+            # A stated outcome is written, not preserved.
+            assert "downloaded = media.downloaded" not in stated
+
+            unstated = await _compiled({"id": "m1", "type": "photo"}, dialect)
+            assert "coalesce(excluded.file_path, media.file_path)" in unstated
+            assert "downloaded = media.downloaded" in unstated
 
     async def test_upsert_still_overwrites_a_real_value_with_a_real_value(self, adapter):
         media_id = f"{CHAT_ID}_7_video"
