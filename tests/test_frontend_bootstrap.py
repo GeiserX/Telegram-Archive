@@ -2959,6 +2959,10 @@ const scenario = async ({ contiguous, visible, clicked }) => {
     audioQueueHasNewer = false
     audioQueueFetching = false
     audioQueueSeeding = null
+    // Reset the auto-advance state too, so a later scenario cannot inherit a
+    // halt raised by an earlier one and fail in the wrong place.
+    audioAutoAdvanceHalted.value = false
+    audioConsecutiveFailures = 0
     messageView.value = { contiguous }
     // The pane renders newest-first.
     sortedMessages.value = visible.slice().sort((a, b) => b - a).map(messageRow)
