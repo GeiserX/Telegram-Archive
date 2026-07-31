@@ -54,6 +54,7 @@ from .message_utils import (
     build_media_filename,
     compute_file_hash,
     download_and_shard_media,
+    extract_media_attributes,
     extract_reactions,
     extract_topic_id,
     fallback_media_filename,
@@ -2859,7 +2860,11 @@ class TelegramBackup:
                     file_size = os.path.getsize(file_path)
                     content_hash = compute_file_hash(file_path)
 
-            # Extract media metadata
+            # Extract media metadata via the SHARED extractor (#263). The listener
+            # writes the same columns from the same helper, so this sweep's upsert
+            # re-writes identical values instead of nulling what live capture stored.
+            # ``file_size`` is overridden afterwards because only the sweep knows the
+            # real on-disk size (the helper reports Telegram's declared size).
             media_data = {
                 "id": media_id,
                 "type": media_type,
@@ -2867,26 +2872,12 @@ class TelegramBackup:
                 "chat_id": chat_id,
                 "file_name": file_name,
                 "file_path": file_path,
-                "file_size": file_size,
-                "mime_type": getattr(media, "mime_type", None),
                 "content_hash": content_hash,
                 "downloaded": True,
                 "download_date": utcnow_naive(),
+                **extract_media_attributes(media),
+                "file_size": file_size,
             }
-
-            # Add type-specific metadata
-            if hasattr(media, "photo"):
-                photo = media.photo
-                media_data["width"] = getattr(photo, "w", None)
-                media_data["height"] = getattr(photo, "h", None)
-            elif hasattr(media, "document"):
-                doc = media.document
-                for attr in doc.attributes:
-                    if hasattr(attr, "w") and hasattr(attr, "h"):
-                        media_data["width"] = attr.w
-                        media_data["height"] = attr.h
-                    if hasattr(attr, "duration"):
-                        media_data["duration"] = attr.duration
 
             # Pre-generate thumbnail for instant gallery loading
             try:

@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, union_all, update
+from sqlalchemy import and_, case, delete, exists, func, literal, or_, select, text, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -1140,12 +1140,47 @@ class DatabaseAdapter:
                 "download_date": media_data.get("download_date"),
             }
 
-            if self._is_sqlite:
-                stmt = sqlite_insert(Media).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=values)
-            else:
-                stmt = pg_insert(Media).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=values)
+            stmt = sqlite_insert(Media).values(**values) if self._is_sqlite else pg_insert(Media).values(**values)
+
+            # On conflict, a writer that has NO value for a column must not blank out
+            # what an earlier writer already stored (#263). Both halves of the row
+            # are affected, so both are COALESCEd:
+            #   - the metadata columns, when an ingest path could not read the
+            #     attributes off the Telethon object;
+            #   - the file-identity columns, because ``_process_media`` returns a
+            #     value-less row for an over-size skip and for a download error —
+            #     that row used to null the file_path/file_name/content_hash/
+            #     download_date of a file that is still on disk.
+            # COALESCE only falls back on NULL, so a real value still overwrites a
+            # real value: a re-download to a new path DOES update file_path.
+            # The one deliberate clear path is ``mark_media_for_redownload`` — a
+            # separate UPDATE — so nothing needs insert_media to null these.
+            update_values = dict(values)
+            for column in (
+                "file_name",
+                "file_path",
+                "file_size",
+                "mime_type",
+                "width",
+                "height",
+                "duration",
+                "content_hash",
+                "download_date",
+            ):
+                update_values[column] = func.coalesce(getattr(stmt.excluded, column), getattr(Media, column))
+            # ``downloaded`` is a flag, not a value: 0 is a real value, so COALESCE
+            # cannot protect it. It is sticky instead — once a file is on disk (and
+            # the COALESCEs above keep its path), a later failed attempt must not
+            # report it as missing. Staying 1 hides nothing: a file that really is
+            # gone is re-found by verify_and_repair_media, which stats the disk for
+            # every ``downloaded=1 OR file_path IS NOT NULL`` row. The old null-out
+            # was what hid it — it dropped the row out of that scan, and for the
+            # over-size skip (whose file_size is a real, over-limit number) out of
+            # the pending-download retry too, leaving the file orphaned on disk.
+            # Written as a CASE because two-argument max()/GREATEST is not portable
+            # across SQLite and PostgreSQL (PostgreSQL's max() is an aggregate).
+            update_values["downloaded"] = case((stmt.excluded.downloaded == 1, 1), else_=Media.downloaded)
+            stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_values)
 
             await session.execute(stmt)
             await session.commit()
@@ -1202,7 +1237,22 @@ class DatabaseAdapter:
         """
         Get paginated media records for a chat with cursor-based pagination.
 
-        Uses composite cursor (Message.date, Media.id) for deterministic ordering.
+        ``before_id`` stays an opaque ``Media.id`` token (the gallery round-trips the
+        composite ``{chat}_{msg}_{type}`` string), but it is resolved to the triple
+        (Message.date, Media.message_id, Media.id) before use. ``Media.id`` alone sorts
+        lexically, so rows sharing a timestamp came back as 9, 99, 98, ..., 8, 89 —
+        numerically meaningless; ``Media.message_id`` is an integer and orders correctly.
+
+        The ORDER BY and the cursor predicate MUST stay the same triple: that identity
+        is what guarantees a full walk yields every row exactly once (no skips, no
+        duplicates). Change one and you must change the other.
+
+        The cursor resolution is scoped to ``chat_id``. Unscoped, a caller could pass
+        ANOTHER chat's media id and have that row's timestamp shape this chat's result
+        window — a cross-chat existence/timestamp oracle for a chat the caller cannot
+        read. A token that does not belong to ``chat_id`` is indistinguishable from a
+        deleted one and returns an EMPTY page (never a full first page), so neither the
+        existence nor the date of a foreign row can be inferred from the response.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
@@ -1230,26 +1280,35 @@ class DatabaseAdapter:
 
             if before_id:
                 cursor_stmt = (
-                    select(Media.id, Message.date)
+                    select(Media.id, Media.message_id, Message.date)
                     .join(
                         Message,
                         and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id),
                     )
-                    .where(Media.id == before_id)
+                    .where(and_(Media.id == before_id, Media.chat_id == chat_id))
                 )
                 cursor_result = await session.execute(cursor_stmt)
                 cursor_row = cursor_result.one_or_none()
                 if cursor_row is None:
                     return {"items": [], "has_more": False}
-                cursor_media_id, cursor_date = cursor_row
+                cursor_media_id, cursor_message_id, cursor_date = cursor_row
                 stmt = stmt.where(
                     or_(
                         Message.date < cursor_date,
-                        and_(Message.date == cursor_date, Media.id < cursor_media_id),
+                        and_(
+                            Message.date == cursor_date,
+                            or_(
+                                Media.message_id < cursor_message_id,
+                                and_(
+                                    Media.message_id == cursor_message_id,
+                                    Media.id < cursor_media_id,
+                                ),
+                            ),
+                        ),
                     )
                 )
 
-            stmt = stmt.order_by(Message.date.desc(), Media.id.desc())
+            stmt = stmt.order_by(Message.date.desc(), Media.message_id.desc(), Media.id.desc())
             stmt = stmt.limit(limit + 1)
             result = await session.execute(stmt)
             rows = result.all()

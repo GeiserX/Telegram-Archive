@@ -31,6 +31,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
+from ..message_utils import media_display_filename
 from ..realtime import RealtimeListener
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates, legacy_marked_chat_ids
 
@@ -1045,7 +1046,23 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     # the FileResponse(resolved) call is unchanged; the containment check above
     # (reject ../absolute, resolve strict, is_relative_to media root) is the
     # actual path-traversal protection.
-    response = FileResponse(resolved)
+    # ?download=1 forces a save instead of inline rendering. The saved name is the
+    # DISPLAY name, not the storage name: on disk every file carries a uniqueness
+    # prefix (``<file_id>_holiday.jpg``), and Media.file_name holds that same
+    # prefixed basename, so a download otherwise landed as ``12345678_holiday.jpg``
+    # while the gallery labelled it ``holiday.jpg``. media_display_filename is the
+    # server-side twin of the viewer's getMediaDisplayName, so the saved name and
+    # the gallery label agree. The viewer's download anchor also carries a
+    # ``download="<display name>"`` attribute, but per the HTML download algorithm a
+    # Content-Disposition: attachment filename takes precedence over it, so THIS
+    # name is the one the browser writes.
+    # The filename is attacker-influenced (it is the Telegram document name), but
+    # Starlette percent-quotes it and falls back to RFC 5987 whenever quoting
+    # changes the string — every header-dangerous byte (CR, LF, ", ;, space) is
+    # escaped by that quote(), so only unreserved chars and "/" survive verbatim.
+    # Default (no download param) stays inline: <img>/<video> use the same URL.
+    download_name = media_display_filename(path.rsplit("/", 1)[-1]) if download else None
+    response = FileResponse(resolved, filename=download_name or None)
     if path.startswith("avatars/"):
         response.headers["Cache-Control"] = "public, max-age=86400"
     return response
@@ -1415,6 +1432,18 @@ _avatar_member_cache_time: datetime | None = None
 AVATAR_MEMBER_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
+def _encode_media_path(path: str) -> str:
+    """Percent-encode each segment of a media path, keeping "/" separators intact.
+
+    Media filenames come from Telegram document names, so they can contain "#"
+    or "?" — unencoded, those truncate the URL into a fragment/query and the
+    request never reaches /media/{path:path} (#258). Encoding per segment (rather
+    than the whole string) keeps the folder/filename structure routable; Starlette
+    decodes the path before the traversal guard in serve_media sees it.
+    """
+    return "/".join(quote(segment, safe="") for segment in path.split("/"))
+
+
 def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     """Get avatar path with caching."""
     global _avatar_cache, _avatar_cache_time
@@ -1454,7 +1483,7 @@ def _sender_avatar_url(sender_id: int | None) -> str | None:
     if not sender_id or sender_id <= 0:
         return None
     avatar_path = _get_cached_avatar_path(sender_id, "private")
-    return f"/media/{avatar_path}" if avatar_path else None
+    return f"/media/{_encode_media_path(avatar_path)}" if avatar_path else None
 
 
 async def _avatar_user_visible_member(path: str, user: UserContext) -> bool:
@@ -1548,7 +1577,7 @@ async def get_chats(
             try:
                 avatar_path = _get_cached_avatar_path(chat["id"], chat.get("type", "private"))
                 if avatar_path:
-                    chat["avatar_url"] = f"/media/{avatar_path}"
+                    chat["avatar_url"] = f"/media/{_encode_media_path(avatar_path)}"
                 else:
                     chat["avatar_url"] = None
             except Exception as e:
@@ -1724,7 +1753,7 @@ async def get_chat_media(
                 folder, filename = parts
                 ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
                 if ext in THUMBNAIL_EXTENSIONS:
-                    item["thumb_url"] = f"/media/thumb/200/{folder}/{filename}"
+                    item["thumb_url"] = f"/media/thumb/200/{_encode_media_path(f'{folder}/{filename}')}"
                 else:
                     item["thumb_url"] = None
             else:
@@ -1733,7 +1762,7 @@ async def get_chat_media(
             if user.no_download:
                 item.pop("file_path", None)
             else:
-                item["media_url"] = f"/media/{file_path}"
+                item["media_url"] = f"/media/{_encode_media_path(file_path)}"
 
         return result
     except Exception as e:

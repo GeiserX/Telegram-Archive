@@ -1,9 +1,42 @@
 """Regression tests for frontend boot-time failures."""
 
+import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+
+NODE = shutil.which("node")
+
+
+def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, epilogue: str):
+    """EXECUTE real setup-scope declarations under a stubbed environment.
+
+    String assertions cannot tell a working helper from a broken one, and this
+    repo has shipped green-CI regressions on exactly that. The declarations are
+    lifted VERBATIM out of the template — no DOM, no Vue, no browser — with
+    ``prelude`` supplying whatever they close over (refs, module-level
+    counters, fetch) and ``epilogue`` driving them and printing one JSON line.
+    """
+    parts = [prelude]
+    for declaration in declarations:
+        start = html.index(declaration)
+        parts.append(html[start : html.index("\n                const ", start + len(declaration))])
+    program = "\n".join(parts) + "\n" + epilogue + "\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "helpers.js"
+        script.write_text(program, encoding="utf-8")
+        result = subprocess.run([NODE, str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr + "\n----\n" + program
+    return json.loads(result.stdout)
+
+
+def _run_setup_helpers(html: str, declarations: tuple[str, ...], expression: str, prelude: str = ""):
+    """EXECUTE a few setup-scope helpers and return the JSON value of ``expression``."""
+    return _run_setup_program(html, declarations, prelude, f"console.log(JSON.stringify({expression}))")
 
 
 def test_media_gallery_refs_are_initialized_before_watcher():
@@ -1193,15 +1226,14 @@ def test_audio_engine_and_playbar_live_outside_the_message_loop():
 def test_audio_playback_rate_survives_a_track_change():
     """#250: the media load algorithm resets ``playbackRate`` on every ``src`` change.
 
-    Without planting the rate in ``defaultPlaybackRate`` before ``load()`` AND
-    re-applying it once metadata arrives, every new track silently falls back to
-    1x while the UI still shows the chosen speed.
+    Without planting the rate in ``defaultPlaybackRate`` before the ``src``
+    assignment AND re-applying it once metadata arrives, every new track
+    silently falls back to 1x while the UI still shows the chosen speed.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     load_body = _setup_slice(html, "const loadAudioTrack = (track) =>")
     assert load_body.index("audioEngine.defaultPlaybackRate = rate") < load_body.index("audioEngine.src = track.url")
-    assert load_body.index("audioEngine.src = track.url") < load_body.index("audioEngine.load()")
 
     meta_start = html.index("audioEngine.addEventListener('loadedmetadata'")
     meta_body = html[meta_start : html.index("audioEngine.addEventListener('timeupdate'", meta_start)]
@@ -1357,8 +1389,10 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
     assert "await fetchAudioQueuePage(track.chatId, track.kind, cursor)" in extend_body
     assert "cursor = items[items.length - 1].id" in extend_body
     # Stop as soon as the playing track is in hand, or nothing older is left.
-    assert "items.some(item => item.message_id === track.id) || !hasOlder" in extend_body
-    # Hitting the cap keeps whatever was fetched instead of failing.
+    assert "items.some(item => item.message_id === track.id)" in extend_body
+    assert "if (!hasOlder) break" in extend_body
+    # Hitting the cap keeps whatever was fetched instead of failing — but only
+    # when the walk actually reached the playing track (see #257 hole guard).
     assert "audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(collected, track))" in extend_body
 
     # "Previous" at the head of the queue pages one more time from the same cursor.
@@ -1568,3 +1602,596 @@ class TestAudioQueuePagingOutcomes(unittest.TestCase):
     def test_teardown_aborts_the_in_flight_page(self) -> None:
         close_body = self._slice("const closeAudioPlayer = () =>")
         self.assertIn("audioQueueAbort?.abort()", close_body)
+
+
+class TestAudioQueueHoleGuard(unittest.TestCase):
+    """#257: a capped backward walk must not splice two disjoint time blocks."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_paged_result_is_adopted_only_when_the_playing_track_was_found(self) -> None:
+        """The walk stops at AUDIO_QUEUE_PAGE_SIZE * AUDIO_QUEUE_MAX_PAGES items.
+
+        With more audio newer than the playing track than that cap allows, the
+        loop ends without ever reaching it, and the newest block plus the seed
+        window are two blocks with a chronological HOLE between them. The old
+        code merged and date-sorted them unconditionally, so "next" walked to
+        the seed edge and then jumped days ahead.
+        """
+        body = _setup_slice(self.html, "const extendAudioQueueFromMedia = async (track) =>")
+
+        # The loop records whether the playing track actually showed up.
+        self.assertIn("let foundPlaying = false", body)
+        self.assertIn("foundPlaying = true", body)
+
+        # The guard runs BEFORE the merge, and bails out of it.
+        self.assertIn("if (!foundPlaying && hasOlder) return", body)
+        guard = body.index("if (!foundPlaying && hasOlder) return")
+        merge = body.index("audioQueue.value = mergeAudioQueue(")
+        self.assertLess(guard, merge)
+
+        # Not found -> keep the seed queue exactly as it is.
+        bail = body[guard:merge]
+        self.assertNotIn("audioQueue.value =", bail)
+
+    def test_hole_guard_does_not_latch_paging_off_for_the_session(self) -> None:
+        """The guard must abandon ONE extension, not disable 'previous' forever.
+
+        Setting ``audioQueueHasOlder = false`` on the not-found path permanently
+        killed head-of-queue paging past the seed window for the rest of the
+        session, even though a later, correctly seeded walk could succeed. Only
+        a CONTIGUOUS result may write the cursor / has-older pair, and the reset
+        on the next track or chat is what re-enables paging.
+        """
+        body = _code_only(_setup_slice(self.html, "const extendAudioQueueFromMedia = async (track) =>"))
+        guard = body.index("if (!foundPlaying && hasOlder) return")
+        # The guard is a bare early return: it writes NOTHING back. The only
+        # assignment to the session flag in this whole helper is the contiguous
+        # one, so the not-found path cannot latch paging off.
+        self.assertNotIn("audioQueueHasOlder = false", body)
+        self.assertEqual(body.count("audioQueueHasOlder"), 1)
+        # The pair is still written on the contiguous path, after the guard.
+        self.assertLess(guard, body.index("audioQueueCursor = cursor"))
+        self.assertLess(guard, body.index("audioQueueHasOlder = hasOlder"))
+        # ...and reset on the next track / on close, which is the re-enable point.
+        self.assertIn("audioQueueHasOlder = false", _setup_slice(self.html, "const playAudioMessage = (msg) =>"))
+        self.assertIn("audioQueueHasOlder = false", _setup_slice(self.html, "const closeAudioPlayer = () =>"))
+
+    def test_an_empty_page_never_forces_exhaustion_and_always_terminates(self) -> None:
+        """An empty page is not proof the walk reached the end of the chat.
+
+        ``get_media_paginated`` also answers ``{items: [], has_more: False}``
+        for a ``before_id`` it cannot resolve (a foreign or since-deleted cursor
+        row). Forcing ``hasOlder = false`` there made an unresolvable cursor
+        look exactly like exhaustion, so the #257 guard adopted or truncated a
+        walk that never reached the end.
+
+        ``hasOlder`` already carries the right answer on both paths — its
+        initial ``false`` on the first page, the previous page's ``has_more``
+        mid-walk — so the branch must write NOTHING. What it must still do is
+        ``break``, which is what keeps the walk finite.
+        """
+        body = _code_only(_setup_slice(self.html, "const extendAudioQueueFromMedia = async (track) =>"))
+        # The initial value is what makes an empty FIRST page read as exhausted.
+        self.assertIn("let hasOlder = false", body)
+        empty = body.index("if (!items.length) {")
+        branch = body[empty : body.index("collected.push(...items)")]
+        self.assertNotIn("hasOlder", branch)
+        # ...but the loop still ends here, so F4's infinite-walk risk stays closed.
+        self.assertIn("break", branch)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_walk_outcomes_executed_against_both_kinds_of_empty_page(self) -> None:
+        """The EXECUTED counterpart: two walks that differ only in has_more.
+
+        Both end on a page the loop cannot continue from, and the string test
+        above cannot tell them apart:
+
+        * ``endOfChat`` — the last page carries items and ``has_more: false``.
+          The chat really is exhausted, so the paged result is adopted even
+          though the playing track was never reached.
+        * ``badCursor`` — the first page promises ``has_more: true`` and the
+          second comes back empty, which is what an unresolvable ``before_id``
+          returns. That walk may have a hole in it, so it must be abandoned and
+          the seeded queue left exactly as it was.
+        """
+        prelude = """
+const noDownload = { value: false }
+const audioQueue = { value: [] }
+const audioTrack = { value: { chatId: 7, kind: 'voice' } }
+const audioTrackFromMediaItem = (item, kind, chatName) => ({
+    id: item.message_id, chatId: item.chat_id, kind, chatName,
+    date: item.message_date, url: item.media_url,
+})
+let PAGES = []
+const REQUESTED = []
+const fetchAudioQueuePage = async (chatId, kind, beforeId) => {
+    REQUESTED.push(beforeId ?? null)
+    return PAGES.shift() ?? { items: [], has_more: false }
+}
+const mediaItem = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7,
+    media_url: `/media/${n}.ogg`, message_date: `2026-07-0${n}T00:00:00`,
+})
+"""
+        epilogue = """
+const scenario = async (pages) => {
+    PAGES = pages.slice()
+    REQUESTED.length = 0
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    // The seeded window queue around the playing track, which the guard
+    // protects when the walk cannot be trusted.
+    audioQueue.value = [{ id: 999, chatId: 7, kind: 'voice', date: '2026-07-09T00:00:00' }]
+    await extendAudioQueueFromMedia({ chatId: 7, kind: 'voice', id: 999, chatName: 'c' })
+    return {
+        cursor: audioQueueCursor,
+        hasOlder: audioQueueHasOlder,
+        ids: audioQueue.value.map(t => t.id),
+        requested: REQUESTED.slice(),
+    }
+};
+(async () => {
+    const endOfChat = await scenario([
+        { items: [mediaItem(3)], has_more: true },
+        { items: [mediaItem(2)], has_more: false },
+    ]);
+    const badCursor = await scenario([
+        { items: [mediaItem(3)], has_more: true },
+        { items: [], has_more: false },
+    ]);
+    console.log(JSON.stringify({ endOfChat, badCursor }));
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # Genuine end of chat: both pages were walked, the result is contiguous,
+        # and it is merged into the seeded queue in date order.
+        self.assertEqual(out["endOfChat"]["requested"], [None, "m3"])
+        self.assertFalse(out["endOfChat"]["hasOlder"])
+        self.assertEqual(out["endOfChat"]["cursor"], "m2")
+        self.assertEqual(out["endOfChat"]["ids"], [2, 3, 999])
+
+        # Unresolvable cursor: the same two fetches, the same "no more items",
+        # but the walk is NOT trustworthy, so nothing is adopted.
+        self.assertEqual(out["badCursor"]["requested"], [None, "m3"])
+        self.assertEqual(out["badCursor"]["ids"], [999])
+        self.assertIsNone(out["badCursor"]["cursor"])
+        self.assertFalse(out["badCursor"]["hasOlder"])
+
+    def test_the_queue_itself_is_observable_from_the_setup_object(self) -> None:
+        """String assertions cannot prove the guard works — a harness must be
+        able to watch the queue. ``audioQueue`` is an existing reactive ref, so
+        it is exported instead of adding any debug-only hook."""
+        self.assertIn("\n                    audioQueue,\n", self.html)
+        self.assertNotIn("window.__dbg", self.html)
+
+    def test_track_change_does_not_double_request_the_file(self) -> None:
+        """Assigning ``src`` already invokes the media load algorithm.
+
+        The extra ``load()`` aborted that fetch and re-invoked it, so the same
+        .ogg was requested 2-3 times per track.
+        """
+        body = _setup_slice(self.html, "const loadAudioTrack = (track) =>")
+        self.assertNotIn("audioEngine.load()", body)
+        # The playbackRate trap stays fixed: rate before src, re-applied on metadata.
+        self.assertLess(
+            body.index("audioEngine.defaultPlaybackRate = rate"),
+            body.index("audioEngine.src = track.url"),
+        )
+        meta_start = self.html.index("audioEngine.addEventListener('loadedmetadata'")
+        meta_body = self.html[meta_start : self.html.index("audioEngine.addEventListener('timeupdate'", meta_start)]
+        self.assertIn("audioEngine.playbackRate = audioTrack.value", meta_body)
+
+    def test_playbar_jump_loads_the_window_when_the_row_is_absent(self) -> None:
+        """The queue reaches far past the loaded window, so the row is usually absent."""
+        body = _setup_slice(self.html, "const focusAudioTrackMessage = async () =>")
+        self.assertIn("if (!findMessageElement(track.id)) {", body)
+        self.assertIn("await loadMessagesAroundId(track.id)", body)
+        self.assertLess(
+            body.index("findMessageElement(track.id)"),
+            body.index("scrollToMessage(track.id)"),
+        )
+
+
+class TestMediaUrlEncoding(unittest.TestCase):
+    """#258: '#' or '?' in a filename truncated the URL inside the browser."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_get_media_url_encodes_each_segment(self) -> None:
+        body = _setup_slice(self.html, "const getMediaUrl = (msg) =>")
+        self.assertIn("encodeURIComponent(folder)", body)
+        self.assertIn("encodeURIComponent(filename)", body)
+        # Per-segment only: encoding the assembled path would escape the '/'.
+        self.assertNotIn("encodeURIComponent(`/media/", body)
+        self.assertNotIn("encodeURI(`/media/", body)
+
+    def test_server_provided_urls_are_not_encoded_again(self) -> None:
+        """media_url / thumb_url / avatar_url arrive already encoded server-side."""
+        self.assertNotIn("encodeURIComponent(item.media_url", self.html)
+        self.assertNotIn("encodeURIComponent(msg.sender_avatar_url", self.html)
+
+
+class TestServiceMessageFallback(unittest.TestCase):
+    """#259: pre-7.28.0 service rows have text='' and rendered as empty pills."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_service_branch_falls_back_to_raw_data(self) -> None:
+        self.assertIn("const serviceMessagePredicate = (msg) =>", self.html)
+        self.assertIn("const serviceMessageView = (msg) =>", self.html)
+        # The pill renders the resolved view, not the bare (possibly empty) text.
+        self.assertIn("serviceMessageView(msg)", self.html)
+        self.assertNotIn(
+            '<div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"',
+            self.html,
+        )
+
+    def test_malformed_raw_data_cannot_throw(self) -> None:
+        """adapter.py substitutes {} for unparseable raw_data — guard anyway."""
+        body = _setup_slice(self.html, "const serviceRawData = (msg) =>")
+        self.assertIn("typeof raw === 'object'", body)
+        action_body = _setup_slice(self.html, "const serviceActionType = (msg) =>")
+        self.assertIn("typeof type === 'string' ? type : ''", action_body)
+
+    def test_add_and_delete_user_never_name_the_sender(self) -> None:
+        """REGRESSION GUARD for the correctness trap.
+
+        For chat_add_user / chat_delete_user the subject of the sentence is the
+        AFFECTED user, which is never persisted — only service_type and
+        action_type are. The row's sender is the ADMIN, so naming them would
+        claim the wrong person joined or left. The backend's unknown-actor form
+        ("Someone", with the default flags) is the only honest rendering.
+        """
+        unknown = _setup_slice(self.html, "const SERVICE_UNKNOWN_SUBJECT = {")
+        self.assertIn("chat_add_user: 'Someone was added to the group'", unknown)
+        self.assertIn("chat_delete_user: 'Someone was removed from the group'", unknown)
+
+        # ...and EXACTLY those two: no other action may use the unknown form,
+        # and neither may appear in a sender-named mapping.
+        self.assertEqual(unknown.count("Someone"), 2)
+        named = _setup_slice(self.html, "const SERVICE_PREDICATES = {")
+        titled = _setup_slice(self.html, "const SERVICE_TITLE_PREDICATES = {")
+        for action in ("chat_add_user", "chat_delete_user"):
+            self.assertNotIn(action, named)
+            self.assertNotIn(action, titled)
+
+        # The sender-is-subject group reproduces the backend wording verbatim.
+        self.assertIn("chat_joined_by_link: 'joined the group via invite link'", named)
+        self.assertIn("chat_joined_by_request: 'joined the group'", named)
+        self.assertIn("chat_edit_photo: 'changed the group photo'", named)
+        self.assertIn("chat_delete_photo: 'removed the group photo'", named)
+        self.assertIn("chat_edit_title: 'changed the group name to'", titled)
+        self.assertIn("chat_create: 'created the group'", titled)
+        self.assertIn("channel_create: 'created the channel'", titled)
+
+    def test_unmapped_actions_and_blank_rows_render_nothing(self) -> None:
+        predicate = _setup_slice(self.html, "const serviceMessagePredicate = (msg) =>")
+        # Object.hasOwn, never a bare lookup: action_type 'constructor' would
+        # otherwise resolve against Object.prototype.
+        self.assertIn("Object.hasOwn(SERVICE_UNKNOWN_SUBJECT, action)", predicate)
+        self.assertIn("Object.hasOwn(SERVICE_PREDICATES, action)", predicate)
+        self.assertIn("Object.hasOwn(SERVICE_TITLE_PREDICATES, action)", predicate)
+        # Falls through to the empty string, matching the backend's None: the
+        # LAST statement of the helper is a bare `return ''`, not a fabricated
+        # sentence. Asserted on the code, never on the comment above it.
+        self.assertTrue(_code_only(predicate).rstrip().rstrip("}").rstrip().endswith("return ''"), predicate)
+
+        # A service row with nothing to show paints an empty pill, and the day
+        # divider is resolved through the same condition the pill renders on.
+        self.assertIn("const isRenderedMessageRow = (msg, index) =>", self.html)
+        self.assertIn('<div v-if="view.tail || view.actor"', self.html)
+
+    def test_a_non_service_row_is_never_suppressed(self) -> None:
+        """DATA-HIDING GUARD.
+
+        ``media`` is null on perfectly good rows under DEFAULT configuration:
+        ``LISTEN_NEW_MESSAGES_MEDIA`` is false (so the live WS payload carries
+        ``"media": None``) and ``DOWNLOAD_MEDIA`` / ``skip_media_chat_ids`` do
+        the same, permanently, for the sweep. A caption-less voice note,
+        sticker or photo therefore has falsy text AND null media, and
+        suppressing it would render the message NOWHERE while the unread badge
+        still counted it — and would drop its ``:data-msg-id`` anchor, which
+        findMessageElement / scrollToMessage / jumpToReply /
+        focusAudioTrackMessage all resolve through.
+
+        So the regular-message branch has exactly ONE reason to drop a row —
+        an album duplicate, which is drawn by the album grid instead. There is
+        no emptiness term in it: a term that could only ever be false still
+        reads as "this branch may hide messages", which is the regression this
+        guard exists to prevent.
+        """
+        self.assertIn('v-else-if="!isHiddenAlbumMessage(msg, index)"', self.html)
+        # The two branches split on the same service condition, so a regular row
+        # can never reach the service arm of the predicate either.
+        self.assertIn("v-if=\"msg.raw_data?.service_type === 'service'\"", self.html)
+        rendered = _code_only(_setup_slice(self.html, "const isRenderedMessageRow = (msg, index) =>"))
+        statements = [line.strip() for line in rendered.splitlines() if line.strip()]
+        # The non-service arm is the LAST statement, and album duplication is
+        # the only thing it tests.
+        self.assertEqual(statements[-2], "return !isHiddenAlbumMessage(msg, index)")
+        # The dead emptiness predicate is gone from the whole template.
+        self.assertNotIn("isBlankMessageRow", self.html)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_rendered_row_predicate_executed_against_real_row_shapes(self) -> None:
+        """The EXECUTED counterpart of the guard above.
+
+        Row 0 is the failure the string test cannot see: a caption-less voice
+        note under default config (``LISTEN_NEW_MESSAGES_MEDIA`` false) —
+        ``{text: '', media: null, raw_data: {}}``. It MUST render.
+
+        Rows 7-9 are #T3: a service row whose only content is media, a reply, a
+        forward, a reaction or a poll. The service branch renders NONE of those
+        — it paints ``view.actor`` and ``view.tail`` and nothing else — so an
+        unmapped action_type leaves an empty pill however much other data the
+        row carries.
+        """
+        service = {"service_type": "service", "action_type": "nope"}
+        rows = [
+            # Not service-shaped: renders, whatever it looks like.
+            {"id": 1, "text": "", "media": None, "raw_data": {}},
+            {"id": 2, "text": None, "media": None, "raw_data": None},
+            {"id": 3, "text": "", "media": None, "raw_data": "unparseable"},
+            {"id": 4, "text": "", "media": None, "raw_data": {"grouped_id": None}},
+            # Service-shaped with no renderable wording: paints nothing.
+            {"id": 5, "text": "", "media": None, "raw_data": service},
+            # Service-shaped WITH wording: painted.
+            {
+                "id": 6,
+                "text": "",
+                "media": None,
+                "raw_data": {"service_type": "service", "action_type": "chat_edit_photo"},
+            },
+            {"id": 7, "text": "hi", "media": None, "raw_data": service},
+            # Service-shaped, no wording, but carrying data the service branch
+            # does not render: still paints NOTHING.
+            {"id": 8, "text": "", "media": {"type": "photo"}, "raw_data": service},
+            {"id": 9, "text": "", "media": None, "reactions": [{"emoji": "x"}], "raw_data": service},
+            {
+                "id": 10,
+                "text": "",
+                "media": None,
+                "reply_to_msg_id": 5,
+                "forward_from_id": 42,
+                "raw_data": {**service, "poll": {"question": "?"}},
+            },
+        ]
+        verdicts = _run_setup_helpers(
+            self.html,
+            (
+                "const SERVICE_PREDICATES = {",
+                "const SERVICE_TITLE_PREDICATES = {",
+                "const SERVICE_UNKNOWN_SUBJECT = {",
+                "const getSenderName = (msg) =>",
+                "const getCurrentSenderName = (msg) =>",
+                "const serviceRawData = (msg) =>",
+                "const serviceActionType = (msg) =>",
+                "const serviceActorIsSender = (msg) =>",
+                "const serviceMessagePredicate = (msg) =>",
+                "const serviceMessageView = (msg) =>",
+                "const getGroupedId = (msg) =>",
+                "const isFirstInAlbum = (msg, index) =>",
+                "const isHiddenAlbumMessage = (msg, index) =>",
+                "const isRenderedMessageRow = (msg, index) =>",
+            ),
+            f"{json.dumps(rows)}.map(isRenderedMessageRow)",
+            prelude="const sortedMessages = { value: [] }\n",
+        )
+        self.assertEqual(
+            verdicts,
+            [True, True, True, True, False, True, True, False, False, False],
+        )
+
+    def test_the_day_divider_lands_on_a_row_that_is_actually_painted(self) -> None:
+        """A divider must never head a suppressed row.
+
+        Under ``flex-col-reverse`` the divider emitted at ``index`` appears
+        ABOVE that row, so it heads the whole day. Emitting it on a suppressed
+        row leaves it orphaned with nothing under it; dropping it there instead
+        would delete the day header for every remaining row of that day. Both
+        neighbours are therefore resolved through the same predicate the row
+        branches use, and the search walks past suppressed rows to the next
+        painted one.
+        """
+        self.assertIn('<div v-if="showDateSeparator(index)" class="date-separator"', self.html)
+        body = _code_only(_setup_slice(self.html, "const showDateSeparator = (index) =>"))
+        self.assertIn("if (!isRenderedMessageRow(currMsg, index)) return false", body)
+        self.assertIn("if (!isRenderedMessageRow(olderMsg, older)) continue", body)
+        # The bail-out precedes any date comparison, and the walk replaced the
+        # bare index + 1 neighbour lookup.
+        self.assertLess(body.index("isRenderedMessageRow(currMsg, index)"), body.index("moment.utc(currMsg.date)"))
+        self.assertNotIn("sortedMessages.value[index + 1]", body)
+
+        rendered = _code_only(_setup_slice(self.html, "const isRenderedMessageRow = (msg, index) =>"))
+        self.assertIn("!isHiddenAlbumMessage(msg, index)", rendered)
+        # A service row paints its container (and keeps its :data-msg-id anchor)
+        # whatever the pill inside resolves to.
+        self.assertIn("serviceRawData(msg)?.service_type === 'service'", rendered)
+        # #T3: the service arm asks the SERVICE BRANCH'S OWN condition rather
+        # than a proxy for it. The branch paints on `view.tail || view.actor`,
+        # so the predicate must build that same view.
+        self.assertIn("const view = serviceMessageView(msg)", rendered)
+        self.assertIn("return !!(view.actor || view.tail)", rendered)
+        self.assertIn('<div v-if="view.tail || view.actor"', self.html)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_service_row_with_reactions_but_no_wording_does_not_orphan_a_divider(self) -> None:
+        """#T3 EXECUTED, end to end through the real ``showDateSeparator``.
+
+        The old predicate answered "painted" for any service row carrying media,
+        a reply, a forward, reactions or a poll — none of which the service
+        branch renders. Such a row is the OLDEST of its day here, so the divider
+        was emitted on it and then had nothing under it: an orphaned "July 29"
+        header above an invisible row.
+
+        Row order is newest-first, matching ``sortedMessages`` under
+        ``flex-col-reverse``: the divider emitted at ``index`` appears ABOVE
+        that row.
+        """
+        rows = [
+            {"id": 3, "date": "2026-07-30 09:00:00", "text": "later", "raw_data": {}},
+            # Reactions only, unmapped action_type -> empty pill, paints nothing.
+            {
+                "id": 2,
+                "date": "2026-07-29 12:00:00",
+                "text": "",
+                "reactions": [{"emoji": "x", "count": 1}],
+                "raw_data": {"service_type": "service", "action_type": "nope"},
+            },
+            {"id": 1, "date": "2026-07-28 08:00:00", "text": "hi", "raw_data": {}},
+        ]
+        prelude = f"""
+const sortedMessages = {{ value: {json.dumps(rows)} }}
+const viewerTimezone = {{ value: 'UTC' }}
+// The rows are naive UTC and the zone is UTC, so the real
+// moment.utc(s).tz(z).format('YYYY-MM-DD') is exactly the date prefix.
+const moment = {{ utc: (s) => ({{ tz: () => ({{ format: () => String(s).slice(0, 10) }}) }}) }}
+"""
+        verdicts = _run_setup_helpers(
+            self.html,
+            (
+                "const SERVICE_PREDICATES = {",
+                "const SERVICE_TITLE_PREDICATES = {",
+                "const SERVICE_UNKNOWN_SUBJECT = {",
+                "const getSenderName = (msg) =>",
+                "const getCurrentSenderName = (msg) =>",
+                "const serviceRawData = (msg) =>",
+                "const serviceActionType = (msg) =>",
+                "const serviceActorIsSender = (msg) =>",
+                "const serviceMessagePredicate = (msg) =>",
+                "const serviceMessageView = (msg) =>",
+                "const getGroupedId = (msg) =>",
+                "const isFirstInAlbum = (msg, index) =>",
+                "const isHiddenAlbumMessage = (msg, index) =>",
+                "const isRenderedMessageRow = (msg, index) =>",
+                "const showDateSeparator = (index) =>",
+            ),
+            "[showDateSeparator(0), showDateSeparator(1), showDateSeparator(2)]",
+            prelude=prelude,
+        )
+        # index 1 is the empty pill: no divider may hang on it. The July 30 row
+        # still heads its own day (the walk skips past the empty pill to July 28),
+        # and the oldest row always gets one.
+        self.assertEqual(verdicts, [True, False, True])
+
+    def test_quoted_title_is_reproduced_for_title_bearing_actions(self) -> None:
+        predicate = _setup_slice(self.html, "const serviceMessagePredicate = (msg) =>")
+        self.assertIn("const title = serviceRawData(msg)?.new_title", predicate)
+        # Backend wording quotes the title: 'X changed the group name to "Y"'.
+        self.assertIn(
+            "`${SERVICE_TITLE_PREDICATES[action]} \"${typeof title === 'string' ? title : ''}\"`",
+            predicate,
+        )
+
+
+class TestServiceMessageSenderTrigger(unittest.TestCase):
+    """#260: the actor name in a service pill opens the sender popup."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_actor_is_a_button_wired_to_the_existing_popup(self) -> None:
+        # The ORIGINAL message-row avatar trigger must stay exactly as it was.
+        self.assertEqual(self.html.count('@click="openSenderInfo(msg, $event)"'), 2)
+        # A real $event is required: the popup stores event.currentTarget and
+        # restores focus to it on close.
+        self.assertIn(':aria-label="`Show sender details for ${view.actor}`"', self.html)
+        self.assertIn('<button v-if="view.clickable" type="button"', self.html)
+
+    def test_trigger_is_gated_on_sender_id_and_on_the_sender_being_the_subject(self) -> None:
+        body = _setup_slice(self.html, "const serviceMessageView = (msg) =>")
+        self.assertIn("serviceActorIsSender(msg) && msg?.sender_id != null", body)
+        # Channel service rows have a NULL sender_id: named, but not clickable.
+        self.assertIn("msg?.sender_id != null ? getSenderName(msg) : 'Someone'", body)
+
+    def test_prose_is_never_parsed_for_the_name(self) -> None:
+        """Only a literal PREFIX match may be split — a display name can contain
+        the words around it, so a substring search would mangle the sentence."""
+        body = _setup_slice(self.html, "const serviceMessageView = (msg) =>")
+        self.assertIn("stored.startsWith(name)", body)
+        self.assertIn("stored.slice(name.length)", body)
+        self.assertNotIn(".indexOf(", body)
+        self.assertNotIn(".split(", body)
+        self.assertNotIn(".replace(", body)
+
+
+class TestPlaybarDate(unittest.TestCase):
+    """#262: the playbar showed a time with no date."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_compact_date_helper_reads_the_timestamp_as_utc(self) -> None:
+        """The stored timestamp is naive UTC.
+
+        ``Date.parse`` / ``new Date`` read a naive string as LOCAL time, which
+        renders the wrong calendar day for anything near midnight, so this must
+        use the same moment.utc(...).tz(...) form as ``formatTime``.
+        """
+        body = _setup_slice(self.html, "const formatShortDate = (dateStr) =>")
+        self.assertIn("moment.utc(dateStr).tz(viewerTimezone.value)", body)
+        self.assertNotIn("Date.parse", body)
+        self.assertNotIn("new Date(", body)
+        self.assertNotIn("toLocaleDateString", body)
+
+    def test_helper_is_registered_and_used_in_the_playbar(self) -> None:
+        self.assertIn("\n                    formatShortDate,\n", self.html)
+        self.assertIn("{{ formatShortDate(audioTrack.date) }} {{ formatTime(audioTrack.date) }}", self.html)
+
+
+class TestAudioBubbleDownload(unittest.TestCase):
+    """#261: per-message download control on audio / voice bubbles."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _audio_bubble(self) -> str:
+        start = self.html.index('<div v-else-if="isAudioFile(msg)"')
+        return self.html[start : self.html.index("<!-- GIFs / Animations", start)]
+
+    def test_download_is_a_real_anchor_gated_on_no_download(self) -> None:
+        bubble = self._audio_bubble()
+        self.assertIn('v-if="!noDownload && getMediaUrl(msg)"', bubble)
+        self.assertIn(":href=\"getMediaUrl(msg) + '?download=1'\"", bubble)
+        self.assertIn(':download="getDocumentDisplayName(msg)"', bubble)
+
+    def test_download_is_not_inside_the_sm_only_playbar_group(self) -> None:
+        """The playbar speed group is ``hidden sm:flex``.
+
+        A download button placed in there vanishes below the sm breakpoint —
+        i.e. on mobile, where a per-message download matters most.
+        """
+        bubble = self._audio_bubble()
+        self.assertNotIn("hidden sm:flex", bubble)
+
+        speed_start = self.html.index('role="group" aria-label="Playback speed"')
+        speed_body = self.html[speed_start : self.html.index("</div>", self.html.index("</button>", speed_start))]
+        self.assertNotIn("download", speed_body)
+
+    def test_duration_is_rendered_once(self) -> None:
+        """#263: duration already exists on the bubble — no duplicate element."""
+        bubble = self._audio_bubble()
+        self.assertEqual(bubble.count("formatAudioTime(msg.media.duration)"), 1)

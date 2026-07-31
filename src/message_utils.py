@@ -9,6 +9,7 @@ import os
 import re
 import stat
 from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +425,129 @@ async def download_and_shard_media(
             shutil.move(shared_file_path, file_path)
 
     return shared_file_path, content_hash
+
+
+def _photo_size_bytes(size: object) -> int:
+    """Byte count of a Telethon ``PhotoSize`` variant, 0 when it carries none.
+
+    ``PhotoSize`` exposes a scalar ``size``; ``PhotoSizeProgressive`` exposes NO
+    ``size`` at all, only ``sizes`` — the list of progressive byte offsets whose
+    last/largest entry is the full rendition. Scoring the progressive variant as 0
+    made it lose every comparison, so the largest rendition (the one Telegram
+    actually delivers for big photos) was never selected and its ``w``/``h`` were
+    read off a smaller thumbnail instead.
+    """
+    value = getattr(size, "size", None)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    progressive = getattr(size, "sizes", None)
+    if isinstance(progressive, (list, tuple)):
+        candidates = [v for v in progressive if isinstance(v, int) and not isinstance(v, bool)]
+        if candidates:
+            return max(candidates)
+    return 0
+
+
+def extract_media_attributes(media: object) -> dict[str, Any]:
+    """Extract size/mime/dimension/duration metadata from a Telegram media object.
+
+    THE single extractor for these five columns: both the scheduled sweep
+    (``TelegramBackup._process_media``) and the realtime listener call it, so a
+    sweep that re-upserts a message the listener already stored writes back the
+    SAME values instead of nulling them (#263). Two divergent copies of this logic
+    are what produced the bug: live-captured voice notes rendered without their
+    duration while the same note captured by the sweep showed it.
+
+    ``mime_type`` is read off ``media.document`` (the ``MessageMediaDocument``
+    wrapper itself has no ``mime_type``; the sweep's old ``getattr(media, ...)``
+    read therefore always yielded ``None``). Photo dimensions and ``file_size``
+    come from the largest ``PhotoSize`` (the ``Photo`` object itself carries no
+    ``w``/``h``), sized via ``_photo_size_bytes`` so progressive renditions count.
+
+    ``duration`` is coerced to ``int``: Telethon reports video durations as a
+    float while the ``media.duration`` column is INTEGER. Rounding (not
+    truncation) is used because that is what PostgreSQL's implicit float->int
+    assignment cast did to the raw floats the sweep has always passed, so newly
+    written rows stay consistent with the historical ones.
+    """
+    attributes: dict[str, Any] = {
+        "file_size": None,
+        "mime_type": None,
+        "width": None,
+        "height": None,
+        "duration": None,
+    }
+
+    document = getattr(media, "document", None)
+    photo = getattr(media, "photo", None)
+
+    if document is not None:
+        attributes["file_size"] = getattr(document, "size", None)
+        attributes["mime_type"] = getattr(document, "mime_type", None)
+        for attr in getattr(document, "attributes", None) or ():
+            if hasattr(attr, "w") and hasattr(attr, "h"):
+                attributes["width"] = attr.w
+                attributes["height"] = attr.h
+            if hasattr(attr, "duration"):
+                attributes["duration"] = attr.duration
+    elif photo is not None:
+        sizes = getattr(photo, "sizes", None) or ()
+        largest = max(sizes, key=_photo_size_bytes, default=None)
+        if largest is not None:
+            attributes["file_size"] = _photo_size_bytes(largest) or None
+            attributes["width"] = getattr(largest, "w", None)
+            attributes["height"] = getattr(largest, "h", None)
+
+    duration = attributes["duration"]
+    if isinstance(duration, float):
+        attributes["duration"] = round(duration)
+
+    return attributes
+
+
+# Storage-name prefixes added by the ingest paths, stripped back off for display
+# and for the download filename. ``<file_id>_`` comes from ``build_media_filename``
+# (Telegram download) and ``import_<chat>_<msg>_`` from the Telegram Desktop
+# importer's media id. Anchored and applied at most once, so only the FIRST
+# component can ever be lost: ``77_2026_report.pdf`` -> ``2026_report.pdf``.
+# ``[0-9]`` rather than ``\d``: Python's ``\d`` also matches non-ASCII decimal
+# digits, which the viewer's ``/^[0-9]+_/`` does not — and this function exists to
+# produce exactly the name the viewer shows.
+_MEDIA_STORAGE_PREFIX_RE = re.compile(r"^(?:import_-?[0-9]+_[0-9]+_|[0-9]+_)")
+
+
+def media_display_filename(stored_name: str, media_id: str | None = None) -> str:
+    """Turn a stored media basename back into the name the user recognises.
+
+    Media is stored under a uniqueness-prefixed name (``<file_id>_holiday.jpg``),
+    which is what ``Media.file_name`` holds too — it is the basename of
+    ``Media.file_path``, not the original document name. The viewer already hides
+    the prefix (``getMediaDisplayName`` in index.html); this is the server-side
+    twin so a forced download saves ``holiday.jpg`` rather than the storage name.
+
+    Produces the same name the viewer shows, in the same two steps: strip
+    ``<media_id>_`` when the caller knows the media id, then strip one leading run
+    of digits followed by ``_``. The extra ``import_<chat>_<msg>_`` alternation
+    stands in for the media id when the caller has none — the viewer always holds
+    ``media.id`` and removes that prefix with it, while ``serve_media`` only has a
+    URL path, so without the alternation an imported file would save as
+    ``import_-1001_5_report.pdf`` while the gallery labels it ``report.pdf``.
+
+    At most one prefix is removed, so ``77_2026_report.pdf`` keeps the second one
+    and yields ``2026_report.pdf``. A name whose ORIGINAL first component is
+    digits (``2026_report.pdf``) is indistinguishable from a prefixed one and does
+    lose it (-> ``report.pdf``); the viewer's unconditional
+    ``name.replace(/^[0-9]+_/, '')`` does the same, and matching the visible label
+    is the point of this function. Returns ``stored_name`` unchanged when nothing
+    matches or stripping would leave an empty name.
+    """
+    name = stored_name
+    if media_id:
+        prefix = f"{media_id}_"
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+    name = _MEDIA_STORAGE_PREFIX_RE.sub("", name, count=1)
+    return name or stored_name
 
 
 def extract_topic_id(message: object) -> int | None:
