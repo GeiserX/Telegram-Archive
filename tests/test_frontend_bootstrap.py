@@ -2255,6 +2255,36 @@ console.log(JSON.stringify({{
 """
         return _run_setup_program(self.html, _SERVICE_WORDING_DECLARATIONS, "", epilogue)
 
+    def _render_client_titles(self, cases: tuple[tuple[str, dict[str, Any]], ...]) -> dict[str, Any]:
+        """Like ``_render_client``, but each row's ``raw_data`` is built from a
+        caller-supplied override instead of the fixed ``_NEW_TITLE`` — needed to
+        exercise a missing/null ``new_title`` per action_type, which
+        ``_render_client`` cannot express (it keys its result dict by
+        action_type, so two rows sharing one action_type would collide)."""
+        rows = [
+            {
+                "id": index + 1,
+                "text": "",
+                "sender_id": 7,
+                "sender_name": _ACTOR_NAME,
+                "raw_data": {
+                    "service_type": "service",
+                    "action_type": action_type,
+                    **raw_data_override,
+                },
+            }
+            for index, (action_type, raw_data_override) in enumerate(cases)
+        ]
+        epilogue = f"""
+const rows = {json.dumps(rows)}
+const rendered = rows.map(row => {{
+    const view = serviceMessageView(row)
+    return view.actor + view.tail
+}})
+console.log(JSON.stringify({{ rendered }}))
+"""
+        return _run_setup_program(self.html, _SERVICE_WORDING_DECLARATIONS, "", epilogue)
+
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_client_covers_exactly_the_backend_wording_set(self) -> None:
         """Neither side may gain (or lose) an action without the other."""
@@ -2288,6 +2318,64 @@ console.log(JSON.stringify({{
                 # Only a sentence whose subject IS the sender may open the
                 # sender popup.
                 self.assertEqual(result["clickable"][action_type], action_type not in unknown_subject)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_title_bearing_actions_render_empty_quotes_when_new_title_is_missing(self) -> None:
+        """The ONE place client and backend are DELIBERATELY allowed to differ.
+
+        Client (``serviceMessagePredicate``, index.html): reads
+        ``raw_data.new_title`` and falls back to ``''`` whenever it is absent
+        or not a string — ``created the group ""``.
+
+        Backend (``service_message_text``, message_utils.py): does
+        ``title = getattr(action, "title", None)`` with no guard against
+        ``None`` before interpolating it into the f-string, so a title-less
+        action would render the literal Python stringification ``"None"``
+        inside the quotes — ``created the group "None"``.
+
+        Verified against the real telethon types (see
+        ``test_every_mapped_action_names_a_real_telethon_action``):
+        ``MessageActionChatEditTitle`` / ``MessageActionChatCreate`` /
+        ``MessageActionChannelCreate`` all declare ``title`` as a REQUIRED
+        constructor field, so the backend's ``None``-title branch can never
+        actually fire from a live Telethon event — it is unreachable in
+        production. The client's branch IS reachable: ``new_title`` is read
+        out of the persisted ``raw_data`` JSON blob, and a historical or
+        otherwise incomplete row can simply lack that key. The client's
+        empty-quotes rendering is therefore the correct behaviour, not a gap
+        — a future "fix" that fetches ``"None"``/``"null"``/``"undefined"``
+        into the sentence to chase parity would be a regression.
+        """
+        title_bearing = tuple(self._render_client(())["titled"])
+        self.assertTrue(title_bearing)  # sanity: SERVICE_TITLE_PREDICATES must not be empty
+
+        cases: list[tuple[str, dict[str, Any]]] = []
+        for action_type in title_bearing:
+            cases.append((action_type, {}))  # new_title key absent entirely
+            cases.append((action_type, {"new_title": None}))  # new_title explicitly null
+        rendered = self._render_client_titles(tuple(cases))["rendered"]
+
+        for (action_type, override), sentence in zip(cases, rendered, strict=True):
+            variant = "new_title absent" if not override else "new_title: null"
+            with self.subTest(action_type=action_type, variant=variant):
+                class_name = _SERVER_ACTION_TYPES[action_type]
+
+                # The client's actual fallback is an empty string, and an empty
+                # string IS a str, so the backend's own type-check leaves it
+                # untouched too — the two sides genuinely agree here.
+                action = _stub_action(class_name)
+                action.title = ""
+                self.assertEqual(sentence, service_message_text(action, actor_name=_ACTOR_NAME))
+
+                # The forbidden variant: the backend's OWN behaviour when title
+                # is actually None (unreachable in production, per the
+                # docstring above, but that's exactly what must never leak
+                # into the client's rendering).
+                action.title = None
+                self.assertNotEqual(sentence, service_message_text(action, actor_name=_ACTOR_NAME))
+                self.assertNotIn('"None"', sentence)
+                self.assertNotIn('"null"', sentence)
+                self.assertNotIn('"undefined"', sentence)
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_unknown_subject_actions_never_render_the_stored_variant_wording(self) -> None:
