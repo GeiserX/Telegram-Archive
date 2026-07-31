@@ -5725,6 +5725,13 @@
                 let audioQueueCursorNewer = null // media id of the NEWEST item the queue knows
                 let audioQueueHasNewer = false
                 let audioQueueFetching = false
+                // #268: the promise of the seed started by the CLICK, kept so a forward
+                // advance that lands while it is still in flight can await it instead of
+                // reading "a page is on its way" as "the queue ended". It matters now
+                // because buildAudioQueue contributes ONLY the clicked track from a
+                // sparse view: at the start of every sparse-view playback the queue is
+                // one entry long and this fetch is the only way forward.
+                let audioQueueSeeding = null
 
                 // Voice and music are queried separately — the endpoint would happily
                 // return both in one call ("voice,audio"), which is exactly what must
@@ -5816,14 +5823,16 @@
                 // The queue is sorted ascending, so its edges are its first and last
                 // entries — but a descriptor is only usable as a cursor if it carries a
                 // media id, so scan inwards until one does.
-                const audioQueueEdgeMediaId = (newest) => {
+                const audioQueueEdgeTrack = (newest) => {
                     const queue = audioQueue.value
                     for (let i = 0; i < queue.length; i++) {
                         const track = newest ? queue[queue.length - 1 - i] : queue[i]
-                        if (track && track.mediaId) return track.mediaId
+                        if (track && track.mediaId) return track
                     }
                     return null
                 }
+
+                const audioQueueEdgeMediaId = (newest) => audioQueueEdgeTrack(newest)?.mediaId || null
 
                 const seedAudioQueueAroundTrack = async (track) => {
                     // #266: ONE page older than the PLAYING track, anchored on its own
@@ -5896,7 +5905,30 @@
                     // entry is older than this page's last item. Paging from the page
                     // would then re-fetch rows the queue already has and report no
                     // progress, so the cursor follows the QUEUE's edge.
-                    audioQueueCursor = audioQueueEdgeMediaId(false) || audioQueueCursor
+                    //
+                    // #268: ...but ONLY while that edge really is older, because the
+                    // fixup can otherwise move the cursor BACKWARDS.
+                    // audioTracksFromMediaItems drops every item with no media_url (a
+                    // file_path outside the media root is never given one), so a whole
+                    // page can be unplayable and add nothing at all — the edge is then
+                    // the oldest track ALREADY queued, which from a sparse view is the
+                    // playing track itself, i.e. the very anchor this page was fetched
+                    // from. "Previous" would then spend a request re-asking the question
+                    // the seed just asked and report 'exhausted' (restarting the track)
+                    // although older playable audio exists.
+                    //
+                    // The test is on TIME rather than on "did the merge add anything":
+                    // that also covers a partly unplayable page, where tracks are added
+                    // but none of them older than the page's own last item. Both sides
+                    // go through audioTrackTime, so they share one parse rule and an
+                    // unreadable date reads as 0 and simply keeps the page cursor —
+                    // failing towards progress.
+                    const pageOldest = items[items.length - 1]
+                    const pageOldestTime = audioTrackTime({ date: pageOldest?.message_date })
+                    const queueOldest = audioQueueEdgeTrack(false)
+                    if (queueOldest && pageOldestTime && audioTrackTime(queueOldest) < pageOldestTime) {
+                        audioQueueCursor = queueOldest.mediaId
+                    }
                     return true
                 }
 
@@ -6134,7 +6166,37 @@
                     // direction playback is moving, so its cost tracks how much is
                     // PLAYED, not how deep in the chat the first track was.
                     const outcome = await extendAudioQueueNewer()
-                    return outcome === 'extended' && playAdjacentAudio(1)
+                    if (outcome === 'extended' && playAdjacentAudio(1)) return true
+                    // #268: 'pending' is a page still ON ITS WAY, not an exhausted
+                    // queue — playPrevAudio has always kept the two apart and this path
+                    // must too. It is reachable now because a sparse view seeds ONLY
+                    // the clicked track: for the first ~50ms of every sparse playback
+                    // the queue has one entry and the click's own seed fetch is the only
+                    // way forward. A sub-second voice note ('ended'), or a file missing
+                    // on disk whose error event beats the media request ('error'), lands
+                    // here inside that window — and collapsing 'pending' into false
+                    // ended auto-advance for the whole session with a full page of
+                    // playable tracks about to arrive.
+                    //
+                    // Await THAT fetch and re-attempt: no polling, no timer, and bounded
+                    // by construction — audioQueueSeeding settles exactly once, and the
+                    // re-attempt does not consult 'pending' again.
+                    if (outcome !== 'pending' || !audioQueueSeeding) return false
+                    const owner = audioTrack.value
+                    await audioQueueSeeding
+                    // The same ownership question the request-id / belongs-to-track
+                    // guards ask, at track granularity: audioTrack.value is replaced by
+                    // loadAudioTrack and cleared by closeAudioPlayer, so a different
+                    // object means the user started something else (or closed the
+                    // player) while we waited and this advance belongs to nobody. A
+                    // queue that halted auto-advance in the meantime stays halted.
+                    if (!owner || audioTrack.value !== owner || audioAutoAdvanceHalted.value) return false
+                    // The seed pages OLDER than the playing track, so it rarely supplies
+                    // the next one itself — the forward page usually still has to be
+                    // asked for, this time with a cursor that is no longer in flight.
+                    if (playAdjacentAudio(1)) return true
+                    const retried = await extendAudioQueueNewer()
+                    return retried === 'extended' && playAdjacentAudio(1)
                 }
 
                 const playPrevAudio = async () => {
@@ -6178,7 +6240,10 @@
                     // Start on the user gesture, THEN grow the queue: awaiting the fetch
                     // first would spend the gesture and hand iOS a blocked play().
                     loadAudioTrack(track)
-                    extendAudioQueueFromMedia(track)
+                    // Still NOT awaited — but kept, so an auto-advance that reaches the
+                    // end of this one-entry queue before the page lands can wait for it
+                    // rather than declaring the queue finished (see playNextAudio).
+                    audioQueueSeeding = extendAudioQueueFromMedia(track)
                 }
 
                 const toggleAudioPlayback = () => {
@@ -6224,6 +6289,8 @@
                     audioQueueFetching = false
                     audioQueueAbort?.abort()
                     audioQueueAbort = null
+                    // Nothing may wait on the closed player's seed any more.
+                    audioQueueSeeding = null
                     audioQueueCursor = null
                     audioQueueHasOlder = false
                     audioQueueCursorNewer = null

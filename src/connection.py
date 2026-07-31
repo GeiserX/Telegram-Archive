@@ -300,7 +300,10 @@ class TelegramConnection:
             pass
         shutil.copy2(session_file, golden_file)
 
-        logger.info(f"Connected as {self._me.first_name} ({self._me.phone})")
+        # Deliberately anonymous: the account's name and phone are PII and must
+        # not reach the logs (the same rule that keeps chat ids and message text
+        # out). Which account authenticated is already confirmed at setup time.
+        logger.info("Connected")
 
         return self._client
 
@@ -371,7 +374,7 @@ class TelegramConnection:
                     logger.warning("Connection lost, reconnecting...")
                     await self._client.connect()
                     self._me = await _call_with_flood_retry(self._client.get_me)
-                    logger.info(f"Reconnected as {self._me.first_name}")
+                    logger.info("Reconnected")
             except Exception as e:
                 logger.warning(f"Connection check failed: {e}, reconnecting...")
                 self._connected = False

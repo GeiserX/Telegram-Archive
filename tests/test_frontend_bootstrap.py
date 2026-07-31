@@ -1476,7 +1476,7 @@ def test_audio_queue_extension_never_drives_message_pagination():
     next_body = _setup_slice(html, "const playNextAudio = async () =>")
     assert "if (playAdjacentAudio(1)) return true" in next_body
     assert "const outcome = await extendAudioQueueNewer()" in next_body
-    assert "return outcome === 'extended' && playAdjacentAudio(1)" in next_body
+    assert "if (outcome === 'extended' && playAdjacentAudio(1)) return true" in next_body
     assert "if (audioAutoAdvanceHalted.value || !(await playNextAudio())) {" in ended_body
 
     advance_body = _setup_slice(html, "const playAdjacentAudio = (step) =>")
@@ -1885,6 +1885,7 @@ _AUDIO_QUEUE_EXEC_DECLARATIONS = (
     "const audioTrackTime = (track) =>",
     "const mergeAudioQueue = (tracks) =>",
     "const audioQueueBelongsToTrack = (track) =>",
+    "const audioQueueEdgeTrack = (newest) =>",
     "const audioQueueEdgeMediaId = (newest) =>",
 )
 
@@ -2655,6 +2656,7 @@ const run = async ({ search = '', topic = null, pinnedIds = null, rowIds }, clic
                 "const audioTrackTime = (track) =>",
                 "const mergeAudioQueue = (tracks) =>",
                 "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
                 "const audioQueueEdgeMediaId = (newest) =>",
                 "const seedAudioQueueAroundTrack = async (track) =>",
                 "const extendAudioQueueFromMedia = async (track) =>",
@@ -2702,6 +2704,338 @@ const run = async ({ search = '', topic = null, pinnedIds = null, rowIds }, clic
         self.assertEqual(out["window"]["seeded"]["queue"], [1, 2, 3, 4, 5])
         window_forward = [r for r in out["window"]["requested"] if r[1] == "newer"]
         self.assertEqual(window_forward[0], ["m5", "newer"])
+
+
+# Shared stubs for the two "the one-entry sparse queue must keep making
+# progress" programs below. Both drive REAL helpers over a 12-track chat whose
+# media endpoint is a faithful stand-in for ``get_media_paginated``: an opaque
+# cursor resolved against the table, paged away from it in the requested
+# direction. ``PLAYED`` is the only record of what actually reached the element,
+# which is what makes these tests behavioural rather than flag-shaped.
+_SPARSE_PROGRESS_PRELUDE = """
+const noDownload = { value: false }
+const audioError = { value: '' }
+const audioQueue = { value: [] }
+const audioTrack = { value: null }
+const audioAutoAdvanceHalted = { value: false }
+let audioConsecutiveFailures = 0
+const selectedChat = { value: { id: 7, title: 'chat' } }
+// The clicked row comes from a SPARSE view (search results), which is what
+// leaves the queue one entry long until the anchored seed lands.
+const messageView = { value: { contiguous: false } }
+const sortedMessages = { value: [] }
+const getChatName = (chat) => chat.title
+const getMediaUrl = (msg) => `/media/${msg.id}.ogg`
+const getSenderName = () => 'someone'
+const isAudioFile = (msg) => msg.media?.type === 'voice'
+const isCurrentAudioMessage = () => false
+const toggleAudioPlayback = () => {}
+const PLAYED = []
+const loadAudioTrack = (track) => { audioTrack.value = track; PLAYED.push(track.id) }
+const SEEKS = []
+const seekAudioTo = (seconds) => { SEEKS.push(seconds) }
+const stamp = (n) => `2026-07-01T00:00:${String(n).padStart(2, '0')}`
+const messageRow = (n) => ({
+    id: n, chat_id: 7, date: stamp(n),
+    media: { id: `m${n}`, type: 'voice', duration: 1 },
+})
+// Small pages, so the walk really pages instead of getting the whole chat back
+// in one answer.
+const PAGE = 3
+const mediaRow = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7,
+    media_url: `/media/${n}.ogg`, message_date: stamp(n),
+})
+const REQUESTED = []
+const answerPage = (table, cursor, direction) => {
+    const at = cursor ? table.findIndex(m => m.id === cursor) : -1
+    if (cursor && at < 0) return { items: [], has_more: false }
+    const rest = direction === 'newer'
+        ? table.slice(at + 1)
+        : (at < 0 ? table.slice() : table.slice(0, at)).reverse()
+    return { items: rest.slice(0, PAGE), has_more: rest.length > PAGE }
+}
+// playAudioMessage deliberately does NOT await the queue growth (the click
+// gesture has to reach play() first), so drain the microtask/timer queues.
+const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r)) }
+"""
+
+
+class TestSparseQueueKeepsMakingProgress(unittest.TestCase):
+    """#268 follow-up: a one-entry seed queue has no slack for "close enough".
+
+    ``buildAudioQueue`` now contributes ONLY the clicked track from a sparse
+    view, so the queue really is one entry long at the start of every sparse
+    playback and the anchored pages are the only way out of it. Two places
+    treated "no answer yet" and "nothing playable here" as "the queue ended",
+    which was survivable while the queue arrived pre-filled from the window and
+    is not survivable now.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_track_that_fails_while_its_seed_is_in_flight_still_auto_advances(self) -> None:
+        """``playNextAudio`` collapsed 'pending' — a page ON ITS WAY — into false.
+
+        Reachable shape: in search results the user clicks a voice note whose
+        file is missing on disk. ``playAudioMessage`` seeds ``[clicked]``, starts
+        the track and fires the anchored seed fetch; the element's ``error``
+        event and the media request race in the same tick, and when the error
+        wins, the handler calls ``playNextAudio`` while the queue still holds one
+        entry. ``extendAudioQueueNewer`` answers 'pending' (a fetch is already in
+        flight), the old code read that as an exhausted queue, and auto-advance
+        was over for the session — with the seed page ~50ms away. The same shape
+        reaches the 'ended' handler for a sub-second voice note.
+
+        ``playPrevAudio`` has always kept 'pending' and 'exhausted' apart, so
+        this was an inconsistency rather than a decision.
+
+        The fetch is HELD here, which is exactly that window; the scenarios
+        differ only in what happens inside it.
+        """
+        prelude = (
+            _SPARSE_PROGRESS_PRELUDE
+            + """
+const MEDIA = Array.from({ length: 12 }, (_, i) => mediaRow(i + 1))
+// The seed page is held until RELEASE is called: everything that happens in
+// between happens while the fetch is genuinely in flight.
+let RELEASE = null
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    if (direction === 'older' && !RELEASE) {
+        return new Promise(resolve => { RELEASE = () => resolve(answerPage(MEDIA, cursor, direction)) })
+    }
+    return answerPage(MEDIA, cursor, direction)
+}
+"""
+        )
+        epilogue = """
+const scenario = async (duringHold) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    RELEASE = null
+    audioQueue.value = []
+    audioTrack.value = null
+    audioAutoAdvanceHalted.value = false
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    audioQueueSeeding = null
+
+    playAudioMessage(messageRow(2))
+    await flush()
+    const seeded = audioQueue.value.map(t => t.id)
+    // What the real 'error'/'ended' handlers do: call playNextAudio without
+    // awaiting it, while the seed is still in flight.
+    const advancing = playNextAudio()
+    await flush()
+    const beforeRelease = PLAYED.slice()
+    if (duringHold) duringHold()
+    RELEASE()
+    const advanced = await advancing
+    await flush()
+    return { seeded, beforeRelease, advanced, played: PLAYED.slice(), requested: REQUESTED.slice() }
+};
+(async () => {
+    // 1. Nothing else happens: the page lands and the advance goes through.
+    const landsLate = await scenario(null)
+    // 2. The user tapped ANOTHER voice note while the page was in flight — one
+    //    the landing page puts in the queue, so a re-attempt would walk from
+    //    THAT track and replay 2.
+    const switched = await scenario(() => {
+        audioTrack.value = {
+            id: 1, chatId: 7, kind: 'voice', chatName: 'chat',
+            mediaId: 'm1', url: '/media/1.ogg', date: stamp(1),
+        }
+    })
+    // 3. Auto-advance was halted while we waited (a second failed file).
+    const halted = await scenario(() => { audioAutoAdvanceHalted.value = true })
+    console.log(JSON.stringify({ landsLate, switched, halted }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioMediaKind = (msg) =>",
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+                "const audioTrackFromMessage = (msg) =>",
+                "const audioQueueSeedIsContiguous = () =>",
+                "const buildAudioQueue = (msg) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
+                "const audioQueueEdgeMediaId = (newest) =>",
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+                "const extendAudioQueueNewer = async () =>",
+                "const currentAudioQueueIndex = () =>",
+                "const playAdjacentAudio = (step) =>",
+                "const playNextAudio = async () =>",
+                "const playAudioMessage = (msg) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # The premise: the sparse seed really is one entry, and the advance is
+        # still undecided while the page is in flight (no track played, and no
+        # forward request issued off a cursor that is mid-fetch).
+        self.assertEqual(out["landsLate"]["seeded"], [2])
+        self.assertEqual(out["landsLate"]["beforeRelease"], [2])
+
+        # THE assertion: the page lands and playback moves on, once. The forward
+        # page is asked for AFTER the seed settles, anchored on the playing
+        # track — the seed itself only pages older, so it cannot supply track 3.
+        self.assertTrue(out["landsLate"]["advanced"])
+        self.assertEqual(out["landsLate"]["played"], [2, 3])
+        self.assertEqual(out["landsLate"]["requested"], [["m2", "older"], ["m2", "newer"]])
+
+        # ...and the re-attempt is owned. A different track means this advance
+        # belongs to nobody: no replay of 2 from track 1's position, and no
+        # request either.
+        self.assertFalse(out["switched"]["advanced"])
+        self.assertEqual(out["switched"]["played"], [2])
+        self.assertEqual(out["switched"]["requested"], [["m2", "older"]])
+
+        # Halting auto-advance while the page was in flight must survive the
+        # wait — the re-attempt may not resurrect it.
+        self.assertFalse(out["halted"]["advanced"])
+        self.assertEqual(out["halted"]["played"], [2])
+        self.assertEqual(out["halted"]["requested"], [["m2", "older"]])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_an_unplayable_seed_page_does_not_park_the_cursor_on_the_playing_track(self) -> None:
+        """The older-cursor fixup could move the cursor BACKWARDS.
+
+        ``seedAudioQueueAroundTrack`` sets the cursor to the page's last item and
+        then overwrites it with the queue's own oldest edge — right for its
+        intended case (the loaded window already holds more than a page of older
+        audio), wrong when the page adds nothing. ``audioTracksFromMediaItems``
+        drops every item with no ``media_url``, which is what the server returns
+        for media whose ``file_path`` falls outside the media root, so a WHOLE
+        page can vanish; the edge is then the oldest track already queued, and
+        from a sparse view that is the playing track itself — the very anchor the
+        page was fetched from. ``audioQueueHasOlder`` was computed before the
+        fixup, so it stays true and 'previous' re-asks the question the seed just
+        asked, reports 'exhausted' and restarts the track although older playable
+        audio is one page further back.
+        """
+        prelude = (
+            _SPARSE_PROGRESS_PRELUDE
+            + """
+// Tracks 9-11 are downloaded but outside the media root, so the endpoint hands
+// back rows with no media_url and the queue can play none of them. With PAGE=3
+// they are exactly the page the seed fetches from track 12.
+const MEDIA = Array.from({ length: 12 }, (_, i) => {
+    const row = mediaRow(i + 1)
+    return (i + 1 >= 9 && i + 1 <= 11) ? { ...row, media_url: '' } : row
+})
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    return answerPage(MEDIA, cursor, direction)
+}
+"""
+        )
+        epilogue = """
+const scenario = async ({ contiguous, visible, clicked }) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    SEEKS.length = 0
+    audioQueue.value = []
+    audioTrack.value = null
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    audioQueueSeeding = null
+    messageView.value = { contiguous }
+    // The pane renders newest-first.
+    sortedMessages.value = visible.slice().sort((a, b) => b - a).map(messageRow)
+
+    playAudioMessage(messageRow(clicked))
+    await flush()
+    const seeded = {
+        queue: audioQueue.value.map(t => t.id),
+        cursor: audioQueueCursor,
+        hasOlder: audioQueueHasOlder,
+        requested: REQUESTED.slice(),
+    }
+    await playPrevAudio()
+    return { seeded, played: PLAYED.slice(), seeks: SEEKS.slice(), requested: REQUESTED.slice() }
+};
+(async () => {
+    // Sparse view: the queue is the clicked track alone, and the page anchored
+    // on it is wholly unplayable.
+    const unplayable = await scenario({ contiguous: false, visible: [12], clicked: 12 })
+    // The case the fixup exists for: a contiguous window holding MORE than one
+    // page of audio older than the playing track. Its own oldest entry really
+    // is older than the page's last item, so the cursor must still follow it.
+    const deepWindow = await scenario({ contiguous: true, visible: [1, 2, 3, 4, 5], clicked: 5 })
+    console.log(JSON.stringify({ unplayable, deepWindow }));
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioMediaKind = (msg) =>",
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+                "const audioTrackFromMessage = (msg) =>",
+                "const audioQueueSeedIsContiguous = () =>",
+                "const buildAudioQueue = (msg) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
+                "const audioQueueEdgeMediaId = (newest) =>",
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+                "const extendAudioQueueOlder = async () =>",
+                "const currentAudioQueueIndex = () =>",
+                "const playAdjacentAudio = (step) =>",
+                "const playPrevAudio = async () =>",
+                "const playAudioMessage = (msg) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # The premise: one anchored request, and it contributed nothing playable.
+        self.assertEqual(out["unplayable"]["seeded"]["queue"], [12])
+        self.assertEqual(out["unplayable"]["seeded"]["requested"], [["m12", "older"]])
+        self.assertTrue(out["unplayable"]["seeded"]["hasOlder"])
+
+        # THE assertion: the cursor is the page's own last item, NOT the playing
+        # track, so 'previous' walks PAST the unplayable page instead of asking
+        # for it again — and lands on real audio rather than restarting track 12.
+        self.assertEqual(out["unplayable"]["seeded"]["cursor"], "m9")
+        self.assertEqual(out["unplayable"]["requested"], [["m12", "older"], ["m9", "older"]])
+        self.assertEqual(out["unplayable"]["played"], [12, 8])
+        self.assertEqual(out["unplayable"]["seeks"], [])
+
+        # No regression on what the fixup is for: the window holds tracks 1-4
+        # older than the playing one while the page only reaches back to 2, so
+        # the cursor follows the QUEUE's edge and paging does not re-fetch rows
+        # the queue already has.
+        self.assertEqual(out["deepWindow"]["seeded"]["queue"], [1, 2, 3, 4, 5])
+        self.assertEqual(out["deepWindow"]["seeded"]["cursor"], "m1")
+        # 'previous' is served from the window itself — no request at all.
+        self.assertEqual(out["deepWindow"]["requested"], [["m5", "older"]])
+        self.assertEqual(out["deepWindow"]["played"], [5, 4])
 
 
 # Setup-scope stubs for EXECUTING the whole APPEND path end to end: the real
@@ -2891,6 +3225,7 @@ _APPEND_DECLARATIONS = (
     "const audioTrackTime = (track) =>",
     "const mergeAudioQueue = (tracks) =>",
     "const audioQueueBelongsToTrack = (track) =>",
+    "const audioQueueEdgeTrack = (newest) =>",
     "const audioQueueEdgeMediaId = (newest) =>",
     "const seedAudioQueueAroundTrack = async (track) =>",
     "const extendAudioQueueFromMedia = async (track) =>",
