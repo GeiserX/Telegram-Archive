@@ -1121,7 +1121,15 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def insert_media(self, media_data: dict[str, Any]) -> None:
-        """Insert a media file record."""
+        """Insert (or upsert) a media file record.
+
+        Contract for the ``downloaded`` key: include it whenever the caller
+        actually observed the download outcome (True after a successful write,
+        False after a skip/failure it is willing to have retried), and OMIT it
+        when the caller cannot know whether a file is on disk. An omitted key
+        means "leave the stored flag alone" on conflict and 0 on a fresh insert —
+        see the comment on the conflict clause below.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 "id": media_data["id"],
@@ -1140,12 +1148,56 @@ class DatabaseAdapter:
                 "download_date": media_data.get("download_date"),
             }
 
-            if self._is_sqlite:
-                stmt = sqlite_insert(Media).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=values)
-            else:
-                stmt = pg_insert(Media).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=values)
+            stmt = sqlite_insert(Media).values(**values) if self._is_sqlite else pg_insert(Media).values(**values)
+
+            # On conflict, a writer that has NO value for a column must not blank out
+            # what an earlier writer already stored (#263). Both halves of the row
+            # are affected, so both are COALESCEd:
+            #   - the metadata columns, when an ingest path could not read the
+            #     attributes off the Telethon object;
+            #   - the file-identity columns, because ``_process_media`` returns a
+            #     value-less row for an over-size skip and for a download error —
+            #     that row used to null the file_path/file_name/content_hash/
+            #     download_date of a file that is still on disk.
+            # COALESCE only falls back on NULL, so a real value still overwrites a
+            # real value: a re-download to a new path DOES update file_path.
+            # (``mark_media_for_redownload`` is a separate UPDATE that clears these
+            # deliberately; it currently has no production caller, only tests.)
+            update_values = dict(values)
+            for column in (
+                "file_name",
+                "file_path",
+                "file_size",
+                "mime_type",
+                "width",
+                "height",
+                "duration",
+                "content_hash",
+                "download_date",
+            ):
+                update_values[column] = func.coalesce(getattr(stmt.excluded, column), getattr(Media, column))
+            # ``downloaded`` is a flag, not a value: 0 is a real value, so COALESCE
+            # cannot express "this writer has no opinion" for it. The KEY'S PRESENCE
+            # in ``media_data`` does instead:
+            #   - present -> the writer observed the outcome, so write it. A failed
+            #     download therefore sets 0 again and the row returns to
+            #     ``get_pending_media_downloads``, which ``_retry_pending_media_downloads``
+            #     drains on EVERY backup cycle. That is the only always-on recovery
+            #     path: ``TelegramBackup._verify_and_redownload_media`` (the disk-stat
+            #     scan) runs only when VERIFY_MEDIA is on, and it defaults to false.
+            #     Pinning the flag at 1 stranded such a row forever, pointing at a
+            #     file that is gone.
+            #   - absent -> the writer knows nothing about what is on disk, so keep
+            #     the stored flag. ``_process_media``'s over-size skip is the one
+            #     such writer: the file may already be on disk from a run with a
+            #     higher MAX_MEDIA_SIZE, and flipping it to 0 would hide it from the
+            #     gallery (``get_media_paginated`` filters ``downloaded == 1``)
+            #     without ever retrying it (``get_pending_media_downloads`` excludes
+            #     its over-limit file_size).
+            # A fresh INSERT still lands 0 for an absent key — nothing is downloaded.
+            if "downloaded" not in media_data:
+                update_values["downloaded"] = Media.downloaded
+            stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_values)
 
             await session.execute(stmt)
             await session.commit()
@@ -1202,7 +1254,22 @@ class DatabaseAdapter:
         """
         Get paginated media records for a chat with cursor-based pagination.
 
-        Uses composite cursor (Message.date, Media.id) for deterministic ordering.
+        ``before_id`` stays an opaque ``Media.id`` token (the gallery round-trips the
+        composite ``{chat}_{msg}_{type}`` string), but it is resolved to the triple
+        (Message.date, Media.message_id, Media.id) before use. ``Media.id`` alone sorts
+        lexically, so rows sharing a timestamp came back as 9, 99, 98, ..., 8, 89 —
+        numerically meaningless; ``Media.message_id`` is an integer and orders correctly.
+
+        The ORDER BY and the cursor predicate MUST stay the same triple: that identity
+        is what guarantees a full walk yields every row exactly once (no skips, no
+        duplicates). Change one and you must change the other.
+
+        The cursor resolution is scoped to ``chat_id``. Unscoped, a caller could pass
+        ANOTHER chat's media id and have that row's timestamp shape this chat's result
+        window — a cross-chat existence/timestamp oracle for a chat the caller cannot
+        read. A token that does not belong to ``chat_id`` is indistinguishable from a
+        deleted one and returns an EMPTY page (never a full first page), so neither the
+        existence nor the date of a foreign row can be inferred from the response.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
@@ -1230,26 +1297,35 @@ class DatabaseAdapter:
 
             if before_id:
                 cursor_stmt = (
-                    select(Media.id, Message.date)
+                    select(Media.id, Media.message_id, Message.date)
                     .join(
                         Message,
                         and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id),
                     )
-                    .where(Media.id == before_id)
+                    .where(and_(Media.id == before_id, Media.chat_id == chat_id))
                 )
                 cursor_result = await session.execute(cursor_stmt)
                 cursor_row = cursor_result.one_or_none()
                 if cursor_row is None:
                     return {"items": [], "has_more": False}
-                cursor_media_id, cursor_date = cursor_row
+                cursor_media_id, cursor_message_id, cursor_date = cursor_row
                 stmt = stmt.where(
                     or_(
                         Message.date < cursor_date,
-                        and_(Message.date == cursor_date, Media.id < cursor_media_id),
+                        and_(
+                            Message.date == cursor_date,
+                            or_(
+                                Media.message_id < cursor_message_id,
+                                and_(
+                                    Media.message_id == cursor_message_id,
+                                    Media.id < cursor_media_id,
+                                ),
+                            ),
+                        ),
                     )
                 )
 
-            stmt = stmt.order_by(Message.date.desc(), Media.id.desc())
+            stmt = stmt.order_by(Message.date.desc(), Media.message_id.desc(), Media.id.desc())
             stmt = stmt.limit(limit + 1)
             result = await session.execute(stmt)
             rows = result.all()

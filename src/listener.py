@@ -41,6 +41,7 @@ from .message_utils import (
     build_media_filename,
     compute_file_hash,
     download_and_shard_media,
+    extract_media_attributes,
     extract_reactions,
     extract_topic_id,
     fallback_media_filename,
@@ -1101,33 +1102,39 @@ class TelegramListener:
                                 media_path, media_file_name, content_hash = download_result
                                 # Create media record (FK to messages now satisfied)
                                 media_id = f"{chat_id}_{message.id}_{media_type}"
-                                await self.db.insert_media(
-                                    {
-                                        "id": media_id,
-                                        "message_id": message.id,
-                                        "chat_id": chat_id,
-                                        "type": media_type,
-                                        "file_path": media_path,
-                                        "file_name": media_file_name,
-                                        "content_hash": content_hash,
-                                        "downloaded": True,
-                                        "download_date": utcnow_naive(),
-                                    }
-                                )
+                                # Same metadata the scheduled sweep records (#263) — without it
+                                # live-captured voice notes had a NULL duration and rendered
+                                # without it while sweep-captured ones showed it.
+                                media_attributes = extract_media_attributes(message.media)
+                                try:
+                                    media_attributes["file_size"] = os.path.getsize(media_path)
+                                except OSError:
+                                    pass  # Keep Telegram's reported size when the path isn't stat-able
+                                media_row = {
+                                    "id": media_id,
+                                    "message_id": message.id,
+                                    "chat_id": chat_id,
+                                    "type": media_type,
+                                    "file_path": media_path,
+                                    "file_name": media_file_name,
+                                    "content_hash": content_hash,
+                                    "downloaded": True,
+                                    "download_date": utcnow_naive(),
+                                    **media_attributes,
+                                }
+                                await self.db.insert_media(media_row)
                                 logger.debug("📎 Downloaded media")
-                                # Mirror the DB row: insert_media leaves file_size/mime_type/width/
-                                # height/duration as None in this path (not passed above), so the
-                                # WS row matches what the next poll will return.
+                                # Mirror the DB row so the WS row matches what the next poll returns.
                                 ws_media = {
                                     "id": media_id,
                                     "type": media_type,
                                     "file_path": media_path,
                                     "file_name": media_file_name,
-                                    "file_size": None,
-                                    "mime_type": None,
-                                    "width": None,
-                                    "height": None,
-                                    "duration": None,
+                                    "file_size": media_row["file_size"],
+                                    "mime_type": media_row["mime_type"],
+                                    "width": media_row["width"],
+                                    "height": media_row["height"],
+                                    "duration": media_row["duration"],
                                 }
                         except Exception as e:
                             logger.warning(f"Failed to download media for message {message.id}: {e}")

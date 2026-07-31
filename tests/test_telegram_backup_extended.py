@@ -1927,7 +1927,13 @@ class TestProcessMedia(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_oversized_media_returns_not_downloaded(self):
-        """Media exceeding max size returns downloaded=False."""
+        """Media exceeding max size states no download outcome at all.
+
+        Nothing was attempted, so the row must not claim the file is missing —
+        insert_media keeps whatever flag is stored for a key it isn't given. The
+        outcome checks in _retry_pending_media_downloads / _verify_and_redownload_media
+        use ``.get("downloaded")``, so an absent key still reads as falsy there.
+        """
         msg = _make_message(3)
         msg.media = MagicMock()
         self.backup._get_media_type = MagicMock(return_value="video")
@@ -1936,7 +1942,9 @@ class TestProcessMedia(unittest.TestCase):
 
         result = _run(self.backup._process_media(msg, 100))
 
-        self.assertFalse(result["downloaded"])
+        self.assertNotIn("downloaded", result)
+        self.assertFalse(result.get("downloaded"))
+        self.assertEqual(result["file_size"], 999999999)
 
     def test_download_exception_returns_not_downloaded(self):
         """Exception during download returns downloaded=False."""

@@ -1199,13 +1199,29 @@
                         <template v-for="(msg, index) in sortedMessages" :key="msg.id">
                             <!-- Service Message (chat actions like photo changed, user joined, etc) -->
                             <!-- v6.0.0: Service type moved to raw_data.service_type -->
+                            <!-- #259: msg.text is empty on rows captured before 7.28.0, so the
+                                 wording is rebuilt from raw_data at render time.
+                                 #260: rendered from structured parts (actor + tail) so the
+                                 actor can be a real button — never by parsing the sentence. -->
                             <div v-if="msg.raw_data?.service_type === 'service'" :data-msg-id="msg.id" class="flex justify-center my-2">
-                                <div class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
-                                    style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
-                                    {{ msg.text }}
-                                </div>
+                                <template v-for="view in [serviceMessageView(msg)]" :key="msg.id">
+                                    <div v-if="view.tail || view.actor"
+                                        class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
+                                        style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
+                                        <button v-if="view.clickable" type="button"
+                                            @click="openSenderInfo(msg, $event)"
+                                            :aria-label="`Show sender details for ${view.actor}`"
+                                            class="font-semibold hover:underline hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">{{ view.actor }}</button><span v-else-if="view.actor" class="font-semibold">{{ view.actor }}</span>{{ view.tail }}
+                                    </div>
+                                </template>
                             </div>
-                            <!-- Regular Message (hide duplicate album messages - only show first in group) -->
+                            <!-- Regular Message. Album duplicates are the ONLY rows this branch
+                                 drops; every other non-service row renders, even when it carries
+                                 no text and no media. That is the DEFAULT shape of a caption-less
+                                 voice note or sticker (LISTEN_NEW_MESSAGES_MEDIA /
+                                 DOWNLOAD_MEDIA off), and hiding it would lose the row and its
+                                 :data-msg-id anchor. Emptiness is a SERVICE-ONLY concern and is
+                                 decided by the service branch above; see isRenderedMessageRow. -->
                             <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id"
                                 class="flex items-end gap-2"
                                 :class="[isOwnMessage(msg) ? 'justify-end' : 'justify-start', isSenderBreak(index) ? 'message-run-break' : 'message-run-continue']">
@@ -1372,6 +1388,23 @@
                                                         <span v-else-if="noDownload">Playback disabled</span>
                                                     </div>
                                                 </div>
+                                                <!-- #261: per-message download. Deliberately here on the
+                                                     bubble and NOT inside the playbar's sm-only speed
+                                                     group, which is hidden below the sm breakpoint —
+                                                     i.e. on mobile, where it matters most. ?download=1
+                                                     makes the server send Content-Disposition with the
+                                                     clean original filename. -->
+                                                <a v-if="!noDownload && getMediaUrl(msg)"
+                                                    :href="getMediaUrl(msg) + '?download=1'"
+                                                    :download="getDocumentDisplayName(msg)"
+                                                    @click.stop
+                                                    :aria-label="'Download ' + getDocumentDisplayName(msg)"
+                                                    class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                            d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
+                                                    </svg>
+                                                </a>
                                             </div>
                                         </div>
 
@@ -1488,7 +1521,7 @@
                             <!-- Date Separator - rendered AFTER message for flex-col-reverse (appears ABOVE visually).
                                  data-date-* feed the floating day pill (#249): the pill observes these
                                  markers and reads the day of whichever one is topmost in the viewport. -->
-                            <div v-if="showDateSeparator(index) && !isHiddenAlbumMessage(msg, index)" class="date-separator"
+                            <div v-if="showDateSeparator(index)" class="date-separator"
                                 :data-date-label="formatDateFull(msg.date)" :data-date-iso="msg.date">
                                 <button type="button" @click="openDatePicker(msg.date)"
                                     :aria-label="`Open date picker for ${formatDateFull(msg.date)}`">
@@ -1981,7 +2014,7 @@
                         class="block w-full text-left truncate rounded px-1 hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
                         <span class="text-sm text-white">{{ audioTrack.sender }}</span>
                         <span class="text-[11px] text-tg-muted ml-2">
-                            {{ audioTrack.chatName }}<template v-if="audioTrack.date"> · {{ formatTime(audioTrack.date) }}</template>
+                            {{ audioTrack.chatName }}<template v-if="audioTrack.date"> · {{ formatShortDate(audioTrack.date) }} {{ formatTime(audioTrack.date) }}</template>
                         </span>
                     </button>
                     <div class="flex items-center gap-2 mt-0.5">
@@ -4445,6 +4478,135 @@
                     return !!msg.sender_name && !!currentName && currentName !== msg.sender_name
                 }
 
+                // ---------------------------------------------------------------
+                // Service message wording (#259)
+                //
+                // Rows captured before 7.28.0 stored service events with text='' and
+                // only raw_data.action_type, so the pill rendered as an EMPTY capsule.
+                // This is a render-time fallback (no migration): the wording mirrors
+                // message_utils.service_message_text exactly.
+                //
+                // The mapping is deliberately SPLIT IN TWO. For the actions below the
+                // row's sender IS the subject of the sentence, so naming them is
+                // correct and the name may be made clickable.
+                // ---------------------------------------------------------------
+                const SERVICE_PREDICATES = {
+                    chat_joined_by_link: 'joined the group via invite link',
+                    chat_joined_by_request: 'joined the group',
+                    chat_edit_photo: 'changed the group photo',
+                    chat_delete_photo: 'removed the group photo',
+                }
+
+                // Same group, but the predicate quotes raw_data.new_title.
+                const SERVICE_TITLE_PREDICATES = {
+                    chat_edit_title: 'changed the group name to',
+                    chat_create: 'created the group',
+                    channel_create: 'created the channel',
+                }
+
+                // For these two the subject is the AFFECTED user (added / removed), NOT
+                // the sender — the sender is the admin who performed the action. The
+                // affected user is never persisted (only service_type/action_type are),
+                // so naming the sender here would assert something false about who
+                // joined or left. Render the backend's own unknown-actor form instead;
+                // added-vs-joined and removed-vs-left are not stored either, so the
+                // default flags are the only honest choice.
+                const SERVICE_UNKNOWN_SUBJECT = {
+                    chat_add_user: 'Someone was added to the group',
+                    chat_delete_user: 'Someone was removed from the group',
+                }
+
+                const serviceRawData = (msg) => {
+                    // adapter.py substitutes {} for unparseable raw_data, but a string or
+                    // null must never throw during render either.
+                    const raw = msg?.raw_data
+                    return raw && typeof raw === 'object' ? raw : null
+                }
+
+                const serviceActionType = (msg) => {
+                    const type = serviceRawData(msg)?.action_type
+                    return typeof type === 'string' ? type : ''
+                }
+
+                // Object.hasOwn, never a bare lookup: an action_type of "constructor"
+                // would otherwise resolve against Object.prototype and render garbage.
+                const serviceActorIsSender = (msg) => {
+                    const action = serviceActionType(msg)
+                    return Object.hasOwn(SERVICE_PREDICATES, action)
+                        || Object.hasOwn(SERVICE_TITLE_PREDICATES, action)
+                }
+
+                const serviceMessagePredicate = (msg) => {
+                    const action = serviceActionType(msg)
+                    if (Object.hasOwn(SERVICE_UNKNOWN_SUBJECT, action)) return SERVICE_UNKNOWN_SUBJECT[action]
+                    if (Object.hasOwn(SERVICE_PREDICATES, action)) return SERVICE_PREDICATES[action]
+                    if (Object.hasOwn(SERVICE_TITLE_PREDICATES, action)) {
+                        const title = serviceRawData(msg)?.new_title
+                        return `${SERVICE_TITLE_PREDICATES[action]} "${typeof title === 'string' ? title : ''}"`
+                    }
+                    // Unmapped action: the backend returns None for these, so show nothing.
+                    return ''
+                }
+
+                // #260: the pill is rendered from STRUCTURED PARTS — an actor and a tail —
+                // so the actor can be a real <button>. A rendered sentence is never parsed
+                // for the name: a display name can contain the words around it.
+                const serviceMessageView = (msg) => {
+                    const stored = typeof msg?.text === 'string' ? msg.text.trim() : ''
+                    const clickable = serviceActorIsSender(msg) && msg?.sender_id != null
+                    if (stored) {
+                        // Materialised wording (post-7.28.0) wins: it was built at capture
+                        // time from facts the row no longer carries. Split the actor off
+                        // only on a literal PREFIX match — a prefix test, not a parser.
+                        const name = clickable ? getSenderName(msg) : ''
+                        if (name && stored.startsWith(name)) {
+                            return { actor: name, tail: stored.slice(name.length), clickable: true }
+                        }
+                        return { actor: '', tail: stored, clickable: false }
+                    }
+                    const predicate = serviceMessagePredicate(msg)
+                    if (!predicate) return { actor: '', tail: '', clickable: false }
+                    if (!serviceActorIsSender(msg)) return { actor: '', tail: predicate, clickable: false }
+                    // A channel service row carries no sender; the backend renders
+                    // "Someone" for a missing actor, so match it instead of inventing a
+                    // "Deleted Account" subject. It is not clickable — the popup would be
+                    // empty.
+                    const actor = msg?.sender_id != null ? getSenderName(msg) : 'Someone'
+                    return { actor, tail: ` ${predicate}`, clickable }
+                }
+
+                // Does this index paint anything at all? The two row branches and the
+                // day divider must agree on this, or a divider ends up heading a row
+                // that was never drawn.
+                //
+                // #259 DATA-HIDING GUARD: ONLY a service-shaped row can ever come out
+                // unpainted. A regular row that merely LOOKS empty is NOT empty data.
+                // media is null on perfectly good rows by DEFAULT configuration:
+                // LISTEN_NEW_MESSAGES_MEDIA is false (live rows carry "media": null)
+                // and DOWNLOAD_MEDIA / skip_media_chat_ids do the same, permanently,
+                // for the sweep. A caption-less voice note, sticker or photo therefore
+                // arrives with falsy text and null media all the time. Hiding it would
+                // drop the row AND its :data-msg-id anchor — findMessageElement,
+                // scrollToMessage, jumpToReply and focusAudioTrackMessage all resolve
+                // through that anchor — while unseenMessageCount still counted it, i.e.
+                // an unread badge for a message that renders nowhere.
+                const isRenderedMessageRow = (msg, index) => {
+                    if (!msg) return false
+                    if (serviceRawData(msg)?.service_type === 'service') {
+                        // Ask the SERVICE BRANCH'S OWN condition, never a proxy for it.
+                        // That branch paints on `view.tail || view.actor` and renders
+                        // NOTHING else — no media, no reply quote, no forward header, no
+                        // reactions, no poll. A service row carrying any of those but no
+                        // mapped wording still draws an empty pill, so none of them may
+                        // count as painted or the divider hangs on an invisible row.
+                        // (The container, and its :data-msg-id anchor, survive either way.)
+                        const view = serviceMessageView(msg)
+                        return !!(view.actor || view.tail)
+                    }
+                    // Album duplicates are the ONLY regular rows the template drops.
+                    return !isHiddenAlbumMessage(msg, index)
+                }
+
                 const handleSenderInfoKeydown = (event) => {
                     if (!senderInfoMessage.value) return
                     if (event.key === 'Escape') {
@@ -4592,16 +4754,24 @@
                     // With flex-col-reverse: separator rendered AFTER message appears ABOVE it visually
                     // Show separator when this is the last message of a day (next message is different day)
                     const currMsg = sortedMessages.value[index]
-                    const nextMsg = sortedMessages.value[index + 1]
+                    // Both neighbours are resolved through isRenderedMessageRow so the
+                    // divider always lands on the oldest row that is actually PAINTED.
+                    // Hanging it on a suppressed row leaves it orphaned with nothing
+                    // under it; simply dropping it there would delete the day header
+                    // for every remaining row of that day.
+                    if (!isRenderedMessageRow(currMsg, index)) return false
 
                     // Parse as UTC and convert to viewer timezone for correct date boundaries
                     const currDate = moment.utc(currMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
 
-                    // Last message (oldest) always gets a separator above it
-                    if (!nextMsg) return true
-
-                    const nextDate = moment.utc(nextMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
-                    return currDate !== nextDate
+                    for (let older = index + 1; older < sortedMessages.value.length; older++) {
+                        const olderMsg = sortedMessages.value[older]
+                        if (!isRenderedMessageRow(olderMsg, older)) continue
+                        const olderDate = moment.utc(olderMsg.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
+                        return currDate !== olderDate
+                    }
+                    // Oldest painted message: it always gets a separator above it
+                    return true
                 }
 
                 const getChatName = (chat) => {
@@ -4727,6 +4897,15 @@
                 const formatTime = (dateStr) => {
                     // Parse as UTC (DB stores UTC) then convert to viewer timezone
                     return moment.utc(dateStr).tz(viewerTimezone.value).format('HH:mm')
+                }
+
+                const formatShortDate = (dateStr) => {
+                    if (!dateStr) return ''
+                    // #262: SAME reading as formatTime — moment.utc(...).tz(...). The
+                    // stored timestamp is naive UTC, and the native parsers read a naive
+                    // string as LOCAL time, which shows the wrong calendar day for
+                    // anything near midnight. 'll' is locale-aware (no US-only mm/dd/yy).
+                    return moment.utc(dateStr).tz(viewerTimezone.value).format('ll')
                 }
 
                 const formatMetadataTimestampTitle = (label, dateStr) => {
@@ -4918,7 +5097,11 @@
                     const parts = msg.media?.file_path.split(/[/\\]/)
                     const filename = parts.pop()
                     const folder = parts.pop()  // Get the folder from the path, not from chat_id
-                    return `/media/${folder}/${filename}`
+                    // #258: encode each SEGMENT on its own. A filename containing '#' or
+                    // '?' is otherwise cut by the browser (fragment / query) before the
+                    // request is even sent. Encoding the assembled path instead would
+                    // escape the '/' separators, so it must stay per-segment.
+                    return `/media/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`
                 }
 
                 const getMediaDisplayName = (media) => {
@@ -5244,8 +5427,11 @@
                     // be planted in defaultPlaybackRate BEFORE load() and re-applied on
                     // loadedmetadata — otherwise each new track silently drops to 1x.
                     audioEngine.defaultPlaybackRate = rate
+                    // #257: assigning src ALREADY invokes the media load algorithm
+                    // (preload='metadata'), so an explicit load() here aborts the fetch
+                    // it just started and re-invokes it — every track cost 2-3 requests
+                    // for the same file. The rate handling above/below is unchanged.
                     audioEngine.src = track.url
-                    audioEngine.load()
                     updateAudioMediaSessionMetadata()
                     startAudioPlayback()
                 }
@@ -5399,16 +5585,45 @@
                     const collected = []
                     let cursor = null
                     let hasOlder = false
+                    let foundPlaying = false
                     try {
                         for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++) {
                             const data = await fetchAudioQueuePage(track.chatId, track.kind, cursor)
                             const items = Array.isArray(data?.items) ? data.items : []
-                            if (!items.length) break
+                            if (!items.length) {
+                                // An empty page is NOT self-evidently "exhausted": it has
+                                // two causes and hasOlder must survive them differently.
+                                //
+                                // 1. FIRST page (cursor is still null, so no before_id was
+                                //    sent): the chat simply has no audio of this kind.
+                                //    Genuinely exhausted — nothing older to hole through.
+                                //    hasOlder is still its initial false, which is exactly
+                                //    what the guard below needs to adopt the walk.
+                                // 2. MID-WALK: control only reaches a second fetch because
+                                //    the PREVIOUS page reported has_more, so an empty page
+                                //    CONTRADICTS it. get_media_paginated also answers
+                                //    {items: [], has_more: false} for a before_id it cannot
+                                //    resolve (a foreign or since-deleted cursor row), so an
+                                //    empty page here is no proof the walk reached the end.
+                                //    hasOlder therefore stays true and the #257 guard below
+                                //    refuses a walk that may be non-contiguous, instead of
+                                //    adopting or truncating it.
+                                //
+                                // So hasOlder already holds the right answer in both cases
+                                // and must NOT be overwritten. What matters is that this
+                                // still BREAKS unconditionally: the loop terminates on every
+                                // path, so the infinite-walk risk stays closed.
+                                break
+                            }
                             collected.push(...items)
                             cursor = items[items.length - 1].id
                             hasOlder = !!data.has_more
                             // Found the playing track, or there is nothing older left.
-                            if (items.some(item => item.message_id === track.id) || !hasOlder) break
+                            if (items.some(item => item.message_id === track.id)) {
+                                foundPlaying = true
+                                break
+                            }
+                            if (!hasOlder) break
                         }
                     } catch (e) {
                         // A queue page that fails to load is NOT a playback failure: it
@@ -5422,6 +5637,27 @@
                     // these pages were in flight; those results belong to nobody now.
                     if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return
                     if (!collected.length) return
+                    // #257: the walk is capped at AUDIO_QUEUE_MAX_PAGES. When more audio
+                    // is NEWER than the playing track than that cap allows, the loop ends
+                    // without ever reaching it, and `collected` (the newest block) plus
+                    // the seed window (around the playing track) are two DISJOINT blocks
+                    // with a chronological HOLE between them. Merging and date-sorting
+                    // them made "next" walk to the seed edge and then teleport days
+                    // ahead into the newest block. Only adopt the paged result when the
+                    // playing track was actually found, or when the walk exhausted the
+                    // chat (hasOlder false — then there is nothing to hole through).
+                    // Otherwise abandon THIS extension and leave the seeded window
+                    // queue exactly as it is, so the queue simply ENDS at the seed
+                    // edge: wrong-but-honest beats wrong-and-silent.
+                    //
+                    // Deliberately does NOT latch audioQueueHasOlder = false. That
+                    // disabled head-of-queue paging for the rest of the session even
+                    // though a later, correctly seeded walk could succeed. The
+                    // cursor / has-older pair keeps whatever the last CONTIGUOUS
+                    // result left (null / false for a freshly seeded queue, which
+                    // already ends it at the seed edge), and playAudioMessage and
+                    // closeAudioPlayer reset both on the next track or chat.
+                    if (!foundPlaying && hasOlder) return
                     audioQueueCursor = cursor
                     audioQueueHasOlder = hasOlder
                     audioQueue.value = mergeAudioQueue(audioTracksFromMediaItems(collected, track))
@@ -5581,6 +5817,15 @@
                         const chat = chats.value.find(c => c.id === track.chatId)
                         if (!chat) return
                         await selectChat(chat)
+                    }
+                    await nextTick()
+                    // #257: the queue reaches far past the loaded message window, so the
+                    // track's row is usually NOT in the DOM — scrollToMessage alone just
+                    // logged "Message not loaded yet" and did nothing. Mirror jumpToReply:
+                    // fetch the window around the message first, which scrolls to it.
+                    if (!findMessageElement(track.id)) {
+                        await loadMessagesAroundId(track.id)
+                        return
                     }
                     scrollToMessage(track.id)
                 }
@@ -6161,7 +6406,10 @@
                     formatDate,
                     formatDateFull,
                     formatTime,
+                    formatShortDate,
                     formatMetadataTimestampTitle,
+                    // Service messages (#259 / #260)
+                    serviceMessageView,
                     getMessageVersions,
                     isMessageVersionsLoading,
                     getMessageVersionsError,
