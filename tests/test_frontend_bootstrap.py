@@ -6,13 +6,25 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 INDEX_HTML = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
 
 NODE = shutil.which("node")
 
 
-def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, epilogue: str):
+def _setup_slice(html: str, declaration: str) -> str:
+    """Return one top-level ``const`` body from the root Vue ``setup()``.
+
+    Setup-scope declarations are indented 16 spaces, so the next such line is
+    the end of the current one; nested declarations are indented deeper and do
+    not terminate the slice.
+    """
+    start = html.index(declaration)
+    return html[start : html.index("\n                const ", start + len(declaration))]
+
+
+def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, epilogue: str) -> Any:
     """EXECUTE real setup-scope declarations under a stubbed environment.
 
     String assertions cannot tell a working helper from a broken one, and this
@@ -23,8 +35,7 @@ def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, e
     """
     parts = [prelude]
     for declaration in declarations:
-        start = html.index(declaration)
-        parts.append(html[start : html.index("\n                const ", start + len(declaration))])
+        parts.append(_setup_slice(html, declaration))
     program = "\n".join(parts) + "\n" + epilogue + "\n"
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "helpers.js"
@@ -34,7 +45,7 @@ def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, e
     return json.loads(result.stdout)
 
 
-def _run_setup_helpers(html: str, declarations: tuple[str, ...], expression: str, prelude: str = ""):
+def _run_setup_helpers(html: str, declarations: tuple[str, ...], expression: str, prelude: str = "") -> Any:
     """EXECUTE a few setup-scope helpers and return the JSON value of ``expression``."""
     return _run_setup_program(html, declarations, prelude, f"console.log(JSON.stringify({expression}))")
 
@@ -1161,17 +1172,6 @@ def test_chat_header_avatar_button_is_not_a_tap_target():
 # --- Global audio player (#250) -------------------------------------------------
 
 
-def _setup_slice(html: str, declaration: str) -> str:
-    """Return one top-level ``const`` body from the root Vue ``setup()``.
-
-    Setup-scope declarations are indented 16 spaces, so the next such line is
-    the end of the current one; nested declarations are indented deeper and do
-    not terminate the slice.
-    """
-    start = html.index(declaration)
-    return html[start : html.index("\n                const ", start + len(declaration))]
-
-
 def _code_only(body: str) -> str:
     """Drop whole-line ``//`` comments: some assertions are about code, not prose."""
     return "\n".join(line for line in body.splitlines() if not line.strip().startswith("//"))
@@ -1715,6 +1715,10 @@ const mediaItem = (n) => ({
     id: `m${n}`, message_id: n, chat_id: 7,
     media_url: `/media/${n}.ogg`, message_date: `2026-07-0${n}T00:00:00`,
 })
+// NOTE: audioQueueCursor and audioQueueHasOlder are NOT declared here on
+// purpose. Both are real module-scope `let`s in the template and arrive with
+// the sliced declarations below; declaring them again is a duplicate-binding
+// SyntaxError, so the epilogue's assignments are not implicit globals.
 """
         epilogue = """
 const scenario = async (pages) => {
