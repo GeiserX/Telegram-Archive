@@ -37,6 +37,28 @@ def sender_display_name(sender: object | None) -> str | None:
     return None
 
 
+def resolve_sender_display_name(
+    sender_name: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    username: str | None,
+) -> str | None:
+    """Resolve a stored message row's sender to a display name.
+
+    Single source of truth for "who sent this row" on the read side, so the
+    message list, the media gallery, the export stream and the reply-quote block
+    can never drift apart. Precedence matches the viewer's getSenderName: the
+    capture-time ``messages.sender_name`` snapshot first (it is what was true
+    when the message arrived), then the user's current first/last name, then the
+    username. Returns ``None`` when nothing is known — each caller picks its own
+    placeholder ("Unknown", the numeric id, or nothing at all).
+    """
+    for value in (sender_name, f"{first_name or ''} {last_name or ''}", username):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def compute_directory_size(path: str) -> int:
     """Return total on-disk size (bytes) of regular files under `path`.
 

@@ -5,6 +5,7 @@ Handles Telegram client connection, message fetching, and incremental backup log
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import os
@@ -190,11 +191,79 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         logger.debug("Thumbnail pre-generation failed: %s", e)
 
 
+def _client_like(obj: object | None) -> bool:
+    """True for anything exposing the client half of the reconnect contract."""
+    return callable(getattr(obj, "is_connected", None)) and callable(getattr(obj, "connect", None))
+
+
+def _retry_client(coro_fn, explicit: object | None) -> object | None:
+    """Find the TelegramClient behind a retried call, for reconnect purposes.
+
+    Every call shape this repo actually uses must resolve, or that path silently
+    keeps the pre-#265 behaviour of retrying a dead client:
+
+    * ``call_with_flood_retry(self.client.download_media, ...)`` — a bound method
+      of the client, so ``__self__`` IS the client (this is the shape in the
+      reported log).
+    * ``call_with_flood_retry(self.client, GetContactsRequest(...))`` — Telethon
+      invokes a raw request by *calling the client*, so ``coro_fn`` itself is the
+      client and there is no ``__self__`` at all.
+    * ``call_with_flood_retry(self._fetch_media_bytes_bounded, ...)`` — a bound
+      method of a component that owns a client.
+
+    A locally-defined closure (``_get_messages_once``) has no owner to inspect;
+    those call sites pass ``client=`` explicitly.
+    """
+    if explicit is not None:
+        return explicit
+    if _client_like(coro_fn):
+        return coro_fn
+    owner = getattr(coro_fn, "__self__", None)
+    if owner is None:
+        return None
+    if _client_like(owner):
+        return owner
+    return getattr(owner, "client", None)
+
+
+async def _reconnect_before_retry(client: object | None, call_name: object) -> bool:
+    """Re-establish a dropped Telegram connection before spending a retry (#265).
+
+    "Cannot send requests while disconnected" is not fixed by waiting: without
+    this, a network blip burned the entire retry budget on a client that could
+    never succeed, and the log showed no reconnection attempt at all — which is
+    half the bug, since an operator cannot tell a silent retry loop from a stuck
+    one. Best-effort by design: it never raises, so a still-down network simply
+    fails the next attempt and backs off exactly as before, and Telethon's own
+    reconnect (when it wins the race) leaves this a no-op.
+    """
+    if client is None:
+        return False
+    if not _client_like(client):
+        return False
+    is_connected = client.is_connected
+    connect = client.connect
+    try:
+        connected = is_connected()
+        if inspect.isawaitable(connected):
+            connected = await connected
+        if connected:
+            return False
+        logger.warning("Connection is down — reconnecting before retrying %s", call_name)
+        await connect()
+    except Exception as exc:  # noqa: BLE001 — reconnect is best effort, never fatal
+        logger.warning("Reconnect before retrying %s failed: %s", call_name, exc)
+        return False
+    logger.info("Reconnected to Telegram before retrying %s", call_name)
+    return True
+
+
 async def call_with_flood_retry(
     coro_fn,
     *args,
     max_retries=MAX_FLOOD_RETRIES,
     non_retryable: Callable[[BaseException], bool] | None = None,
+    client: object | None = None,
     **kwargs,
 ):
     """Retry a single async call on FloodWaitError with bounded sleep and
@@ -208,6 +277,9 @@ async def call_with_flood_retry(
     raised exception, that exception is re-raised immediately instead of being
     retried here, letting the caller handle it (e.g. refresh a stale media
     reference and retry with its own backoff).
+
+    ``client`` overrides the client this helper reconnects between transient
+    retries; by default it is inferred from ``coro_fn`` (see ``_retry_client``).
     """
     retries = 0
     while True:
@@ -295,6 +367,10 @@ async def call_with_flood_retry(
                 exc,
             )
             await asyncio.sleep(sleep_duration)
+            # Reconnect AFTER the backoff so the network has had the pause to come
+            # back, and immediately BEFORE the next attempt, which is what the
+            # retry actually needs (#265).
+            await _reconnect_before_retry(_retry_client(coro_fn, client), getattr(coro_fn, "__name__", coro_fn))
 
 
 @asynccontextmanager
@@ -366,6 +442,16 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
     output for short waits — those are routine and noisy in healthy backfills.
     Set to 0 to log every wait.
 
+    Dropped connections are handled the same way (#265). A long backfill easily
+    outlives Telethon's internal reconnect budget (5 attempts, then it marks the
+    sender disconnected and stops retrying by itself), after which every request
+    raises ``ConnectionError("Cannot send requests while disconnected")``. That
+    used to abort the whole chat on the first such error, and — because nothing
+    ever called ``connect()`` again — every later chat in the sweep died the same
+    way. Now the connection is re-established and iteration resumes from the last
+    yielded id, sharing the same bounded retry budget. Errors Telegram raises for
+    a permanent condition (``RPCError`` and friends) still propagate untouched.
+
     Note: resume tracking uses ``max(resume_from, msg.id)`` which is only
     correct for ascending iteration (``reverse=True``).
     """
@@ -417,6 +503,33 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
                     MAX_FLOOD_RETRIES,
                 )
             await asyncio.sleep(sleep_duration)
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            # Connection-shaped failures only: RPCError and other Telegram-level
+            # errors keep propagating to the caller exactly as before, so a
+            # permanent condition is never retried five times first.
+            retries += 1
+            if retries > MAX_FLOOD_RETRIES:
+                logger.error(
+                    "Transient Error: exceeded %d retries without progress while iterating, giving up: %s",
+                    MAX_FLOOD_RETRIES,
+                    exc,
+                )
+                raise
+            backoff = min(BACKOFF_MAX_SECONDS, BACKOFF_MIN_SECONDS * (2.0 ** (retries - 1)))
+            jitter = random.uniform(0.5, 1.5)
+            sleep_duration = backoff + jitter
+            logger.warning(
+                "Transient Error (%s): sleeping %.2fs before resuming iteration (retry=%d/%d): %s",
+                exc.__class__.__name__,
+                sleep_duration,
+                retries,
+                MAX_FLOOD_RETRIES,
+                exc,
+            )
+            await asyncio.sleep(sleep_duration)
+            # Reconnect after the backoff and immediately before the next
+            # attempt, mirroring call_with_flood_retry (#265).
+            await _reconnect_before_retry(client, "iter_messages")
 
 
 class TelegramBackup:
@@ -2609,6 +2722,10 @@ class TelegramBackup:
             fresh_messages = await call_with_flood_retry(
                 _get_messages_once,
                 non_retryable=lambda exc: isinstance(exc, TimeoutError),
+                # A local closure has no owner to infer the client from, and this
+                # runs on the media path that reported #265 — pass it explicitly
+                # or the refresh retries against a disconnected client.
+                client=self.client,
             )
         except (TimeoutError, RPCError, ConnectionError, OSError) as e:
             logger.debug("Could not refresh media reference (%s)", type(e).__name__)
