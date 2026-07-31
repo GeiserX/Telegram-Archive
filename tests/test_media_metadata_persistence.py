@@ -96,6 +96,11 @@ def _make_backup(media_root):
         return path
 
     backup.client.download_media = AsyncMock(side_effect=fake_download)
+    # config is a MagicMock, so an unset predicate returns a truthy mock. Pin the
+    # skip predicates to False: a future test routing through _process_message or
+    # _backup_dialog with this fixture would otherwise silently skip every message
+    # and pass vacuously.
+    backup.config.should_skip_topic.return_value = False
     return backup
 
 

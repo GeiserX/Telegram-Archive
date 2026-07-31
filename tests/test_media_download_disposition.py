@@ -160,7 +160,7 @@ class TestDownloadDisposition:
                 handle.write(b"bytes")
             with patch.dict(
                 os.environ,
-                {"VIEWER_USERNAME": "admin", "VIEWER_PASSWORD": "testpass123", "SECURE_COOKIES": "false"},
+                {"VIEWER_USERNAME": "admin", "VIEWER_PASSWORD": "test@value/here", "SECURE_COOKIES": "false"},
             ):
                 client, main_mod = _reload_main(media_root=tmpdir)
                 main_mod.AUTH_ENABLED = True
