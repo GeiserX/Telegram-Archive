@@ -261,3 +261,164 @@ class TestGetMediaCounts:
     async def test_empty_chat_returns_empty_dict(self, adapter):
         counts = await adapter.get_media_counts(-9999)
         assert counts == {}
+
+
+# ===========================================================================
+# #257 -- ordering / tiebreak of get_media_paginated
+#
+# The pre-existing pagination tests above only assert "no duplicates" and every
+# fixture message has a unique date, so the tiebreak branch was never exercised.
+# These fixtures use PRODUCTION-format composite ids (f"{chat_id}_{msg_id}_{type}")
+# because the defect was Media.id sorting LEXICALLY.
+# ===========================================================================
+
+
+async def _build_adapter(seed) -> DatabaseAdapter:
+    """In-memory SQLite adapter, seeded by the given ``seed(session, chat_id)``."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    db_manager = DatabaseManager.__new__(DatabaseManager)
+    db_manager.engine = engine
+    db_manager.database_url = "sqlite+aiosqlite://"
+    db_manager._is_sqlite = True
+    db_manager.async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with db_manager.async_session_factory() as session:
+        await seed(session)
+        await session.commit()
+
+    return DatabaseAdapter(db_manager)
+
+
+async def _walk_all(adapter: DatabaseAdapter, chat_id: int, limit: int) -> list[dict]:
+    """Page through every media row using before_id cursors until exhaustion."""
+    collected: list[dict] = []
+    before_id = None
+    for _ in range(1000):  # guard: a broken cursor must fail the test, not hang it
+        page = await adapter.get_media_paginated(chat_id, limit=limit, before_id=before_id)
+        collected.extend(page["items"])
+        if not page["has_more"]:
+            return collected
+        assert page["items"], "has_more=True with an empty page would loop forever"
+        before_id = page["items"][-1]["id"]
+    raise AssertionError("pagination did not terminate")
+
+
+MULTI_DATE_CHAT = -100257
+MULTI_DATE_TOTAL = 120
+SAME_DATE_CHAT = -100258
+SAME_DATE_MESSAGE_IDS = [7, 8, 9, 80, 89, 99, 120, 1000]
+
+
+@pytest_asyncio.fixture
+async def multi_date_adapter():
+    """120 media rows spread over 4 timestamps (30 rows share each timestamp)."""
+
+    async def seed(session) -> None:
+        session.add(Chat(id=MULTI_DATE_CHAT, type="channel", title="Bulk"))
+        for index in range(MULTI_DATE_TOTAL):
+            message_id = index + 1
+            day = 1 + index // 30
+            session.add(
+                Message(
+                    id=message_id,
+                    chat_id=MULTI_DATE_CHAT,
+                    sender_id=None,
+                    date=datetime(2026, 3, day, 12),
+                    text="",
+                )
+            )
+            session.add(
+                Media(
+                    id=f"{MULTI_DATE_CHAT}_{message_id}_voice",
+                    message_id=message_id,
+                    chat_id=MULTI_DATE_CHAT,
+                    type="voice",
+                    file_path=f"{MULTI_DATE_CHAT}/voice_{message_id}.ogg",
+                    file_name=f"voice_{message_id}.ogg",
+                    downloaded=1,
+                )
+            )
+
+    return await _build_adapter(seed)
+
+
+@pytest_asyncio.fixture
+async def same_date_adapter():
+    """Every media row shares ONE timestamp; message_ids differ in digit length."""
+
+    async def seed(session) -> None:
+        session.add(Chat(id=SAME_DATE_CHAT, type="channel", title="Tiebreak"))
+        shared_date = datetime(2026, 4, 1, 9, 30)
+        for message_id in SAME_DATE_MESSAGE_IDS:
+            session.add(
+                Message(
+                    id=message_id,
+                    chat_id=SAME_DATE_CHAT,
+                    sender_id=None,
+                    date=shared_date,
+                    text="",
+                )
+            )
+            session.add(
+                Media(
+                    id=f"{SAME_DATE_CHAT}_{message_id}_voice",
+                    message_id=message_id,
+                    chat_id=SAME_DATE_CHAT,
+                    type="voice",
+                    file_path=f"{SAME_DATE_CHAT}/voice_{message_id}.ogg",
+                    file_name=f"voice_{message_id}.ogg",
+                    downloaded=1,
+                )
+            )
+
+    return await _build_adapter(seed)
+
+
+class TestMediaPaginationOrdering:
+    """#257: full-walk integrity plus numeric (not lexical) tiebreak ordering."""
+
+    async def test_full_walk_returns_every_row_exactly_once(self, multi_date_adapter) -> None:
+        items = await _walk_all(multi_date_adapter, MULTI_DATE_CHAT, limit=7)
+        ids = [item["id"] for item in items]
+
+        assert len(ids) == MULTI_DATE_TOTAL
+        assert len(set(ids)) == MULTI_DATE_TOTAL, "duplicate rows across the walk"
+        expected = {f"{MULTI_DATE_CHAT}_{n}_voice" for n in range(1, MULTI_DATE_TOTAL + 1)}
+        assert set(ids) == expected, "the walk skipped rows"
+
+    async def test_full_walk_dates_are_non_increasing(self, multi_date_adapter) -> None:
+        items = await _walk_all(multi_date_adapter, MULTI_DATE_CHAT, limit=7)
+        dates = [item["message_date"] for item in items]
+
+        assert all(dates[i] >= dates[i + 1] for i in range(len(dates) - 1)), "message_date is not descending"
+
+    async def test_full_walk_is_numerically_descending_within_each_date(self, multi_date_adapter) -> None:
+        items = await _walk_all(multi_date_adapter, MULTI_DATE_CHAT, limit=7)
+        message_ids = [item["message_id"] for item in items]
+
+        assert message_ids == sorted(message_ids, reverse=True)
+
+    async def test_identical_dates_tiebreak_numerically_not_lexically(self, same_date_adapter) -> None:
+        items = await _walk_all(same_date_adapter, SAME_DATE_CHAT, limit=3)
+        message_ids = [item["message_id"] for item in items]
+
+        assert message_ids == sorted(SAME_DATE_MESSAGE_IDS, reverse=True)
+
+        # A lexical sort on the composite Media.id puts 9 before 89 before 8 -- the
+        # exact symptom of #257. Assert we are NOT producing that order.
+        lexical = sorted(SAME_DATE_MESSAGE_IDS, key=lambda n: f"{SAME_DATE_CHAT}_{n}_voice", reverse=True)
+        assert message_ids != lexical
+
+    async def test_identical_dates_walk_has_no_duplicates_or_gaps(self, same_date_adapter) -> None:
+        items = await _walk_all(same_date_adapter, SAME_DATE_CHAT, limit=3)
+        ids = [item["id"] for item in items]
+
+        assert len(ids) == len(set(ids))
+        assert set(ids) == {f"{SAME_DATE_CHAT}_{n}_voice" for n in SAME_DATE_MESSAGE_IDS}

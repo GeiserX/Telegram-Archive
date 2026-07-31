@@ -1619,19 +1619,12 @@ class TestOnNewMessageAdvanced:
         assert ws_message["username"] == "testuser"
         assert ws_message["sender_name"] == "Test User"
 
-        # Nested media dict mirrors the insert_media call exactly (same id/type/file_path/
-        # file_name; the unset fields insert_media defaults to None via .get() also stay None)
+        # Nested media dict mirrors the insert_media call exactly, including the
+        # attributes extracted from the media object (#263).
         media_data = db.insert_media.call_args[0][0]
         assert ws_message["media"] == {
-            "id": media_data["id"],
-            "type": media_data["type"],
-            "file_path": media_data["file_path"],
-            "file_name": media_data["file_name"],
-            "file_size": None,
-            "mime_type": None,
-            "width": None,
-            "height": None,
-            "duration": None,
+            key: media_data[key]
+            for key in ("id", "type", "file_path", "file_name", "file_size", "mime_type", "width", "height", "duration")
         }
 
         # message_data passed to db.insert_message is untouched -- DB path unchanged
@@ -2319,3 +2312,134 @@ class TestListenerMainEntryPoint:
             pytest.raises(RuntimeError, match="fatal"),
         ):
             await main()
+
+
+# ===========================================================================
+# #263 -- realtime listener must record the same media attributes as the sweep
+# ===========================================================================
+
+
+def _voice_media(duration: int = 7, size: int = 4321):
+    """A MessageMediaDocument mock shaped like a Telegram voice note."""
+    from types import SimpleNamespace
+
+    from telethon.tl.types import DocumentAttributeAudio, MessageMediaDocument
+
+    media = MagicMock(spec=MessageMediaDocument)
+    media.document = SimpleNamespace(
+        id=987654321,
+        size=size,
+        mime_type="audio/ogg",
+        attributes=[DocumentAttributeAudio(duration=duration, voice=True)],
+    )
+    return media
+
+
+def _video_media(width: int = 640, height: int = 480, duration: int = 12, size: int = 90000):
+    """A MessageMediaDocument mock shaped like a Telegram video."""
+    from types import SimpleNamespace
+
+    from telethon.tl.types import DocumentAttributeVideo, MessageMediaDocument
+
+    media = MagicMock(spec=MessageMediaDocument)
+    media.document = SimpleNamespace(
+        id=123456789,
+        size=size,
+        mime_type="video/mp4",
+        attributes=[DocumentAttributeVideo(duration=duration, w=width, h=height)],
+    )
+    return media
+
+
+def _media_event(media, message_id: int = 4242):
+    """NewMessage event carrying the given media object."""
+    event = MagicMock()
+    event.chat_id = -1001234567890
+    msg = MagicMock()
+    msg.reply_to = None
+    msg.id = message_id
+    msg.sender_id = 111
+    msg.date = datetime(2026, 1, 1)
+    msg.text = ""
+    msg.reply_to_msg_id = None
+    msg.edit_date = None
+    msg.out = False
+    msg.grouped_id = None
+    msg.media = media
+    msg.sender = None
+    event.message = msg
+    event.get_chat = AsyncMock(return_value=MagicMock())
+    return event
+
+
+class TestRealtimeMediaAttributes:
+    """#263: live capture left duration/file_size/mime_type/width/height NULL."""
+
+    async def test_voice_note_attributes_reach_the_db_row(self):
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        handler = handlers[events.NewMessage]
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "hash123"))
+
+        await handler(_media_event(_voice_media(duration=7, size=4321)))
+
+        media_data = db.insert_media.call_args[0][0]
+        assert media_data["type"] == "voice"
+        assert media_data["duration"] == 7
+        assert media_data["file_size"] == 4321
+        assert media_data["mime_type"] == "audio/ogg"
+
+    async def test_video_dimensions_and_duration_reach_the_db_row(self):
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        handler = handlers[events.NewMessage]
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/clip.mp4", "clip.mp4", "hash456"))
+
+        await handler(_media_event(_video_media(width=640, height=480, duration=12, size=90000)))
+
+        media_data = db.insert_media.call_args[0][0]
+        assert media_data["type"] == "video"
+        assert media_data["width"] == 640
+        assert media_data["height"] == 480
+        assert media_data["duration"] == 12
+        assert media_data["file_size"] == 90000
+        assert media_data["mime_type"] == "video/mp4"
+
+    async def test_ws_media_mirrors_the_inserted_row(self):
+        from src.realtime import NotificationType
+
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        handler = handlers[events.NewMessage]
+        notifier = AsyncMock()
+        listener._notifier = notifier
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "hash123"))
+
+        await handler(_media_event(_voice_media(duration=9, size=555)))
+
+        media_data = db.insert_media.call_args[0][0]
+        assert notifier.notify.call_args[0][0] == NotificationType.NEW_MESSAGE
+        ws_media = notifier.notify.call_args[0][2]["message"]["media"]
+        assert ws_media == {
+            "id": media_data["id"],
+            "type": media_data["type"],
+            "file_path": media_data["file_path"],
+            "file_name": media_data["file_name"],
+            "file_size": media_data["file_size"],
+            "mime_type": media_data["mime_type"],
+            "width": media_data["width"],
+            "height": media_data["height"],
+            "duration": media_data["duration"],
+        }
+        assert ws_media["duration"] == 9
+        assert ws_media["file_size"] == 555
+
+    async def test_on_disk_size_wins_over_telegram_reported_size(self, tmp_path):
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        handler = handlers[events.NewMessage]
+        on_disk = tmp_path / "voice.ogg"
+        on_disk.write_bytes(b"x" * 17)
+        listener._download_media = AsyncMock(return_value=(str(on_disk), "voice.ogg", "hash123"))
+
+        await handler(_media_event(_voice_media(duration=3, size=999999)))
+
+        media_data = db.insert_media.call_args[0][0]
+        assert media_data["file_size"] == 17
+        assert media_data["duration"] == 3
