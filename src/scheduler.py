@@ -182,7 +182,32 @@ class BackupScheduler:
         if not self.config.enable_listener:
             return
 
-        if not self._connection or not self._connection.is_connected:
+        if not self._connection:
+            logger.error("Cannot start listener: not connected to Telegram")
+            return
+
+        # ``TelegramConnection.is_connected`` is an app-level flag: it stays True
+        # after Telethon's sender exhausts its own reconnect budget (~55s) and
+        # marks itself disconnected, so it cannot tell us the socket is dead.
+        # Without re-establishing the connection here, the watchdog restarts the
+        # listener into "Shared client is not connected" every 5 seconds forever
+        # once an outage outlives Telethon's budget (#265). ensure_connected()
+        # checks the live client and calls connect() when it is down.
+        #
+        # This runs on the watchdog loop, which shares an event loop with the
+        # scheduled backup job, so it can fire while a backup is suspended at an
+        # await. That is safe because TelegramConnection heals the SAME client
+        # object in place and serialises healers on its own lock — the backup's
+        # client reference heals with it instead of being left behind. Skipping
+        # the heal while a backup holds the connection would be the wrong trade:
+        # a backup can run for hours, and the listener would stay dead for all
+        # of it, which is the outage #265 is about.
+        try:
+            await self._connection.ensure_connected()
+        except Exception as e:
+            logger.warning(f"Could not re-establish the shared connection before starting the listener: {e}")
+
+        if not self._connection.is_connected:
             logger.error("Cannot start listener: not connected to Telegram")
             return
 
