@@ -169,6 +169,7 @@ class TestMediaPaginated:
             media_types=["photo", "video"],
             limit=50,
             before_id=None,
+            after_id=None,
         )
 
     def test_passes_limit(self, anon_env):
@@ -180,6 +181,7 @@ class TestMediaPaginated:
             media_types=None,
             limit=20,
             before_id=None,
+            after_id=None,
         )
 
     def test_passes_before_id(self, anon_env):
@@ -191,7 +193,29 @@ class TestMediaPaginated:
             media_types=None,
             limit=50,
             before_id="abc",
+            after_id=None,
         )
+
+    def test_passes_after_id(self, anon_env):
+        """#266: the forward cursor reaches the adapter as the same opaque string."""
+        client, _, mock_db = _get_client()
+        resp = client.get("/api/chats/-1001/media?after_id=-1001_2428_voice")
+        assert resp.status_code == 200
+        mock_db.get_media_paginated.assert_called_once_with(
+            -1001,
+            media_types=None,
+            limit=50,
+            before_id=None,
+            after_id="-1001_2428_voice",
+        )
+
+    def test_before_id_and_after_id_are_mutually_exclusive(self, anon_env):
+        """#266: asking for both directions at once is rejected, not silently halved."""
+        client, _, mock_db = _get_client()
+        resp = client.get("/api/chats/-1001/media?before_id=a&after_id=b")
+        assert resp.status_code == 400
+        assert "mutually exclusive" in resp.json()["detail"]
+        mock_db.get_media_paginated.assert_not_called()
 
     def test_empty_types_means_all(self, anon_env):
         client, _, mock_db = _get_client()
@@ -202,6 +226,7 @@ class TestMediaPaginated:
             media_types=None,
             limit=50,
             before_id=None,
+            after_id=None,
         )
 
     def test_items_include_thumb_url(self, anon_env):

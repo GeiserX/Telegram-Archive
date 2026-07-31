@@ -1738,15 +1738,26 @@ async def get_chat_media(
     types: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=200),
     before_id: str = Query(default=""),
+    after_id: str = Query(default=""),
     user: UserContext = Depends(require_auth),
 ):
-    """Get paginated media items for a chat, with optional type filtering."""
+    """Get paginated media items for a chat, with optional type filtering.
+
+    ``before_id`` pages BACKWARD (older) and ``after_id`` pages FORWARD (newer);
+    both are the same opaque composite media-id token. They are mutually
+    exclusive — asking for a page both before X and after Y has no meaning here,
+    so it is rejected instead of silently honouring one. An unresolvable or
+    foreign token yields an empty page in either direction (#266).
+    """
     allowed = get_user_chat_ids(user)
     if allowed is not None and chat_id not in allowed:
         raise HTTPException(status_code=403, detail="Access denied")
 
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
+
+    if before_id and after_id:
+        raise HTTPException(status_code=400, detail="before_id and after_id are mutually exclusive")
 
     media_types = [t.strip() for t in types.split(",") if t.strip()] or None
 
@@ -1756,6 +1767,7 @@ async def get_chat_media(
             media_types=media_types,
             limit=limit,
             before_id=before_id or None,
+            after_id=after_id or None,
         )
         for item in result["items"]:
             file_path = item.get("file_path", "") or ""

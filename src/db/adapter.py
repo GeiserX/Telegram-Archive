@@ -22,7 +22,7 @@ from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, u
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from ..message_utils import compute_directory_size, utcnow_naive
+from ..message_utils import compute_directory_size, resolve_sender_display_name, utcnow_naive
 from .base import DatabaseManager
 from .models import (
     AppSettings,
@@ -1250,27 +1250,50 @@ class DatabaseAdapter:
         media_types: list[str] | None = None,
         limit: int = 50,
         before_id: str | None = None,
+        after_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Get paginated media records for a chat with cursor-based pagination.
 
-        ``before_id`` stays an opaque ``Media.id`` token (the gallery round-trips the
-        composite ``{chat}_{msg}_{type}`` string), but it is resolved to the triple
-        (Message.date, Media.message_id, Media.id) before use. ``Media.id`` alone sorts
-        lexically, so rows sharing a timestamp came back as 9, 99, 98, ..., 8, 89 —
-        numerically meaningless; ``Media.message_id`` is an integer and orders correctly.
+        ``before_id``/``after_id`` are opaque ``Media.id`` tokens (the gallery
+        round-trips the composite ``{chat}_{msg}_{type}`` string), but each is resolved
+        to the triple (Message.date, Media.message_id, Media.id) before use.
+        ``Media.id`` alone sorts lexically, so rows sharing a timestamp came back as
+        9, 99, 98, ..., 8, 89 — numerically meaningless; ``Media.message_id`` is an
+        integer and orders correctly.
 
-        The ORDER BY and the cursor predicate MUST stay the same triple: that identity
-        is what guarantees a full walk yields every row exactly once (no skips, no
-        duplicates). Change one and you must change the other.
+        Two directions, one cursor shape:
 
-        The cursor resolution is scoped to ``chat_id``. Unscoped, a caller could pass
-        ANOTHER chat's media id and have that row's timestamp shape this chat's result
-        window — a cross-chat existence/timestamp oracle for a chat the caller cannot
-        read. A token that does not belong to ``chat_id`` is indistinguishable from a
-        deleted one and returns an EMPTY page (never a full first page), so neither the
-        existence nor the date of a foreign row can be inferred from the response.
+        - ``before_id`` walks BACKWARD (older): predicate ``<`` on the triple, ordered
+          DESC, page returned newest-first. ``has_more`` means "more OLDER rows exist".
+        - ``after_id`` walks FORWARD (newer): predicate ``>`` on the triple, ordered
+          ASC, page returned oldest-first. ``has_more`` means "more NEWER rows exist".
+          The audio queue uses this to extend forward on demand instead of
+          pre-collecting every item newer than the playing track (#266).
+
+        The two are MUTUALLY EXCLUSIVE: supplying both is a caller bug (there is no
+        coherent page "before X and after Y" in this API) and raises ``ValueError``.
+
+        The ORDER BY and the cursor predicate MUST stay the same triple, in the same
+        direction: that identity is what guarantees a full walk yields every row
+        exactly once (no skips, no duplicates). Change one and you must change the
+        other — in both directions.
+
+        The cursor resolution is scoped to ``chat_id``, forward as well as backward.
+        Unscoped, a caller could pass ANOTHER chat's media id and have that row's
+        timestamp shape this chat's result window — a cross-chat existence/timestamp
+        oracle for a chat the caller cannot read. A token that does not belong to
+        ``chat_id`` is indistinguishable from a deleted one and returns an EMPTY page
+        (never a full first page) in either direction, so neither the existence nor the
+        date of a foreign row can be inferred from the response, and a client can treat
+        both directions alike.
         """
+        if before_id and after_id:
+            raise ValueError("before_id and after_id are mutually exclusive")
+
+        forward = bool(after_id)
+        cursor_token = after_id if forward else before_id
+
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(
@@ -1295,37 +1318,57 @@ class DatabaseAdapter:
             if media_types:
                 stmt = stmt.where(Media.type.in_(media_types))
 
-            if before_id:
+            if cursor_token:
                 cursor_stmt = (
                     select(Media.id, Media.message_id, Message.date)
                     .join(
                         Message,
                         and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id),
                     )
-                    .where(and_(Media.id == before_id, Media.chat_id == chat_id))
+                    .where(and_(Media.id == cursor_token, Media.chat_id == chat_id))
                 )
                 cursor_result = await session.execute(cursor_stmt)
                 cursor_row = cursor_result.one_or_none()
                 if cursor_row is None:
                     return {"items": [], "has_more": False}
                 cursor_media_id, cursor_message_id, cursor_date = cursor_row
-                stmt = stmt.where(
-                    or_(
-                        Message.date < cursor_date,
-                        and_(
-                            Message.date == cursor_date,
-                            or_(
-                                Media.message_id < cursor_message_id,
-                                and_(
-                                    Media.message_id == cursor_message_id,
-                                    Media.id < cursor_media_id,
+                if forward:
+                    stmt = stmt.where(
+                        or_(
+                            Message.date > cursor_date,
+                            and_(
+                                Message.date == cursor_date,
+                                or_(
+                                    Media.message_id > cursor_message_id,
+                                    and_(
+                                        Media.message_id == cursor_message_id,
+                                        Media.id > cursor_media_id,
+                                    ),
                                 ),
                             ),
-                        ),
+                        )
                     )
-                )
+                else:
+                    stmt = stmt.where(
+                        or_(
+                            Message.date < cursor_date,
+                            and_(
+                                Message.date == cursor_date,
+                                or_(
+                                    Media.message_id < cursor_message_id,
+                                    and_(
+                                        Media.message_id == cursor_message_id,
+                                        Media.id < cursor_media_id,
+                                    ),
+                                ),
+                            ),
+                        )
+                    )
 
-            stmt = stmt.order_by(Message.date.desc(), Media.message_id.desc(), Media.id.desc())
+            if forward:
+                stmt = stmt.order_by(Message.date.asc(), Media.message_id.asc(), Media.id.asc())
+            else:
+                stmt = stmt.order_by(Message.date.desc(), Media.message_id.desc(), Media.id.desc())
             stmt = stmt.limit(limit + 1)
             result = await session.execute(stmt)
             rows = result.all()
@@ -1345,7 +1388,7 @@ class DatabaseAdapter:
                     "height": media.height,
                     "duration": media.duration,
                     "message_date": msg_date.isoformat() if msg_date else None,
-                    "sender_name": (sender_name or f"{first_name or ''} {last_name or ''}".strip() or username or None),
+                    "sender_name": resolve_sender_display_name(sender_name, first_name, last_name, username),
                 }
                 for media, msg_date, sender_name, first_name, last_name, username in rows[:limit]
             ]
@@ -1971,6 +2014,74 @@ class DatabaseAdapter:
 
     # ========== Web Viewer Operations ==========
 
+    async def _attach_reply_metadata(self, session, chat_id: int, messages: list[dict[str, Any]]) -> None:
+        """Resolve the reply targets of a whole page in ONE query (#268).
+
+        THE single rule for what a reply quote block shows. Every read path that
+        returns rendered messages calls this — the normal list, the pinned list
+        and the by-date lookup — so the same message can never render one way in
+        one list and another way in the next (#259 was exactly that drift).
+
+        Null contract: a message that IS a reply always carries both
+        ``reply_to_sender_name`` and ``reply_to_media_type``. They are None when
+        the target is not in the archive (never captured, hard-deleted, or in
+        another chat) or when the target's sender cannot be named at all — the
+        viewer renders its own fallback. A soft-deleted target is still archived
+        history and resolves normally. A message that is not a reply carries
+        neither key. ``reply_to_text`` is only backfilled when the row did not
+        capture one.
+
+        Cost: one statement per page regardless of how many replies it holds.
+        The media kind rides along as a correlated scalar subquery (first media
+        row per message) rather than a join, which would multiply rows for
+        albums, and never as a per-row lookup.
+        """
+        reply_ids_needed = {msg["reply_to_msg_id"] for msg in messages if msg.get("reply_to_msg_id")}
+        if not reply_ids_needed:
+            return
+
+        reply_media_type = (
+            select(Media.type)
+            .where(and_(Media.chat_id == chat_id, Media.message_id == Message.id))
+            .order_by(Media.id)
+            .limit(1)
+            .scalar_subquery()
+            .label("reply_media_type")
+        )
+        reply_stmt = (
+            select(
+                Message.id,
+                Message.text,
+                Message.sender_name,
+                User.first_name,
+                User.last_name,
+                User.username,
+                reply_media_type,
+            )
+            .outerjoin(User, Message.sender_id == User.id)
+            .where(and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed)))
+        )
+        reply_result = await session.execute(reply_stmt)
+        reply_rows: dict[int, dict[str, Any]] = {
+            row.id: {
+                "text": row.text,
+                "sender_name": resolve_sender_display_name(
+                    row.sender_name, row.first_name, row.last_name, row.username
+                ),
+                "media_type": row.reply_media_type,
+            }
+            for row in reply_result
+        }
+
+        for msg in messages:
+            if not msg.get("reply_to_msg_id"):
+                continue
+            reply_row = reply_rows.get(msg["reply_to_msg_id"])
+            msg["reply_to_sender_name"] = reply_row["sender_name"] if reply_row else None
+            msg["reply_to_media_type"] = reply_row["media_type"] if reply_row else None
+            if reply_row and not msg.get("reply_to_text") and reply_row["text"]:
+                msg["reply_to_text"] = reply_row["text"][:100]
+
     async def get_messages_paginated(
         self,
         chat_id: int,
@@ -2006,7 +2117,9 @@ class DatabaseAdapter:
             topic_id: Optional forum topic ID to filter messages by thread
 
         Returns:
-            List of message dictionaries with user and media info
+            List of message dictionaries with user and media info. A row that is a
+            reply also carries ``reply_to_sender_name`` and ``reply_to_media_type``
+            (both nullable) so the viewer can render "Reply to <name>" (#268).
         """
         async with self.db_manager.async_session_factory() as session:
             # Build query with joins - v6.0.0: join on composite key
@@ -2130,20 +2243,7 @@ class DatabaseAdapter:
                 count_result = await session.execute(count_stmt)
                 version_counts.update({row.message_id: int(row.version_count or 0) for row in count_result})
 
-            # Batch reply-text backfill: one query for the whole page instead of one
-            # SELECT per reply row (previously up to `limit` round-trips per page).
-            reply_ids_needed = {
-                msg["reply_to_msg_id"]
-                for msg in messages
-                if msg.get("reply_to_msg_id") and not msg.get("reply_to_text")
-            }
-            reply_texts: dict[int, str] = {}
-            if reply_ids_needed:
-                reply_stmt = select(Message.id, Message.text).where(
-                    and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed))
-                )
-                reply_result = await session.execute(reply_stmt)
-                reply_texts = {row.id: row.text for row in reply_result if row.text}
+            await self._attach_reply_metadata(session, chat_id, messages)
 
             # Batch reactions: one query for the whole page instead of one
             # get_reactions() call per message. Ties within the same emoji are
@@ -2171,11 +2271,6 @@ class DatabaseAdapter:
 
             for msg in messages:
                 msg["version_count"] = version_counts.get(msg["id"], 0)
-
-                if msg.get("reply_to_msg_id") and not msg.get("reply_to_text"):
-                    reply_text = reply_texts.get(msg["reply_to_msg_id"])
-                    if reply_text:
-                        msg["reply_to_text"] = reply_text[:100]
 
                 reactions_by_emoji = {}
                 for reaction in reactions_by_message.get(msg["id"], []):
@@ -2310,14 +2405,10 @@ class DatabaseAdapter:
                     logger.debug("Malformed raw_data JSON for a message row; substituting empty dict")
                     msg["raw_data"] = {}
 
-            # Get reply text
-            if msg.get("reply_to_msg_id") and not msg.get("reply_to_text"):
-                reply_result = await session.execute(
-                    select(Message.text).where(and_(Message.chat_id == chat_id, Message.id == msg["reply_to_msg_id"]))
-                )
-                reply_text = reply_result.scalar_one_or_none()
-                if reply_text:
-                    msg["reply_to_text"] = reply_text[:100]
+            # Reply quote metadata — same helper, same rule as every other read
+            # path. It replaces a text-only lookup that resolved less than the
+            # message list did for the very same message.
+            await self._attach_reply_metadata(session, chat_id, [msg])
 
             # Get reactions
             reactions = await self.get_reactions(msg["id"], chat_id)
@@ -2358,6 +2449,11 @@ class DatabaseAdapter:
         """Get all pinned messages for a chat, ordered by date descending (newest first).
 
         v6.0.0: Media is now returned as a nested object from the media table.
+
+        The pinned-only view swaps this list into the SAME message renderer the
+        normal list uses, so a pinned reply must arrive with the same reply
+        metadata (#268) — otherwise one message renders "Reply to <name>" in the
+        list and a bare "Reply to / Message" in the pinned view.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
@@ -2418,6 +2514,9 @@ class DatabaseAdapter:
                         msg["raw_data"] = {}
 
                 messages.append(msg)
+
+            # One query for the whole pinned list, not one per pinned reply.
+            await self._attach_reply_metadata(session, chat_id, messages)
 
             return messages
 
@@ -2544,9 +2643,9 @@ class DatabaseAdapter:
                     "id": row.id,
                     "date": row.date.isoformat() if row.date else None,
                     "sender": {
-                        "name": row.sender_name
-                        or f"{row.first_name or ''} {row.last_name or ''}".strip()
-                        or row.username
+                        "name": resolve_sender_display_name(
+                            row.sender_name, row.first_name, row.last_name, row.username
+                        )
                         or "Unknown",
                         "username": row.username,
                     },

@@ -618,12 +618,16 @@ async def test_disconnect_handles_exception():
 
 @pytest.mark.asyncio
 async def test_ensure_connected_calls_connect_when_not_connected():
-    """ensure_connected() calls connect() when not connected."""
+    """ensure_connected() runs the connect body when not connected.
+
+    It calls ``_connect_locked`` rather than ``connect`` because it already
+    holds the connect lock (see TestHealingIsSerialised).
+    """
     config = MagicMock()
     conn = TelegramConnection(config)
     mock_client = AsyncMock()
 
-    with patch.object(conn, "connect", new_callable=AsyncMock, return_value=mock_client) as mock_connect:
+    with patch.object(conn, "_connect_locked", new_callable=AsyncMock, return_value=mock_client) as mock_connect:
         result = await conn.ensure_connected()
 
     mock_connect.assert_awaited_once()
@@ -675,7 +679,7 @@ async def test_ensure_connected_reconnects_on_check_failure():
     conn._connected = True
 
     mock_new_client = AsyncMock()
-    with patch.object(conn, "connect", new_callable=AsyncMock, return_value=mock_new_client):
+    with patch.object(conn, "_connect_locked", new_callable=AsyncMock, return_value=mock_new_client):
         result = await conn.ensure_connected()
 
     assert result is mock_client  # Returns self._client at end

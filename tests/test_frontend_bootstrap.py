@@ -33,6 +33,29 @@ def _setup_slice(html: str, declaration: str) -> str:
     return html[start : html.index("\n                const ", start + len(declaration))]
 
 
+def _setup_function(html: str, declaration: str) -> str:
+    """Return exactly one setup-scope function, ended by its matching brace.
+
+    ``_setup_slice`` stops at the next 16-space ``const``, which OVERSHOOTS when
+    what follows is a ``let`` or a bare ``watch(...)`` call — the extra code then
+    runs inside the test program and fails on identifiers the test never stubbed.
+    Brace matching is exact here because the template's function bodies keep
+    their braces balanced (template literals included).
+    """
+    start = html.index(declaration)
+    index = html.index("{", start)
+    depth = 0
+    while True:
+        char = html[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start : index + 1]
+        index += 1
+
+
 def _run_setup_program(html: str, declarations: tuple[str, ...], prelude: str, epilogue: str) -> Any:
     """EXECUTE real setup-scope declarations under a stubbed environment.
 
@@ -295,14 +318,17 @@ def test_realtime_display_uses_api_message_order():
 
     helper_start = html.index("const messageSortTime = (msg) =>")
     helper_body = html[helper_start : html.index("// v6.2.0: Find the topics nav entry", helper_start)]
-    sorted_start = html.index("const sortedMessages = computed(() =>")
+    # #268: the ordinary view's rows are produced by messageView, alongside the
+    # contiguity answer that goes with them; sortedMessages is its projection.
+    sorted_start = html.index("const messageView = computed(() =>")
     sorted_body = html[sorted_start : html.index("// Group consecutive messages", sorted_start)]
 
     assert "moment.utc(msg.date)" in helper_body
     assert "sortTimeCache" in helper_body
     assert "messageSortTime(b) - messageSortTime(a)" in helper_body
     assert "(Number(b?.id) || 0) - (Number(a?.id) || 0)" in helper_body
-    assert "return sortedLoadedMessages()" in sorted_body
+    assert "rows: sortedLoadedMessages()" in sorted_body
+    assert "const sortedMessages = computed(() => messageView.value.rows)" in sorted_body
 
 
 def test_history_cursor_is_not_advanced_by_realtime_refresh():
@@ -1367,8 +1393,10 @@ def test_audio_auto_advance_does_not_drive_pagination():
 # --- Pagination-aware audio queue (#254) ---------------------------------------
 
 _AUDIO_QUEUE_DECLARATIONS = (
-    "const fetchAudioQueuePage = async (chatId, kind, beforeId) =>",
+    "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>",
+    "const seedAudioQueueAroundTrack = async (track) =>",
     "const extendAudioQueueFromMedia = async (track) =>",
+    "const extendAudioQueueNewer = async () =>",
     "const extendAudioQueueOlder = async () =>",
 )
 
@@ -1376,18 +1404,19 @@ _AUDIO_QUEUE_DECLARATIONS = (
 def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
     """#254: the queue grows from the media endpoint's own cursor, not the pane's.
 
-    Playback runs oldest -> newest while ``/media`` pages newest -> oldest, so
-    paging back until the playing track appears puts every possible next track in
-    hand. The walk must be capped so a huge chat cannot spin forever.
+    The unanchored backward walk is now the FALLBACK path (#266 anchors on the
+    playing track's own media id instead), but it is still what runs for an
+    archive whose media ids the client cannot rebuild, and it is still capped so
+    a huge chat cannot spin forever.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatId, kind, beforeId) =>")
+    fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>")
     assert "`/api/chats/${chatId}/media?${params}`" in fetch_body
     assert "types: audioQueueTypes(kind)," in fetch_body
     assert "limit: String(AUDIO_QUEUE_PAGE_SIZE)," in fetch_body
-    # The cursor is the composite media id of the last item seen.
-    assert "params.set('before_id', beforeId)" in fetch_body
+    # One cursor shape, two directions: before_id walks older, after_id newer.
+    assert "params.set(direction === 'newer' ? 'after_id' : 'before_id', cursor)" in fetch_body
     assert "credentials: 'include'" in fetch_body
 
     assert "const AUDIO_QUEUE_PAGE_SIZE = 50" in html
@@ -1395,7 +1424,7 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
 
     extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
     assert "for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++)" in extend_body
-    assert "await fetchAudioQueuePage(track.chatId, track.kind, cursor)" in extend_body
+    assert "await fetchAudioQueuePage(track.chatId, track.kind, cursor, 'older')" in extend_body
     assert "cursor = items[items.length - 1].id" in extend_body
     # Stop as soon as the playing track is in hand, or nothing older is left.
     assert "items.some(item => item.message_id === track.id)" in extend_body
@@ -1406,7 +1435,7 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
 
     # "Previous" at the head of the queue pages one more time from the same cursor.
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
-    assert "await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)" in older_body
+    assert "await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor, 'older')" in older_body
     prev_body = _setup_slice(html, "const playPrevAudio = async () =>")
     assert "await extendAudioQueueOlder()" in prev_body
     assert "seekAudioTo(0)" in prev_body
@@ -1423,7 +1452,7 @@ def test_audio_queue_extension_never_drives_message_pagination():
 
     advance_declarations = _AUDIO_QUEUE_DECLARATIONS + (
         "const playAdjacentAudio = (step) =>",
-        "const playNextAudio = () => playAdjacentAudio(1)",
+        "const playNextAudio = async () =>",
         "const playPrevAudio = async () =>",
         "const playAudioMessage = (msg) =>",
     )
@@ -1439,9 +1468,17 @@ def test_audio_queue_extension_never_drives_message_pagination():
     assert "loadMessages" not in ended_body
     assert "loadNewerMessages" not in ended_body
 
-    # Auto-advance itself stays a synchronous walk over the player's own queue,
-    # so the 'ended' handler can still branch on its boolean result.
-    assert "const playNextAudio = () => playAdjacentAudio(1)" in html
+    # The step over the queue itself stays synchronous. playNextAudio wraps it
+    # with the on-demand forward page (#266) and is therefore async, so the
+    # 'ended' handler has to AWAIT its boolean — `!promise` is always false and
+    # would skip the end-of-queue reset.
+    assert "const playNextAudio = async () =>" in html
+    next_body = _setup_slice(html, "const playNextAudio = async () =>")
+    assert "if (playAdjacentAudio(1)) return true" in next_body
+    assert "const outcome = await extendAudioQueueNewer()" in next_body
+    assert "if (outcome === 'extended' && playAdjacentAudio(1)) return true" in next_body
+    assert "if (audioAutoAdvanceHalted.value || !(await playNextAudio())) {" in ended_body
+
     advance_body = _setup_slice(html, "const playAdjacentAudio = (step) =>")
     assert "audioQueue.value[index + step]" in advance_body
 
@@ -1528,11 +1565,17 @@ def test_audio_queue_keeps_voice_and_music_on_separate_types():
     # Never the combined filter the media gallery uses.
     assert "'voice,audio'" not in types_body
 
-    # Every page request is keyed on the playing track's own kind.
+    # Every page request is keyed on the playing track's own kind, in EVERY
+    # direction — a forward page that dropped the kind would roll a voice run
+    # into music the moment auto-advance left the seeded window.
     extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
-    assert "fetchAudioQueuePage(track.chatId, track.kind, cursor)" in extend_body
+    assert "fetchAudioQueuePage(track.chatId, track.kind, cursor, 'older')" in extend_body
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
-    assert "fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor)" in older_body
+    assert "fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor, 'older')" in older_body
+    seed_body = _setup_slice(html, "const seedAudioQueueAroundTrack = async (track) =>")
+    assert "fetchAudioQueuePage(track.chatId, track.kind, track.mediaId, 'older')" in seed_body
+    newer_body = _setup_slice(html, "const extendAudioQueueNewer = async () =>")
+    assert "track.chatId, track.kind, audioQueueCursorNewer, 'newer')" in newer_body
 
     # Fetched descriptors inherit that kind, so a merged queue stays single-class.
     tracks_body = _setup_slice(html, "const audioTracksFromMediaItems = (items, track) =>")
@@ -1551,8 +1594,10 @@ def test_audio_queue_in_flight_flag_cannot_leak():
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "let audioQueueFetchSeq = 0" in html
-    # Both fetch paths release the flag by ownership token, not by request id.
-    assert html.count("if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false") == 2
+    # EVERY fetch path releases the flag by ownership token, not by request id:
+    # the anchored seed and the forward extension (#266) as well as the original
+    # walk and the head-of-queue page.
+    assert html.count("if (fetchToken === audioQueueFetchSeq) audioQueueFetching = false") == 4
     assert "if (requestId === audioQueueRequestId) audioQueueFetching = false" not in html
 
     # Teardown releases it outright.
@@ -1579,7 +1624,7 @@ class TestAudioQueuePagingOutcomes(unittest.TestCase):
         same falsy result as an exhausted cursor and "previous" restarted the
         current track as though the oldest message had been reached.
         """
-        fetch_body = self._slice("const fetchAudioQueuePage = async (chatId, kind, beforeId) =>")
+        fetch_body = self._slice("const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>")
         self.assertIn("error.status = res.status", fetch_body)
         # Stale pages are aborted rather than landing on a closed player.
         self.assertIn("new AbortController()", fetch_body)
@@ -1825,6 +1870,1685 @@ const scenario = async (pages) => {
         self.assertLess(
             body.index("findMessageElement(track.id)"),
             body.index("scrollToMessage(track.id)"),
+        )
+
+
+# --- Directional, on-demand audio queue (#266) ---------------------------------
+
+_AUDIO_QUEUE_EXEC_DECLARATIONS = (
+    # Brings AUDIO_QUEUE_MAX_PAGES *and* every module-scope `let` the queue owns
+    # (request id, fetch seq, both cursors, both has-more flags, fetching), which
+    # is why none of them may be re-declared in a prelude.
+    "const AUDIO_QUEUE_MAX_PAGES = ",
+    "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+    "const audioTracksFromMediaItems = (items, track) =>",
+    "const audioTrackTime = (track) =>",
+    "const mergeAudioQueue = (tracks) =>",
+    "const audioQueueBelongsToTrack = (track) =>",
+    "const audioQueueEdgeTrack = (newest) =>",
+    "const audioQueueEdgeMediaId = (newest) =>",
+)
+
+_AUDIO_QUEUE_EXEC_PRELUDE = """
+const noDownload = { value: false }
+const audioError = { value: '' }
+const audioQueue = { value: [] }
+const audioTrack = { value: null }
+let PAGES = []
+let REPEAT = null
+const REQUESTED = []
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    return PAGES.shift() ?? REPEAT ?? { items: [], has_more: false }
+}
+// Ascending ids double as ascending dates, so mergeAudioQueue's sort is stable
+// and the queue's first/last entries really are its oldest/newest.
+const mediaItem = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7,
+    media_url: `/media/${n}.ogg`, message_date: `2026-07-01T00:00:${String(n).padStart(2, '0')}`,
+})
+// Downloaded, but with no URL this viewer can play: the queue drops it, so a
+// page of these adds NOTHING even though it was a perfectly successful fetch.
+const unplayableItem = (n) => ({ ...mediaItem(n), media_url: '' })
+const seedTrack = (n) => ({
+    id: n, chatId: 7, kind: 'voice', mediaId: `m${n}`,
+    date: `2026-07-01T00:00:${String(n).padStart(2, '0')}`, url: `/media/${n}.ogg`,
+})
+"""
+
+
+class TestAudioQueueExtendsInTheDirectionOfTravel(unittest.TestCase):
+    """#266: auto-advance died after ~40 tracks in a 1,764-note chat.
+
+    The queue was pre-collected by walking BACKWARD from the newest item until
+    the playing track appeared — a cost of one page per 50 tracks of DEPTH,
+    capped at ``AUDIO_QUEUE_MAX_PAGES``. Past that cap the walk never reached the
+    playing track, #257's hole guard (correctly) refused the disjoint result, and
+    the queue stayed at the seeded message window: 9 requests, ~40 tracks, then
+    silence with no error and no 'ended'.
+
+    Raising the cap only moves the wall. The fix is to stop pre-collecting: page
+    forward, one page at a time, in the direction playback is actually moving.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_forward_paging_uses_the_after_id_cursor(self) -> None:
+        """The endpoint pages backward by default; forward needs the #266 cursor."""
+        fetch_body = _setup_slice(
+            self.html, "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>"
+        )
+        self.assertIn("params.set(direction === 'newer' ? 'after_id' : 'before_id', cursor)", fetch_body)
+        # One cursor per request: before_id and after_id are mutually exclusive
+        # server-side, and sending both is a 400.
+        self.assertEqual(fetch_body.count("params.set("), 1)
+
+    def test_forward_cursor_is_armed_without_a_request(self) -> None:
+        """The seeded window already names the newest track — no walk needed.
+
+        This is what makes the fix depth-independent: the queue can page forward
+        from its own edge the instant auto-advance reaches it, whether the
+        playing track is the 5th voice note of the chat or the 1,700th.
+        """
+        play_body = _setup_slice(self.html, "const playAudioMessage = (msg) =>")
+        # #268 qualified the edge: it is an anchor only while the window is a
+        # contiguous slice of the timeline (see TestAudioQueueForwardCursorContiguity).
+        self.assertIn(
+            "(audioQueueSeedIsContiguous() && audioQueueEdgeMediaId(true)) || track.mediaId",
+            play_body,
+        )
+        self.assertIn("audioQueueHasNewer = !!audioQueueCursorNewer", play_body)
+        # ...and both are released with the player, like the backward pair.
+        close_body = _setup_slice(self.html, "const closeAudioPlayer = () =>")
+        self.assertIn("audioQueueCursorNewer = null", close_body)
+        self.assertIn("audioQueueHasNewer = false", close_body)
+
+    def test_no_page_cap_gates_the_forward_extension(self) -> None:
+        """A cap is what put the wall there. Correctness must not need one."""
+        newer_body = _code_only(_setup_slice(self.html, "const extendAudioQueueNewer = async () =>"))
+        self.assertNotIn("AUDIO_QUEUE_MAX_PAGES", newer_body)
+        # No counter of any kind drives termination — Igor's report blamed a
+        # consecutive-load counter, and inventing one would be the wrong fix.
+        self.assertNotIn("page++", newer_body)
+        self.assertNotIn("attempts", newer_body)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_forward_extension_executed(self) -> None:
+        """Four walks over the REAL helper, distinguishable only by execution."""
+        epilogue = """
+const scenario = async (pages, repeat) => {
+    PAGES = pages.slice()
+    REPEAT = repeat ?? null
+    REQUESTED.length = 0
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueue.value = [seedTrack(10)]
+    audioTrack.value = { chatId: 7, kind: 'voice', id: 10, chatName: 'c', mediaId: 'm10' }
+    audioQueueCursorNewer = audioQueueEdgeMediaId(true)
+    audioQueueHasNewer = true
+    const outcome = await extendAudioQueueNewer()
+    return {
+        outcome,
+        cursor: audioQueueCursorNewer,
+        hasNewer: audioQueueHasNewer,
+        ids: audioQueue.value.map(t => t.id),
+        requested: REQUESTED.slice(),
+    }
+};
+(async () => {
+    // 1. The ordinary case: one page forward, appended in date order.
+    const extended = await scenario([
+        { items: [mediaItem(11), mediaItem(12)], has_more: true },
+    ]);
+    // 2. Nothing newer: the forward walk really is finished.
+    const empty = await scenario([{ items: [], has_more: false }]);
+    // 3. A page that adds nothing usable is NOT the end — keep going. A stop
+    //    here would be #266 all over again, just one page further along.
+    const skipped = await scenario([
+        { items: [unplayableItem(11), unplayableItem(12)], has_more: true },
+        { items: [mediaItem(13)], has_more: true },
+    ]);
+    // 4. Runaway: a server that keeps handing back the SAME page while
+    //    promising more. Terminates on "the cursor did not move", never on a
+    //    page count, and must not spin.
+    const stuck = await scenario([], { items: [unplayableItem(11)], has_more: true });
+    console.log(JSON.stringify({ extended, empty, skipped, stuck }));
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            _AUDIO_QUEUE_EXEC_DECLARATIONS + ("const extendAudioQueueNewer = async () =>",),
+            _AUDIO_QUEUE_EXEC_PRELUDE,
+            epilogue,
+        )
+
+        # 1. Travelling forward: one request, after_id on the queue's own edge.
+        self.assertEqual(out["extended"]["requested"], [["m10", "newer"]])
+        self.assertEqual(out["extended"]["outcome"], "extended")
+        self.assertEqual(out["extended"]["ids"], [10, 11, 12])
+        self.assertEqual(out["extended"]["cursor"], "m12")
+        self.assertTrue(out["extended"]["hasNewer"])
+
+        # 2. Genuine end of the chat.
+        self.assertEqual(out["empty"]["outcome"], "exhausted")
+        self.assertEqual(out["empty"]["ids"], [10])
+        self.assertFalse(out["empty"]["hasNewer"])
+
+        # 3. Progress, not page count, decides: the unusable page advanced the
+        #    cursor, so the walk continued and the NEXT page delivered a track.
+        self.assertEqual(out["skipped"]["outcome"], "extended")
+        self.assertEqual(out["skipped"]["ids"], [10, 13])
+        self.assertEqual(out["skipped"]["requested"], [["m10", "newer"], ["m12", "newer"]])
+
+        # 4. No progress -> stop. Reaching this assertion at all is the proof
+        #    that the runaway guard fired instead of looping forever.
+        self.assertEqual(out["stuck"]["outcome"], "exhausted")
+        self.assertEqual(out["stuck"]["ids"], [10])
+        self.assertFalse(out["stuck"]["hasNewer"])
+        self.assertEqual(out["stuck"]["requested"], [["m10", "newer"], ["m11", "newer"]])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_seeding_is_anchored_on_the_playing_track_executed(self) -> None:
+        """The backward direction is anchored too, so nothing walks by depth.
+
+        ``before_id`` is an opaque media id and the PLAYING track's own id is a
+        valid one, so a single request yields the page immediately older than it
+        — contiguous by construction, whatever its depth. Only a track whose id
+        this archive does not use falls through to the legacy walk.
+        """
+        epilogue = """
+const scenario = async (track, pages) => {
+    PAGES = pages.slice()
+    REPEAT = null
+    REQUESTED.length = 0
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueue.value = [seedTrack(500)]
+    audioTrack.value = { chatId: 7, kind: 'voice', id: 500, chatName: 'c' }
+    await extendAudioQueueFromMedia(track)
+    return {
+        cursor: audioQueueCursor,
+        hasOlder: audioQueueHasOlder,
+        cursorNewer: audioQueueCursorNewer,
+        hasNewer: audioQueueHasNewer,
+        ids: audioQueue.value.map(t => t.id),
+        requested: REQUESTED.slice(),
+    }
+};
+(async () => {
+    const anchored = { chatId: 7, kind: 'voice', id: 500, chatName: 'c', mediaId: 'm500' };
+    // The endpoint answers a backward page newest-first.
+    const seeded = await scenario(anchored, [
+        { items: [mediaItem(499), mediaItem(498)], has_more: true },
+    ]);
+    // #268: an empty backward page is settled with ONE anchored probe forward.
+    // Empty both ways = an id shape this archive does not use, which only the
+    // unanchored walk can settle.
+    const unresolvable = await scenario(anchored, [
+        { items: [], has_more: false },
+        { items: [], has_more: false },
+        { items: [mediaItem(501), mediaItem(500), mediaItem(499)], has_more: false },
+    ]);
+    // ...but items forward mean the anchor RESOLVES and the track really is the
+    // oldest of its kind. That must stay on the anchored path.
+    const oldestOfItsKind = await scenario(anchored, [
+        { items: [], has_more: false },
+        { items: [mediaItem(501), mediaItem(502)], has_more: true },
+    ]);
+    // No id to anchor on at all -> straight to the walk.
+    const noAnchor = await scenario({ chatId: 7, kind: 'voice', id: 500, chatName: 'c' }, [
+        { items: [mediaItem(501), mediaItem(500)], has_more: false },
+    ]);
+    console.log(JSON.stringify({ seeded, unresolvable, oldestOfItsKind, noAnchor }));
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            _AUDIO_QUEUE_EXEC_DECLARATIONS
+            + (
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+            ),
+            _AUDIO_QUEUE_EXEC_PRELUDE,
+            epilogue,
+        )
+
+        # ONE request, anchored on the playing track — not a walk from the newest
+        # item, which is what cost Igor 9 requests and still missed him.
+        self.assertEqual(out["seeded"]["requested"], [["m500", "older"]])
+        self.assertEqual(out["seeded"]["ids"], [498, 499, 500])
+        self.assertEqual(out["seeded"]["cursor"], "m498")
+        self.assertTrue(out["seeded"]["hasOlder"])
+
+        # Anchor rejected in BOTH directions -> the walk runs, starting from no
+        # cursor as before.
+        self.assertEqual(
+            out["unresolvable"]["requested"],
+            [["m500", "older"], ["m500", "newer"], [None, "older"]],
+        )
+        self.assertEqual(out["unresolvable"]["ids"], [499, 500, 501])
+
+        # #268: the oldest track of its kind never reaches the walk. Two anchored
+        # requests settle it, and the forward page it already paid for becomes the
+        # queue AND the forward cursor. Handing this to the walk instead would make
+        # it page backwards through the entire chat to find the very last track.
+        self.assertEqual(
+            out["oldestOfItsKind"]["requested"],
+            [["m500", "older"], ["m500", "newer"]],
+        )
+        self.assertEqual(out["oldestOfItsKind"]["ids"], [500, 501, 502])
+        self.assertIsNone(out["oldestOfItsKind"]["cursor"])
+        self.assertFalse(out["oldestOfItsKind"]["hasOlder"])
+        self.assertEqual(out["oldestOfItsKind"]["cursorNewer"], "m502")
+        self.assertTrue(out["oldestOfItsKind"]["hasNewer"])
+
+        # No anchor -> no wasted anchored request at all.
+        self.assertEqual(out["noAnchor"]["requested"], [[None, "older"]])
+        self.assertEqual(out["noAnchor"]["ids"], [500, 501])
+
+    def test_media_id_is_carried_on_every_descriptor(self) -> None:
+        """A cursor the queue cannot name is a queue that cannot page."""
+        item_body = _setup_slice(self.html, "const audioTrackFromMediaItem = (item, kind, chatName) =>")
+        self.assertIn("mediaId: item.id ?? null,", item_body)
+
+        msg_body = _setup_slice(self.html, "const audioTrackFromMessage = (msg) =>")
+        self.assertIn("mediaId: audioMessageMediaId(msg),", msg_body)
+
+        # #268: taken from the payload first — the rebuild is only the fallback.
+        built = _setup_slice(self.html, "const audioMessageMediaId = (msg) =>")
+        self.assertIn("const delivered = msg?.media?.id", built)
+        self.assertLess(built.index("msg?.media?.id"), built.index("`${chatId}_${msg.id}_${type}`"))
+        self.assertIn("return `${chatId}_${msg.id}_${type}`", built)
+        self.assertIn("if (chatId == null || msg?.id == null || !type) return null", built)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_rebuilt_media_id_executed(self) -> None:
+        out = _run_setup_helpers(
+            self.html,
+            (
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+            ),
+            "cases.map(audioMessageMediaId)",
+            prelude="""
+const selectedChat = { value: null }
+const cases = [
+    { id: 12, chat_id: -100, media: { type: 'voice' } },
+    { id: 12, chat_id: -100, media: {} },
+    { id: 12, media: { type: 'voice' } },
+]
+""",
+        )
+        self.assertEqual(out, ["-100_12_voice", None, None])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_delivered_media_id_wins_over_the_rebuild_executed(self) -> None:
+        """#268: the authoritative cursor is already in the payload — use it.
+
+        ``get_messages_paginated`` and ``get_pinned_messages`` both select
+        ``Media.id`` into ``media.id`` (src/db/adapter.py), and the no_download
+        strip only blanks ``file_path``, so the client never has to guess. It
+        matters because ``{chat}_{message}_{type}`` is NOT the only shape in
+        use: the importer writes ``import_{chat}_{message}``
+        (src/telegram_import.py). Rebuilding invented a cursor those archives
+        have no row for, ``get_media_paginated`` answered the empty page it
+        answers for any unresolvable cursor, and #266 stayed unfixed for
+        exactly those users — silently, with nothing to show for it.
+        """
+        out = _run_setup_helpers(
+            self.html,
+            (
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+            ),
+            "cases.map(audioMessageMediaId)",
+            prelude="""
+const selectedChat = { value: null }
+const cases = [
+    // Imported archive: the rebuild would have produced "-100_12_voice".
+    { id: 12, chat_id: -100, media: { id: 'import_-100_12', type: 'voice' } },
+    // Capture path: same shape as the rebuild, still taken from the payload.
+    { id: 12, chat_id: -100, media: { id: '-100_12_voice', type: 'voice' } },
+    // Numeric ids survive the trip as cursor strings.
+    { id: 12, chat_id: -100, media: { id: 4242, type: 'voice' } },
+    // No id delivered -> the documented best-effort rebuild.
+    { id: 12, chat_id: -100, media: { type: 'voice' } },
+]
+""",
+        )
+        self.assertEqual(out, ["import_-100_12", "-100_12_voice", "4242", "-100_12_voice"])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_forward_walk_stops_on_a_cursor_it_has_already_asked_from(self) -> None:
+        """The forward loop is unbounded by design, so it needs a real progress rule.
+
+        "Nothing playable on this page" must not end auto-advance (that is #266
+        one page further along), so the loop keeps going. Comparing the new
+        cursor only against the PREVIOUS one leaves a response that alternates
+        A -> B -> A spinning forever. A forward walk never legitimately revisits
+        a cursor, so a repeat — of any age — is proof of no progress.
+
+        The stub throws once the walk exceeds a sane number of requests, so a
+        regression surfaces as ``'error'`` instead of hanging the suite.
+        """
+        prelude = """
+const noDownload = { value: false }
+const audioError = { value: '' }
+const audioQueue = { value: [] }
+const audioTrack = { value: { chatId: 7, kind: 'voice', id: 10 } }
+const REQUESTED = []
+let CALLS = 0
+// Downloaded but unplayable for this viewer, so no page ever adds a track and
+// the loop is never allowed to exit on "extended".
+const unplayableItem = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7, media_url: '',
+    message_date: `2026-07-01T00:00:${String(n).padStart(2, '0')}`,
+})
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'newer') => {
+    REQUESTED.push([cursor ?? null, direction])
+    if (++CALLS > 20) throw new Error('forward walk never terminated')
+    // Always promises more, and swings the cursor back and forth between two
+    // values it has already handed out.
+    return { items: [unplayableItem(cursor === 'm11' ? 12 : 11)], has_more: true }
+}
+"""
+        epilogue = """
+(async () => {
+    audioQueueCursorNewer = 'm10'
+    audioQueueHasNewer = true
+    const outcome = await extendAudioQueueNewer()
+    console.log(JSON.stringify({ outcome, requested: REQUESTED, hasNewer: audioQueueHasNewer }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const extendAudioQueueNewer = async () =>",
+            ),
+            prelude,
+            epilogue,
+        )
+        # m10 -> m11 -> m12 -> m11 (already asked) -> stop. Three requests, and
+        # 'exhausted' rather than the stub's runaway error.
+        self.assertEqual(out["outcome"], "exhausted")
+        self.assertEqual(out["requested"], [["m10", "newer"], ["m11", "newer"], ["m12", "newer"]])
+        self.assertFalse(out["hasNewer"])
+
+
+# Setup-scope stubs for EXECUTING the real message-pane producers
+# (resetMessagePagination / loadMessages / loadMessagesAroundId) under node, so
+# a test can ask what each one DECLARES about the window it just wrote.
+# ``PANE_ROWS`` is what the stubbed endpoint returns, ``TOPIC`` is what
+# ``activeTopicId()`` reports, and ``URLS`` records the requests actually built.
+_PRODUCER_PRELUDE = """
+const messages = { value: [] }
+const page = { value: 0 }
+const hasMore = { value: true }
+const loading = { value: false }
+const hasMoreNewer = { value: false }
+const loadingNewer = { value: false }
+const newerLoadError = { value: '' }
+const viewingPinnedWindow = { value: false }
+const unseenMessageCount = { value: 0 }
+const messageWindowIsContiguous = { value: false }
+const isAuthenticated = { value: true }
+const messageSearchQuery = { value: '' }
+const selectedChat = { value: { id: 7, title: 'chat' } }
+let oldestMessageCursor = null
+let loadFailureStreak = 0
+let newestMessageId = null
+let newerLoadRequestSeq = 0
+let chatVersion = 0
+let messagesScrollObserver = null
+const loadMoreSentinel = { value: null }
+let TOPIC = null
+const activeTopicId = () => TOPIC
+const resetCalendarAvailability = () => {}
+const updateOldestMessageCursor = () => {}
+const oldestMessageFrom = () => null
+const messageCursor = () => null
+const showToast = () => {}
+const nextTick = async () => {}
+const stamp = (n) => `2026-07-01T00:00:${String(n).padStart(2, '0')}`
+const messageRow = (n) => ({
+    id: n, chat_id: 7, date: stamp(n),
+    media: { id: `m${n}`, type: 'voice', duration: 1 },
+})
+let PANE_ROWS = []
+const URLS = []
+const fetch = async (url) => {
+    URLS.push(url)
+    // The after-context half of a jump window comes back SHORT, so the window
+    // counts as tail-inclusive instead of a detached jump window.
+    return { ok: true, status: 200, json: async () => url.includes('after_id=') ? [] : PANE_ROWS }
+}
+"""
+
+
+class TestMessageWindowContiguityIsDeclaredByProducers(unittest.TestCase):
+    """#268: contiguity is a POSITIVE property the producer records, not a blacklist.
+
+    Three times in this batch the same defect shipped: an anchor taken from a
+    list that is not a contiguous slice of the timeline (#257 backward, then
+    pinned-only forward, then search/topic forward). Every one of them came from
+    asking "is this one of the sparse views I know about?" — a question that is
+    wrong by default and that a newly added filtered view answers incorrectly
+    without anyone noticing.
+
+    So the question is inverted here: ``messageWindowIsContiguous`` starts false,
+    ``resetMessagePagination`` (the chokepoint every view entry passes through)
+    re-clears it, and only a producer that KNOWS it wrote a timeline slice sets
+    it. These tests execute the real producers and check what each declares.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_the_flag_defaults_to_sparse(self) -> None:
+        """The default is the safety property — a ref that starts true buys nothing."""
+        self.assertIn("const messageWindowIsContiguous = ref(false)", self.html)
+        reset = _setup_slice(self.html, "const resetMessagePagination = () =>")
+        self.assertIn("messageWindowIsContiguous.value = false", reset)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_load_messages_declares_only_the_unfiltered_chat_page(self) -> None:
+        """``loadMessages`` builds four different requests; only one is the timeline.
+
+        A search page holds matching rows only. A topic page holds one topic out
+        of many, while the audio queue's ``/media`` endpoint is chat-wide — so
+        the topic pane's newest row is NOT the newest media before it.
+        """
+        prelude = _PRODUCER_PRELUDE
+        epilogue = """
+(async () => {
+    const shape = async (search, topic) => {
+        TOPIC = topic
+        messageSearchQuery.value = search
+        messages.value = []
+        loading.value = false
+        URLS.length = 0
+        resetMessagePagination()
+        const afterReset = messageWindowIsContiguous.value
+        await loadMessages()
+        return { afterReset, contiguous: messageWindowIsContiguous.value, url: URLS[0] }
+    }
+    console.log(JSON.stringify({
+        plain: await shape('', null),
+        search: await shape('needle', null),
+        topic: await shape('', 4),
+        searchInTopic: await shape('needle', 4),
+    }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const messageIdKey = (msg) =>",
+                "const upsertMessages = (incomingMessages, ",
+                "const resetMessagePagination = () =>",
+                "const loadMessages = async () =>",
+            ),
+            prelude,
+            epilogue,
+        )
+        # resetMessagePagination clears it every time, whatever the previous view left.
+        for name, result in out.items():
+            self.assertFalse(result["afterReset"], name)
+        self.assertTrue(out["plain"]["contiguous"])
+        self.assertFalse(out["search"]["contiguous"])
+        self.assertFalse(out["topic"]["contiguous"])
+        self.assertFalse(out["searchInTopic"]["contiguous"])
+        # ...and the classification really does track the request that was sent.
+        self.assertNotIn("search=", out["plain"]["url"])
+        self.assertNotIn("topic_id=", out["plain"]["url"])
+        self.assertIn("search=needle", out["search"]["url"])
+        self.assertIn("topic_id=4", out["topic"]["url"])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_jump_window_is_contiguous_unless_it_is_topic_scoped(self) -> None:
+        """Both halves of a jump window are pages hinged on the same id.
+
+        That makes it a real slice of the timeline — and the whole point of
+        keeping the flag rather than banning anchors outright, because a normal
+        window must still arm the forward cursor from its own edge with no extra
+        request. A topic-scoped window is a slice of the TOPIC, not the chat.
+        """
+        # loadMessagesAroundId is followed by a `let` and a `watch(...)`, not by
+        # another `const`, so it is lifted brace-matched and handed over in the
+        # prelude — still VERBATIM template code, just cut at the right place.
+        prelude = (
+            _PRODUCER_PRELUDE
+            + """
+const newestLoadedMessageId = () => 9
+const setupMessagesScrollObserver = () => {}
+const scrollToMessage = () => {}
+const startMessageRefresh = () => {}
+let messagesNewerObserver = null
+const loadNewerSentinel = { value: null }
+"""
+            + _setup_function(self.html, "const loadMessagesAroundId = async (messageId, externalGuard = null) =>")
+        )
+        epilogue = """
+(async () => {
+    const jump = async (topic) => {
+        TOPIC = topic
+        messageSearchQuery.value = ''
+        messages.value = []
+        loading.value = false
+        URLS.length = 0
+        await loadMessagesAroundId(5)
+        return { contiguous: messageWindowIsContiguous.value, urls: URLS.slice() }
+    }
+    console.log(JSON.stringify({ plain: await jump(null), topic: await jump(4) }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const messageIdKey = (msg) =>",
+                "const upsertMessages = (incomingMessages, ",
+                "const resetMessagePagination = () =>",
+            ),
+            prelude,
+            epilogue,
+        )
+        self.assertTrue(out["plain"]["contiguous"])
+        self.assertFalse(out["topic"]["contiguous"])
+        # The declaration survives resetMessagePagination, which runs in between and
+        # clears the flag by design.
+        self.assertEqual(len(out["plain"]["urls"]), 2)
+        for url in out["topic"]["urls"]:
+            self.assertIn("topic_id=4", url)
+
+
+class TestAudioQueueForwardCursorContiguity(unittest.TestCase):
+    """#268: #257's hole, recreated in the FORWARD direction by a sparse seed.
+
+    ``sortedMessages`` is not always a contiguous slice of the timeline. The
+    pinned-only view swaps in ``pinnedMessages`` (entries months apart); an
+    in-chat search leaves only matching rows; a forum topic leaves one topic's
+    rows while the audio queue's ``/media`` endpoint is chat-wide.
+    ``buildAudioQueue`` seeded the queue from any of them, so two tracks that are
+    nowhere near each other in the chat ended up ADJACENT in the queue, and
+    ``playAudioMessage`` then armed the forward cursor from that sparse queue's
+    newest entry — cementing the gap, because the first page forward starts past
+    everything in between.
+
+    The rule the whole batch turns on: adjacent queue entries must be adjacent
+    in time. An anchor is only usable when it is contiguous with the real
+    timeline — the playing track's own media id, or the edge of a window that
+    really is a slice of the chat.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_the_gate_asks_a_positive_question_instead_of_listing_views(self) -> None:
+        """A predicate that enumerates the sparse views is the defect, not the fix."""
+        contiguous = _setup_slice(self.html, "const audioQueueSeedIsContiguous = () =>")
+        self.assertIn("messageView.value.contiguous", contiguous)
+        # No view names in the gate: adding a filtered view must not require
+        # editing it, because whoever adds one will not know it exists.
+        for view in ("showPinnedOnly", "messageSearchQuery", "activeTopicId", "selectedPaneTopic"):
+            self.assertNotIn(view, contiguous, view)
+
+        build_body = _setup_slice(self.html, "const buildAudioQueue = (msg) =>")
+        # A sparse view contributes the clicked track and nothing else...
+        self.assertIn("if (!audioQueueSeedIsContiguous()) return [audioTrackFromMessage(msg)]", build_body)
+        # ...and that check precedes every read of the sparse list.
+        self.assertLess(
+            build_body.index("audioQueueSeedIsContiguous()"),
+            build_body.index("sortedMessages.value"),
+        )
+
+    def test_rows_and_their_contiguity_cannot_diverge(self) -> None:
+        """One branch yields both, so a new view cannot return rows and forget the flag."""
+        view = _setup_slice(self.html, "const messageView = computed(() =>")
+        self.assertIn("rows: pinnedMessages.value, contiguous: false", view)
+        self.assertIn("contiguous: messageWindowIsContiguous.value", view)
+        # sortedMessages is a projection of that pair — not a second, driftable branch.
+        self.assertIn("const sortedMessages = computed(() => messageView.value.rows)", self.html)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_playback_never_skips_a_track_from_any_sparse_view(self) -> None:
+        """Auto-advance over a REAL 12-track chat, entered from each sparse view.
+
+        End to end and all real code: the producer (``loadMessages``) fills the
+        pane and declares its contiguity, ``messageView`` turns that into the
+        gate's answer, and ``playAudioMessage``/``playNextAudio`` walk the chat.
+        The stubbed endpoint is a genuine cursor-paged media table, so the walk
+        has to be right rather than merely plausible.
+
+        Pre-fix each sparse view played the gap it was shown: pinned-only
+        2 -> 11 -> 12, search 2 -> 11 -> 12, topic 2 -> 6 -> 11 -> 12. Tracks
+        3-10 were never asked for at all.
+        """
+        prelude = (
+            _PRODUCER_PRELUDE
+            + """
+const computed = (fn) => ({ get value() { return fn() } })
+const pinnedMessages = { value: [] }
+const showPinnedOnly = { value: false }
+// Stand-in for the date sort: in this fixture message ids ascend with time.
+const sortedLoadedMessages = () => [...messages.value].sort((a, b) => Number(b.id) - Number(a.id))
+
+const noDownload = { value: false }
+const audioError = { value: '' }
+const audioQueue = { value: [] }
+const audioTrack = { value: null }
+const audioAutoAdvanceHalted = { value: false }
+let audioConsecutiveFailures = 0
+const getChatName = (chat) => chat.title
+const getMediaUrl = (msg) => `/media/${msg.id}.ogg`
+const getSenderName = () => 'someone'
+const isAudioFile = (msg) => msg.media?.type === 'voice'
+const isCurrentAudioMessage = () => false
+const toggleAudioPlayback = () => {}
+const PLAYED = []
+const loadAudioTrack = (track) => { audioTrack.value = track; PLAYED.push(track.id) }
+// A small page size so the forward walk really pages instead of getting the
+// whole chat in one answer.
+const PAGE = 3
+const mediaRow = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7,
+    media_url: `/media/${n}.ogg`, message_date: stamp(n),
+})
+// The chat's real audio timeline, oldest -> newest. Contiguous by definition:
+// any gap in what gets PLAYED is a gap the client invented.
+const MEDIA = Array.from({ length: 12 }, (_, i) => mediaRow(i + 1))
+const REQUESTED = []
+// A faithful stand-in for get_media_paginated: an opaque cursor resolved
+// against the table, paged away from it in the requested direction, answering
+// an unresolvable cursor with an empty page in EITHER direction.
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    const at = cursor ? MEDIA.findIndex(m => m.id === cursor) : -1
+    if (cursor && at < 0) return { items: [], has_more: false }
+    const rest = direction === 'newer'
+        ? MEDIA.slice(at + 1)
+        : (at < 0 ? MEDIA.slice() : MEDIA.slice(0, at)).reverse()
+    return { items: rest.slice(0, PAGE), has_more: rest.length > PAGE }
+}
+// playAudioMessage deliberately does NOT await the queue growth (the click
+// gesture has to reach play() first), so drain the microtask/timer queues.
+const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r)) }
+"""
+        )
+        epilogue = """
+const run = async ({ search = '', topic = null, pinnedIds = null, rowIds }, clickedId) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    audioQueue.value = []
+    audioTrack.value = null
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    // The REAL producer fills the pane and declares what it wrote. The message
+    // pane renders newest-first.
+    PANE_ROWS = rowIds.slice().sort((a, b) => b - a).map(messageRow)
+    TOPIC = topic
+    messageSearchQuery.value = search
+    messages.value = []
+    loading.value = false
+    resetMessagePagination()
+    await loadMessages()
+    // The pinned-only view is entered on top of whatever the producer wrote —
+    // here a genuinely contiguous window, so only the view branch can catch it.
+    showPinnedOnly.value = pinnedIds != null
+    pinnedMessages.value = (pinnedIds || []).slice().sort((a, b) => b - a).map(messageRow)
+
+    playAudioMessage(messageRow(clickedId))
+    await flush()
+    const seeded = { queue: audioQueue.value.map(t => t.id), requested: REQUESTED.slice() }
+    for (let i = 0; i < 40; i++) {
+        if (!await playNextAudio()) break
+    }
+    return {
+        visible: sortedMessages.value.map(m => m.id),
+        contiguous: messageView.value.contiguous,
+        played: PLAYED.slice(), seeded, requested: REQUESTED.slice(),
+    }
+};
+(async () => {
+    // Two pinned voice notes nine tracks apart, over a contiguous window.
+    const pinned = await run({ rowIds: [1, 2, 3, 4, 5], pinnedIds: [2, 11] }, 2)
+    // An in-chat search: only the matching rows survive.
+    const search = await run({ search: 'needle', rowIds: [2, 11] }, 2)
+    // A forum topic: this topic's rows, scattered through a chat-wide timeline.
+    const topic = await run({ topic: 4, rowIds: [2, 6, 11] }, 2)
+    // The ordinary view: a contiguous window of the same chat.
+    const window = await run({ rowIds: [1, 2, 3, 4, 5] }, 2)
+    console.log(JSON.stringify({ pinned, search, topic, window }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const messageIdKey = (msg) =>",
+                "const upsertMessages = (incomingMessages, ",
+                "const resetMessagePagination = () =>",
+                "const loadMessages = async () =>",
+                "const messageView = computed(() =>",
+                "const sortedMessages = computed(() => messageView.value.rows)",
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioMediaKind = (msg) =>",
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+                "const audioTrackFromMessage = (msg) =>",
+                "const audioQueueSeedIsContiguous = () =>",
+                "const buildAudioQueue = (msg) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
+                "const audioQueueEdgeMediaId = (newest) =>",
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+                "const extendAudioQueueNewer = async () =>",
+                "const currentAudioQueueIndex = () =>",
+                "const playAdjacentAudio = (step) =>",
+                "const playNextAudio = async () =>",
+                "const playAudioMessage = (msg) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # The fixtures really are the sparse views they claim to be...
+        self.assertEqual(out["pinned"]["visible"], [11, 2])
+        self.assertEqual(out["search"]["visible"], [11, 2])
+        self.assertEqual(out["topic"]["visible"], [11, 6, 2])
+        # ...and each is classified sparse, the pinned one DESPITE sitting on a
+        # window its producer declared contiguous.
+        for name in ("pinned", "search", "topic"):
+            with self.subTest(view=name):
+                self.assertFalse(out[name]["contiguous"])
+
+        # THE assertion: every track from the clicked one to the end of the chat,
+        # in order, with nothing skipped. subTest so a regression names EVERY
+        # view it broke, not just the first one checked.
+        for name in ("pinned", "search", "topic"):
+            with self.subTest(view=name):
+                self.assertEqual(out[name]["played"], [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+                # The sparse view contributes no neighbours at all — the seed is
+                # the clicked track plus the page anchored on it, both contiguous.
+                self.assertEqual(out[name]["seeded"]["queue"], [1, 2])
+                self.assertEqual(out[name]["seeded"]["requested"], [["m2", "older"]])
+                # ...so the FIRST forward page is anchored on the playing track
+                # itself, never on the far-away visible row (that would be "m11").
+                forward = [r for r in out[name]["requested"] if r[1] == "newer"]
+                self.assertEqual(forward[0], ["m2", "newer"])
+
+        # No regression on the contiguous path: the window is still a valid
+        # anchor, so the first forward page starts at its EDGE rather than
+        # re-fetching tracks the window already provided — and costs no extra
+        # request to arm.
+        self.assertTrue(out["window"]["contiguous"])
+        self.assertEqual(out["window"]["played"], [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        self.assertEqual(out["window"]["seeded"]["queue"], [1, 2, 3, 4, 5])
+        window_forward = [r for r in out["window"]["requested"] if r[1] == "newer"]
+        self.assertEqual(window_forward[0], ["m5", "newer"])
+
+
+# Shared stubs for the two "the one-entry sparse queue must keep making
+# progress" programs below. Both drive REAL helpers over a 12-track chat whose
+# media endpoint is a faithful stand-in for ``get_media_paginated``: an opaque
+# cursor resolved against the table, paged away from it in the requested
+# direction. ``PLAYED`` is the only record of what actually reached the element,
+# which is what makes these tests behavioural rather than flag-shaped.
+_SPARSE_PROGRESS_PRELUDE = """
+const noDownload = { value: false }
+const audioError = { value: '' }
+const audioQueue = { value: [] }
+const audioTrack = { value: null }
+const audioAutoAdvanceHalted = { value: false }
+let audioConsecutiveFailures = 0
+const selectedChat = { value: { id: 7, title: 'chat' } }
+// The clicked row comes from a SPARSE view (search results), which is what
+// leaves the queue one entry long until the anchored seed lands.
+const messageView = { value: { contiguous: false } }
+const sortedMessages = { value: [] }
+const getChatName = (chat) => chat.title
+const getMediaUrl = (msg) => `/media/${msg.id}.ogg`
+const getSenderName = () => 'someone'
+const isAudioFile = (msg) => msg.media?.type === 'voice'
+const isCurrentAudioMessage = () => false
+const toggleAudioPlayback = () => {}
+const PLAYED = []
+const loadAudioTrack = (track) => { audioTrack.value = track; PLAYED.push(track.id) }
+const SEEKS = []
+const seekAudioTo = (seconds) => { SEEKS.push(seconds) }
+const stamp = (n) => `2026-07-01T00:00:${String(n).padStart(2, '0')}`
+const messageRow = (n) => ({
+    id: n, chat_id: 7, date: stamp(n),
+    media: { id: `m${n}`, type: 'voice', duration: 1 },
+})
+// Small pages, so the walk really pages instead of getting the whole chat back
+// in one answer.
+const PAGE = 3
+const mediaRow = (n) => ({
+    id: `m${n}`, message_id: n, chat_id: 7,
+    media_url: `/media/${n}.ogg`, message_date: stamp(n),
+})
+const REQUESTED = []
+const answerPage = (table, cursor, direction) => {
+    const at = cursor ? table.findIndex(m => m.id === cursor) : -1
+    if (cursor && at < 0) return { items: [], has_more: false }
+    const rest = direction === 'newer'
+        ? table.slice(at + 1)
+        : (at < 0 ? table.slice() : table.slice(0, at)).reverse()
+    return { items: rest.slice(0, PAGE), has_more: rest.length > PAGE }
+}
+// playAudioMessage deliberately does NOT await the queue growth (the click
+// gesture has to reach play() first), so drain the microtask/timer queues.
+const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r)) }
+"""
+
+
+class TestSparseQueueKeepsMakingProgress(unittest.TestCase):
+    """#268 follow-up: a one-entry seed queue has no slack for "close enough".
+
+    ``buildAudioQueue`` now contributes ONLY the clicked track from a sparse
+    view, so the queue really is one entry long at the start of every sparse
+    playback and the anchored pages are the only way out of it. Two places
+    treated "no answer yet" and "nothing playable here" as "the queue ended",
+    which was survivable while the queue arrived pre-filled from the window and
+    is not survivable now.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_track_that_fails_while_its_seed_is_in_flight_still_auto_advances(self) -> None:
+        """``playNextAudio`` collapsed 'pending' — a page ON ITS WAY — into false.
+
+        Reachable shape: in search results the user clicks a voice note whose
+        file is missing on disk. ``playAudioMessage`` seeds ``[clicked]``, starts
+        the track and fires the anchored seed fetch; the element's ``error``
+        event and the media request race in the same tick, and when the error
+        wins, the handler calls ``playNextAudio`` while the queue still holds one
+        entry. ``extendAudioQueueNewer`` answers 'pending' (a fetch is already in
+        flight), the old code read that as an exhausted queue, and auto-advance
+        was over for the session — with the seed page ~50ms away. The same shape
+        reaches the 'ended' handler for a sub-second voice note.
+
+        ``playPrevAudio`` has always kept 'pending' and 'exhausted' apart, so
+        this was an inconsistency rather than a decision.
+
+        The fetch is HELD here, which is exactly that window; the scenarios
+        differ only in what happens inside it.
+        """
+        prelude = (
+            _SPARSE_PROGRESS_PRELUDE
+            + """
+const MEDIA = Array.from({ length: 12 }, (_, i) => mediaRow(i + 1))
+// The seed page is held until RELEASE is called: everything that happens in
+// between happens while the fetch is genuinely in flight.
+let RELEASE = null
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    if (direction === 'older' && !RELEASE) {
+        return new Promise(resolve => { RELEASE = () => resolve(answerPage(MEDIA, cursor, direction)) })
+    }
+    return answerPage(MEDIA, cursor, direction)
+}
+"""
+        )
+        epilogue = """
+const scenario = async (duringHold) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    RELEASE = null
+    audioQueue.value = []
+    audioTrack.value = null
+    audioAutoAdvanceHalted.value = false
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    audioQueueSeeding = null
+
+    playAudioMessage(messageRow(2))
+    await flush()
+    const seeded = audioQueue.value.map(t => t.id)
+    // What the real 'error'/'ended' handlers do: call playNextAudio without
+    // awaiting it, while the seed is still in flight.
+    const advancing = playNextAudio()
+    await flush()
+    const beforeRelease = PLAYED.slice()
+    if (duringHold) duringHold()
+    RELEASE()
+    const advanced = await advancing
+    await flush()
+    return { seeded, beforeRelease, advanced, played: PLAYED.slice(), requested: REQUESTED.slice() }
+};
+(async () => {
+    // 1. Nothing else happens: the page lands and the advance goes through.
+    const landsLate = await scenario(null)
+    // 2. The user tapped ANOTHER voice note while the page was in flight — one
+    //    the landing page puts in the queue, so a re-attempt would walk from
+    //    THAT track and replay 2.
+    const switched = await scenario(() => {
+        audioTrack.value = {
+            id: 1, chatId: 7, kind: 'voice', chatName: 'chat',
+            mediaId: 'm1', url: '/media/1.ogg', date: stamp(1),
+        }
+    })
+    // 3. Auto-advance was halted while we waited (a second failed file).
+    const halted = await scenario(() => { audioAutoAdvanceHalted.value = true })
+    console.log(JSON.stringify({ landsLate, switched, halted }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioMediaKind = (msg) =>",
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+                "const audioTrackFromMessage = (msg) =>",
+                "const audioQueueSeedIsContiguous = () =>",
+                "const buildAudioQueue = (msg) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
+                "const audioQueueEdgeMediaId = (newest) =>",
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+                "const extendAudioQueueNewer = async () =>",
+                "const currentAudioQueueIndex = () =>",
+                "const playAdjacentAudio = (step) =>",
+                "const playNextAudio = async () =>",
+                "const playAudioMessage = (msg) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # The premise: the sparse seed really is one entry, and the advance is
+        # still undecided while the page is in flight (no track played, and no
+        # forward request issued off a cursor that is mid-fetch).
+        self.assertEqual(out["landsLate"]["seeded"], [2])
+        self.assertEqual(out["landsLate"]["beforeRelease"], [2])
+
+        # THE assertion: the page lands and playback moves on, once. The forward
+        # page is asked for AFTER the seed settles, anchored on the playing
+        # track — the seed itself only pages older, so it cannot supply track 3.
+        self.assertTrue(out["landsLate"]["advanced"])
+        self.assertEqual(out["landsLate"]["played"], [2, 3])
+        self.assertEqual(out["landsLate"]["requested"], [["m2", "older"], ["m2", "newer"]])
+
+        # ...and the re-attempt is owned. A different track means this advance
+        # belongs to nobody: no replay of 2 from track 1's position, and no
+        # request either.
+        self.assertFalse(out["switched"]["advanced"])
+        self.assertEqual(out["switched"]["played"], [2])
+        self.assertEqual(out["switched"]["requested"], [["m2", "older"]])
+
+        # Halting auto-advance while the page was in flight must survive the
+        # wait — the re-attempt may not resurrect it.
+        self.assertFalse(out["halted"]["advanced"])
+        self.assertEqual(out["halted"]["played"], [2])
+        self.assertEqual(out["halted"]["requested"], [["m2", "older"]])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_an_unplayable_seed_page_does_not_park_the_cursor_on_the_playing_track(self) -> None:
+        """The older-cursor fixup could move the cursor BACKWARDS.
+
+        ``seedAudioQueueAroundTrack`` sets the cursor to the page's last item and
+        then overwrites it with the queue's own oldest edge — right for its
+        intended case (the loaded window already holds more than a page of older
+        audio), wrong when the page adds nothing. ``audioTracksFromMediaItems``
+        drops every item with no ``media_url``, which is what the server returns
+        for media whose ``file_path`` falls outside the media root, so a WHOLE
+        page can vanish; the edge is then the oldest track already queued, and
+        from a sparse view that is the playing track itself — the very anchor the
+        page was fetched from. ``audioQueueHasOlder`` was computed before the
+        fixup, so it stays true and 'previous' re-asks the question the seed just
+        asked, reports 'exhausted' and restarts the track although older playable
+        audio is one page further back.
+        """
+        prelude = (
+            _SPARSE_PROGRESS_PRELUDE
+            + """
+// Tracks 9-11 are downloaded but outside the media root, so the endpoint hands
+// back rows with no media_url and the queue can play none of them. With PAGE=3
+// they are exactly the page the seed fetches from track 12.
+const MEDIA = Array.from({ length: 12 }, (_, i) => {
+    const row = mediaRow(i + 1)
+    return (i + 1 >= 9 && i + 1 <= 11) ? { ...row, media_url: '' } : row
+})
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    return answerPage(MEDIA, cursor, direction)
+}
+"""
+        )
+        epilogue = """
+const scenario = async ({ contiguous, visible, clicked }) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    SEEKS.length = 0
+    audioQueue.value = []
+    audioTrack.value = null
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    audioQueueSeeding = null
+    // Reset the auto-advance state too, so a later scenario cannot inherit a
+    // halt raised by an earlier one and fail in the wrong place.
+    audioAutoAdvanceHalted.value = false
+    audioConsecutiveFailures = 0
+    messageView.value = { contiguous }
+    // The pane renders newest-first.
+    sortedMessages.value = visible.slice().sort((a, b) => b - a).map(messageRow)
+
+    playAudioMessage(messageRow(clicked))
+    await flush()
+    const seeded = {
+        queue: audioQueue.value.map(t => t.id),
+        cursor: audioQueueCursor,
+        hasOlder: audioQueueHasOlder,
+        requested: REQUESTED.slice(),
+    }
+    await playPrevAudio()
+    return { seeded, played: PLAYED.slice(), seeks: SEEKS.slice(), requested: REQUESTED.slice() }
+};
+(async () => {
+    // Sparse view: the queue is the clicked track alone, and the page anchored
+    // on it is wholly unplayable.
+    const unplayable = await scenario({ contiguous: false, visible: [12], clicked: 12 })
+    // The case the fixup exists for: a contiguous window holding MORE than one
+    // page of audio older than the playing track. Its own oldest entry really
+    // is older than the page's last item, so the cursor must still follow it.
+    const deepWindow = await scenario({ contiguous: true, visible: [1, 2, 3, 4, 5], clicked: 5 })
+    console.log(JSON.stringify({ unplayable, deepWindow }));
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const AUDIO_QUEUE_MAX_PAGES = ",
+                "const audioMediaKind = (msg) =>",
+                "const audioMessageChatId = (msg) =>",
+                "const audioMessageMediaId = (msg) =>",
+                "const audioTrackFromMessage = (msg) =>",
+                "const audioQueueSeedIsContiguous = () =>",
+                "const buildAudioQueue = (msg) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTracksFromMediaItems = (items, track) =>",
+                "const audioTrackTime = (track) =>",
+                "const mergeAudioQueue = (tracks) =>",
+                "const audioQueueBelongsToTrack = (track) =>",
+                "const audioQueueEdgeTrack = (newest) =>",
+                "const audioQueueEdgeMediaId = (newest) =>",
+                "const seedAudioQueueAroundTrack = async (track) =>",
+                "const extendAudioQueueFromMedia = async (track) =>",
+                "const extendAudioQueueOlder = async () =>",
+                "const currentAudioQueueIndex = () =>",
+                "const playAdjacentAudio = (step) =>",
+                "const playPrevAudio = async () =>",
+                "const playAudioMessage = (msg) =>",
+            ),
+            prelude,
+            epilogue,
+        )
+
+        # The premise: one anchored request, and it contributed nothing playable.
+        self.assertEqual(out["unplayable"]["seeded"]["queue"], [12])
+        self.assertEqual(out["unplayable"]["seeded"]["requested"], [["m12", "older"]])
+        self.assertTrue(out["unplayable"]["seeded"]["hasOlder"])
+
+        # THE assertion: the cursor is the page's own last item, NOT the playing
+        # track, so 'previous' walks PAST the unplayable page instead of asking
+        # for it again — and lands on real audio rather than restarting track 12.
+        self.assertEqual(out["unplayable"]["seeded"]["cursor"], "m9")
+        self.assertEqual(out["unplayable"]["requested"], [["m12", "older"], ["m9", "older"]])
+        self.assertEqual(out["unplayable"]["played"], [12, 8])
+        self.assertEqual(out["unplayable"]["seeks"], [])
+
+        # No regression on what the fixup is for: the window holds tracks 1-4
+        # older than the playing one while the page only reaches back to 2, so
+        # the cursor follows the QUEUE's edge and paging does not re-fetch rows
+        # the queue already has.
+        self.assertEqual(out["deepWindow"]["seeded"]["queue"], [1, 2, 3, 4, 5])
+        self.assertEqual(out["deepWindow"]["seeded"]["cursor"], "m1")
+        # 'previous' is served from the window itself — no request at all.
+        self.assertEqual(out["deepWindow"]["requested"], [["m5", "older"]])
+        self.assertEqual(out["deepWindow"]["played"], [5, 4])
+
+
+# Setup-scope stubs for EXECUTING the whole APPEND path end to end: the real
+# ``loadMessages`` fills the pane, the real ``checkForNewMessages`` and
+# ``handleWebSocketMessage`` bring arrivals in through the real
+# ``upsertMessages``, and the real audio queue then plays what that leaves
+# behind. ``SERVER`` is the archive's message table (ids ascending with time)
+# and ``PANE_PAGE`` bounds every page the message endpoint returns — exactly
+# what ``limit=50`` does in production, shrunk so the ids stay readable.
+_APPEND_PRELUDE = """
+// The real poll logs what it added; keep stdout to the one JSON line the runner
+// parses, and hand the tests a private channel for it (``emit``).
+const emit = console.log.bind(console)
+console.log = () => {}
+const ref = (v) => ({ value: v })
+const computed = (fn) => ({ get value() { return fn() } })
+const moment = { utc: (s) => { const t = Date.parse(/(Z|[+-]\\d\\d:?\\d\\d)$/.test(s) ? s : s + 'Z')
+    return { isValid: () => !Number.isNaN(t), valueOf: () => t } } }
+const messages = ref([])
+const page = ref(0)
+const hasMore = ref(true)
+const loading = ref(false)
+const hasMoreNewer = ref(false)
+const loadingNewer = ref(false)
+const newerLoadError = ref('')
+const viewingPinnedWindow = ref(false)
+const unseenMessageCount = ref(0)
+const isAuthenticated = ref(true)
+const messageSearchQuery = ref('')
+const selectedChat = ref({ id: 7, title: 'chat' })
+const selectedPaneTopic = ref(null)
+const pinnedMessages = ref([])
+const showPinnedOnly = ref(false)
+const messagesContainer = ref({ scrollTop: 0 })
+const notificationPermission = ref('denied')
+const document = { hidden: false }
+let newestMessageId = null
+let newerLoadRequestSeq = 0
+let chatVersion = 0
+let isRefreshing = false
+let messagesScrollObserver = null
+const loadMoreSentinel = ref(null)
+const GENERAL_TOPIC_ID = 1
+let TOPIC = null
+const activeTopicId = () => TOPIC
+const resetCalendarAvailability = () => {}
+const showToast = () => {}
+const showNotification = () => {}
+const clearMessageVersionsCache = () => {}
+const isVersionsPanelOpenFor = () => false
+const loadMessageVersions = () => {}
+const loadPinnedMessages = () => {}
+const scrollToBottom = () => {}
+const nextTick = async (fn) => { if (fn) fn() }
+
+// The archive: message ids ascending with time, every one a voice note.
+const stamp = (n) => `2026-07-01T00:00:${String(n).padStart(2, '0')}`
+const messageRow = (n) => ({
+    id: n, chat_id: 7, date: stamp(n),
+    media: { id: `m${n}`, type: 'voice', duration: 1 },
+})
+let SERVER = []
+// Every page the endpoint returns is BOUNDED. That bound is the whole reason a
+// poll can fail to reach back to the loaded window.
+const PANE_PAGE = 3
+const URLS = []
+const fetch = async (url) => {
+    URLS.push(url)
+    const params = new URL(url, 'http://viewer').searchParams
+    const beforeId = params.get('before_id')
+    const afterId = params.get('after_id')
+    let rows = SERVER.slice()
+    if (afterId != null) {
+        rows = rows.filter(n => n > Number(afterId)).slice(0, PANE_PAGE)
+    } else {
+        if (beforeId != null) rows = rows.filter(n => n < Number(beforeId))
+        rows = rows.slice(-PANE_PAGE)
+    }
+    rows = rows.slice().reverse().map(messageRow)   // newest-first response contract
+    return { ok: true, status: 200, json: async () => rows }
+}
+
+// ---- audio queue: the media endpoint, paged like the real one ----
+const noDownload = ref(false)
+const audioError = ref('')
+const audioQueue = ref([])
+const audioTrack = ref(null)
+const audioAutoAdvanceHalted = ref(false)
+let audioConsecutiveFailures = 0
+const getChatName = (chat) => chat.title
+const getMediaUrl = (msg) => `/media/${msg.id}.ogg`
+const getSenderName = () => 'someone'
+const isAudioFile = (msg) => msg.media?.type === 'voice'
+const isCurrentAudioMessage = () => false
+const toggleAudioPlayback = () => {}
+const PLAYED = []
+const loadAudioTrack = (track) => { audioTrack.value = track; PLAYED.push(track.id) }
+const MEDIA_PAGE = 3
+const REQUESTED = []
+const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+    REQUESTED.push([cursor ?? null, direction])
+    const table = SERVER.map(n => ({
+        id: `m${n}`, message_id: n, chat_id: 7,
+        media_url: `/media/${n}.ogg`, message_date: stamp(n),
+    }))
+    const at = cursor ? table.findIndex(m => m.id === cursor) : -1
+    if (cursor && at < 0) return { items: [], has_more: false }
+    const rest = direction === 'newer'
+        ? table.slice(at + 1)
+        : (at < 0 ? table.slice() : table.slice(0, at)).reverse()
+    return { items: rest.slice(0, MEDIA_PAGE), has_more: rest.length > MEDIA_PAGE }
+}
+// playAudioMessage deliberately does NOT await the queue growth (the click
+// gesture has to reach play() first), so drain the microtask/timer queues.
+const flush = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setImmediate(r)) }
+"""
+
+# Driving helpers shared by every test in the class below: open a chat through
+# the REAL producer, then report what the window and the audio queue became.
+_APPEND_EPILOGUE_HELPERS = """
+const openChat = async (ids) => {
+    SERVER = ids.slice()
+    messages.value = []
+    loading.value = false
+    messageSearchQuery.value = ''
+    URLS.length = 0
+    resetMessagePagination()
+    await loadMessages()
+}
+const windowState = () => ({
+    visible: sortedMessages.value.map(m => m.id),
+    contiguous: messageView.value.contiguous,
+})
+const playFrom = async (clickedId) => {
+    REQUESTED.length = 0
+    PLAYED.length = 0
+    audioQueue.value = []
+    audioTrack.value = null
+    audioQueueCursor = null
+    audioQueueHasOlder = false
+    audioQueueCursorNewer = null
+    audioQueueHasNewer = false
+    audioQueueFetching = false
+    playAudioMessage(messageRow(clickedId))
+    await flush()
+    const seeded = { queue: audioQueue.value.map(t => t.id), requested: REQUESTED.slice() }
+    const armedFrom = audioQueueCursorNewer
+    for (let i = 0; i < 60; i++) {
+        if (!await playNextAudio()) break
+    }
+    return { seeded, armedFrom, played: PLAYED.slice(), requested: REQUESTED.slice() }
+}
+"""
+
+_APPEND_DECLARATIONS = (
+    "const STICK_TO_BOTTOM_PX = ",
+    "const sortTimeCache = new WeakMap()",
+    "const messageSortTime = (msg) =>",
+    "const compareMessagesDesc = (a, b) =>",
+    # Overshoots onto `let oldestMessageCursor` / `let loadFailureStreak`, which
+    # is what we want: those two are the real pagination state, lifted verbatim.
+    "const sortedLoadedMessages = () =>",
+    "const messageWindowIsContiguous = ref(false)",
+    "const messageIdKey = (msg) =>",
+    "const messageCursor = (msg) =>",
+    "const oldestMessageFrom = (messageList) =>",
+    "const updateOldestMessageCursor = (loadedMessages) =>",
+    "const newestLoadedMessageId = () =>",
+    "const resetMessagePagination = () =>",
+    "const messageBelongsToCurrentTopic = (msg) =>",
+    "const appendKeepsWindowContiguous = (added, overlapsWindow) =>",
+    "const upsertMessages = (incomingMessages, ",
+    "const isNearMessageBottom = (container) =>",
+    "const checkForNewMessages = async () =>",
+    "const loadMessages = async () =>",
+    "const messageView = computed(() =>",
+    "const sortedMessages = computed(() => messageView.value.rows)",
+    "const AUDIO_QUEUE_MAX_PAGES = ",
+    "const audioMediaKind = (msg) =>",
+    "const audioMessageChatId = (msg) =>",
+    "const audioMessageMediaId = (msg) =>",
+    "const audioTrackFromMessage = (msg) =>",
+    "const audioQueueSeedIsContiguous = () =>",
+    "const buildAudioQueue = (msg) =>",
+    "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+    "const audioTracksFromMediaItems = (items, track) =>",
+    "const audioTrackTime = (track) =>",
+    "const mergeAudioQueue = (tracks) =>",
+    "const audioQueueBelongsToTrack = (track) =>",
+    "const audioQueueEdgeTrack = (newest) =>",
+    "const audioQueueEdgeMediaId = (newest) =>",
+    "const seedAudioQueueAroundTrack = async (track) =>",
+    "const extendAudioQueueFromMedia = async (track) =>",
+    "const extendAudioQueueNewer = async () =>",
+    "const currentAudioQueueIndex = () =>",
+    "const playAdjacentAudio = (step) =>",
+    "const playNextAudio = async () =>",
+    "const playAudioMessage = (msg) =>",
+)
+
+
+class TestAppendsCannotPunchAHoleInTheWindow(unittest.TestCase):
+    """#268, fourth sighting: the hole opened by an APPEND, not by a view.
+
+    ``messageWindowIsContiguous`` was written only by the wholesale producers,
+    so a window they had declared contiguous stayed "contiguous" while other
+    code appended to it. Two appenders can land past the loaded window:
+
+    * the 3s poll fetches the LATEST page. More arrivals than fit in one page
+      and that page no longer reaches back to the window — the rows in between
+      are never fetched, and nothing heals them (later polls fetch the same
+      latest page; "load older" pages the other way).
+    * the WebSocket ``new_message`` frame after a reconnect gap appends a single
+      row from far past the window's edge.
+
+    Either way the pane held two blocks with a gap between them while still
+    claiming to be one slice of the timeline, so the audio queue seeded straight
+    across the gap — adjacent queue entries that are not adjacent in time, which
+    is the defect this whole batch is about.
+
+    The check therefore lives in ``upsertMessages``, the single append path all
+    of them pass through, and it only ever CLEARS: declaring a window contiguous
+    stays the privilege of the producer that wrote it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _run(self, epilogue: str) -> Any:
+        return _run_setup_program(
+            self.html,
+            _APPEND_DECLARATIONS,
+            _APPEND_PRELUDE + _setup_function(self.html, "const handleWebSocketMessage = (data) => {"),
+            _APPEND_EPILOGUE_HELPERS + epilogue,
+        )
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_burst_bigger_than_one_page_leaves_the_window_sparse(self) -> None:
+        """More arrivals than one page fit: the poll cannot reach back, so playback must not either.
+
+        Pre-fix the poll left the pane holding 12, 11, 10, 5, 4, 3 — messages
+        6-9 never fetched — and still called it contiguous, so the queue seeded
+        [1, 2, 3, 4, 5, 10, 11, 12], armed the forward cursor from m12 (past
+        everything missing) and auto-advance PLAYED [3, 4, 5, 10, 11, 12]: four
+        voice notes silently skipped.
+        """
+        out = self._run("""
+(async () => {
+    await openChat([1, 2, 3, 4, 5])
+    const before = windowState()
+    // Seven messages arrive between two ticks; the poll's page holds three.
+    SERVER = Array.from({ length: 12 }, (_, i) => i + 1)
+    await checkForNewMessages()
+    const after = windowState()
+    emit(JSON.stringify({ before, after, playback: await playFrom(3) }))
+})();
+""")
+        # The window really is the sparse one the poll produced.
+        self.assertEqual(out["before"]["visible"], [5, 4, 3])
+        self.assertTrue(out["before"]["contiguous"])
+        self.assertEqual(out["after"]["visible"], [12, 11, 10, 5, 4, 3])
+        # THE flag: the append did not adjoin (lowest new id 10, window newest
+        # 5, and no row in common), so the window is no longer a timeline slice.
+        self.assertFalse(out["after"]["contiguous"])
+        # THE consequence: nothing skipped between the click and the end of the
+        # chat, where pre-fix it played [3, 4, 5, 10, 11, 12].
+        self.assertEqual(out["playback"]["played"], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        # The sparse pane contributes no neighbours at all — the seed is the
+        # clicked track plus the page anchored on it.
+        self.assertEqual(out["playback"]["seeded"]["queue"], [1, 2, 3])
+        self.assertEqual(out["playback"]["armedFrom"], "m3")
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_burst_smaller_than_one_page_keeps_the_optimisation(self) -> None:
+        """The ordinary case must stay cheap: the poll's page still overlaps the window.
+
+        A check that cleared on every append would cost the queue an anchored
+        request per poll tick forever, which is why "adjoins" is a real
+        question and not just "did anything arrive".
+        """
+        out = self._run("""
+(async () => {
+    await openChat([1, 2, 3, 4, 5])
+    // Two arrivals: the latest page (7, 6, 5) still carries a row we hold.
+    SERVER = [1, 2, 3, 4, 5, 6, 7]
+    await checkForNewMessages()
+    const after = windowState()
+    emit(JSON.stringify({ after, playback: await playFrom(3) }))
+})();
+""")
+        self.assertEqual(out["after"]["visible"], [7, 6, 5, 4, 3])
+        self.assertTrue(out["after"]["contiguous"])
+        # The window is still a usable seed AND a usable anchor: the queue takes
+        # its rows, and the forward cursor is armed from the window's own edge
+        # with no request at all (the only seeding request is the backward page).
+        self.assertEqual(out["playback"]["seeded"]["queue"], [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(out["playback"]["seeded"]["requested"], [["m3", "older"]])
+        self.assertEqual(out["playback"]["armedFrom"], "m7")
+        self.assertEqual(out["playback"]["played"], [3, 4, 5, 6, 7])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_removal_only_tick_leaves_the_flag_alone(self) -> None:
+        """A deleted message is not a hole — the timeline no longer has it.
+
+        This is the boundary the check has to respect: the ids in a contiguous
+        window are NOT required to be consecutive, so the question can only ever
+        be asked about the seam an append lands on. A tick that only removes
+        rows appends nothing and must not touch the flag, and the next arrival
+        on top of the resulting id gap must not either.
+        """
+        out = self._run("""
+(async () => {
+    await openChat([1, 2, 3])
+    const before = windowState()
+    SERVER = [1, 3]                       // message 2 was hard-deleted upstream
+    await checkForNewMessages()
+    const afterRemoval = windowState()
+    SERVER = [1, 3, 4]                    // ...and now a new message arrives
+    await checkForNewMessages()
+    emit(JSON.stringify({ before, afterRemoval, afterArrival: windowState() }))
+})();
+""")
+        self.assertEqual(out["before"]["visible"], [3, 2, 1])
+        self.assertTrue(out["before"]["contiguous"])
+        # The row is gone from the pane, the flag is untouched...
+        self.assertEqual(out["afterRemoval"]["visible"], [3, 1])
+        self.assertTrue(out["afterRemoval"]["contiguous"])
+        # ...and an append over that id gap is still an append that adjoins.
+        self.assertEqual(out["afterArrival"]["visible"], [4, 3, 1])
+        self.assertTrue(out["afterArrival"]["contiguous"])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_the_socket_frame_is_checked_at_the_same_chokepoint(self) -> None:
+        """The WS append is a different caller, not a different rule.
+
+        Pre-fix a frame delivered after a reconnect gap appended one row from
+        far past the window's edge and the pane still claimed contiguity, so the
+        queue seeded [1, 2, 3, 12] and playback went [3, 12] — nine tracks gone.
+        The live case (the very next message) must still be free.
+        """
+        out = self._run("""
+(async () => {
+    await openChat([1, 2, 3])
+    // The socket was down while 4..12 were archived; on reconnect it delivers 12.
+    SERVER = Array.from({ length: 12 }, (_, i) => i + 1)
+    handleWebSocketMessage({ type: 'new_message', chat_id: 7, message: messageRow(12) })
+    const afterGap = windowState()
+    const playback = await playFrom(3)
+    // The live case: the pane is the tail and the frame is the next message.
+    await openChat([1, 2, 3])
+    SERVER = [1, 2, 3, 4]
+    handleWebSocketMessage({ type: 'new_message', chat_id: 7, message: messageRow(4) })
+    emit(JSON.stringify({ afterGap, playback, live: windowState() }))
+})();
+""")
+        self.assertEqual(out["afterGap"]["visible"], [12, 3, 2, 1])
+        self.assertFalse(out["afterGap"]["contiguous"])
+        self.assertEqual(out["playback"]["seeded"]["queue"], [1, 2, 3])
+        self.assertEqual(out["playback"]["played"], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        # ...while the ordinary live frame is the window's own successor.
+        self.assertEqual(out["live"]["visible"], [4, 3, 2, 1])
+        self.assertTrue(out["live"]["contiguous"])
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_a_later_page_cannot_re_declare_a_holed_window(self) -> None:
+        """Scrolling up after a burst must not undo what the append proved.
+
+        ``loadMessages`` declares contiguity from the REQUEST it built, which is
+        only the whole answer for the first page — every later page is appended
+        to rows that call never saw. Pre-fix the first scroll-up re-declared the
+        holed window contiguous and the queue went back to seeding across the
+        gap ([1, 2, 3, 4, 5, 10, 11, 12]), playing [3, 4, 5, 10, 11, 12].
+        """
+        out = self._run("""
+(async () => {
+    await openChat([1, 2, 3, 4, 5])
+    SERVER = Array.from({ length: 12 }, (_, i) => i + 1)
+    await checkForNewMessages()
+    const afterBurst = windowState()
+    // In production the first page comes back FULL (50 of 50), which is what
+    // leaves the scroll-up sentinel armed; this fixture's pages are three rows
+    // long, so re-arm it by hand and let the sentinel fire.
+    hasMore.value = true
+    await loadMessages()
+    const afterOlderPage = windowState()
+    emit(JSON.stringify({ afterBurst, afterOlderPage, playback: await playFrom(3) }))
+})();
+""")
+        self.assertFalse(out["afterBurst"]["contiguous"])
+        # The older page really did land — and the hole really did survive it.
+        self.assertEqual(out["afterOlderPage"]["visible"], [12, 11, 10, 5, 4, 3, 2, 1])
+        self.assertFalse(out["afterOlderPage"]["contiguous"])
+        self.assertEqual(out["playback"]["played"], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+
+
+class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
+    """#267: "0:12" rendered as 0 / : / 1 / 2, one character per line.
+
+    ``.message-bubble`` sets ``overflow-wrap: anywhere``, which every descendant
+    inherits and which drops a text box's MIN-CONTENT width to a single
+    character. The duration span is a flex item of a row inside
+    ``min-w-0 flex-1``, so once that row is squeezed — the #261 download anchor
+    became a sibling in 7.32.0 — it shrinks all the way to that one-character
+    minimum. ``whitespace-nowrap`` restores min-content to the whole string,
+    which flex ``min-width: auto`` then refuses to shrink below.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+        start = cls.html.index('v-else-if="isAudioFile(msg)"')
+        cls.bubble = cls.html[start : cls.html.index("<!-- GIFs / Animations", start)]
+
+    def test_the_wrapping_rule_that_makes_nowrap_load_bearing_is_still_there(self) -> None:
+        """If this ever goes, the assertions below stop protecting anything."""
+        rule_start = self.html.index(".message-bubble {")
+        rule = self.html[rule_start : self.html.index("}", rule_start)]
+        self.assertIn("overflow-wrap: anywhere;", rule)
+        # ...and the squeezable ancestor that lets the row shrink at all.
+        self.assertIn('<div class="min-w-0 flex-1">', self.bubble)
+
+    def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
+        """Row-wide, not span-by-span: a NEW status span must not regress it."""
+        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-gray-400"')
+        row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
+        spans = re.findall(r"<span\b[^>]*>", row)
+        self.assertGreaterEqual(len(spans), 3)
+        for span in spans:
+            self.assertIn("whitespace-nowrap", span, span)
+
+    def test_the_specific_spans_reported_in_267(self) -> None:
+        self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
+        self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-blue-400 whitespace-nowrap">', self.bubble)
+        self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>', self.bubble)
+
+    def test_the_filename_span_keeps_its_own_protection(self) -> None:
+        """``truncate`` implies nowrap; the duration span never had either."""
+        self.assertIn('<span class="truncate">{{ getDocumentDisplayName(msg) }}</span>', self.bubble)
+
+
+class TestReplyQuoteNamesItsSender(unittest.TestCase):
+    """#268: the quote block showed no sender and a bare "Message"."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_markup_delegates_to_the_helpers(self) -> None:
+        start = self.html.index('v-if="msg.reply_to_msg_id"')
+        block = self.html[start : self.html.index("Forwarded Message Info", start)]
+        self.assertIn("{{ replyToLabel(msg) }}", block)
+        self.assertIn("{{ replyToSnippet(msg) }}", block)
+        # The old inline expression is gone, sender and all.
+        self.assertNotIn("msg.reply_to_text || 'Message'", block)
+        self.assertNotIn(">Reply to</div>", block)
+        # A long sender name must not break per character either (#267's rule
+        # applies to this block too — it is inside the same bubble).
+        self.assertIn('class="font-semibold text-blue-400 mb-0.5 truncate"', block)
+
+    def test_helpers_are_exported_to_the_template(self) -> None:
+        self.assertIn("\n                    replyToLabel,\n", self.html)
+        self.assertIn("\n                    replyToSnippet,\n", self.html)
+
+    @unittest.skipUnless(NODE, "node is required to execute the helper")
+    def test_label_and_snippet_executed(self) -> None:
+        """Named when the backend names it, silent when it cannot.
+
+        ``reply_to_sender_name`` / ``reply_to_media_type`` are null when the
+        replied-to message is not in the archive, and absent entirely on an
+        older backend. Both must degrade to the pre-#268 output rather than
+        render "undefined" or throw.
+        """
+        out = _run_setup_helpers(
+            self.html,
+            (
+                "const replyMediaLabels = {",
+                "const replyToLabel = (msg) =>",
+                "const replyToSnippet = (msg) =>",
+            ),
+            "cases.map(msg => [replyToLabel(msg), replyToSnippet(msg)])",
+            prelude="""
+const cases = [
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: 'see below', reply_to_media_type: null },
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'photo' },
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'voice' },
+    { reply_to_msg_id: 1, reply_to_sender_name: null, reply_to_text: null, reply_to_media_type: null },
+    { reply_to_msg_id: 1, reply_to_sender_name: 'Ada L', reply_to_text: null, reply_to_media_type: 'venue' },
+    { reply_to_msg_id: 1 },
+    {},
+    undefined,
+]
+""",
+        )
+        self.assertEqual(
+            out,
+            [
+                ["Reply to Ada L", "see below"],
+                ["Reply to Ada L", "Photo"],
+                ["Reply to Ada L", "Voice message"],
+                # Target not in the archive: exactly the pre-#268 output.
+                ["Reply to", "Message"],
+                # Unmapped media kind: the raw type beats the bare word.
+                ["Reply to Ada L", "venue"],
+                # Older backend, neither key present.
+                ["Reply to", "Message"],
+                ["Reply to", "Message"],
+                ["Reply to", "Message"],
+            ],
         )
 
 
