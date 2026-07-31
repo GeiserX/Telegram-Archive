@@ -1056,13 +1056,26 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     # ``download="<display name>"`` attribute, but per the HTML download algorithm a
     # Content-Disposition: attachment filename takes precedence over it, so THIS
     # name is the one the browser writes.
-    # The filename is attacker-influenced (it is the Telegram document name), but
-    # Starlette percent-quotes it and falls back to RFC 5987 whenever quoting
-    # changes the string — every header-dangerous byte (CR, LF, ", ;, space) is
-    # escaped by that quote(), so only unreserved chars and "/" survive verbatim.
+    # The filename is attacker-influenced (it is the Telegram document name), so it
+    # is percent-quoted and falls back to RFC 5987 whenever quoting changes the
+    # string — every header-dangerous byte (CR, LF, ", ;, space) is escaped by that
+    # quote(), so only unreserved characters survive verbatim. This mirrors
+    # Starlette's own FileResponse header construction; it is written out here
+    # rather than passed as filename= so the FileResponse call keeps the plain
+    # FileResponse(resolved) shape. Passing a user-derived filename= makes CodeQL
+    # model the call as a filesystem sink and raise py/path-injection on
+    # `resolved`, which is a false positive: containment is already enforced above
+    # (reject ../absolute, resolve(strict=True), is_relative_to(_media_root)).
     # Default (no download param) stays inline: <img>/<video> use the same URL.
-    download_name = media_display_filename(path.rsplit("/", 1)[-1]) if download else None
-    response = FileResponse(resolved, filename=download_name or None)
+    response = FileResponse(resolved)
+    if download:
+        download_name = media_display_filename(path.rsplit("/", 1)[-1])
+        quoted = quote(download_name)
+        response.headers["Content-Disposition"] = (
+            f"attachment; filename*=utf-8''{quoted}"
+            if quoted != download_name
+            else f'attachment; filename="{download_name}"'
+        )
     if path.startswith("avatars/"):
         response.headers["Cache-Control"] = "public, max-age=86400"
     return response
