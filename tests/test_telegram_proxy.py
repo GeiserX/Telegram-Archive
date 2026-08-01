@@ -209,7 +209,12 @@ async def test_setup_authentication_passes_proxy_kwargs():
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True
-    client.get_me.return_value = SimpleNamespace(first_name="Test", last_name=None, username="tester", phone="123")
+    # Telegram returns the number without a leading "+", so this is the same
+    # account as config.phone above. Setup now fails closed when they differ
+    # (#272), so an arbitrary value here would abort before the assertions.
+    client.get_me.return_value = SimpleNamespace(
+        first_name="Test", last_name=None, username="tester", phone="123456789"
+    )
 
     with (
         patch("src.config.Config", return_value=config),

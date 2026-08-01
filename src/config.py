@@ -802,7 +802,12 @@ if __name__ == "__main__":
         setup_logging(config)
         logger.info("Configuration test successful")
         logger.info(f"API ID: {config.api_id}")
-        logger.info(f"Phone: {config.phone}")
+        # This self-test needs to report that a phone number parsed, not what it
+        # is: the number is PII and setup_logging sends this to stderr, which is
+        # captured wherever the check runs. bool() is applied before the logging
+        # call so the statement itself never reads the attribute.
+        phone_configured = bool(config.phone)
+        logger.info(f"Phone configured: {phone_configured}")
         logger.info(f"Schedule: {config.schedule}")
         logger.info(f"Chat types: {config.chat_types}")
     except ValueError as e:

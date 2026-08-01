@@ -358,8 +358,16 @@ class TelegramListener:
         if self.client is not None and not self._owns_client:
             if not self.client.is_connected():
                 raise RuntimeError("Shared client is not connected")
-            me = await self.client.get_me()
-            logger.info(f"Connected as {me.first_name} ({me.phone})")
+            # This branch has no authorization check of its own. It used to get
+            # one by accident: the old log line read me.first_name, and get_me()
+            # returns None on an unauthorized session, so an AttributeError blew
+            # up connect(). Removing the account name from the log (#272) would
+            # have removed that signal too and left the listener attaching
+            # handlers to a revoked session in silence, so ask the question
+            # directly — is_user_authorized() actually raises, get_me() does not.
+            if not await self.client.is_user_authorized():
+                raise RuntimeError("Shared client session is not authorized")
+            logger.info("Connected")
         else:
             # Create new client
             logger.info(f"Using Telethon session database: {self.config.session_path}.session")
@@ -379,8 +387,8 @@ class TelegramListener:
                 logger.error("Please run the authentication setup first.")
                 raise RuntimeError("Session not authorized. Please run authentication setup.")
 
-            me = await self.client.get_me()
-            logger.info(f"Connected as {me.first_name} ({me.phone})")
+            # Authorization already proven by the check above; no get_me() needed.
+            logger.info("Connected")
 
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
