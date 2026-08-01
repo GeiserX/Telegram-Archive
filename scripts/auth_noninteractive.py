@@ -54,8 +54,7 @@ async def main():
     await client.connect()
 
     if await client.is_user_authorized():
-        me = await client.get_me()
-        print(f"Already authorized as {me.first_name} (@{me.username})")
+        print("Already authorized")
         await client.disconnect()
         return
 
@@ -66,7 +65,11 @@ async def main():
         with os.fdopen(fd, "w") as f:
             f.write(result.phone_code_hash)
         print(f"Verification code sent to Telegram app ({result.type.__class__.__name__})")
-        print(f"Phone code hash: {result.phone_code_hash}")
+        # The hash itself is a short-lived login credential and is deliberately
+        # not printed: it is already written above to a 0600 file that the
+        # verify step reads, so echoing it to stdout would only copy a secret
+        # into the container log stream and undo that file mode.
+        print(f"Phone code hash saved to: {hash_path}")
         await client.disconnect()
 
     elif action == "verify":
@@ -106,8 +109,7 @@ async def main():
                 await client.disconnect()
                 sys.exit(1)
 
-        me = await client.get_me()
-        print(f"Authenticated as {me.first_name} (@{me.username})")
+        print("Authenticated")
         try:
             os.remove(hash_path)
         except FileNotFoundError:

@@ -232,8 +232,7 @@ async def restore_chat(
     # Initialize Telegram client
     logger.info("\nConnecting to Telegram...")
     client = await get_telegram_client()
-    me = await client.get_me()
-    logger.info(f"Logged in as: {me.first_name} ({me.phone})")
+    logger.info("Logged in")
 
     # Verify destination chat exists
     try:

@@ -9,7 +9,36 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.setup_auth import _print_permission_error_help, main, setup_authentication
+from src.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
+
+
+class TestSamePhoneNumber(unittest.TestCase):
+    """#272: confirm WHICH account authenticated without logging the number.
+
+    The setup flow reports a boolean comparing the authenticated account against
+    TELEGRAM_PHONE. That is only useful if the comparison is right: Telegram
+    returns ``me.phone`` with no leading ``+``, so a raw string comparison would
+    report a mismatch for every correctly configured account and train operators
+    to ignore the warning.
+    """
+
+    def test_a_leading_plus_does_not_make_it_a_different_number(self):
+        assert _same_phone_number("+34687016994", "34687016994") is True
+
+    def test_separators_are_ignored(self):
+        assert _same_phone_number("+34 687 01 69 94", "+34-687-016-994") is True
+
+    def test_a_genuinely_different_number_is_reported(self):
+        assert _same_phone_number("+34687016994", "+34665238495") is False
+
+    def test_a_missing_value_is_never_a_match(self):
+        """An unauthorized client yields no phone; that must not read as success."""
+        assert _same_phone_number(None, "+34687016994") is False
+        assert _same_phone_number("+34687016994", None) is False
+        assert _same_phone_number("", "") is False
+
+    def test_a_substring_is_not_a_match(self):
+        assert _same_phone_number("+34687016994", "687016994") is False
 
 
 class TestPrintPermissionErrorHelp(unittest.TestCase):
