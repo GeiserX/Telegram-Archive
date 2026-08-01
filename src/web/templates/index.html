@@ -125,14 +125,15 @@
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
-           why an icon-sized anchor needs an opt-out: this selector is (0,1,1),
-           which OUTRANKS a Tailwind `w-9` utility at (0,1,0), so `width: 100%`
-           silently wins over the utility and `shrink-0` then protects that
-           100% basis instead of the intended 36px. The anchor eats the row and
-           its `min-w-0 flex-1` sibling is starved to 0, which is invisible
-           rather than merely ugly (a `truncate` child paints nothing at 0
-           width). Any anchor that must keep its own size opts out with
-           `bubble-icon-action`. */
+           why an icon-sized anchor needs an opt-out: the plain `.message-bubble a`
+           this replaces is (0,1,1), which OUTRANKS a Tailwind `w-9` utility at
+           (0,1,0), so `width: 100%` silently won over the utility and `shrink-0`
+           then protected that 100% basis instead of the intended 36px. The anchor
+           ate the row and its `min-w-0 flex-1` sibling was starved to 0, which is
+           invisible rather than merely ugly (a `truncate` child paints nothing at
+           0 width). Any anchor that must keep its own size opts out with
+           `bubble-icon-action`; adding that `:not()` raises this arm to (0,2,1),
+           which only widens the gap over the utility it must not beat. */
         .message-bubble img,
         .message-bubble video,
         .message-bubble audio,

@@ -4289,3 +4289,18 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         self.assertIn("w-9", anchor)
         self.assertIn("h-9", anchor)
         self.assertIn("shrink-0", anchor)
+
+    def test_the_note_icon_cannot_be_squeezed_out_of_the_filename_row(self) -> None:
+        """The bare emoji span was the last unprotected item in that row.
+
+        It is a flex item beside a ``truncate`` filename, and ``.message-bubble``
+        sets ``overflow-wrap: anywhere``, which drops a text box's min-content
+        width to a single character — so without ``shrink-0`` the icon can be
+        squeezed away whenever the row is under pressure, the same class of bug
+        as the duration spans in #267.
+        """
+        start = self.html.index('<div v-else-if="isAudioFile(msg)"')
+        bubble = self.html[start : self.html.index("<!-- GIFs / Animations", start)]
+        icon_start = bubble.index("🎵")
+        icon_span = bubble[bubble.rindex("<span", 0, icon_start) : icon_start]
+        self.assertIn("shrink-0", icon_span)
