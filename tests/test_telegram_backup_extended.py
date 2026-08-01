@@ -181,7 +181,7 @@ class TestConnect(unittest.TestCase):
         mock_client.is_connected.assert_called_once()
         mock_client.is_user_authorized.assert_awaited_once()
 
-    def test_shared_client_connected_but_unauthorized_raises(self):
+    def test_shared_client_connected_but_unauthorized_raises(self) -> None:
         """A revoked session stays connected and fails every request (#272)."""
         mock_client = MagicMock()
         mock_client.is_connected = MagicMock(return_value=True)

@@ -21,13 +21,19 @@ output lands in the container log stream like everything else.
 to stdout, which is captured identically. Anything unrecognised is treated as a
 log call rather than waved through — for a guard, the safe default is to ask.
 
-Out of scope, and NOT because it would be noisy: exactly 1 of the 631 logging
-calls in ``src`` reads ``.id`` (``listener.py``, a failed-download message id).
-Chat and topic ids are a different rule — "never log chat IDs, topic IDs, or
-topic titles" — which is equally unenforced and has live violations today, so
-covering it here would turn this guard red on pre-existing work unrelated to
-#272. That is deliberate follow-up, not a false-positive problem; anyone
-widening this scan should expect to fix those sites in the same change.
+The Telegram user id IS covered, but only on the account. #272 lists it, and
+``telegram_backup.py`` did log ``me.id`` — yet banning ``.id`` outright would
+also catch ``listener.py``'s failed-download ``message.id``, which is both a
+different rule and legitimate debugging detail. So the scan first works out
+which locals hold the result of ``get_me()`` and bans ``.id`` on those alone.
+The same id is still stored as ``owner_id``, which is storage, not logging.
+
+Genuinely out of scope: chat ids, topic ids and titles. That is a separate
+documented rule — "never log chat IDs, topic IDs, or topic titles" — which is
+equally unenforced and has live violations today, so covering it here would turn
+this guard red on pre-existing work unrelated to #272. Deliberate follow-up, not
+a false-positive problem; anyone widening this scan should expect to fix those
+sites in the same change.
 
 One honest limit: the scan sees a banned attribute only when a logging call
 reads it DIRECTLY. Hoisting it to a local first defeats it. That is the same
@@ -82,11 +88,40 @@ def _is_logging_call(node: ast.Call) -> bool:
     return True
 
 
-def _banned_attributes_in(node: ast.AST) -> list[str]:
-    """Every banned attribute name read anywhere inside ``node``."""
-    return [
-        child.attr for child in ast.walk(node) if isinstance(child, ast.Attribute) and child.attr in BANNED_ATTRIBUTES
-    ]
+def _account_variable_names(tree: ast.AST) -> frozenset[str]:
+    """Locals holding the result of ``get_me()``, however it was called.
+
+    Covers ``me = await client.get_me()`` and the wrapped
+    ``me = await call_with_flood_retry(self.client.get_me)`` alike, by looking
+    for the name anywhere in the assigned expression.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(child, ast.Attribute) and child.attr == "get_me" for child in ast.walk(node.value)):
+            continue
+        names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    return frozenset(names)
+
+
+def _banned_attributes_in(node: ast.AST, account_names: frozenset[str] = frozenset()) -> list[str]:
+    """Every banned attribute name read anywhere inside ``node``.
+
+    ``.id`` is banned only on a variable known to hold the account, never
+    generally: #272 lists the Telegram user id as protected, but a bare ban
+    would also catch ``message.id``, which is a different rule and legitimate
+    debugging detail.
+    """
+    found: list[str] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Attribute):
+            continue
+        if child.attr in BANNED_ATTRIBUTES:
+            found.append(child.attr)
+        elif child.attr == "id" and isinstance(child.value, ast.Name) and child.value.id in account_names:
+            found.append("id")
+    return found
 
 
 def _scan_source_tree() -> list[str]:
@@ -94,11 +129,12 @@ def _scan_source_tree() -> list[str]:
     for root in SCANNED_ROOTS:
         for path in sorted(root.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            account_names = _account_variable_names(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or not _is_logging_call(node):
                     continue
                 for argument in [*node.args, *(kw.value for kw in node.keywords)]:
-                    for attribute in _banned_attributes_in(argument):
+                    for attribute in _banned_attributes_in(argument, account_names):
                         violations.append(f"{path.relative_to(REPO)}:{node.lineno} reads .{attribute}")
     return violations
 
@@ -149,6 +185,36 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
         self.assertTrue(_is_logging_call(call))
         found = [attr for argument in call.args for attr in _banned_attributes_in(argument)]
         self.assertEqual(["first_name", "username"], found)
+
+    def test_the_account_id_is_banned_but_a_message_id_is_not(self) -> None:
+        """#272 lists the Telegram user id, but ``.id`` alone is too broad.
+
+        ``telegram_backup.py`` logged ``me.id`` and still legitimately stores it
+        as owner_id; ``listener.py`` logs ``message.id`` on a failed download,
+        which is a different rule. The distinction is where the value came from.
+        """
+        source = (
+            "me = await client.get_me()\n"
+            'logger.info(f"Logged in as {me.id}")\n'
+            'logger.warning(f"Failed to download media for message {message.id}: {e}")\n'
+        )
+        tree = ast.parse(source)
+        account_names = _account_variable_names(tree)
+        self.assertEqual({"me"}, set(account_names))
+
+        found = [
+            attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _is_logging_call(node)
+            for argument in node.args
+            for attr in _banned_attributes_in(argument, account_names)
+        ]
+        self.assertEqual(["id"], found)
+
+    def test_the_wrapped_get_me_call_still_marks_the_account(self) -> None:
+        """The repo also calls it through a retry wrapper."""
+        tree = ast.parse("me = await call_with_flood_retry(self.client.get_me)\n")
+        self.assertEqual({"me"}, set(_account_variable_names(tree)))
 
     def test_an_unrecognised_receiver_fails_closed(self) -> None:
         """A logger built inline must not slip past by being unfamiliar."""
