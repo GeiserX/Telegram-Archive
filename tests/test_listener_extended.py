@@ -2000,6 +2000,28 @@ class TestListenerConnectSharedClient:
         with pytest.raises(RuntimeError, match="Shared client is not connected"):
             await listener.connect()
 
+    async def test_shared_client_connected_but_unauthorized_raises(self):
+        """#272: a connected-but-revoked shared session must fail loudly.
+
+        This branch never had an authorization check of its own. It used to get
+        one by accident: the log line read ``me.first_name``, and Telethon's
+        get_me() returns None on an unauthorized session, so an AttributeError
+        aborted connect(). Removing the account name from that log would have
+        turned a crash into silence — handlers attached to a dead session,
+        nothing archived, no error anywhere — so the check is now explicit.
+        """
+        config = _make_config()
+        db = _make_db()
+        mock_client = AsyncMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.is_user_authorized = AsyncMock(return_value=False)
+        listener = TelegramListener(config, db, client=mock_client)
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Shared client session is not authorized"):
+            await listener.connect()
+
     async def test_shared_client_connected_succeeds(self):
         """Shared client that is connected returns normally."""
         config = _make_config()
