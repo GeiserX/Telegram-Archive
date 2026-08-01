@@ -53,6 +53,9 @@ class TestMainBlockEdgeCases(unittest.TestCase):
         # the number itself must not reach the log — basicConfig writes to
         # stderr, which is captured wherever this check is run.
         self.assertNotIn("+9876543210", result.stderr)
+        # Without the prefix too: a leak of the bare digits is the same leak,
+        # and Config could normalise the "+" away at any point.
+        self.assertNotIn("9876543210", result.stderr)
         self.assertIn("Phone configured: True", result.stderr)
 
     def test_main_block_config_error_prints_to_stdout(self):

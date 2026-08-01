@@ -172,11 +172,24 @@ class TestConnect(unittest.TestCase):
         """Shared client that is_connected() returns early without creating new client."""
         mock_client = MagicMock()
         mock_client.is_connected = MagicMock(return_value=True)
+        # Connected is not authorized: connect() now asks both (#272).
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
         backup = _make_backup(client=mock_client, _owns_client=False)
 
         _run(backup.connect())
 
         mock_client.is_connected.assert_called_once()
+        mock_client.is_user_authorized.assert_awaited_once()
+
+    def test_shared_client_connected_but_unauthorized_raises(self):
+        """A revoked session stays connected and fails every request (#272)."""
+        mock_client = MagicMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.is_user_authorized = AsyncMock(return_value=False)
+        backup = _make_backup(client=mock_client, _owns_client=False)
+
+        with self.assertRaisesRegex(RuntimeError, "Shared client session is not authorized"):
+            _run(backup.connect())
 
     def test_shared_client_not_connected_raises(self):
         """Shared client that is NOT connected raises RuntimeError."""

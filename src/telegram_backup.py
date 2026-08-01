@@ -806,6 +806,12 @@ class TelegramBackup:
         if self.client is not None and not self._owns_client:
             if not self.client.is_connected():
                 raise RuntimeError("Shared client is not connected")
+            # Connected is not the same as authorized: a revoked session stays
+            # connected and fails every request. The listener's shared-client
+            # branch asks this question too; without it here the backup would
+            # accept a client the listener rejects.
+            if not await self.client.is_user_authorized():
+                raise RuntimeError("Shared client session is not authorized")
             logger.debug("Using shared Telegram client")
             return
 
