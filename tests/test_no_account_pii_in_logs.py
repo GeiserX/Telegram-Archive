@@ -339,6 +339,16 @@ def _chat_object_field_reads(node: ast.AST) -> list[str]:
             and _is_chat_object(child.func.value)
         ):
             found.append(f".get({child.args[0].value!r})")
+        elif (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "getattr"
+            and len(child.args) >= 2
+            and isinstance(child.args[1], ast.Constant)
+            and child.args[1].value in _ID_FIELDS
+            and _is_chat_object(child.args[0])
+        ):
+            found.append(f"getattr(..., {child.args[1].value!r})")
     return found
 
 
@@ -445,6 +455,16 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
             self.assertTrue(
                 any(_chat_object_field_reads(a) for a in call.args), f"missed a chat/topic field read in: {src}"
             )
+
+    def test_a_getattr_read_of_a_chat_field_is_detected(self) -> None:
+        """``getattr(chat, "id")`` is the .get() bypass in attribute form."""
+        tree = ast.parse('logger.info("%s", getattr(chat, "id"))')
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertTrue(any(_chat_object_field_reads(a) for a in call.args))
+        # ...but not on a non-chat object.
+        tree = ast.parse('logger.info("%s", getattr(msg, "id"))')
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertEqual([], [h for a in call.args for h in _chat_object_field_reads(a)])
 
     def test_a_message_or_token_id_is_not_treated_as_a_chat_id(self) -> None:
         """The object, not the field name, is what scopes this — ``id`` is ambiguous."""
