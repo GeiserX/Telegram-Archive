@@ -4243,3 +4243,49 @@ class TestAudioBubbleDownload(unittest.TestCase):
         """#263: duration already exists on the bubble — no duplicate element."""
         bubble = self._audio_bubble()
         self.assertEqual(bubble.count("formatAudioTime(msg.media.duration)"), 1)
+
+
+class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
+    """#270: the round #261 download anchor was stretched to fill its row.
+
+    ``.message-bubble a`` is (0,1,1) specificity, which OUTRANKS the Tailwind
+    ``w-9`` utility at (0,1,0). Without the ``:not(.bubble-icon-action)``
+    exclusion, ``width: 100%`` silently wins over the 36px utility, and
+    ``shrink-0`` then protects that 100% basis instead of the intended 36px:
+    the anchor eats the row and its ``min-w-0 flex-1`` sibling (icon +
+    filename + duration) is starved to 0px width — invisible, since
+    ``truncate`` paints nothing at 0 width, not merely ugly.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _bubble_media_rule(self) -> str:
+        rule_start = self.html.index(".message-bubble img,")
+        return self.html[rule_start : self.html.index("}", rule_start)]
+
+    def _download_anchor_tag(self) -> str:
+        start = self.html.index('<div v-else-if="isAudioFile(msg)"')
+        bubble = self.html[start : self.html.index("<!-- GIFs / Animations", start)]
+        anchor_start = bubble.index('<a v-if="!noDownload && getMediaUrl(msg)"')
+        return bubble[anchor_start : bubble.index(">", anchor_start) + 1]
+
+    def test_the_anchor_arm_of_the_stretch_rule_excludes_icon_actions(self) -> None:
+        """If ``:not(.bubble-icon-action)`` is dropped, every icon anchor in
+        ``.message-bubble`` (not just the download button) silently gets
+        stretched to 100% width/height:auto again."""
+        rule = self._bubble_media_rule()
+        self.assertIn(".message-bubble a:not(.bubble-icon-action),", rule)
+
+    def test_the_download_anchor_opts_out_via_the_icon_action_class(self) -> None:
+        """Without ``bubble-icon-action`` on the anchor itself, the CSS
+        exclusion above has nothing to match and the anchor is stretched
+        exactly as it was pre-fix."""
+        anchor = self._download_anchor_tag()
+        self.assertIn("bubble-icon-action", anchor)
+        # The opt-out is meaningless without the actual 36px sizing utilities
+        # it is meant to protect.
+        self.assertIn("w-9", anchor)
+        self.assertIn("h-9", anchor)
+        self.assertIn("shrink-0", anchor)

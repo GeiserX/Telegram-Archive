@@ -124,10 +124,19 @@
             overflow-x: hidden;
         }
 
+        /* Media and full-width link cards stretch to the bubble. The `a` arm is
+           why an icon-sized anchor needs an opt-out: this selector is (0,1,1),
+           which OUTRANKS a Tailwind `w-9` utility at (0,1,0), so `width: 100%`
+           silently wins over the utility and `shrink-0` then protects that
+           100% basis instead of the intended 36px. The anchor eats the row and
+           its `min-w-0 flex-1` sibling is starved to 0, which is invisible
+           rather than merely ugly (a `truncate` child paints nothing at 0
+           width). Any anchor that must keep its own size opts out with
+           `bubble-icon-action`. */
         .message-bubble img,
         .message-bubble video,
         .message-bubble audio,
-        .message-bubble a,
+        .message-bubble a:not(.bubble-icon-action),
         .message-bubble .media-wrapper {
             max-width: 100%;
             width: 100%;
@@ -1377,7 +1386,7 @@
                                                 </button>
                                                 <div class="min-w-0 flex-1">
                                                     <div class="flex items-center gap-2 text-xs text-gray-300">
-                                                        <span>🎵</span>
+                                                        <span class="shrink-0">🎵</span>
                                                         <span class="truncate">{{ getDocumentDisplayName(msg) }}</span>
                                                     </div>
                                                     <!-- #267: every span in this row needs whitespace-nowrap.
@@ -1410,7 +1419,7 @@
                                                     :download="getDocumentDisplayName(msg)"
                                                     @click.stop
                                                     :aria-label="'Download ' + getDocumentDisplayName(msg)"
-                                                    class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                                    class="bubble-icon-action w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                             d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
