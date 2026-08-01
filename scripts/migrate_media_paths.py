@@ -213,7 +213,7 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
                 continue  # Nothing to migrate for this chat
 
             stats["chats_processed"] += 1
-            logger.info(f"📁 Chat {chat_id} ({chat['type']}): {chat['title']}")
+            logger.info(f"📁 Processing chat (type: {chat['type']})")
 
             # Count paths that need updating
             counts = await count_paths_for_chat(session, chat_id, old_folder)

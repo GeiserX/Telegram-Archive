@@ -675,7 +675,7 @@ class TelegramImporter:
         export_type = chat_data.get("type", "personal_chat")
         messages = chat_data.get("messages", [])
 
-        logger.info(f"Importing chat '{chat_name}' (ID: {chat_id}, type: {export_type}) - {len(messages)} messages")
+        logger.info(f"Importing chat (type: {export_type}) - {len(messages)} messages")
 
         if not merge and not dry_run:
             existing = await self.db.get_chat_stats(chat_id)
@@ -819,7 +819,7 @@ class TelegramImporter:
             await self.db.update_sync_status(chat_id, max_msg_id, msg_count)
 
         action = "Would import" if dry_run else "Imported"
-        logger.info(f"{action} {msg_count} messages and {media_count} media files for '{chat_name}'")
+        logger.info(f"{action} {msg_count} messages and {media_count} media files")
 
         return {
             "chat_id": chat_id,

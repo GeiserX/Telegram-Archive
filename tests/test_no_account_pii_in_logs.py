@@ -28,12 +28,10 @@ different rule and legitimate debugging detail. So the scan first works out
 which locals hold the result of ``get_me()`` and bans ``.id`` on those alone.
 The same id is still stored as ``owner_id``, which is storage, not logging.
 
-Genuinely out of scope: chat ids, topic ids and titles. That is a separate
-documented rule — "never log chat IDs, topic IDs, or topic titles" — which is
-equally unenforced and has live violations today, so covering it here would turn
-this guard red on pre-existing work unrelated to #272. Deliberate follow-up, not
-a false-positive problem; anyone widening this scan should expect to fix those
-sites in the same change.
+Chat ids, topic ids and titles are the separate documented rule — "never log
+chat IDs, topic IDs, or topic titles" — enforced lower in this file by
+``TestNoChatIdentifiersInLogs`` (#274). It was added after the account rule, once
+its own backlog of pre-existing violations had been cleared.
 
 One honest limit: the scan sees a banned attribute only when a logging call
 reads it DIRECTLY. Hoisting it to a local first defeats it. That is the same
@@ -48,6 +46,7 @@ with a raw SyntaxError rather than a meaningful assertion.
 
 import ast
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -263,6 +262,119 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_logging_call(node)]
         self.assertEqual(1, len(calls))
         self.assertEqual([], [a for arg in calls[0].args for a in _banned_attributes_in(arg)])
+
+
+# ---------------------------------------------------------------------------
+# The chat-id / topic-id / title rule (#274)
+#
+# CLAUDE.md: "Never log chat IDs, topic IDs, or topic titles." This survived
+# unenforced even longer than the account-identity rule. A targeted grep found 6
+# sites; matching only the literal name `chat_id` missed `source_chat_id`,
+# `dest_chat_id` and the config collection dumps. So this matches any name /
+# attribute / subscript-key whose tail is a chat-id-ish token, and — because
+# logging HOW MANY chats is fine while logging WHICH is not — excludes anything
+# sitting inside a `len(...)` call.
+#
+# A path allow-list carries the deliberate exceptions, where the identifier is
+# the answer the operator asked for rather than incidental noise. Listing them by
+# path keeps the exemption visible instead of an accident of the matcher.
+# ---------------------------------------------------------------------------
+
+_CHAT_ID_RE = re.compile(r"(chat_ids?|chat_name|chat_title|topic_ids?|topic_title)$")
+
+CHAT_ID_LOG_ALLOWLIST = frozenset(
+    {
+        "src/__main__.py",  # CLI gap-fill / import summaries, printed to the operator who ran the command
+        "src/export_backup.py",  # the `list-chats` table — the chat id IS the requested output
+        "scripts/restore_chat.py",  # interactive destructive tool; ids are the operator's own arguments
+    }
+)
+
+
+def _chat_identifier_hits(node: ast.AST) -> list[str]:
+    """Chat-id-ish names read in ``node``, excluding those inside ``len(...)``.
+
+    ``len(chat_ids)`` is a count, which the rule explicitly permits; the raw
+    collection or a single id is what must not be logged.
+    """
+    inside_len: set[int] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "len":
+            inside_len.update(id(d) for d in ast.walk(child))
+
+    found: list[str] = []
+    for child in ast.walk(node):
+        if id(child) in inside_len:
+            continue
+        name = None
+        if isinstance(child, ast.Name):
+            name = child.id
+        elif isinstance(child, ast.Attribute):
+            name = child.attr
+        elif isinstance(child, ast.Subscript):
+            key = child.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                name = key.value
+        if name and _CHAT_ID_RE.search(name):
+            found.append(name)
+    return found
+
+
+def _scan_for_chat_identifiers() -> list[str]:
+    violations: list[str] = []
+    for root in SCANNED_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            rel = str(path.relative_to(REPO))
+            if rel in CHAT_ID_LOG_ALLOWLIST:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not _is_logging_call(node):
+                    continue
+                for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+                    for name in _chat_identifier_hits(argument):
+                        violations.append(f"{rel}:{node.lineno} logs {name}")
+    return violations
+
+
+class TestNoChatIdentifiersInLogs(unittest.TestCase):
+    def test_no_logging_call_reads_a_chat_identifier(self) -> None:
+        violations = _scan_for_chat_identifiers()
+        self.assertEqual(
+            [],
+            violations,
+            "Logging must not read a chat id, topic id or title (CLAUDE.md). Log a count, "
+            "or nothing. If the identifier is genuinely the operator-facing answer (a list "
+            "command, an interactive destructive tool), add the file to CHAT_ID_LOG_ALLOWLIST "
+            "with a reason. Offending call sites:\n  " + "\n  ".join(violations),
+        )
+
+    def test_a_bare_variable_named_source_chat_id_is_caught(self) -> None:
+        """The literal-name scan missed these; the tail match is why they are covered now."""
+        tree = ast.parse('logger.error(f"Chat {source_chat_id} not found")')
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertEqual(["source_chat_id"], [h for a in call.args for h in _chat_identifier_hits(a)])
+
+    def test_a_count_of_chats_is_allowed(self) -> None:
+        tree = ast.parse('logger.info(f"backing up {len(self.chat_ids)} chats")')
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertEqual([], [h for a in call.args for h in _chat_identifier_hits(a)])
+
+    def test_a_loop_index_that_merely_contains_chat_id_is_not_matched(self) -> None:
+        """`chat_idx` is a counter, not an id — the tail anchor must exclude it."""
+        tree = ast.parse('logger.info(f"{chat_idx}/{total}")')
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertEqual([], [h for a in call.args for h in _chat_identifier_hits(a)])
+
+    def test_a_subscript_key_is_detected(self) -> None:
+        tree = ast.parse("logger.info(f\"{detail['chat_id']}\")")
+        call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+        self.assertEqual(["chat_id"], [h for a in call.args for h in _chat_identifier_hits(a)])
+
+    def test_the_allowlisted_paths_all_exist(self) -> None:
+        """A stale allow-list entry silently widens the exemption."""
+        for rel in CHAT_ID_LOG_ALLOWLIST:
+            self.assertTrue((REPO / rel).is_file(), f"allowlisted path missing: {rel}")
 
 
 if __name__ == "__main__":

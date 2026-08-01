@@ -863,7 +863,7 @@ class DatabaseAdapter:
             # Delete the message
             await session.execute(delete(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)))
             await session.commit()
-            logger.debug(f"Deleted message {message_id} from chat {chat_id}")
+            logger.debug(f"Deleted message {message_id}")
 
     @retry_on_locked()
     async def mark_message_deleted(self, chat_id: int, message_id: int, deleted_at: datetime | None = None) -> None:
@@ -1985,7 +1985,7 @@ class DatabaseAdapter:
             await session.execute(delete(Chat).where(Chat.id == chat_id))
 
             await session.commit()
-            logger.info(f"Deleted chat {chat_id} and all related data from database")
+            logger.info("Deleted chat and all related data from database")
 
         # Delete physical files
         if media_base_path and os.path.exists(media_base_path):

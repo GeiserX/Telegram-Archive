@@ -451,7 +451,6 @@ class Config:
         # Log filtering mode
         if self.whitelist_mode:
             logger.info(f"Filter mode: WHITELIST - backing up ONLY {len(self.chat_ids)} specific chats")
-            logger.debug(f"  CHAT_IDS: {self.chat_ids}")
         else:
             logger.debug("Filter mode: TYPE-BASED")
             logger.debug(f"  Chat types: {self.chat_types}")
@@ -496,10 +495,10 @@ class Config:
                 "FOLLOW_CHAT_MIGRATIONS enabled - will adopt the new supergroup id after a group→supergroup migration"
             )
         if self.display_chat_ids:
-            logger.info(f"Display mode: Viewer restricted to chat IDs {self.display_chat_ids}")
+            logger.info(f"Display mode: Viewer restricted to {len(self.display_chat_ids)} chat(s)")
         if self.skip_media_chat_ids:
             cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
-            logger.info(f"Media downloads skipped for chat IDs: {self.skip_media_chat_ids} ({cleanup_status})")
+            logger.info(f"Media downloads skipped for {len(self.skip_media_chat_ids)} chat(s) ({cleanup_status})")
         if self.skip_topic_ids:
             total_topics = sum(len(t) for t in self.skip_topic_ids.values())
             logger.info(f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)")
