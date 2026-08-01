@@ -119,9 +119,20 @@ def _banned_attributes_in(node: ast.AST, account_names: frozenset[str] = frozens
             continue
         if child.attr in BANNED_ATTRIBUTES:
             found.append(child.attr)
-        elif child.attr == "id" and isinstance(child.value, ast.Name) and child.value.id in account_names:
+        elif child.attr == "id" and _reads_the_account(child.value, account_names):
             found.append("id")
     return found
+
+
+def _reads_the_account(value: ast.AST, account_names: frozenset[str]) -> bool:
+    """Is this expression the account — by name, or fetched on the spot?
+
+    A name covers ``me.id``. The inline form ``(await client.get_me()).id``
+    never binds a local, so matching names alone would let it through.
+    """
+    if isinstance(value, ast.Name):
+        return value.id in account_names
+    return any(isinstance(child, ast.Attribute) and child.attr == "get_me" for child in ast.walk(value))
 
 
 def _scan_source_tree() -> list[str]:
@@ -210,6 +221,20 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
             for attr in _banned_attributes_in(argument, account_names)
         ]
         self.assertEqual(["id"], found)
+
+    def test_an_inline_get_me_cannot_dodge_the_account_id_rule(self) -> None:
+        """``(await client.get_me()).id`` never binds a local to match against."""
+        tree = ast.parse('logger.info(f"Logged in as {(await client.get_me()).id}")')
+        call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_logging_call(node))
+        found = [attr for argument in call.args for attr in _banned_attributes_in(argument, frozenset())]
+        self.assertEqual(["id"], found)
+
+    def test_an_unrelated_inline_id_is_still_allowed(self) -> None:
+        """Only the account is in scope; a message id fetched inline is not."""
+        tree = ast.parse('logger.warning(f"Failed for {client.get_message(n).id}")')
+        call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_logging_call(node))
+        found = [attr for argument in call.args for attr in _banned_attributes_in(argument, frozenset())]
+        self.assertEqual([], found)
 
     def test_the_wrapped_get_me_call_still_marks_the_account(self) -> None:
         """The repo also calls it through a retry wrapper."""
