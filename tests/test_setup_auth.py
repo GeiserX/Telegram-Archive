@@ -46,6 +46,64 @@ class TestSamePhoneNumber(unittest.TestCase):
         self.assertFalse(_same_phone_number("+34687016994", "687016994"))
 
 
+@pytest.mark.asyncio
+async def test_setup_fails_closed_when_the_session_belongs_to_another_account():
+    """#272: a stale session for a different account must not report success.
+
+    This is the case the check exists for. The session is genuinely authorized,
+    so every downstream check passes — the daemons verify authorization and
+    never identity — which is why setup itself has to be the one to notice.
+    """
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session-mismatch"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.phone = "+34687016994"
+    config.get_telegram_client_kwargs.return_value = {}
+
+    client = AsyncMock()
+    client.is_user_authorized.return_value = True
+    # Authorized, but a different number than the one configured.
+    client.get_me.return_value = MagicMock(phone="34665238495")
+
+    with (
+        patch("src.config.Config", return_value=config),
+        patch("src.config.setup_logging"),
+        patch("src.setup_auth.TelegramClient", return_value=client),
+    ):
+        result = await setup_authentication()
+
+    assert result is False
+    client.disconnect.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_setup_succeeds_when_the_session_matches_the_configured_number():
+    """The same flow with the expected account still reports success."""
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session-match"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.phone = "+34687016994"
+    config.get_telegram_client_kwargs.return_value = {}
+
+    client = AsyncMock()
+    client.is_user_authorized.return_value = True
+    # Telegram returns the number without the leading "+".
+    client.get_me.return_value = MagicMock(phone="34687016994")
+
+    with (
+        patch("src.config.Config", return_value=config),
+        patch("src.config.setup_logging"),
+        patch("src.setup_auth.TelegramClient", return_value=client),
+    ):
+        result = await setup_authentication()
+
+    assert result is True
+
+
 class TestPrintPermissionErrorHelp(unittest.TestCase):
     """Test _print_permission_error_help output."""
 
