@@ -806,6 +806,12 @@ class TelegramBackup:
         if self.client is not None and not self._owns_client:
             if not self.client.is_connected():
                 raise RuntimeError("Shared client is not connected")
+            # Connected is not the same as authorized: a revoked session stays
+            # connected and fails every request. The listener's shared-client
+            # branch asks this question too; without it here the backup would
+            # accept a client the listener rejects.
+            if not await self.client.is_user_authorized():
+                raise RuntimeError("Shared client session is not authorized")
             logger.debug("Using shared Telegram client")
             return
 
@@ -846,8 +852,11 @@ class TelegramBackup:
             logger.error("  Local:  python -m src.setup_auth")
             raise RuntimeError("Session not authorized. Please run authentication setup.")
 
-        me = await self.client.get_me()
-        logger.info(f"Connected as {me.first_name} ({me.phone})")
+        # No get_me() here: authorization is already proven by the check above,
+        # and the account's name and phone must not be logged (#272). Telethon's
+        # get_me() would not add a guarantee anyway — it returns None on an
+        # unauthorized session rather than raising.
+        logger.info("Connected")
 
     async def disconnect(self):
         """
@@ -874,7 +883,9 @@ class TelegramBackup:
 
             # Get current user info
             me = await self.client.get_me()
-            logger.info(f"Logged in as {me.first_name} ({me.id})")
+            # `me.id` is stored below as owner_id because is_outgoing needs it;
+            # it is not logged, and neither is the account name.
+            logger.info("Logged in")
 
             # Store owner ID and backfill is_outgoing for existing messages
             await self.db.set_metadata("owner_id", str(me.id))

@@ -43,11 +43,20 @@ class TestMainBlockEdgeCases(unittest.TestCase):
             timeout=10,
         )
         self.assertEqual(result.returncode, 0)
-        # Lines 634-637 log API ID, Phone, Schedule, and Chat types
+        # The self-test reports API ID, whether a phone is configured, schedule
+        # and chat types.
         self.assertIn("Configuration test successful", result.stderr)
         self.assertIn("99999", result.stderr)
-        self.assertIn("+9876543210", result.stderr)
         self.assertIn("0 */6 * * *", result.stderr)
+        # #272: this used to assert the phone number was PRESENT, which pinned
+        # the leak in place. The self-test still confirms the value parsed, but
+        # the number itself must not reach the log — basicConfig writes to
+        # stderr, which is captured wherever this check is run.
+        self.assertNotIn("+9876543210", result.stderr)
+        # Without the prefix too: a leak of the bare digits is the same leak,
+        # and Config could normalise the "+" away at any point.
+        self.assertNotIn("9876543210", result.stderr)
+        self.assertIn("Phone configured: True", result.stderr)
 
     def test_main_block_config_error_prints_to_stdout(self):
         """ValueError during Config() in __main__ prints 'Configuration error' to stdout."""

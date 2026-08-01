@@ -9,7 +9,99 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.setup_auth import _print_permission_error_help, main, setup_authentication
+from src.setup_auth import _print_permission_error_help, _same_phone_number, main, setup_authentication
+
+
+class TestSamePhoneNumber(unittest.TestCase):
+    """#272: confirm WHICH account authenticated without logging the number.
+
+    The setup flow reports a boolean comparing the authenticated account against
+    TELEGRAM_PHONE. That is only useful if the comparison is right: Telegram
+    returns ``me.phone`` with no leading ``+``, so a raw string comparison would
+    report a mismatch for every correctly configured account and train operators
+    to ignore the warning.
+    """
+
+    def test_a_leading_plus_does_not_make_it_a_different_number(self) -> None:
+        self.assertTrue(_same_phone_number("+34687016994", "34687016994"))
+
+    def test_the_00_international_prefix_is_the_same_number(self) -> None:
+        """Both forms are in common use; the caller fails closed, so this matters."""
+        self.assertTrue(_same_phone_number("0034687016994", "+34687016994"))
+
+    def test_separators_are_ignored(self) -> None:
+        self.assertTrue(_same_phone_number("+34 687 01 69 94", "+34-687-016-994"))
+
+    def test_a_genuinely_different_number_is_reported(self) -> None:
+        self.assertFalse(_same_phone_number("+34687016994", "+34665238495"))
+
+    def test_a_missing_value_is_never_a_match(self) -> None:
+        """An unauthorized client yields no phone; that must not read as success."""
+        self.assertFalse(_same_phone_number(None, "+34687016994"))
+        self.assertFalse(_same_phone_number("+34687016994", None))
+        self.assertFalse(_same_phone_number("", ""))
+
+    def test_a_substring_is_not_a_match(self) -> None:
+        """Loose matching would hide the stale-session case this exists to catch."""
+        self.assertFalse(_same_phone_number("+34687016994", "687016994"))
+
+
+@pytest.mark.asyncio
+async def test_setup_fails_closed_when_the_session_belongs_to_another_account():
+    """#272: a stale session for a different account must not report success.
+
+    This is the case the check exists for. The session is genuinely authorized,
+    so every downstream check passes — the daemons verify authorization and
+    never identity — which is why setup itself has to be the one to notice.
+    """
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session-mismatch"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.phone = "+34687016994"
+    config.get_telegram_client_kwargs.return_value = {}
+
+    client = AsyncMock()
+    client.is_user_authorized.return_value = True
+    # Authorized, but a different number than the one configured.
+    client.get_me.return_value = MagicMock(phone="34665238495")
+
+    with (
+        patch("src.config.Config", return_value=config),
+        patch("src.config.setup_logging"),
+        patch("src.setup_auth.TelegramClient", return_value=client),
+    ):
+        result = await setup_authentication()
+
+    assert result is False
+    client.disconnect.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_setup_succeeds_when_the_session_matches_the_configured_number():
+    """The same flow with the expected account still reports success."""
+    config = MagicMock()
+    config.validate_credentials = MagicMock()
+    config.session_path = "/tmp/test-session-match"
+    config.api_id = 12345
+    config.api_hash = "hash"
+    config.phone = "+34687016994"
+    config.get_telegram_client_kwargs.return_value = {}
+
+    client = AsyncMock()
+    client.is_user_authorized.return_value = True
+    # Telegram returns the number without the leading "+".
+    client.get_me.return_value = MagicMock(phone="34687016994")
+
+    with (
+        patch("src.config.Config", return_value=config),
+        patch("src.config.setup_logging"),
+        patch("src.setup_auth.TelegramClient", return_value=client),
+    ):
+        result = await setup_authentication()
+
+    assert result is True
 
 
 class TestPrintPermissionErrorHelp(unittest.TestCase):

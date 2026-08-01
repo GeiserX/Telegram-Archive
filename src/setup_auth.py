@@ -35,6 +35,34 @@ def _print_permission_error_help():
 logger = logging.getLogger(__name__)
 
 
+def _normalised_phone_digits(number: str) -> str:
+    """Digits only, with an international call prefix removed.
+
+    ``+34…`` and ``0034…`` are the same number written two ways, and both are
+    in common use. Keeping the ``00`` would make them compare unequal.
+    """
+    digits = "".join(filter(str.isdigit, number))
+    return digits[2:] if digits.startswith("00") else digits
+
+
+def _same_phone_number(left: str | None, right: str | None) -> bool:
+    """Compare two phone numbers by their digits alone.
+
+    Telegram returns ``me.phone`` without a leading ``+`` while TELEGRAM_PHONE
+    is normally written with one, so comparing the raw strings would report a
+    mismatch for every correctly configured account. Separators and the ``00``
+    prefix vary too. Neither value is ever logged — the caller logs the boolean.
+
+    This deliberately does NOT match on a shared suffix. The caller fails closed
+    on a mismatch, so a loose comparison would hide the stale-session case this
+    exists to catch; a strict one can only ever cost a clear error message
+    telling the operator to check how the number is written.
+    """
+    if not left or not right:
+        return False
+    return _normalised_phone_digits(left) == _normalised_phone_digits(right)
+
+
 async def setup_authentication():
     """Interactive authentication setup."""
     try:
@@ -48,7 +76,15 @@ async def setup_authentication():
         logger.info("=" * 60)
         logger.info("Telegram Authentication Setup")
         logger.info("=" * 60)
-        logger.info(f"Phone: {config.phone}")
+        # The phone number is deliberately not echoed. This flow looks
+        # interactive, but it emits through setup_logging -> basicConfig ->
+        # stderr, and where that stream ends up is the OPERATOR's choice, not
+        # ours: docker-compose.yml declares no logging driver, so under
+        # journald, syslog, gelf, fluentd or a Loki plugin every line is shipped
+        # off-box the moment it is written and outlives the --rm container that
+        # produced it. That is the argument; "docker logs captures it" is not,
+        # since `docker compose exec` output never reaches docker logs at all
+        # and --rm deletes the json-file log on exit.
         logger.info(f"Session will be saved to: {config.session_path}")
         logger.info("=" * 60)
 
@@ -96,13 +132,36 @@ async def setup_authentication():
         else:
             logger.info("Already authorized!")
 
-        # Verify authentication
+        # Confirm WHICH account answered, without naming it. The session path
+        # below cannot do this: SESSION_NAME defaults to "telegram_backup" in
+        # config.py, docker-compose.yml and .env.example alike, so it is the
+        # same string for every user — and even when it is customised it names
+        # the destination slot the operator chose, not the identity Telegram
+        # returned. Comparing the two is what actually answers "did I
+        # authenticate the account I meant to?", and it answers it for the
+        # `Already authorized!` branch above, where a stale session file from a
+        # different account would otherwise pass in silence. The result is a
+        # boolean, so nothing identifying reaches the log.
         me = await client.get_me()
+        # get_me() returns None on an unauthorized session rather than raising,
+        # so read through it defensively: a session that died between the check
+        # above and here must not crash with an AttributeError.
+        account_matches_configured_phone = _same_phone_number(getattr(me, "phone", None), config.phone)
         logger.info("=" * 60)
         logger.info("Authentication verified!")
-        logger.info(f"Logged in as: {me.first_name} {me.last_name or ''}")
-        logger.info(f"Username: @{me.username}" if me.username else "Username: (none)")
-        logger.info(f"Phone: {me.phone}")
+        logger.info(f"Authenticated account matches TELEGRAM_PHONE: {account_matches_configured_phone}")
+        if not account_matches_configured_phone:
+            # Fail closed. Reporting the mismatch and returning success anyway
+            # would let main() announce a completed setup while the session
+            # belongs to another account — the daemons check authorization but
+            # never identity, so nothing downstream would catch it either.
+            logger.error(
+                "The authorized session does not belong to TELEGRAM_PHONE. "
+                "Delete the session file and re-run this setup, or correct "
+                "TELEGRAM_PHONE if the number is written in a different form."
+            )
+            await client.disconnect()
+            return False
         logger.info("=" * 60)
         logger.info(f"Session saved to: {config.session_path}")
         logger.info("You can now use this session with Docker or the scheduler.")
