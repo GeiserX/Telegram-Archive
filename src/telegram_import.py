@@ -628,7 +628,7 @@ class TelegramImporter:
             )
 
             if chat_id == 0:
-                logger.warning(f"Skipping chat with no ID: {chat_data.get('name', 'unknown')}")
+                logger.warning("Skipping a chat entry with no ID")
                 continue
 
             result = await self._import_chat(

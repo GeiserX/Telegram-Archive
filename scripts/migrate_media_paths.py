@@ -233,7 +233,7 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
             # Rename the folder
             if os.path.exists(new_folder_path):
                 # New folder already exists - merge contents
-                logger.info(f"   ⚠️  Both folders exist, merging {old_folder}/ into {new_folder}/")
+                logger.info("   ⚠️  Both old and new media folders exist for this chat; merging")
 
                 if not dry_run:
                     for item in os.listdir(old_folder_path):
@@ -248,18 +248,18 @@ async def migrate(db_url: str, media_path: str, dry_run: bool = True):
                     # Remove old folder (should be empty now)
                     try:
                         os.rmdir(old_folder_path)
-                        logger.info(f"   ✓ Removed empty folder: {old_folder}/")
+                        logger.info("   ✓ Removed empty old media folder")
                     except OSError:
-                        logger.warning(f"   Could not remove folder {old_folder}/ (not empty?)")
+                        logger.warning("   Could not remove old media folder (not empty?)")
 
                 stats["folders_renamed"] += 1
             else:
                 # Simple rename
                 if dry_run:
-                    logger.info(f"   [DRY RUN] Would rename folder: {old_folder}/ → {new_folder}/")
+                    logger.info("   [DRY RUN] Would rename this chat's media folder to marked format")
                 else:
                     shutil.move(old_folder_path, new_folder_path)
-                    logger.info(f"   Renamed folder: {old_folder}/ → {new_folder}/")
+                    logger.info("   Renamed this chat's media folder to marked format")
 
                 stats["folders_renamed"] += 1
 

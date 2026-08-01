@@ -1621,7 +1621,7 @@ async def get_chats(
                 else:
                     chat["avatar_url"] = None
             except Exception as e:
-                logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
+                logger.error(f"Error finding avatar for a chat: {e}")
                 chat["avatar_url"] = None
 
         return {

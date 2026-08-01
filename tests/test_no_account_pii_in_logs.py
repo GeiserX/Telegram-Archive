@@ -33,11 +33,15 @@ chat IDs, topic IDs, or topic titles" — enforced lower in this file by
 ``TestNoChatIdentifiersInLogs`` (#274). It was added after the account rule, once
 its own backlog of pre-existing violations had been cleared.
 
-One honest limit: the scan sees a banned attribute only when a logging call
-reads it DIRECTLY. Hoisting it to a local first defeats it. That is the same
-manoeuvre ``config.py`` uses legitimately to log ``bool(config.phone)``, so the
-two cannot be told apart without real taint analysis. This catches the shape the
-nine original leaks actually had, not every conceivable one.
+One honest limit, shared by both scans: they see an identifier only when a
+logging call reads it DIRECTLY — as a banned attribute, a chat/topic-ish
+variable name, or a chat/topic object's ``id``/``name``/``title`` field. What
+they CANNOT see is a value laundered through another call before logging:
+``config.py``'s legitimate ``bool(config.phone)``, or ``migrate_media_paths``'s
+``folder = str(chat_id)`` where the chat id becomes a generically-named string.
+Telling those apart needs real taint analysis; the ``migrate_media_paths`` folder
+logs were found and redacted by review, not by this scan. It catches the shapes
+the leaks actually had, not every conceivable one.
 
 Requires Python 3.14: ``ast.parse`` here must read the repo's own sources, which
 use PEP 758 unparenthesized ``except A, B:``. On an older interpreter this fails
@@ -46,7 +50,6 @@ with a raw SyntaxError rather than a meaningful assertion.
 
 import ast
 import os
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -280,7 +283,64 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
 # path keeps the exemption visible instead of an accident of the matcher.
 # ---------------------------------------------------------------------------
 
-_CHAT_ID_RE = re.compile(r"(chat_ids?|chat_name|chat_title|topic_ids?|topic_title)$")
+_ID_SUBJECTS = ("chat", "topic")
+_ID_FIELDS = frozenset({"id", "name", "title"})
+
+
+def _is_identifier_name(name: str) -> bool:
+    """A variable whose components pair a subject (chat/topic) with a field.
+
+    Component-based, not a tail regex: catches ``chat_id``, ``chat_ids``,
+    ``source_chat_id``, ``display_chat_ids`` and ``chat_id_str`` (a real-leak
+    shape the first tail-anchored version missed), while sparing ``chat_idx`` —
+    a loop counter whose second component is ``idx``, not ``id``.
+    """
+    parts = name.lower().split("_")
+    norm = [p[:-1] if p.endswith("s") and p[:-1] in _ID_FIELDS else p for p in parts]
+    return any(a in _ID_SUBJECTS and b in _ID_FIELDS for a, b in zip(norm, norm[1:], strict=False))
+
+
+def _is_chat_object(value: ast.AST) -> bool:
+    """A Name/Attribute whose own name mentions a chat or topic.
+
+    This is what keeps ``chat.get("id")`` and ``chat["title"]`` in scope while
+    leaving ``msg.get("id")`` (a message id) and ``token_record["id"]`` (a share
+    token) out — the field name alone is ambiguous, the object is not.
+    """
+    obj = value.id if isinstance(value, ast.Name) else value.attr if isinstance(value, ast.Attribute) else None
+    return bool(obj) and any(s in obj.lower() for s in _ID_SUBJECTS)
+
+
+def _chat_object_field_reads(node: ast.AST) -> list[str]:
+    """id / name / title pulled from a chat/topic OBJECT.
+
+    ``chat.id``, ``chat["id"]``, ``chat.get("id")`` — the shapes the name scan
+    cannot see because the identifier is a dict key or attribute, not a variable.
+    A live ``chat.get("id")`` leak in the viewer got through the first version.
+    """
+    found: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Attribute) and child.attr in _ID_FIELDS and _is_chat_object(child.value):
+            found.append(f".{child.attr}")
+        elif (
+            isinstance(child, ast.Subscript)
+            and isinstance(child.slice, ast.Constant)
+            and child.slice.value in _ID_FIELDS
+            and _is_chat_object(child.value)
+        ):
+            found.append(f"[{child.slice.value!r}]")
+        elif (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "get"
+            and child.args
+            and isinstance(child.args[0], ast.Constant)
+            and child.args[0].value in _ID_FIELDS
+            and _is_chat_object(child.func.value)
+        ):
+            found.append(f".get({child.args[0].value!r})")
+    return found
+
 
 CHAT_ID_LOG_ALLOWLIST = frozenset(
     {
@@ -315,7 +375,7 @@ def _chat_identifier_hits(node: ast.AST) -> list[str]:
             key = child.slice
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
                 name = key.value
-        if name and _CHAT_ID_RE.search(name):
+        if name and _is_identifier_name(name):
             found.append(name)
     return found
 
@@ -334,6 +394,8 @@ def _scan_for_chat_identifiers() -> list[str]:
                 for argument in [*node.args, *(kw.value for kw in node.keywords)]:
                     for name in _chat_identifier_hits(argument):
                         violations.append(f"{rel}:{node.lineno} logs {name}")
+                    for read in _chat_object_field_reads(argument):
+                        violations.append(f"{rel}:{node.lineno} logs a chat/topic {read}")
     return violations
 
 
@@ -370,6 +432,35 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         tree = ast.parse("logger.info(f\"{detail['chat_id']}\")")
         call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
         self.assertEqual(["chat_id"], [h for a in call.args for h in _chat_identifier_hits(a)])
+
+    def test_an_id_or_title_read_from_a_chat_object_is_detected(self) -> None:
+        """A live ``chat.get('id')`` leak got through the name-only first version."""
+        for src in (
+            "logger.error(f\"avatar for {chat.get('id')}\")",
+            "logger.info(f\"{chat['title']}\")",
+            'logger.info(f"{topic.title}")',
+        ):
+            tree = ast.parse(src)
+            call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+            self.assertTrue(
+                any(_chat_object_field_reads(a) for a in call.args), f"missed a chat/topic field read in: {src}"
+            )
+
+    def test_a_message_or_token_id_is_not_treated_as_a_chat_id(self) -> None:
+        """The object, not the field name, is what scopes this — ``id`` is ambiguous."""
+        for src in (
+            "logger.error(f\"{msg.get('id')}\")",
+            'logger.warning("denying %s", token_record["id"])',
+        ):
+            tree = ast.parse(src)
+            call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+            self.assertEqual([], [h for a in call.args for h in _chat_object_field_reads(a)], src)
+
+    def test_a_chat_id_str_name_is_detected_but_chat_idx_is_not(self) -> None:
+        """Component match, not tail regex: ``chat_id_str`` is an id, ``chat_idx`` a counter."""
+        self.assertTrue(_is_identifier_name("chat_id_str"))
+        self.assertTrue(_is_identifier_name("source_chat_id"))
+        self.assertFalse(_is_identifier_name("chat_idx"))
 
     def test_the_allowlisted_paths_all_exist(self) -> None:
         """A stale allow-list entry silently widens the exemption."""
