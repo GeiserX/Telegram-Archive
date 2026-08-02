@@ -59,7 +59,7 @@ def fix_media_sizes():
                     cursor.execute("UPDATE media SET file_size = ? WHERE id = ?", (size, media_id))
                     updated_count += 1
             except Exception as e:
-                logger.warning(f"Error reading size for {file_path}: {e}")
+                logger.warning(f"Error reading size for {os.path.basename(file_path)}: {type(e).__name__}")
         else:
             missing_files += 1
             # logger.debug(f"File not found: {file_path}")

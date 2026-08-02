@@ -103,7 +103,11 @@ def main():
                 os.remove(item["legacy"])
                 deleted += 1
             except Exception as e:
-                print(f"  Error deleting {item['legacy']}: {e}")
+                # Type only: the avatar filename embeds the chat id, and OSError
+                # stringifies with the offending path. Deliberately self-contained
+                # rather than using describe_exception — this script imports
+                # nothing from src.
+                print(f"  Error deleting an avatar: {type(e).__name__}")
 
         print(f"Deleted {deleted} legacy avatar file(s).")
 

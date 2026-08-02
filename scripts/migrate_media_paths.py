@@ -145,20 +145,22 @@ async def migrate_avatars(media_path: str, dry_run: bool) -> dict:
         new_path = os.path.join(chats_avatar_dir, new_filename)
 
         if os.path.exists(new_path):
-            logger.debug(f"  Avatar already migrated: {filename}")
+            # The avatar filename IS the chat id ("-<chat_id>_<photo_id>.jpg"),
+            # so it cannot be logged (#274 follow-up).
+            logger.debug("  Avatar already migrated")
             stats["skipped"] += 1
             continue
 
         if dry_run:
-            logger.info(f"  [DRY RUN] Would rename avatar: {filename} → {new_filename}")
+            logger.info("  [DRY RUN] Would rename an avatar to marked format")
             stats["renamed"] += 1
         else:
             try:
                 shutil.move(old_path, new_path)
-                logger.info(f"  Renamed avatar: {filename} → {new_filename}")
+                logger.info("  Renamed an avatar to marked format")
                 stats["renamed"] += 1
             except Exception as e:
-                logger.error(f"  Error renaming avatar {filename}: {e}")
+                logger.error(f"  Error renaming an avatar: {type(e).__name__}")
                 stats["errors"] += 1
 
     return stats

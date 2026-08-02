@@ -440,7 +440,9 @@ async def download_and_shard_media(
             else:
                 raise
     except OSError as e:
-        logger.warning(f"Symlink not supported, using direct path: {e}")
+        # Type only, as in the sibling handler above: OSError stringifies with
+        # the offending path, and a media path carries the chat-id folder.
+        logger.warning(f"Symlink not supported, using direct path: {type(e).__name__}")
         import shutil
 
         if reused:
@@ -578,6 +580,29 @@ def media_display_filename(stored_name: str) -> str:
     """
     name = _MEDIA_STORAGE_PREFIX_RE.sub("", stored_name, count=1)
     return name or stored_name
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Exception detail that cannot smuggle a filesystem path into the logs.
+
+    ``OSError`` and its subclasses stringify with the offending filename —
+    ``[Errno 66] Directory not empty: '/data/media/-1001234'`` — and a media
+    path carries the chat-id folder, so for those only the type is safe. That is
+    how a leak survived the #274 sweep: the message had stopped naming the id
+    while the exception text still carried it.
+
+    Everything else keeps its message, because that is where the diagnostic
+    value lives: a Telethon ``FloodWaitError``'s wait, an RPC error's reason.
+    Blanket-stripping every ``{e}`` would buy no privacy and cost real
+    debuggability.
+    """
+    # OSError is the obvious case, but not the only one: subprocess's
+    # TimeoutExpired and CalledProcessError expose `cmd`, and their str()
+    # includes the full argv — the ffmpeg command with the media path in it.
+    # Neither is an OSError, so a type check alone let that through.
+    if isinstance(exc, OSError) or any(getattr(exc, attr, None) for attr in ("filename", "filename2", "cmd")):
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {exc}"
 
 
 def extract_topic_id(message: object) -> int | None:

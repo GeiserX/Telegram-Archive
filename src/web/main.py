@@ -31,7 +31,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
-from ..message_utils import media_display_filename
+from ..message_utils import describe_exception, media_display_filename
 from ..realtime import RealtimeListener
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates, legacy_marked_chat_ids
 
@@ -347,7 +347,7 @@ async def stats_calculation_scheduler():
             logger.info("Stats calculation scheduler cancelled")
             break
         except Exception as e:
-            logger.error(f"Error in stats calculation scheduler: {e}")
+            logger.error(f"Error in stats calculation scheduler: {describe_exception(e)}")
             # Wait an hour before retrying on error
             await asyncio.sleep(3600)
 

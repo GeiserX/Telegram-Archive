@@ -160,7 +160,9 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
                         files_moved_to_shared += 1
                         symlinks_created += 1
                     except OSError as e:
-                        logger.error(f"Error moving {source_path}: {e}")
+                        # basename only: the parent folder is the chat id, and
+                        # OSError stringifies with the full path.
+                        logger.error(f"Error moving {os.path.basename(source_path)}: {type(e).__name__}")
                         errors += 1
                 else:
                     files_moved_to_shared += 1
@@ -194,7 +196,7 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
                     space_saved += source_size
 
                 except OSError as e:
-                    logger.error(f"Error deduplicating {file_path}: {e}")
+                    logger.error(f"Error deduplicating {os.path.basename(file_path)}: {type(e).__name__}")
                     errors += 1
             else:
                 files_deduplicated += 1
