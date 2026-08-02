@@ -360,6 +360,61 @@ def _chat_object_field_reads(node: ast.AST) -> list[str]:
     return found
 
 
+_FS_CALLS = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmdir",
+        "rmtree",
+        "rename",
+        "replace",
+        "makedirs",
+        "mkdir",
+        "copy",
+        "copy2",
+        "move",
+        "symlink",
+        "link",
+        "listdir",
+        "getsize",
+        "scandir",
+        "download_media",
+        "download_profile_photo",
+    }
+)
+
+
+def _try_calls_a_filesystem_op(try_node: ast.Try) -> bool:
+    """Does the try body do something whose OSError would name a path?
+
+    Includes the Telethon download helpers: they take a ``file=`` destination,
+    so an OSError from them carries the media path too.
+    """
+    for child in ast.walk(try_node):
+        if isinstance(child, ast.Call):
+            name = child.func.attr if isinstance(child.func, ast.Attribute) else getattr(child.func, "id", None)
+            if name in _FS_CALLS or name == "open":
+                return True
+    return False
+
+
+def _interpolates_raw_exception(node: ast.AST, handler_name: str) -> bool:
+    """True for ``{e}``; False for ``type(e).__name__`` and ``describe_exception(e)``."""
+    wrapped: set[int] = set()
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "__name__"
+            and isinstance(child.value, ast.Call)
+            and isinstance(child.value.func, ast.Name)
+            and child.value.func.id == "type"
+        ):
+            wrapped.update(id(a) for a in ast.walk(child.value))
+        elif isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "describe_exception":
+            wrapped.update(id(a) for a in ast.walk(child))
+    return any(isinstance(c, ast.Name) and c.id == handler_name and id(c) not in wrapped for c in ast.walk(node))
+
+
 CHAT_ID_LOG_ALLOWLIST = frozenset(
     {
         "src/__main__.py",  # CLI gap-fill / import summaries, printed to the operator who ran the command
@@ -489,6 +544,55 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         self.assertTrue(_is_identifier_name("chat_id_str"))
         self.assertTrue(_is_identifier_name("source_chat_id"))
         self.assertFalse(_is_identifier_name("chat_idx"))
+
+    def test_no_filesystem_handler_logs_a_raw_exception(self) -> None:
+        """Exception text is the third leak route, and it shipped in v7.33.3.
+
+        ``OSError`` stringifies with the offending path, and a media path
+        carries the chat-id folder — so ``logger.error(f"...: {e}")`` in a
+        handler wrapping a filesystem call re-leaks an id the message itself no
+        longer names. That is exactly how ``message_utils.py`` line 443 survived
+        the #274 sweep while its sibling at 389 was fixed: a replace-all edit
+        matched only one indentation.
+
+        Handlers over filesystem operations must use ``describe_exception(e)``,
+        which drops the message for ``OSError`` and keeps it for everything
+        else, or ``type(e).__name__``.
+        """
+        violations = []
+        for root in SCANNED_ROOTS:
+            for path in sorted(root.rglob("*.py")):
+                rel = str(path.relative_to(REPO))
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Try) or not _try_calls_a_filesystem_op(node):
+                        continue
+                    for handler in node.handlers:
+                        if not handler.name:
+                            continue
+                        for call in ast.walk(handler):
+                            if not isinstance(call, ast.Call) or not _is_logging_call(call):
+                                continue
+                            args = [*call.args, *(k.value for k in call.keywords)]
+                            if any(_interpolates_raw_exception(a, handler.name) for a in args):
+                                violations.append(f"{rel}:{call.lineno} logs raw '{handler.name}'")
+        self.assertEqual(
+            [],
+            violations,
+            "A handler wrapping a filesystem call must not interpolate the raw exception: "
+            "OSError carries the path, and media paths carry the chat id. Use "
+            "describe_exception(e) — it keeps the message for non-OSError, where the "
+            "diagnostic value is. Offending sites:\n  " + "\n  ".join(violations),
+        )
+
+    def test_the_raw_exception_detector_discriminates(self) -> None:
+        """Guard the guard: the safe wrappers must NOT read as violations."""
+        raw = ast.parse('logger.error(f"x: {e}")')
+        safe_type = ast.parse('logger.error(f"x: {type(e).__name__}")')
+        safe_helper = ast.parse('logger.error(f"x: {describe_exception(e)}")')
+        for tree, expected in ((raw, True), (safe_type, False), (safe_helper, False)):
+            call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_logging_call(n))
+            self.assertEqual(expected, any(_interpolates_raw_exception(a, "e") for a in call.args))
 
     def test_the_allowlisted_paths_all_exist(self) -> None:
         """A stale allow-list entry silently widens the exemption."""

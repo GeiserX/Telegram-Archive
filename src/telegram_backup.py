@@ -54,6 +54,7 @@ from .media_errors import is_media_location_error
 from .message_utils import (
     build_media_filename,
     compute_file_hash,
+    describe_exception,
     download_and_shard_media,
     extract_media_attributes,
     extract_reactions,
@@ -188,7 +189,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
             img.thumbnail((200, 200), Image.LANCZOS)
             img.save(dest, "WEBP", quality=WEBP_QUALITY)
     except Exception as e:
-        logger.debug("Thumbnail pre-generation failed: %s", e)
+        logger.debug("Thumbnail pre-generation failed: %s", describe_exception(e))
 
 
 def _client_like(obj: object | None) -> bool:
@@ -1363,7 +1364,7 @@ class TelegramBackup:
                 await self._verify_and_redownload_media()
 
         except Exception as e:
-            logger.error(f"Backup failed: {e}", exc_info=True)
+            logger.error(f"Backup failed: {describe_exception(e)}", exc_info=True)
             raise
         finally:
             # Always clear the in-progress flag, even on failure, so the viewer
@@ -1540,10 +1541,10 @@ class TelegramBackup:
                             logger.warning("Failed to re-download media for message")
                     except Exception as e:
                         failed += 1
-                        logger.error(f"Error re-downloading media for message: {e}")
+                        logger.error(f"Error re-downloading media for message: {describe_exception(e)}")
 
             except Exception as e:
-                logger.error(f"Error processing chat for media verification: {e}")
+                logger.error(f"Error processing chat for media verification: {describe_exception(e)}")
                 failed += len(records)
 
         logger.info("=" * 60)
@@ -1994,7 +1995,7 @@ class TelegramBackup:
                             await self.db.reconcile_reactions(msg_id, chat_id, observed, mark_removed=True)
 
             except Exception as e:
-                logger.error(f"Error syncing batch for chat: {e}")
+                logger.error(f"Error syncing batch for chat: {describe_exception(e)}")
 
             total_checked += len(batch_ids)
             if total_checked % 1000 == 0:
@@ -2645,7 +2646,7 @@ class TelegramBackup:
             if result:
                 logger.info("📷 Avatar downloaded")
         except Exception as e:
-            logger.warning(f"Failed to download avatar: {e}")
+            logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
     async def _cleanup_existing_media(self, chat_id: int) -> None:
         """
@@ -2698,7 +2699,7 @@ class TelegramBackup:
                         os.rmdir(chat_media_dir)
                         logger.debug("Removed empty media directory for chat")
                 except Exception as e:
-                    logger.debug(f"Could not remove media directory for chat: {e}")
+                    logger.debug(f"Could not remove media directory for chat: {describe_exception(e)}")
 
             if deleted_files > 0 or deleted_symlinks > 0 or deleted_records > 0:
                 freed_mb = freed_bytes / (1024 * 1024)
@@ -2712,7 +2713,7 @@ class TelegramBackup:
                 )
 
         except Exception as e:
-            logger.error(f"Error cleaning up existing media for chat: {e}", exc_info=True)
+            logger.error(f"Error cleaning up existing media for chat: {describe_exception(e)}", exc_info=True)
 
     async def _refresh_message_for_media(self, chat_id: int, message: Message) -> Message | None:
         """Best-effort re-fetch so Telegram issues an updated media reference/location.
@@ -3027,7 +3028,7 @@ class TelegramBackup:
             return media_data
 
         except Exception as e:
-            logger.error(f"Error downloading media: {e}")
+            logger.error(f"Error downloading media: {describe_exception(e)}")
             return {
                 "id": media_id,
                 "type": media_type,
@@ -3086,7 +3087,9 @@ class TelegramBackup:
                 try:
                     return await self._parallel_downloader.download_media(message, tmp_path)
                 except ParallelDownloadUnavailable as exc:
-                    logger.info("Parallel download not applicable (%s); falling back to single-stream", exc)
+                    logger.info(
+                        "Parallel download not applicable (%s); falling back to single-stream", describe_exception(exc)
+                    )
             return await self.client.download_media(message, tmp_path)
 
     def _get_media_size(self, media) -> int:

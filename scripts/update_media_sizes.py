@@ -167,7 +167,7 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
                     updated_count += 1
                     total_size_added += file_size
                 except Exception as e:
-                    logger.error(f"Error processing {full_path}: {e}")
+                    logger.error(f"Error processing {os.path.basename(full_path)}: {type(e).__name__}")
                     error_count += 1
             else:
                 missing_count += 1

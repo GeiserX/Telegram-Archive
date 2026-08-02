@@ -123,4 +123,6 @@ def _write_marker(marker_path: str) -> None:
         with open(marker_path, "w") as f:
             f.write("sharding migration complete\n")
     except OSError as e:
-        logger.error(f"Failed to write migration marker: {e}")
+        # Type only: OSError names the marker path, which sits under the
+        # media root alongside the chat-id folders.
+        logger.error(f"Failed to write migration marker: {type(e).__name__}")
