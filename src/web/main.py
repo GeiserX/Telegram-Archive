@@ -152,6 +152,13 @@ async def _normalize_display_chat_ids():
     existing_ids = {c["id"] for c in all_chats}
 
     normalized = set()
+    # The specific ids here are the operator's own config, but this runs in the
+    # long-lived viewer whose logs ship off-box, so it reports COUNTS rather than
+    # the ids themselves (the chat-id logging rule). "Which id" is answerable from
+    # the operator's own DISPLAY_CHAT_IDS setting; the warning only needs to say
+    # that some entry did not resolve.
+    auto_corrected = 0
+    unresolved = 0
     for chat_id in config.display_chat_ids:
         if chat_id in existing_ids:
             # ID exists as-is
@@ -160,18 +167,26 @@ async def _normalize_display_chat_ids():
             # Positive ID not found - try -100 prefix (channel/supergroup format)
             marked_id = -1000000000000 - chat_id
             if marked_id in existing_ids:
-                logger.warning(
-                    f"DISPLAY_CHAT_IDS: Auto-correcting {chat_id} → {marked_id} "
-                    f"(use marked format for channels/supergroups)"
-                )
+                auto_corrected += 1
                 normalized.add(marked_id)
             else:
-                logger.warning(f"DISPLAY_CHAT_IDS: Chat ID {chat_id} not found in database")
+                unresolved += 1
                 normalized.add(chat_id)  # Keep original, might be backed up later
         else:
             # Negative ID not found
-            logger.warning(f"DISPLAY_CHAT_IDS: Chat ID {chat_id} not found in database")
+            unresolved += 1
             normalized.add(chat_id)
+
+    if auto_corrected:
+        logger.warning(
+            f"DISPLAY_CHAT_IDS: auto-corrected {auto_corrected} positive "
+            f"entr{'y' if auto_corrected == 1 else 'ies'} to marked (channel/supergroup) format"
+        )
+    if unresolved:
+        logger.warning(
+            f"DISPLAY_CHAT_IDS: {unresolved} configured chat(s) not found in the database; "
+            "verify the DISPLAY_CHAT_IDS setting"
+        )
 
     config.display_chat_ids = normalized
 
@@ -1606,7 +1621,7 @@ async def get_chats(
                 else:
                     chat["avatar_url"] = None
             except Exception as e:
-                logger.error(f"Error finding avatar for chat {chat.get('id')}: {e}")
+                logger.error(f"Error finding avatar for a chat: {e}")
                 chat["avatar_url"] = None
 
         return {

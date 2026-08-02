@@ -2682,7 +2682,9 @@ class TelegramBackup:
                             os.remove(file_path)
                             deleted_files += 1
                     except Exception as e:
-                        logger.warning(f"Failed to delete media file: {e}")
+                        # Type only: the path in an OSError message carries the
+                        # chat-id folder.
+                        logger.warning(f"Failed to delete media file: {type(e).__name__}")
 
             # Delete all media records from database for this chat
             deleted_records = await self.db.delete_media_for_chat(chat_id)

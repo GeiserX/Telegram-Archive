@@ -197,9 +197,7 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
                             messages_grouped += len(current_album)
 
                             if albums_detected <= 10:
-                                logger.info(
-                                    f"  Album detected: {len(current_album)} items in chat {chat_id} (msg {grouped_id})"
-                                )
+                                logger.info(f"  Album detected: {len(current_album)} items (msg {grouped_id})")
 
                         # Start new potential album
                         current_album = [msg]
@@ -224,7 +222,7 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
                 messages_grouped += len(current_album)
 
                 if albums_detected <= 10:
-                    logger.info(f"  Album detected: {len(current_album)} items in chat {chat_id} (msg {grouped_id})")
+                    logger.info(f"  Album detected: {len(current_album)} items (msg {grouped_id})")
 
         # Flush remaining updates
         if pending_updates and not dry_run:

@@ -863,7 +863,7 @@ class DatabaseAdapter:
             # Delete the message
             await session.execute(delete(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)))
             await session.commit()
-            logger.debug(f"Deleted message {message_id} from chat {chat_id}")
+            logger.debug(f"Deleted message {message_id}")
 
     @retry_on_locked()
     async def mark_message_deleted(self, chat_id: int, message_id: int, deleted_at: datetime | None = None) -> None:
@@ -1985,7 +1985,7 @@ class DatabaseAdapter:
             await session.execute(delete(Chat).where(Chat.id == chat_id))
 
             await session.commit()
-            logger.info(f"Deleted chat {chat_id} and all related data from database")
+            logger.info("Deleted chat and all related data from database")
 
         # Delete physical files
         if media_base_path and os.path.exists(media_base_path):
@@ -1993,9 +1993,13 @@ class DatabaseAdapter:
             if os.path.exists(chat_media_dir):
                 try:
                     shutil.rmtree(chat_media_dir)
-                    logger.info(f"Deleted media folder: {chat_media_dir}")
+                    logger.info("Deleted media folder for chat")
                 except Exception as e:
-                    logger.error(f"Failed to delete media folder {chat_media_dir}: {e}")
+                    # Type only, never str(e): OSError stringifies as
+                    # "[Errno 66] Directory not empty: '/media/-1001234'", so the
+                    # message carries the path — and the path is str(chat_id).
+                    # Logging the exception text would undo the redaction above.
+                    logger.error(f"Failed to delete media folder for chat: {type(e).__name__}")
 
             for avatar_type in ["chats", "users"]:
                 avatar_pattern = os.path.join(media_base_path, "avatars", avatar_type, f"{chat_id}_*.jpg")
@@ -2008,9 +2012,10 @@ class DatabaseAdapter:
                 for avatar_file in avatar_files:
                     try:
                         os.remove(avatar_file)
-                        logger.info(f"Deleted avatar file: {avatar_file}")
+                        logger.info("Deleted avatar file for chat")
                     except Exception as e:
-                        logger.error(f"Failed to delete avatar {avatar_file}: {e}")
+                        # Type only — the avatar path embeds the chat id too.
+                        logger.error(f"Failed to delete avatar for chat: {type(e).__name__}")
 
     # ========== Web Viewer Operations ==========
 
