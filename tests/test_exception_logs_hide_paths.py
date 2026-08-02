@@ -53,6 +53,10 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
             source.write_bytes(b"not a real video")
             dest = Path(tmp) / "out.webp"
             with (
+                # ffmpeg is present on a dev box and absent on CI; without
+                # pinning this the function returns early at DEBUG and the
+                # handler under test never runs.
+                patch.object(thumbnails, "_check_ffmpeg", return_value=True),
                 patch.object(thumbnails.subprocess, "run", side_effect=OSError(2, "No such file", str(source))),
                 self.assertLogs("src.web.thumbnails", level="WARNING") as captured,
             ):
@@ -70,6 +74,7 @@ class TestExceptionLogsHidePaths(unittest.TestCase):
             source.write_bytes(b"not a real video")
             dest = Path(tmp) / "out.webp"
             with (
+                patch.object(thumbnails, "_check_ffmpeg", return_value=True),
                 patch.object(thumbnails.subprocess, "run", side_effect=RuntimeError("ffmpeg exploded")),
                 self.assertLogs("src.web.thumbnails", level="WARNING") as captured,
             ):
