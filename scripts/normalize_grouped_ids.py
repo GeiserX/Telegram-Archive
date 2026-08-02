@@ -67,7 +67,7 @@ async def normalize_grouped_ids(dry_run: bool = False):
                 if isinstance(raw_data, str):
                     raw_data = json.loads(raw_data)
                 logger.info(
-                    f"  Message {msg_id} in chat {chat_id}: grouped_id = {raw_data.get('grouped_id')} (type: {type(raw_data.get('grouped_id')).__name__})"
+                    f"  Message {msg_id}: grouped_id = {raw_data.get('grouped_id')} (type: {type(raw_data.get('grouped_id')).__name__})"
                 )
             if len(rows) > 10:
                 logger.info(f"  ... and {len(rows) - 10} more")

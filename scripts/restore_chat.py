@@ -152,6 +152,13 @@ async def restore_chat(
     logger.info("Connecting to database...")
     db = await get_db_adapter()
 
+    # NOTE (#274): the chat ids logged below are deliberately kept. This is a
+    # manually-run, one-shot, DESTRUCTIVE tool (it copies messages between
+    # chats); the source and destination ids are the operator's own CLI
+    # arguments, and echoing them — especially "about to send N to chat X" — is a
+    # genuine safety confirmation before an irreversible action, not incidental
+    # noise. Unlike the daemons this does not accumulate a shipped log stream.
+    # This file is allow-listed in tests/test_no_account_pii_in_logs.py.
     # Get chat info
     chat = await db.get_chat_by_id(source_chat_id)
     if not chat:

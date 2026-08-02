@@ -384,7 +384,9 @@ async def download_and_shard_media(
                     raise
             logger.debug("Created symlink for deduplicated media")
         except OSError as e:
-            logger.warning(f"Symlink not supported, using direct path: {e}")
+            # Type only: OSError embeds the offending path, and media paths
+            # carry the chat-id folder.
+            logger.warning(f"Symlink not supported, using direct path: {type(e).__name__}")
             import shutil
 
             shutil.copy2(shared_file_path, file_path)
