@@ -43,6 +43,14 @@ Telling those apart needs real taint analysis; the ``migrate_media_paths`` folde
 logs were found and redacted by review, not by this scan. It catches the shapes
 the leaks actually had, not every conceivable one.
 
+The other blind spot is EXCEPTION TEXT. ``OSError`` stringifies as
+``[Errno 66] Directory not empty: '/media/-1001234'`` — the path, and a media
+path carries the chat-id folder — so ``logger.error(f"...: {e}")`` on a
+filesystem operation re-leaks an id that the surrounding message no longer
+names. Those sites log ``type(e).__name__`` instead. The scan cannot see this
+either: ``{e}`` is opaque to it. Reviewers found these; when touching a log line
+near a chat-derived path, check what the exception itself would print.
+
 Requires Python 3.14: ``ast.parse`` here must read the repo's own sources, which
 use PEP 758 unparenthesized ``except A, B:``. On an older interpreter this fails
 with a raw SyntaxError rather than a meaningful assertion.

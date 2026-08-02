@@ -1995,7 +1995,11 @@ class DatabaseAdapter:
                     shutil.rmtree(chat_media_dir)
                     logger.info("Deleted media folder for chat")
                 except Exception as e:
-                    logger.error(f"Failed to delete media folder for chat: {e}")
+                    # Type only, never str(e): OSError stringifies as
+                    # "[Errno 66] Directory not empty: '/media/-1001234'", so the
+                    # message carries the path — and the path is str(chat_id).
+                    # Logging the exception text would undo the redaction above.
+                    logger.error(f"Failed to delete media folder for chat: {type(e).__name__}")
 
             for avatar_type in ["chats", "users"]:
                 avatar_pattern = os.path.join(media_base_path, "avatars", avatar_type, f"{chat_id}_*.jpg")
@@ -2010,7 +2014,8 @@ class DatabaseAdapter:
                         os.remove(avatar_file)
                         logger.info("Deleted avatar file for chat")
                     except Exception as e:
-                        logger.error(f"Failed to delete avatar for chat: {e}")
+                        # Type only — the avatar path embeds the chat id too.
+                        logger.error(f"Failed to delete avatar for chat: {type(e).__name__}")
 
     # ========== Web Viewer Operations ==========
 
