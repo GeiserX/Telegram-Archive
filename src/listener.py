@@ -40,6 +40,7 @@ from .db import DatabaseAdapter, create_adapter
 from .message_utils import (
     build_media_filename,
     compute_file_hash,
+    describe_exception,
     download_and_shard_media,
     extract_media_attributes,
     extract_reactions,
@@ -668,7 +669,7 @@ class TelegramListener:
             else:
                 logger.debug("No avatar available")
         except Exception as e:
-            logger.warning(f"Failed to download avatar: {e}")
+            logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
     def _get_media_type(self, media) -> str | None:
         """Get media type as string."""
@@ -827,7 +828,7 @@ class TelegramListener:
             return f"{self.config.media_path}/{chat_id}/{file_name}", file_name, content_hash
 
         except Exception as e:
-            logger.error(f"Error downloading media: {e}")
+            logger.error(f"Error downloading media: {describe_exception(e)}")
             return None
 
     def _register_handlers(self) -> None:
@@ -1145,7 +1146,9 @@ class TelegramListener:
                                     "duration": media_row["duration"],
                                 }
                         except Exception as e:
-                            logger.warning(f"Failed to download media for message {message.id}: {e}")
+                            logger.warning(
+                                f"Failed to download media for message {message.id}: {describe_exception(e)}"
+                            )
 
                 # Send real-time notification (enriched to mirror the API row shape so the
                 # viewer can render sender name + media immediately instead of a bare row
@@ -1167,7 +1170,10 @@ class TelegramListener:
 
             except Exception as e:
                 self.stats["errors"] += 1
-                logger.error(f"Error in new message handler: {e}", exc_info=True)
+                # No exc_info: the traceback ends with the raw exception repr, so an
+                # OSError would print the media path that describe_exception
+                # just removed. Type and (where safe) message are kept.
+                logger.error(f"Error in new message handler: {describe_exception(e)}")
 
         # ChatAction handler - tracks chat metadata changes
         @self.client.on(events.ChatAction)

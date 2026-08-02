@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from ..message_utils import describe_exception
 from .media_utils import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, legacy_folder_alternates
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
         finally:
             Path(tmp_path).unlink(missing_ok=True)
     except Exception as e:
-        logger.warning("Video thumbnail generation failed: %s", e)
+        logger.warning("Video thumbnail generation failed: %s", describe_exception(e))
         return False
 
 
@@ -148,7 +149,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
             img.save(dest, "WEBP", quality=WEBP_QUALITY)
         return True
     except Exception as e:
-        logger.warning("Thumbnail generation failed: %s", e)
+        logger.warning("Thumbnail generation failed: %s", describe_exception(e))
         return False
 
 
