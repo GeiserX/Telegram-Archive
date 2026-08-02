@@ -1364,7 +1364,9 @@ class TelegramBackup:
                 await self._verify_and_redownload_media()
 
         except Exception as e:
-            logger.error(f"Backup failed: {describe_exception(e)}", exc_info=True)
+            # No exc_info here either — same reason. Losing the stack on a rare
+            # failure is the accepted cost of the logging rule.
+            logger.error(f"Backup failed: {describe_exception(e)}")
             raise
         finally:
             # Always clear the in-progress flag, even on failure, so the viewer
@@ -2713,7 +2715,7 @@ class TelegramBackup:
                 )
 
         except Exception as e:
-            logger.error(f"Error cleaning up existing media for chat: {describe_exception(e)}", exc_info=True)
+            logger.error(f"Error cleaning up existing media for chat: {describe_exception(e)}")
 
     async def _refresh_message_for_media(self, chat_id: int, message: Message) -> Message | None:
         """Best-effort re-fetch so Telegram issues an updated media reference/location.

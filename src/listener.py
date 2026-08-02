@@ -1170,7 +1170,10 @@ class TelegramListener:
 
             except Exception as e:
                 self.stats["errors"] += 1
-                logger.error(f"Error in new message handler: {describe_exception(e)}", exc_info=True)
+                # No exc_info: the traceback ends with the raw exception repr, so an
+                # OSError would print the media path that describe_exception
+                # just removed. Type and (where safe) message are kept.
+                logger.error(f"Error in new message handler: {describe_exception(e)}")
 
         # ChatAction handler - tracks chat metadata changes
         @self.client.on(events.ChatAction)

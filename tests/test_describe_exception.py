@@ -46,6 +46,25 @@ class TestDescribeException(unittest.TestCase):
             self.assertNotIn("-100999", described)
             self.assertEqual(type(exc).__name__, described)
 
+    def test_a_subprocess_error_carrying_a_command_is_reduced(self) -> None:
+        """Not an OSError, but its str() prints the whole argv.
+
+        ``TimeoutExpired``/``CalledProcessError`` expose ``cmd``, and the ffmpeg
+        invocation contains the media path. A type check on OSError alone let
+        this straight through, which is why the rule keys on the attributes that
+        make a message carry a path rather than on a list of types.
+        """
+        import subprocess
+
+        for exc in (
+            subprocess.TimeoutExpired(["ffmpeg", "-i", "/data/media/-1001234/v.mp4"], 15),
+            subprocess.CalledProcessError(1, ["ffmpeg", "-i", "/data/media/-1001234/v.mp4"]),
+        ):
+            self.assertIn("-1001234", str(exc), "precondition: the raw str does leak")
+            described = describe_exception(exc)
+            self.assertNotIn("-1001234", described)
+            self.assertEqual(type(exc).__name__, described)
+
     def test_a_non_oserror_keeps_its_message(self) -> None:
         """Stripping every exception would cost debuggability for no privacy gain."""
         described = describe_exception(ValueError("wait 30 seconds before retrying"))

@@ -43,6 +43,13 @@ Telling those apart needs real taint analysis; the ``migrate_media_paths`` folde
 logs were found and redacted by review, not by this scan. It catches the shapes
 the leaks actually had, not every conceivable one.
 
+Scope limit on the exception rule below: it covers a handler whose OWN try body
+calls a filesystem operation. An OSError raised deep inside a nested call and
+caught by an outer handler is invisible to it, because that handler's try body
+shows no filesystem call. Those outer handlers keep ``exc_info``; catching them
+would need whole-program analysis, and stripping every traceback in the codebase
+would cost far more debuggability than the speculative risk is worth.
+
 The other blind spot is EXCEPTION TEXT. ``OSError`` stringifies as
 ``[Errno 66] Directory not empty: '/media/-1001234'`` — the path, and a media
 path carries the chat-id folder — so ``logger.error(f"...: {e}")`` on a
@@ -398,6 +405,14 @@ def _try_calls_a_filesystem_op(try_node: ast.Try) -> bool:
     return False
 
 
+def _passes_exc_info(call: ast.Call) -> bool:
+    """``exc_info=True`` — the traceback reprints the exception, path and all."""
+    return any(
+        kw.arg == "exc_info" and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+        for kw in call.keywords
+    )
+
+
 def _interpolates_raw_exception(node: ast.AST, handler_name: str) -> bool:
     """True for ``{e}``; False for ``type(e).__name__`` and ``describe_exception(e)``."""
     wrapped: set[int] = set()
@@ -576,6 +591,11 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
                             args = [*call.args, *(k.value for k in call.keywords)]
                             if any(_interpolates_raw_exception(a, handler.name) for a in args):
                                 violations.append(f"{rel}:{call.lineno} logs raw '{handler.name}'")
+                            elif _passes_exc_info(call):
+                                # exc_info renders a traceback whose last line is
+                                # the exception repr, so it reprints the very path
+                                # the message was redacted to hide.
+                                violations.append(f"{rel}:{call.lineno} passes exc_info")
         self.assertEqual(
             [],
             violations,

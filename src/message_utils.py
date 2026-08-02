@@ -596,7 +596,11 @@ def describe_exception(exc: BaseException) -> str:
     Blanket-stripping every ``{e}`` would buy no privacy and cost real
     debuggability.
     """
-    if isinstance(exc, OSError):
+    # OSError is the obvious case, but not the only one: subprocess's
+    # TimeoutExpired and CalledProcessError expose `cmd`, and their str()
+    # includes the full argv — the ffmpeg command with the media path in it.
+    # Neither is an OSError, so a type check alone let that through.
+    if isinstance(exc, OSError) or any(getattr(exc, attr, None) for attr in ("filename", "filename2", "cmd")):
         return type(exc).__name__
     return f"{type(exc).__name__}: {exc}"
 
