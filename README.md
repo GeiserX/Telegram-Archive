@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.svg" alt="Telegram Archive banner" width="900"/>
-</p>
-
-<p align="center">
-  <img src="assets/Telegram-Archive.png" alt="Telegram Archive Logo" width="150"/>
+  <img src="docs/images/banner.svg" alt="Telegram Archive — self-hosted Telegram backups" width="900"/>
 </p>
 
 <h1 align="center">Telegram Archive</h1>
