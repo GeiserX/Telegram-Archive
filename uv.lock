@@ -1192,7 +1192,7 @@ wheels = [
 
 [[package]]
 name = "telegram-archive"
-version = "7.33.4"
+version = "7.33.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
