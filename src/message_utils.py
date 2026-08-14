@@ -90,9 +90,19 @@ _WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*')
 
 # Device names Windows refuses to create as files, with or without an extension
 # (``CON.pdf`` fails the same way ``CON`` does). Compared case-insensitively
-# against the portion before the first dot.
+# against the portion before the first dot. Windows treats the ISO 8859-1
+# superscript digits as digits in device names, so COM¹/LPT³ are reserved too.
 _WINDOWS_RESERVED_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"COM{s}" for s in "¹²³"),
+        *(f"LPT{i}" for i in range(1, 10)),
+        *(f"LPT{s}" for s in "¹²³"),
+    }
 )
 
 

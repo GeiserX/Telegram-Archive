@@ -238,6 +238,10 @@ def test_windows_reserved_device_names_prefixed():
     assert sanitize_media_filename("con.pdf") == "_con.pdf"
     assert sanitize_media_filename("Nul.tar.gz") == "_Nul.tar.gz"
     assert sanitize_media_filename("COM7.log") == "_COM7.log"
+    # Windows parses ISO 8859-1 superscript digits as digits in device names:
+    # `echo test > COM¹` fails the same way COM1 does (MS file-naming docs).
+    assert sanitize_media_filename("COM¹.pdf") == "_COM¹.pdf"
+    assert sanitize_media_filename("lpt³") == "_lpt³"
     # Near-misses must pass through untouched.
     assert sanitize_media_filename("CONFERENCE.pdf") == "CONFERENCE.pdf"
     assert sanitize_media_filename("COM10.log") == "COM10.log"
