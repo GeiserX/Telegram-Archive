@@ -3,7 +3,12 @@ and fallback_media_filename (backup/listener ingest-path parity)."""
 
 from unittest.mock import MagicMock, patch
 
-from src.message_utils import _MEDIA_PART_SUFFIX_RESERVE, build_media_filename, fallback_media_filename
+from src.message_utils import (
+    _MEDIA_PART_SUFFIX_RESERVE,
+    build_media_filename,
+    fallback_media_filename,
+    sanitize_media_filename,
+)
 
 SYNOLOGY_BUDGET = 143
 
@@ -194,3 +199,78 @@ def test_backup_and_listener_fallback_filenames_match():
         backup_result = backup._get_media_filename(msg, media_type, telegram_file_id)
         listener_result = listener._get_media_filename(msg, media_type, telegram_file_id)
         assert backup_result == listener_result, f"Mismatch for {media_type}/{mime_type}/{telegram_file_id}"
+
+
+# --- #280: Windows-invalid characters in Telegram file_name ---
+
+
+def test_control_characters_replaced_with_underscore():
+    """Newline/CR in file_name raised OSError [Errno 22] on Windows at .part creation (#280)."""
+    result = sanitize_media_filename("Werner Furrer\nKlima-Wandel?\rKlima-Schwindel!.pdf")
+
+    assert result == "Werner Furrer_Klima-Wandel__Klima-Schwindel!.pdf"
+
+
+def test_windows_reserved_punctuation_replaced():
+    """The <>:"|?* set fails file creation on Windows exactly like control chars."""
+    result = sanitize_media_filename('a<b>c:d"e|f?g*h.txt')
+
+    assert result == "a_b_c_d_e_f_g_h.txt"
+
+
+def test_every_ascii_control_char_is_neutralized():
+    for code in range(32):
+        name = f"a{chr(code)}b.bin"
+        result = sanitize_media_filename(name)
+        assert result == "a_b.bin", f"control char {code:#04x} survived: {result!r}"
+
+
+def test_trailing_dots_and_spaces_stripped():
+    """Win32 silently strips trailing dots/spaces, desyncing disk name from recorded name."""
+    assert sanitize_media_filename("report.pdf. ") == "report.pdf"
+    assert sanitize_media_filename("notes. . .") == "notes"
+    assert sanitize_media_filename("...") == "_"
+
+
+def test_windows_reserved_device_names_prefixed():
+    """CON/NUL/COM1... fail creation on Windows even with an extension attached."""
+    assert sanitize_media_filename("CON") == "_CON"
+    assert sanitize_media_filename("con.pdf") == "_con.pdf"
+    assert sanitize_media_filename("Nul.tar.gz") == "_Nul.tar.gz"
+    assert sanitize_media_filename("COM7.log") == "_COM7.log"
+    # Near-misses must pass through untouched.
+    assert sanitize_media_filename("CONFERENCE.pdf") == "CONFERENCE.pdf"
+    assert sanitize_media_filename("COM10.log") == "COM10.log"
+    assert sanitize_media_filename(".config") == ".config"
+
+
+def test_normal_names_unchanged():
+    """The sanitizer must not disturb ordinary names (determinism/dedup contract)."""
+    for name in ("photo_2024.jpg", "Informe fiscal (año 2025).pdf", "видео.mp4", "no_extension"):
+        assert sanitize_media_filename(name) == name
+
+
+def test_issue_280_full_path_via_build():
+    """End to end through build_media_filename: the composed name must be Windows-creatable."""
+    result = build_media_filename("5276091715084619737", "Werner Furrer\nKlima-Wandel?\rKlima-Schwindel!.pdf", 255)
+
+    assert result.startswith("5276091715084619737_")
+    assert not any(ord(ch) < 32 for ch in result)
+    assert not any(ch in '<>:"|?*' for ch in result)
+    assert result.endswith(".pdf")
+
+
+def test_truncated_extensionless_stem_cannot_end_with_dot_or_space():
+    """A truncation cut landing inside an INTERNAL dot/space run must not leave a dot/space end (#280).
+
+    The run sits mid-name (sanitize's own rstrip only sees the far tail), and the
+    oversized fake extension forces the ext="" path, so only the truncation guard
+    in build_media_filename can prevent a Windows-invalid trailing dot.
+    """
+    name = "a" * 80 + ". . ." + "b" * 40  # splitext ext is >16 bytes -> treated as extensionless
+    budget = _MEDIA_PART_SUFFIX_RESERVE + len("1_") + 83  # cut lands on the run's second dot
+    result = build_media_filename("1", name, budget)
+
+    assert result == "1_" + "a" * 80
+    assert not result.endswith(".")
+    assert not result.endswith(" ")

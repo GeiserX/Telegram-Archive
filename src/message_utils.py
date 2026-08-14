@@ -83,20 +83,42 @@ def compute_directory_size(path: str) -> int:
     return total
 
 
+# Characters Windows rejects in filenames beyond the path separators handled via
+# basename(): the reserved punctuation set. Control chars (0x00-0x1F) are handled
+# alongside; both raise OSError [Errno 22] at file creation on Windows (#280).
+_WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*')
+
+# Device names Windows refuses to create as files, with or without an extension
+# (``CON.pdf`` fails the same way ``CON`` does). Compared case-insensitively
+# against the portion before the first dot.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+)
+
+
 def sanitize_media_filename(name: str) -> str:
-    """Strip path components from an attacker-controlled media filename.
+    """Strip path components and OS-invalid characters from a media filename.
 
     Telegram document ``file_name`` attributes are remote-controlled and may
     contain ``/``, ``\\``, or ``..`` segments. Left unchecked these survive into
     ``media.file_name`` and later into on-disk ``os.replace`` targets, allowing a
     write outside the media store (#175 repair pass made this reachable). Collapse
     to a bare basename and neutralise residual traversal/separators.
+
+    Windows additionally rejects control characters (``\\n``, ``\\r``, ...) and
+    the ``<>:"|?*`` set with ``OSError [Errno 22]`` at ``.part`` creation, and
+    silently strips trailing dots/spaces (so the on-disk name would no longer
+    match the recorded one). Sanitize those on every platform so the computed
+    name stays deterministic and archives stay portable across OSes (#280).
     """
     name = name.replace("\\", "/")
     name = os.path.basename(name)
-    name = name.replace("\x00", "")
+    name = "".join("_" if ord(ch) < 32 or ch in _WINDOWS_RESERVED_CHARS else ch for ch in name)
+    name = name.rstrip(". ")
     if name in ("", ".", ".."):
         return "_"
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        return f"_{name}"
     return name
 
 
@@ -148,6 +170,10 @@ def build_media_filename(file_id: str, original_name: str, name_max_bytes: int) 
 
     # Truncate the stem to the byte budget without splitting a multibyte codepoint.
     safe_stem = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    if not ext:
+        # With no extension the stem ends the filename, and a truncation cut can
+        # leave a trailing dot/space there — invalid on Windows (#280).
+        safe_stem = safe_stem.rstrip(". ")
     if not safe_stem:
         digest = hashlib.sha1(safe_name.encode("utf-8")).hexdigest()[:8]
         return f"{safe_id}_{digest}{ext}"
