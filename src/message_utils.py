@@ -428,17 +428,24 @@ async def download_and_shard_media(
             shutil.copy2(shared_file_path, file_path)
         return shared_file_path, content_hash
 
-    # First time seeing this file — download to unique .part then shard
+    # First time seeing this file — download to a unique .part name and KEEP the
+    # blob there until it reaches its final home. It must never be readable under
+    # the plain shared name in between: a concurrent ingest of the same document
+    # resolves that name, symlinks its chat dir to it, and is left with a
+    # permanently dangling link the moment we move the blob into its bucket.
+    # ``.part`` is private by construction — resolve_shared_file_path only looks
+    # up the plain name and the sharding migration skips ``.part`` entries.
     task_id = id(asyncio.current_task()) if asyncio.current_task() else 0
     tmp_shared_file_path = os.path.join(shared_dir, f"{file_name}.{os.getpid()}.{task_id}.part")
     if os.path.exists(tmp_shared_file_path):
         os.remove(tmp_shared_file_path)
 
     actual_path = await download_coro(tmp_shared_file_path)
+    # Collect whatever Telethon wrote back under the SAME private .part name.
     tmp_shared_file_path = finalize_atomic_download(
         actual_path if isinstance(actual_path, str) else None,
         tmp_shared_file_path,
-        os.path.join(shared_dir, file_name),
+        tmp_shared_file_path,
     )
     if not tmp_shared_file_path or not os.path.exists(tmp_shared_file_path):
         logger.warning("Media download did not produce a file")
@@ -448,10 +455,12 @@ async def download_and_shard_media(
     # Content-hash dedup: check if identical content already exists
     tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(db, tmp_shared_file_path, shared_dir)
 
-    # Move to sharded location if we own this file (not reused)
-    if not reused and content_hash:
-        actual_name = os.path.basename(tmp_shared_file_path)
-        final_shared = get_shared_file_path(shared_dir, actual_name, content_hash)
+    # Publish the blob if we own it (not reused): ONE rename from the private
+    # .part name straight to its final path, under the clean ``file_name``. With
+    # no hash there is no bucket, so that final path is the flat one — still
+    # final, nothing moves it afterwards.
+    if not reused:
+        final_shared = get_shared_file_path(shared_dir, file_name, content_hash)
         os.makedirs(os.path.dirname(final_shared), exist_ok=True)
         if tmp_shared_file_path != final_shared:
             os.replace(tmp_shared_file_path, final_shared)
