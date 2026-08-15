@@ -68,7 +68,7 @@ Examples:
 
 ### Pull Requests
 
-1. Create a feature branch from `master`
+1. Create a feature branch from `main` (the default branch)
 2. Make your changes
 3. Run tests: `python -m pytest tests/ -v`
 4. Run linting: `ruff check .`
