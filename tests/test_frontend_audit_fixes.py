@@ -1052,3 +1052,196 @@ def test_the_unhashable_exceptions_are_documented_in_the_template() -> None:
 
     assert "Access-Control-Allow-Origin" in head
     assert "per user agent" in head
+
+
+# --------------------------------------------------------------------------------------
+# The stats header and pinned banner kept a previous chat's data: their loaders wrote
+# state after their awaits with no staleness check, and neither panel auto-refreshes,
+# so a response that lost the race to a chat switch stuck until the NEXT switch
+# --------------------------------------------------------------------------------------
+
+
+_STALE_PANEL_FETCH_STUB = """
+const requests = [];
+const fetch = url => new Promise((resolve, reject) => { requests.push({ url, resolve, reject }); });
+const respond = (index, payload) => requests[index].resolve({ ok: true, json: async () => payload });
+const respondError = (index, status) => requests[index].resolve({ ok: false, status, json: async () => ({}) });
+const fail = index => requests[index].reject(new TypeError('network down'));
+const flush = () => new Promise(resolve => setImmediate(resolve));
+"""
+
+
+def test_chat_stats_response_that_outlived_its_chat_is_discarded() -> None:
+    """Stats requested for one chat must never label another chat's header.
+
+    ``chatStats`` is written once per selection and never refreshed, so a stale
+    paint was persistent — and the catch branch writes too, so a stale *failure*
+    blanked the current chat's header instead.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const selectedChat = ref({ id: 111 });
+const chatStats = ref(null);
+const console = { error: () => {} };
+""",
+            _STALE_PANEL_FETCH_STUB,
+            _extract_const_arrow_function(html, "loadChatStats", asynchronous=True),
+            """
+(async () => {
+    loadChatStats(111);
+    await flush();
+    assert.ok(requests[0].url.startsWith('/api/chats/111/stats'), requests[0].url);
+
+    // The user switches chats while chat 111's stats are still in flight
+    // (selectChat resets the panel and issues the new chat's request).
+    selectedChat.value = { id: 222 };
+    chatStats.value = null;
+    loadChatStats(222);
+    await flush();
+
+    respond(1, { message_count: 5 });
+    await flush();
+    assert.deepEqual(chatStats.value, { message_count: 5 });
+
+    // The superseded response lands last and must be discarded.
+    respond(0, { message_count: 999 });
+    await flush();
+    assert.deepEqual(chatStats.value, { message_count: 5 },
+        "chat 111's stats landed in chat 222's header");
+
+    // A stale network error must not blank the header either.
+    loadChatStats(222);
+    await flush();
+    selectedChat.value = { id: 333 };
+    chatStats.value = null;
+    loadChatStats(333);
+    await flush();
+    respond(3, { message_count: 7 });
+    await flush();
+    fail(2);
+    await flush();
+    assert.deepEqual(chatStats.value, { message_count: 7 },
+        "chat 222's network error blanked chat 333's header");
+
+    // The CURRENT chat's failure still clears: the guard must not pin stale numbers.
+    loadChatStats(333);
+    await flush();
+    fail(4);
+    await flush();
+    assert.equal(chatStats.value, null, 'a live network error no longer clears the header');
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
+
+
+def test_pinned_messages_response_that_outlived_its_chat_is_discarded() -> None:
+    """A pinned banner requested for one chat must never hang in another.
+
+    All three branches write ``pinnedMessages``: a stale success painted the old
+    chat's pin into the new chat, and a stale else/catch wiped the new chat's
+    banner that had just loaded. The success write also resets the banner cycle,
+    so a discarded response must leave ``currentPinnedIndex`` alone too.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const selectedChat = ref({ id: 111 });
+const pinnedMessages = ref([]);
+const currentPinnedIndex = ref(0);
+const console = { error: () => {} };
+""",
+            _STALE_PANEL_FETCH_STUB,
+            _extract_const_arrow_function(html, "loadPinnedMessages", asynchronous=True),
+            """
+(async () => {
+    loadPinnedMessages(111);
+    await flush();
+    assert.ok(requests[0].url.startsWith('/api/chats/111/pinned'), requests[0].url);
+
+    // Chat switch while 111's request is in flight (selectChat's resets).
+    selectedChat.value = { id: 222 };
+    pinnedMessages.value = [];
+    currentPinnedIndex.value = 0;
+    loadPinnedMessages(222);
+    await flush();
+
+    respond(1, [{ id: 'pin-222-newest' }, { id: 'pin-222-older' }]);
+    await flush();
+    assert.deepEqual(pinnedMessages.value.map(pin => pin.id), ['pin-222-newest', 'pin-222-older']);
+    currentPinnedIndex.value = 1;   // the user cycled the banner
+
+    // The superseded 111 response lands last and must be discarded entirely.
+    respond(0, [{ id: 'pin-111' }]);
+    await flush();
+    assert.deepEqual(pinnedMessages.value.map(pin => pin.id), ['pin-222-newest', 'pin-222-older'],
+        "chat 111's pinned messages landed in chat 222");
+    assert.equal(currentPinnedIndex.value, 1, 'a stale response reset the banner cycle');
+
+    // A stale HTTP failure must not wipe the current chat's banner.
+    loadPinnedMessages(222);
+    await flush();
+    selectedChat.value = { id: 333 };
+    pinnedMessages.value = [];
+    currentPinnedIndex.value = 0;
+    loadPinnedMessages(333);
+    await flush();
+    respond(3, [{ id: 'pin-333' }]);
+    await flush();
+    respondError(2, 500);
+    await flush();
+    assert.deepEqual(pinnedMessages.value.map(pin => pin.id), ['pin-333'],
+        "chat 222's failed request wiped chat 333's banner");
+
+    // A stale network error must not wipe it either.
+    loadPinnedMessages(333);
+    await flush();
+    selectedChat.value = { id: 444 };
+    pinnedMessages.value = [];
+    loadPinnedMessages(444);
+    await flush();
+    respond(5, [{ id: 'pin-444' }]);
+    await flush();
+    fail(4);
+    await flush();
+    assert.deepEqual(pinnedMessages.value.map(pin => pin.id), ['pin-444'],
+        "chat 333's network error wiped chat 444's banner");
+
+    // The CURRENT chat's failures still clear: the guard must not pin a stale banner.
+    loadPinnedMessages(444);
+    await flush();
+    respondError(6, 500);
+    await flush();
+    assert.deepEqual(pinnedMessages.value, [], 'a live failed reload no longer clears the banner');
+
+    pinnedMessages.value = [{ id: 'left-behind' }];
+    loadPinnedMessages(444);
+    await flush();
+    fail(7);
+    await flush();
+    assert.deepEqual(pinnedMessages.value, [], 'a live network error no longer clears the banner');
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)

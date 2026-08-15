@@ -4301,13 +4301,20 @@
                         })
                         if (res.ok) {
                             const data = await res.json()
+                            // The banner never auto-refreshes, so a response that
+                            // outlived its chat would pin the previous chat's message
+                            // over this one until the next switch — and a stale
+                            // failure below would wipe this chat's banner instead.
+                            if (selectedChat.value?.id !== chatId) return
                             pinnedMessages.value = Array.isArray(data) ? data : []
                             currentPinnedIndex.value = 0  // Start with newest
                         } else {
+                            if (selectedChat.value?.id !== chatId) return
                             pinnedMessages.value = []
                         }
                     } catch (e) {
                         console.error('Failed to load pinned messages:', e)
+                        if (selectedChat.value?.id !== chatId) return
                         pinnedMessages.value = []
                     }
                 }
@@ -4347,10 +4354,16 @@
                             credentials: 'include'
                         })
                         if (res.ok) {
-                            chatStats.value = await res.json()
+                            const data = await res.json()
+                            // Stats never auto-refresh, so a response that outlived its
+                            // chat would show the previous chat's counts in this chat's
+                            // header until the next switch.
+                            if (selectedChat.value?.id !== chatId) return
+                            chatStats.value = data
                         }
                     } catch (e) {
                         console.error('Failed to load chat stats:', e)
+                        if (selectedChat.value?.id !== chatId) return
                         chatStats.value = null
                     }
                 }
