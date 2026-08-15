@@ -292,6 +292,11 @@ if has_tables and not has_alembic:
     # Migration 019 is a data-only cleanup with no detectable schema artifact.
     # A schema with the 020 column was created from current ORM metadata, but it
     # must still stamp at 018 so Alembic runs 019 before guarded/idempotent 020.
+    # 021 deliberately adds no rung either: its artifacts (NOT NULL, server
+    # defaults, the reactions FK) are exactly what an ORM-provisioned schema
+    # already has, so detecting them could only push the stamp past data-only
+    # 019. It reads the live schema per column and does nothing where the
+    # target shape is already in place, so re-running it here is a no-op.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
@@ -356,9 +361,17 @@ print('Migrations complete.')
       DB_PATH="${DATABASE_URL#sqlite:///}"
     fi
 
+    # Alembic is the schema authority on both backends, so it runs whether or not
+    # the file exists yet. On a fresh install this creates the database at head
+    # with alembic_version already written, instead of leaving create_all() to
+    # build an unstamped schema whose revision the next start has to guess.
+    mkdir -p "$(dirname "$DB_PATH")"
     if [ -f "$DB_PATH" ]; then
       echo "SQLite database found at $DB_PATH - running migrations..."
-      python -c "
+    else
+      echo "No SQLite database at $DB_PATH yet - creating it with Alembic..."
+    fi
+    python -c "
 from alembic.config import Config
 from alembic import command
 import os
@@ -370,7 +383,21 @@ if database_url.startswith('sqlite+aiosqlite:///'):
 elif database_url.startswith('sqlite:///'):
     db_path = database_url.removeprefix('sqlite:///')
 else:
-    db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
+    # Same precedence as src/db/base.py and alembic/env.py. DATABASE_DIR was
+    # missing here, so a DATABASE_DIR-only install had its schema inspected at
+    # one path and migrated at another - the stamping ladder then read an empty
+    # database and skipped, and Alembic re-ran migration 001 against the real
+    # one. Keep these three resolution chains identical.
+    db_path = os.getenv('DATABASE_PATH', '')
+    if not db_path:
+        db_dir = os.getenv('DATABASE_DIR', '')
+        if db_dir:
+            db_path = os.path.join(db_dir, 'telegram_backup.db')
+    if not db_path:
+        db_path = os.getenv('DB_PATH', '')
+    if not db_path:
+        db_path = os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')
+    db_path = os.path.abspath(db_path)
 
 # Check if this is a pre-Alembic database that needs stamping
 conn = sqlite3.connect(db_path)
@@ -478,6 +505,11 @@ if has_tables and not has_alembic:
     # Determine which version to stamp based on existing schema
     # Even when the 020 artifact exists, cap the stamp at 018 so migration 019
     # runs before guarded/idempotent migration 020.
+    # 021 adds no rung for the same reason: its artifacts (NOT NULL, server
+    # defaults, the reactions FK) are what an ORM-provisioned schema already
+    # has, so detecting them could only push the stamp past data-only 019. It
+    # inspects the live schema per column and rebuilds only the tables that
+    # still differ, so re-running it against such a database does nothing.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
@@ -526,9 +558,6 @@ config = Config('/app/alembic.ini')
 command.upgrade(config, 'head')
 print('SQLite migrations complete.')
 "
-    else
-      echo "No database found yet - skipping migrations (will be created automatically)"
-    fi
   fi
 fi
 
