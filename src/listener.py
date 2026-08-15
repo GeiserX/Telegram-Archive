@@ -285,6 +285,13 @@ class TelegramListener:
         # Real-time notifier for viewer WebSocket updates
         self._notifier: RealtimeNotifier | None = None
 
+        # Callbacks handed to client.add_event_handler, kept so stop() can detach
+        # them again. Telethon only ever appends, and the scheduler builds a NEW
+        # listener on the SAME shared client after every network blip, so without
+        # this every restart left another live instance dispatching the same
+        # updates: duplicate writes, duplicate broadcasts, duplicate downloads.
+        self._registered_handlers: list = []
+
         # Statistics
         self.stats = {
             "edits_received": 0,
@@ -789,8 +796,27 @@ class TelegramListener:
                 os.makedirs(shared_dir, exist_ok=True)
 
                 async def _download_fn(tmp_path):
-                    async with absorb_media_floods(self.client, getattr(self.config, "media_flood_sleep_threshold", 0)):
-                        return await call_with_flood_retry(self.client.download_media, message, tmp_path)
+                    # absorb_media_floods raises a CLIENT-WIDE attribute, so it may only be
+                    # held for one transfer attempt — never across the retry wrapper's flood
+                    # sleeps, which would leave every other coroutine (the scheduled backup
+                    # shares this client) silently sleeping inside Telethon for hours. Same
+                    # ordering as the backup path's _fetch_media_bytes.
+                    async def _attempt():
+                        async with absorb_media_floods(
+                            self.client, getattr(self.config, "media_flood_sleep_threshold", 0)
+                        ):
+                            return await self.client.download_media(message, tmp_path)
+
+                    try:
+                        return await call_with_flood_retry(_attempt, client=self.client)
+                    except BaseException:
+                        # Never leave a partial .part behind on failure or cancellation.
+                        if os.path.exists(tmp_path):
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+                        raise
 
                 shared_file_path, content_hash = await download_and_shard_media(
                     db=self.db,
@@ -812,8 +838,23 @@ class TelegramListener:
                     tmp_file_path = f"{file_path}.{os.getpid()}.{task_id}.part"
                     if os.path.exists(tmp_file_path):
                         os.remove(tmp_file_path)
-                    async with absorb_media_floods(self.client, getattr(self.config, "media_flood_sleep_threshold", 0)):
-                        actual_path = await call_with_flood_retry(self.client.download_media, message, tmp_file_path)
+
+                    async def _attempt():
+                        async with absorb_media_floods(
+                            self.client, getattr(self.config, "media_flood_sleep_threshold", 0)
+                        ):
+                            return await self.client.download_media(message, tmp_file_path)
+
+                    try:
+                        actual_path = await call_with_flood_retry(_attempt, client=self.client)
+                    except BaseException:
+                        # Never leave a partial .part behind on failure or cancellation.
+                        if os.path.exists(tmp_file_path):
+                            try:
+                                os.remove(tmp_file_path)
+                            except OSError:
+                                pass
+                        raise
                     file_path = finalize_atomic_download(
                         actual_path if isinstance(actual_path, str) else None,
                         tmp_file_path,
@@ -1327,7 +1368,7 @@ class TelegramListener:
                             if photo_changed:
                                 await self._download_avatar(entity, chat_id)
                     except Exception as e:
-                        logger.warning(f"Failed to update chat metadata: {e}")
+                        logger.warning(f"Failed to update chat metadata: {type(e).__name__}")
 
             except Exception as e:
                 self.stats["errors"] += 1
@@ -1424,6 +1465,28 @@ class TelegramListener:
                 self.stats["errors"] += 1
                 logger.error(f"Error in reaction handler: {type(e).__name__}")
 
+        # Paired with _remove_handlers() in stop(); keep both lists in step.
+        self._registered_handlers = [
+            on_message_edited,
+            on_message_deleted,
+            on_new_message,
+            on_chat_action,
+            on_pinned_messages,
+            on_message_reactions,
+        ]
+
+    def _remove_handlers(self) -> None:
+        """Detach this listener's handlers from the (possibly shared) client."""
+        if not self.client:
+            self._registered_handlers = []
+            return
+        for callback in self._registered_handlers:
+            try:
+                self.client.remove_event_handler(callback)
+            except Exception as e:
+                logger.debug(f"Could not remove event handler: {type(e).__name__}")
+        self._registered_handlers = []
+
     async def run(self) -> None:
         """
         Run the listener until stopped.
@@ -1506,6 +1569,10 @@ class TelegramListener:
         """
         logger.info("Stopping listener...")
         self._running = False
+
+        # Detach handlers first: a shared client outlives this listener, and a
+        # stopped listener must stop receiving events.
+        self._remove_handlers()
 
         # Only disconnect if we own the client
         if self.client and self._owns_client and self.client.is_connected():

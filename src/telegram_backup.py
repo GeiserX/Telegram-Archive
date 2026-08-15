@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient
 from telethon.errors import (
+    AuthKeyError,
     ChannelPrivateError,
     ChatForbiddenError,
     ChatIdInvalidError,
@@ -25,6 +26,7 @@ from telethon.errors import (
     FloodWaitError,
     PeerIdInvalidError,
     RPCError,
+    UnauthorizedError,
     UserBannedInChannelError,
 )
 from telethon.tl.types import (
@@ -147,9 +149,20 @@ def _is_non_retryable_media_op(exc: BaseException) -> bool:
     return is_media_location_error(exc) or isinstance(exc, TimeoutError)
 
 
+# Peak decode memory is set by pixel count, not compressed size, so the byte
+# gate in _pre_generate_thumbnail cannot bound it: a 12000x8000 flat-colour PNG
+# is well under 1 MB on disk and still costs ~370 MB to decode inside the
+# backup process. Image.MAX_IMAGE_PIXELS is no help either -- Pillow only
+# refuses above TWICE that value, so everything up to 100 MP proceeds after a
+# warning nobody reads. Mirrors _MAX_SOURCE_PIXELS in src/web/thumbnails.py;
+# keep the two in step.
+_MAX_SOURCE_PIXELS = 25_000_000
+
+
 def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
     """Pre-generate 200px WebP thumbnail for gallery grid view."""
     try:
+        import tempfile
         from pathlib import Path
 
         from PIL import Image
@@ -186,8 +199,28 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
+            # Image.open() parses only the header, so the dimensions are known
+            # before a single pixel is decoded -- refuse pixel bombs here, not
+            # after. JPEG is exempt: img.thumbnail() drafts JPEGs to decode at
+            # up to 1/8 scale so their cost stays bounded, and Image.open()
+            # itself refuses anything past twice Image.MAX_IMAGE_PIXELS.
+            pixels = img.size[0] * img.size[1]
+            if img.format != "JPEG" and pixels > _MAX_SOURCE_PIXELS:
+                logger.debug("Thumbnail pre-generation refused oversized source (%d pixels)", pixels)
+                return
             img.thumbnail((200, 200), Image.LANCZOS)
-            img.save(dest, "WEBP", quality=WEBP_QUALITY)
+            # The viewer treats dest.exists() as "complete", so saving straight
+            # to dest would let a concurrent reader see -- and cache -- a
+            # half-written file. Write to a unique temp file in the same
+            # directory and os.replace() it: dest only ever appears whole.
+            fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".thumb-", suffix=".tmp")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                img.save(tmp, "WEBP", quality=WEBP_QUALITY)
+                os.replace(tmp, dest)
+            finally:
+                tmp.unlink(missing_ok=True)
     except Exception as e:
         logger.debug("Thumbnail pre-generation failed: %s", describe_exception(e))
 
@@ -325,6 +358,10 @@ async def call_with_flood_retry(
             # If it is a FloodWaitError, FileReferenceExpiredError, or terminal RPC error,
             # raise it to let the prior except block or the calling scope catch it specifically
             # without wasting retries.
+            # UnauthorizedError (session revoked/expired, account deactivated) and
+            # AuthKeyError (key duplicated/unregistered) are process-wide and permanent:
+            # Telegram returns them identically forever, and the transport is still up so
+            # reconnecting cannot help. Retrying burns ~65s of backoff per call for nothing.
             if isinstance(
                 exc,
                 (
@@ -334,6 +371,8 @@ async def call_with_flood_retry(
                     ChatForbiddenError,
                     ChatIdInvalidError,
                     PeerIdInvalidError,
+                    UnauthorizedError,
+                    AuthKeyError,
                     UserBannedInChannelError,
                 ),
             ):
@@ -949,7 +988,9 @@ class TelegramBackup:
                         seen_chat_ids.add(cid)
                         logger.info("  → Fetched chat")
                     except Exception as e:
-                        logger.warning(f"  → Could not fetch chat: {e}")
+                        # Type only: Telethon's peer-resolution ValueError spells the id out
+                        # ("Could not find the input entity for PeerUser(user_id=...)").
+                        logger.warning(f"  → Could not fetch chat: {e.__class__.__name__}")
                         unresolved.add(cid)
 
                 # Fallback for unresolved entries (#234): a bare positive user id
@@ -1188,7 +1229,7 @@ class TelegramBackup:
                                 f"  → Added chat{' [in archive]' if is_in_archive else ' [not in any dialog list]'}"
                             )
                         except Exception as e:
-                            logger.warning(f"  → Could not fetch included chat: {e}")
+                            logger.warning(f"  → Could not fetch included chat: {e.__class__.__name__}")
 
                 # Delete only explicitly excluded chats from database
                 if explicitly_excluded_chat_ids:
@@ -1334,7 +1375,9 @@ class TelegramBackup:
                         await self._backup_forum_topics(chat_id, entity)
                     except Exception as e:
                         # Don't let a topic-fetch failure abort folders/stats below.
-                        logger.warning(f"End-of-run forum-topic fetch failed (will retry next run): {e}")
+                        logger.warning(
+                            f"End-of-run forum-topic fetch failed (will retry next run): {e.__class__.__name__}"
+                        )
 
             # v6.2.0: Backup user's chat folders
             logger.info("Backing up chat folders...")
@@ -1500,7 +1543,7 @@ class TelegramBackup:
                 try:
                     messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=message_ids)
                 except Exception as e:
-                    logger.warning(f"Cannot access chat for media verification: {e}")
+                    logger.warning(f"Cannot access chat for media verification: {e.__class__.__name__}")
                     failed += len(records)
                     continue
 
@@ -1605,7 +1648,7 @@ class TelegramBackup:
                 try:
                     messages = await call_with_flood_retry(self.client.get_messages, chat_id, ids=message_ids)
                 except Exception as e:
-                    logger.warning(f"Cannot access chat for pending media retry: {e}")
+                    logger.warning(f"Cannot access chat for pending media retry: {e.__class__.__name__}")
                     failed += len(records)
                     continue
 
@@ -1679,7 +1722,9 @@ class TelegramBackup:
             try:
                 await self._backup_forum_topics(chat_id, entity)
             except Exception as e:
-                logger.warning(f"Early forum-topic fetch failed for chat (will retry at end of run): {e}")
+                logger.warning(
+                    f"Early forum-topic fetch failed for chat (will retry at end of run): {e.__class__.__name__}"
+                )
 
         # Clean up existing media if this chat is in the skip list (once per session)
         if (
@@ -1712,15 +1757,30 @@ class TelegramBackup:
         uncheckpointed_count = 0
         batches_since_checkpoint = 0
         running_max_id = last_message_id
+        # One unprocessable message must never abort the dialog, and the cursor must
+        # never move past it: the message stays retryable on the next run instead of
+        # being silently skipped forever. Messages arrive oldest-first, so freezing
+        # the cursor at the first failure is enough to keep it behind that id.
+        failed_messages = 0
+        cursor_frozen = False
 
         async for message in iter_messages_with_flood_retry(self.client, entity, min_id=last_message_id, reverse=True):
-            running_max_id = max(running_max_id, message.id)
-
             # Skip messages belonging to excluded forum topics
             if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
+                if not cursor_frozen:
+                    running_max_id = max(running_max_id, message.id)
                 continue
 
-            msg_data = await self._process_message(message, chat_id)
+            try:
+                msg_data = await self._process_message(message, chat_id)
+            except Exception as e:
+                failed_messages += 1
+                cursor_frozen = True
+                logger.debug(f"Message could not be processed: {type(e).__name__}")
+                continue
+
+            if not cursor_frozen:
+                running_max_id = max(running_max_id, message.id)
             batch_data.append(msg_data)
 
             if len(batch_data) >= batch_size:
@@ -1744,6 +1804,12 @@ class TelegramBackup:
             count = len(batch_data)
             grand_total += count
             uncheckpointed_count += count
+
+        if failed_messages:
+            logger.warning(
+                f"  → {failed_messages} message(s) could not be processed; "
+                f"the sync cursor stays behind them so they are retried next run"
+            )
 
         # Final checkpoint: persist when there are un-checkpointed messages OR
         # when the cursor advanced purely from skipped (topic-filtered) messages
@@ -1800,6 +1866,10 @@ class TelegramBackup:
         batch_data: list[dict] = []
         batch_size = self.config.batch_size
         recovered = 0
+        # Same per-message isolation as _backup_dialog: one unprocessable message must
+        # not abandon the rest of the gap. Gap-fill keeps no cursor, so a failed message
+        # is simply left in the gap and re-attempted on the next scan.
+        failed_messages = 0
 
         async for message in iter_messages_with_flood_retry(
             self.client, entity, min_id=gap_start, max_id=gap_end, reverse=True
@@ -1808,7 +1878,13 @@ class TelegramBackup:
             if self.config.should_skip_topic(chat_id, extract_topic_id(message)):
                 continue
 
-            msg_data = await self._process_message(message, chat_id)
+            try:
+                msg_data = await self._process_message(message, chat_id)
+            except Exception as e:
+                failed_messages += 1
+                logger.debug(f"Gap-fill: message could not be processed: {type(e).__name__}")
+                continue
+
             batch_data.append(msg_data)
 
             if len(batch_data) >= batch_size:
@@ -1820,6 +1896,9 @@ class TelegramBackup:
         if batch_data:
             await self._commit_batch(batch_data, chat_id)
             recovered += len(batch_data)
+
+        if failed_messages:
+            logger.warning(f"    → {failed_messages} message(s) in this gap could not be processed")
 
         return recovered
 
@@ -1875,7 +1954,7 @@ class TelegramBackup:
                 logger.warning(f"Gap-fill: skipping chat (no access): {e.__class__.__name__}")
                 continue
             except Exception as e:
-                logger.error(f"Gap-fill: failed to get entity for chat: {e}")
+                logger.error(f"Gap-fill: failed to get entity for chat: {e.__class__.__name__}")
                 summary["errors"] += 1
                 continue
 
@@ -1903,7 +1982,7 @@ class TelegramBackup:
                     chat_recovered += recovered
                     logger.info(f"    Recovered {recovered} messages")
                 except Exception as e:
-                    logger.error(f"    Error filling gap (size {gap_size}): {e}")
+                    logger.error(f"    Error filling gap (size {gap_size}): {type(e).__name__}")
                     summary["errors"] += 1
 
             summary["total_gaps"] += len(gaps)
@@ -3391,12 +3470,12 @@ class TelegramBackup:
                 # run continues from here.
                 if topics_count > 0:
                     logger.warning(
-                        f"GetForumTopicsRequest failed mid-pagination ({e.__class__.__name__}: {e}); "
+                        f"GetForumTopicsRequest failed mid-pagination ({e.__class__.__name__}); "
                         f"keeping {topics_count} topics fetched so far"
                     )
                     return topics_count
                 logger.warning(
-                    f"GetForumTopicsRequest failed ({e.__class__.__name__}: {e}), falling back to message inference"
+                    f"GetForumTopicsRequest failed ({e.__class__.__name__}), falling back to message inference"
                 )
                 # Fall through to inference method
         except ImportError:
@@ -3445,7 +3524,7 @@ class TelegramBackup:
             return topics_count
 
         except Exception as e:
-            logger.warning(f"  → Failed to infer forum topics: {e}")
+            logger.warning(f"  → Failed to infer forum topics: {e.__class__.__name__}")
             return 0
 
     def _resolve_peer_ids(self, peers, own_id: int | None = None) -> set[int]:
