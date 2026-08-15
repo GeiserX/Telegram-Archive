@@ -122,6 +122,16 @@ MEDIA_REFRESH_TIMEOUT_SECONDS = _get_int_env("MEDIA_REFRESH_TIMEOUT_SECONDS", 12
 # Hard wall-clock bound on the #234 whitelist dialog scan — the count limit alone
 # cannot prevent a wedged-connection hang, which is what #95 was about.
 WHITELIST_RESOLVE_SWEEP_TIMEOUT_SECONDS = 300
+# Bounded retry for a message _process_message cannot handle (#286 follow-up).
+# Holding the sync cursor behind a failure is right for a TRANSIENT one, but a
+# PERMANENT one would hold it there forever: every later run would re-fetch and
+# re-commit the entire tail of that chat — a window that keeps growing — and the
+# chat's recorded progress would never advance again. After this many separate
+# runs have failed on the SAME message the cursor is allowed past it.
+MESSAGE_MAX_PROCESS_ATTEMPTS = 2
+# Cap on the ids kept in a chat's give-up record so it cannot grow without bound.
+# The running total is stored separately and stays exact.
+MESSAGE_GIVE_UP_RECORD_LIMIT = 500
 
 
 def _media_retry_backoff_seconds(attempt: int) -> float:
@@ -1696,6 +1706,79 @@ class TelegramBackup:
             logger.info("Pending media retry: no actionable items")
         logger.info("=" * 60)
 
+    @staticmethod
+    def _message_failure_key(chat_id: int) -> str:
+        """Metadata KV key holding one chat's message-failure record."""
+        return f"message_failures_{chat_id}"
+
+    async def _load_message_failures(self, chat_id: int) -> dict:
+        """Load the durable per-chat message-failure record from the metadata KV.
+
+        Two independent facts live in it:
+
+        ``frozen_id``/``runs``
+            which message the sync cursor is currently parked behind, and how
+            many separate runs have already failed on it. This is what bounds
+            the retry: without a count that survives the process, a permanently
+            unprocessable message freezes the cursor forever.
+        ``given_up_total``/``given_up_ids``
+            the record of messages the cursor was eventually allowed past, so a
+            skip is never silent. ``detect_message_gaps`` cannot stand in for
+            it: it only reports holes larger than ``GAP_THRESHOLD`` (50), so a
+            single passed-over message is invisible to it by construction.
+
+        An id stays in the record even if a later run archives it successfully —
+        it is a log of what was given up on, not of what is missing now.
+
+        Never raises: a missing or malformed value degrades to "nothing recorded
+        yet", which costs one more retry and never skips anything early.
+        """
+        state: dict = {"frozen_id": 0, "runs": 0, "given_up_total": 0, "given_up_ids": set()}
+        try:
+            raw = await self.db.get_metadata(self._message_failure_key(chat_id))
+        except Exception as e:
+            logger.debug("Could not load the message-failure record (%s)", type(e).__name__)
+            return state
+        if not isinstance(raw, str) or not raw:
+            return state
+        try:
+            loaded = json.loads(raw)
+        except ValueError, TypeError:
+            logger.debug("Malformed message-failure record; starting a fresh one")
+            return state
+        if not isinstance(loaded, dict):
+            return state
+        for field in ("frozen_id", "runs", "given_up_total"):
+            value = loaded.get(field)
+            if isinstance(value, int) and value > 0:
+                state[field] = value
+        ids = loaded.get("given_up_ids")
+        if isinstance(ids, list):
+            state["given_up_ids"] = {i for i in ids if isinstance(i, int)}
+        return state
+
+    async def _save_message_failures(self, chat_id: int, state: dict) -> None:
+        """Persist one chat's message-failure record. Never raises.
+
+        Only the most recent ``MESSAGE_GIVE_UP_RECORD_LIMIT`` ids are kept (ids
+        grow over time, so the highest are the newest); ``given_up_total`` counts
+        every give-up regardless.
+        """
+        try:
+            await self.db.set_metadata(
+                self._message_failure_key(chat_id),
+                json.dumps(
+                    {
+                        "frozen_id": state["frozen_id"],
+                        "runs": state["runs"],
+                        "given_up_total": state["given_up_total"],
+                        "given_up_ids": sorted(state["given_up_ids"])[-MESSAGE_GIVE_UP_RECORD_LIMIT:],
+                    }
+                ),
+            )
+        except Exception as e:
+            logger.debug("Could not persist the message-failure record (%s)", type(e).__name__)
+
     async def _backup_dialog(self, dialog, is_archived: bool = False) -> int:
         """
         Backup a single dialog (chat).
@@ -1758,11 +1841,21 @@ class TelegramBackup:
         batches_since_checkpoint = 0
         running_max_id = last_message_id
         # One unprocessable message must never abort the dialog, and the cursor must
-        # never move past it: the message stays retryable on the next run instead of
-        # being silently skipped forever. Messages arrive oldest-first, so freezing
-        # the cursor at the first failure is enough to keep it behind that id.
+        # not move past it: the message stays retryable on the next run instead of
+        # being silently skipped. Messages arrive oldest-first, so freezing the
+        # cursor at the first failure is enough to keep it behind that id.
+        #
+        # That freeze needs a way out, or a PERMANENTLY unprocessable message parks
+        # the cursor forever and every run re-fetches the whole (ever-growing) tail
+        # behind it. So the failure is counted across runs in the metadata KV, and
+        # once the same message has failed MESSAGE_MAX_PROCESS_ATTEMPTS times the
+        # cursor is let past it and its id is recorded as given up on.
         failed_messages = 0
+        given_up_messages = 0
         cursor_frozen = False
+        cursor_passed_failure = False
+        # Loaded lazily: a dialog with no failures must not pay for a read.
+        failures: dict | None = None
 
         async for message in iter_messages_with_flood_retry(self.client, entity, min_id=last_message_id, reverse=True):
             # Skip messages belonging to excluded forum topics
@@ -1774,9 +1867,39 @@ class TelegramBackup:
             try:
                 msg_data = await self._process_message(message, chat_id)
             except Exception as e:
-                failed_messages += 1
-                cursor_frozen = True
                 logger.debug(f"Message could not be processed: {type(e).__name__}")
+                if failures is None:
+                    failures = await self._load_message_failures(chat_id)
+                # Only the message the cursor is parked behind carries a count;
+                # anything else is failing for the first time as far as we know.
+                prior_runs = failures["runs"] if failures["frozen_id"] == message.id else 0
+
+                if message.id in failures["given_up_ids"] or prior_runs + 1 >= MESSAGE_MAX_PROCESS_ATTEMPTS:
+                    # The exit from the freeze. Re-checking the recorded ids is what
+                    # makes it stick: if a previous run gave up here but died before
+                    # its checkpoint landed, this message would otherwise start its
+                    # count again and the chat would never get past it.
+                    given_up_messages += 1
+                    if message.id not in failures["given_up_ids"]:
+                        failures["given_up_ids"].add(message.id)
+                        failures["given_up_total"] += 1
+                    if failures["frozen_id"] == message.id:
+                        failures["frozen_id"] = 0
+                        failures["runs"] = 0
+                    if not cursor_frozen:
+                        running_max_id = max(running_max_id, message.id)
+                        cursor_passed_failure = True
+                    continue
+
+                failed_messages += 1
+                if not cursor_frozen:
+                    cursor_frozen = True
+                    # Persisted here rather than at the end of the dialog: this run
+                    # may not reach the end, and without the count on disk the next
+                    # run restarts the message at attempt one, forever.
+                    failures["frozen_id"] = message.id
+                    failures["runs"] = prior_runs + 1
+                    await self._save_message_failures(chat_id, failures)
                 continue
 
             if not cursor_frozen:
@@ -1811,10 +1934,24 @@ class TelegramBackup:
                 f"the sync cursor stays behind them so they are retried next run"
             )
 
-        # Final checkpoint: persist when there are un-checkpointed messages OR
-        # when the cursor advanced purely from skipped (topic-filtered) messages
-        # that were never counted in uncheckpointed_count.
-        if uncheckpointed_count > 0 or (grand_total == 0 and running_max_id > last_message_id):
+        if given_up_messages and failures is not None:
+            # Written before the checkpoint below, never after: if only one of the
+            # two lands it must be this one. A cursor that moved past a message
+            # with no record of which message is exactly the silent skip this
+            # whole mechanism exists to avoid.
+            await self._save_message_failures(chat_id, failures)
+            given_up_total = failures["given_up_total"]
+            logger.warning(
+                f"  → {given_up_messages} message(s) failed on {MESSAGE_MAX_PROCESS_ATTEMPTS} separate runs "
+                f"and were passed over so the chat can move on ({given_up_total} recorded for it in total); "
+                f"their ids are kept in the backup metadata"
+            )
+
+        # Final checkpoint: persist when there are un-checkpointed messages, when the
+        # cursor was let past a message given up on (otherwise the give-up is lost and
+        # the next run starts it over), OR when the cursor advanced purely from skipped
+        # (topic-filtered) messages that were never counted in uncheckpointed_count.
+        if uncheckpointed_count > 0 or cursor_passed_failure or (grand_total == 0 and running_max_id > last_message_id):
             await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
 
         # Sync deletions and edits if enabled (expensive!)
