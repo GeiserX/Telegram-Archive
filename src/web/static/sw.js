@@ -107,28 +107,55 @@ self.addEventListener('notificationclick', (event) => {
         }
     }
     
+    // `url` is relative; client.url is the absolute creation URL, so comparing them
+    // directly was true every time and client.navigate() always ran — a full document
+    // reload that threw away the loaded messages, the scroll position, any open
+    // lightbox, and (the audio engine is one in-page element) whatever was playing.
+    const targetUrl = new URL(url, self.location.origin).href;
+    const isSameOrigin = (client) => {
+        try {
+            return new URL(client.url).origin === self.location.origin;
+        } catch (e) {
+            return false;
+        }
+    };
+
     event.waitUntil(
         clients.matchAll({ type: 'window', includeUncontrolled: true })
             .then((windowClients) => {
-                // Check if there's already a window open
-                for (const client of windowClients) {
-                    // If we find an existing window, focus it and navigate
-                    if ('focus' in client) {
-                        return client.focus().then(() => {
-                            if (client.url !== url && 'navigate' in client) {
-                                return client.navigate(url);
-                            }
-                            // Post message to the client to navigate/highlight
-                            client.postMessage({
+                // Only our own pages can act on the message, and only they should be
+                // focused for this notification.
+                const ownClients = windowClients.filter(isSameOrigin);
+                // Prefer handing the click to an open tab: focus it and post the deep
+                // link so the page navigates in place. The tab is selected on 'focus'
+                // — NOT on 'postMessage', which exists on every window client per
+                // spec, so that predicate matched unconditionally and made the
+                // openWindow fallback below unreachable.
+                const focusable = ownClients.find((client) => 'focus' in client);
+                if (focusable) {
+                    return Promise.resolve()
+                        .then(() => focusable.focus())
+                        .then((focused) => {
+                            (focused || focusable).postMessage({
                                 type: 'NOTIFICATION_CLICK',
                                 data: data
                             });
+                        })
+                        .catch((err) => {
+                            // The tab refused focus or died mid-click: land the click
+                            // in a fresh window instead of swallowing it. An unhandled
+                            // rejection here would reject waitUntil and kill the whole
+                            // click. Log the failure type only, never the deep link.
+                            console.error('[SW] Failed to hand the click to an open tab:', err && err.name);
+                            if (clients.openWindow) {
+                                return clients.openWindow(targetUrl);
+                            }
                         });
-                    }
                 }
-                // No existing window, open a new one
+                // No focusable window of ours: open one directly on the deep link so
+                // a cold start still lands on the right chat.
                 if (clients.openWindow) {
-                    return clients.openWindow(url);
+                    return clients.openWindow(targetUrl);
                 }
             })
     );
@@ -164,10 +191,10 @@ self.addEventListener('pushsubscriptionchange', (event) => {
     );
 });
 
-// Handle messages from the main page
+// Handle messages from the main page.
+// Nothing about the payload is logged: a message can carry identifiers, and the
+// console travels with screen shares, devtools screenshots and browser bug reports.
 self.addEventListener('message', (event) => {
-    console.log('[SW] Message received:', event.data);
-    
     if (event.data && event.data.type === 'SKIP_WAITING') {
         self.skipWaiting();
     }
