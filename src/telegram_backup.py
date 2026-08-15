@@ -3119,8 +3119,14 @@ class TelegramBackup:
         elif isinstance(media, MessageMediaDocument):
             # Check document attributes to determine specific type
             if hasattr(media, "document") and media.document:
+                # DocumentEmpty is truthy but carries no .attributes at all. Its reference
+                # is unusable, so treat it exactly like a missing document rather than
+                # classifying it as a real one and sending it down the download path.
+                attributes = getattr(media.document, "attributes", None)
+                if attributes is None:
+                    return None
                 is_animated = False
-                for attr in media.document.attributes:
+                for attr in attributes:
                     attr_type = type(attr).__name__
                     if "Animated" in attr_type:
                         is_animated = True
@@ -3160,7 +3166,7 @@ class TelegramBackup:
             doc = message.media.document
             mime_type = getattr(doc, "mime_type", None)
 
-            for attr in doc.attributes:
+            for attr in getattr(doc, "attributes", None) or ():
                 if hasattr(attr, "file_name") and attr.file_name:
                     original_name = attr.file_name
                     break
@@ -3321,7 +3327,7 @@ class TelegramBackup:
                                 self.client, GetCustomEmojiDocumentsRequest(document_id=emoji_ids)
                             )
                             for doc in docs:
-                                for attr in doc.attributes:
+                                for attr in getattr(doc, "attributes", None) or ():
                                     if hasattr(attr, "alt") and attr.alt:
                                         emoji_map[doc.id] = attr.alt
                                         break
