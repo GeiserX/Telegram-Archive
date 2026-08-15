@@ -14,7 +14,15 @@ What it changes, and why each is safe:
   migrations never said so, so a PostgreSQL install accepted NULLs that the
   SQLite install of the same version rejected. Every column is backfilled with
   the ORM's own default *before* it is tightened, so a database holding NULLs
-  converges instead of crash-looping on ``SET NOT NULL``.
+  converges instead of crash-looping on ``SET NOT NULL``. The one fill that is
+  not the ORM default is ``viewer_tokens.is_revoked``, filled with ``1``: the
+  token validator only reads rows with ``is_revoked = 0``, so a NULL there was
+  an unusable token, and a token in an unknown state must stay unusable. It is
+  alone in that. The only other backfilled gate, ``no_download``, is read for
+  Python truthiness, where NULL and ``0`` are the same answer; the remaining
+  fills are timestamps, cursors and display flags whose worst case is redoing
+  idempotent work (a zeroed ``media.downloaded`` becomes a download candidate
+  again).
 * **Server defaults.** ``created_at``/``updated_at`` gain the ``func.now()``
   default the ORM declares. ``messages.is_pinned``/``is_outgoing`` and
   ``media.downloaded`` lose the literal ``0`` the ORM does not declare (their
@@ -37,20 +45,31 @@ What it changes, and why each is safe:
   forever. It is dropped ONLY when empty: on a database that really did upgrade
   through v6.0.0 with legacy media rows it still holds the pre-normalization
   pointers, and this migration will not delete those.
+* **``idx_audit_log_username`` / ``idx_audit_log_created``.** Migration 007
+  creates them, but a 7.x SQLite install provisioned by ``create_all`` was
+  stamped past 007 before models.py declared these indexes, so its
+  ``viewer_audit_log`` was born unindexed and nothing later in the chain or in
+  the app would ever index it — the admin audit page full-scans a table that
+  grows with every login. Created here when absent, on both backends.
 
 Idempotency: every step reads the live schema first and does nothing when the
 object is already in its target shape, so this runs clean against a database
 provisioned by ``create_all`` (where most of it is already true), against one
 built by this chain, and against a re-run of itself.
 
-One difference is deliberately left alone. A SQLite database created by the
-``create_all`` of a release before this one carries the reactions -> users
-foreign key unnamed, because models.py only started naming it
-``fk_reactions_user`` here. SQLite never enforces that constraint (nothing in
-this project sets ``PRAGMA foreign_keys=ON``) and never exposes its name, so
-relabelling it would mean rebuilding a table of the user's data for a label
-nothing can observe. Every freshly built schema on either backend agrees, which
-is what the parity gate checks.
+Two leftovers are deliberate. A SQLite database created by the ``create_all``
+of a release before this one carries the reactions -> users foreign key
+unnamed, because models.py only started naming it ``fk_reactions_user`` here.
+SQLite never enforces that constraint (nothing in this project sets ``PRAGMA
+foreign_keys=ON``) and never exposes its name, so relabelling it would mean
+rebuilding a table of the user's data for a label nothing can observe. Every
+freshly built schema on either backend agrees, which is what the parity gate
+checks. The same ``create_all`` databases may also keep reaction rows whose
+message is gone: the orphan delete runs only where ``fk_reaction_message`` has
+to be added, because there it is the difference between the ADD succeeding and
+failing. Where the constraint already exists it has sat unenforced since
+``create_all`` built it, and rows of the user's data are not deleted for a
+constraint nothing checks.
 
 Revision ID: 021
 Revises: 020
@@ -104,7 +123,9 @@ NOT_NULL_COLUMNS: dict[str, dict[str, str]] = {
     "viewer_sessions": {"no_download": "0"},
     "viewer_tokens": {
         "created_at": "now",
-        "is_revoked": "0",
+        # 1, not the ORM default 0: the validator matches is_revoked = 0 only,
+        # so a NULL was a dead token and must not come back to life here.
+        "is_revoked": "1",
         "no_download": "0",
         "use_count": "0",
     },
@@ -239,6 +260,22 @@ def _drop_empty_backup_table(conn: sa.Connection, inspector: sa.Inspector) -> No
     op.drop_table(BACKUP_TABLE)
 
 
+def _create_missing_audit_indexes(inspector: sa.Inspector) -> None:
+    """Create viewer_audit_log's two indexes wherever migration 007 never ran.
+
+    A 7.x SQLite install provisioned by ``create_all`` was stamped past 007
+    before models.py declared these indexes, so its audit table has none and
+    nothing later in the chain or in the app would ever add them.
+    """
+    if "viewer_audit_log" not in inspector.get_table_names():
+        return
+    existing = {index["name"] for index in inspector.get_indexes("viewer_audit_log")}
+    if "idx_audit_log_username" not in existing:
+        op.create_index("idx_audit_log_username", "viewer_audit_log", ["username"])
+    if "idx_audit_log_created" not in existing:
+        op.create_index("idx_audit_log_created", "viewer_audit_log", ["created_at"])
+
+
 # ---------------------------------------------------------------------------
 # PostgreSQL
 # ---------------------------------------------------------------------------
@@ -297,6 +334,7 @@ def _upgrade_postgresql(conn: sa.Connection) -> None:
             ["id", "chat_id"],
         )
 
+    _create_missing_audit_indexes(sa.inspect(conn))
     _drop_empty_backup_table(conn, sa.inspect(conn))
 
 
@@ -408,6 +446,10 @@ def _upgrade_sqlite(conn: sa.Connection) -> None:
         if table == "media":
             batch_kwargs["copy_from"] = _sqlite_media_copy_from(conn)
 
+        # pysqlite autocommits DDL, so a crash mid-rebuild can strand the batch
+        # copy's temporary table on disk — and its mere existence fails every
+        # later rebuild of the same table with "already exists".
+        conn.exec_driver_sql(f'DROP TABLE IF EXISTS "_alembic_tmp_{table}"')
         conn.exec_driver_sql("PRAGMA legacy_alter_table=ON")
         try:
             with op.batch_alter_table(table, **batch_kwargs) as batch_op:
@@ -444,6 +486,9 @@ def _upgrade_sqlite(conn: sa.Connection) -> None:
 
         inspector = sa.inspect(conn)
 
+    # After the rebuilds: a rebuilt viewer_audit_log recreates only the indexes
+    # reflection saw, which on a 7.x create_all database is none.
+    _create_missing_audit_indexes(sa.inspect(conn))
     _drop_empty_backup_table(conn, sa.inspect(conn))
 
 
@@ -483,6 +528,8 @@ def downgrade() -> None:
         targets = [column for column in sorted(columns) if column in present and not present[column]["nullable"]]
         if not targets:
             continue
+        # Same stranded-temporary-table hazard as the upgrade's rebuild loop.
+        conn.exec_driver_sql(f'DROP TABLE IF EXISTS "_alembic_tmp_{table}"')
         conn.exec_driver_sql("PRAGMA legacy_alter_table=ON")
         try:
             with op.batch_alter_table(table) as batch_op:
