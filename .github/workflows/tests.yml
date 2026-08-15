@@ -6,8 +6,10 @@ on:
     branches: [main, master]
     paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', 'Dockerfile*', 'docker-compose.yml', '.github/workflows/tests.yml']
   pull_request:
+    # No paths filter: test is a required status check, so it must be able to run
+    # on every PR (a docs- or compose-only PR would otherwise never satisfy it and
+    # could never merge without admin override).
     branches: [main, master]
-    paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', 'Dockerfile*', 'docker-compose.yml', '.github/workflows/tests.yml']
 
 jobs:
   test:
@@ -20,20 +22,23 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-          cache: 'pip'
-      
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # Install the exact versions the images ship (uv.lock), not a fresh
+      # resolution of requirements.txt - the gate must test what is published.
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio beautifulsoup4 Pillow
-      
+        run: uv sync --locked --extra dev --no-install-project
+
       - name: Run tests
         run: |
-          python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=xml
+          uv run --no-sync python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: ./coverage.xml

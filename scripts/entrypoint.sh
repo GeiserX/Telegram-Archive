@@ -22,25 +22,26 @@ import os
 import sys
 import time
 import psycopg2
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # Build connection URL from the same DATABASE_URL-preferred contract the app uses.
+# urlparse does not decode percent-encoding, but RFC 3986 requires reserved
+# characters in credentials to be encoded - psycopg2 needs the decoded values.
 raw_url = os.getenv('DATABASE_URL', '')
 if raw_url:
-    url = raw_url.replace('postgresql+asyncpg://', 'postgresql://', 1).replace('postgres://', 'postgresql://', 1)
-    parsed = urlparse(url)
-    host = parsed.hostname or 'localhost'
+    normalized = raw_url.replace('postgresql+asyncpg://', 'postgresql://', 1).replace('postgres://', 'postgresql://', 1)
+    parsed = urlparse(normalized)
+    host = unquote(parsed.hostname or 'localhost')
     port = str(parsed.port or 5432)
-    user = parsed.username or 'telegram'
-    password = parsed.password or ''
-    db = (parsed.path or '/telegram_backup').lstrip('/')
+    user = unquote(parsed.username or 'telegram')
+    password = unquote(parsed.password or '')
+    db = unquote((parsed.path or '/telegram_backup').lstrip('/'))
 else:
     host = os.getenv('POSTGRES_HOST', 'localhost')
     port = os.getenv('POSTGRES_PORT', '5432')
     user = os.getenv('POSTGRES_USER', 'telegram')
     password = os.getenv('POSTGRES_PASSWORD', '')
     db = os.getenv('POSTGRES_DB', 'telegram_backup')
-    url = f'postgresql://{user}:{password}@{host}:{port}/{db}'
 
 print(f'Connecting to PostgreSQL at {host}:{port}...')
 
@@ -335,8 +336,10 @@ cur.close()
 conn.close()
 
 # Now run normal Alembic upgrade
+# alembic/env.py resolves the URL from the environment itself; setting
+# sqlalchemy.url here would only run it through configparser interpolation,
+# which rejects any raw or percent-encoded '%'.
 config = Config('/app/alembic.ini')
-config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
 print('Migrations complete.')
 "
@@ -368,7 +371,6 @@ elif database_url.startswith('sqlite:///'):
     db_path = database_url.removeprefix('sqlite:///')
 else:
     db_path = os.getenv('DB_PATH', os.getenv('DATABASE_PATH', os.path.join(os.getenv('BACKUP_PATH', '/data/backups'), 'telegram_backup.db')))
-url = f'sqlite:///{db_path}'
 
 # Check if this is a pre-Alembic database that needs stamping
 conn = sqlite3.connect(db_path)
@@ -519,8 +521,8 @@ cur.close()
 conn.close()
 
 # Now run normal Alembic upgrade
+# alembic/env.py resolves the URL from the environment itself (see above).
 config = Config('/app/alembic.ini')
-config.set_main_option('sqlalchemy.url', url)
 command.upgrade(config, 'head')
 print('SQLite migrations complete.')
 "
