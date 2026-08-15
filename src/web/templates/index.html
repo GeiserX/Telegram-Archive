@@ -11,15 +11,42 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="manifest" href="/static/manifest.json">
     <title>Telegram Archive</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js"></script>
+    <!-- Third-party assets: every URL is pinned to an exact version and carries a
+         Subresource Integrity hash, because these scripts run in the same origin
+         as the archive session — an unpinned URL ships whatever the next npm
+         publish contains, and without integrity a compromised CDN edge can
+         return anything at all.
+         TWO DELIBERATE EXCEPTIONS, both unhashable rather than overlooked:
+           * cdn.tailwindcss.com serves no Access-Control-Allow-Origin header even
+             when the request carries an Origin (re-verified 2026-08-15), and
+             integrity= forces a CORS-checked fetch, so adding it would block the
+             script outright and the UI would load unstyled. The bytes themselves
+             are stable and hashable, but the npm package ships no browser bundle,
+             so no CORS-enabled CDN can serve this file. Pinned only.
+           * the Google Fonts stylesheet is generated per user agent, so its bytes
+             (and therefore its hash) differ between browsers. It has no version
+             to pin and delivers CSS, not script. -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script src="https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js"
+        integrity="sha384-arPHRzOKPl8g3Rbe/cQBWYPnq4HcxfPFSFWD3qvI/hc2XQf+4GkVqkOlWgjN5mD3"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"
+        integrity="sha384-VCGDSwGwLWkVOK5vAWSaY38KZ4oKJ0whHjpJQhjqrMlWadpf2dUVKLgOLBdEaLvZ"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js"
+        integrity="sha384-l7VdBcaAfGCeXKsn587Z+4Z3m6M5/96OPpQu1zC3wscMtXK9xPY8oQQYUhZBJIC/"
+        crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+        integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0"
+        crossorigin="anonymous">
     <!-- Flatpickr for date picker -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css"
+        integrity="sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt"
+        crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"
+        integrity="sha384-5JqMv4L/Xa0hfvtF06qboNdhvuYXUku9ZrhZh3bSk8VXF0A/RuSLHpLsSV9Zqhl6"
+        crossorigin="anonymous"></script>
     <style>
         /* iOS Safe Area Support */
         :root {
@@ -708,6 +735,20 @@
                             <span class="text-sm">Loading topics...</span>
                         </div>
 
+                        <!-- Topics failed to load (same shape as the chat-list error banner) -->
+                        <div v-else-if="topicsError" class="px-3 py-2 bg-amber-900/80 border-b border-amber-700">
+                            <div class="flex items-center gap-2 text-amber-200 text-sm">
+                                <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <span>{{ topicsError }}</span>
+                                <button @click="retryLoadTopics()" class="ml-auto text-amber-300 hover:text-white text-xs underline">
+                                    Retry
+                                </button>
+                            </div>
+                        </div>
+
                         <!-- Topic list -->
                         <div v-else-if="topics.length === 0" class="flex flex-col items-center justify-center py-12 px-4 text-tg-muted text-center gap-3">
                             <span class="text-sm">No topics backed up yet</span>
@@ -967,7 +1008,7 @@
                         <div class="flex items-center gap-1 sm:gap-2 shrink-0">
                             <!-- Search Bar - responsive width -->
                             <div class="relative w-28 sm:w-48 md:w-64">
-                                <input v-model="messageSearchQuery" @input="searchMessages" type="text"
+                                <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
                                     placeholder="Search..."
                                     class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
@@ -1437,21 +1478,35 @@
 
                                         <!-- Videos - click to open in lightbox -->
                                         <div v-else-if="msg.media?.type === 'video'"
-                                            class="relative cursor-pointer group"
-                                            @click="openMedia(msg)">
-                                            <video preload="metadata"
-                                                class="rounded-lg max-h-64 w-full pointer-events-none"
-                                                @error="handleMediaError($event, msg)">
-                                                <source :src="getMediaUrl(msg)" type="video/mp4">
-                                            </video>
-                                            <!-- Play overlay -->
-                                            <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
-                                                <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
-                                                    <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
-                                                        <path d="M8 5v14l11-7z"/>
-                                                    </svg>
-                                                </div>
+                                            class="relative group"
+                                            :class="msg.mediaLoadFailed ? '' : 'cursor-pointer'"
+                                            @click="msg.mediaLoadFailed || openMedia(msg)">
+                                            <!-- The missing-media placeholder is rendered BY Vue. Writing it in
+                                                 with innerHTML detached this subtree from the render tree for
+                                                 good: Vue kept patching nodes that were no longer in the
+                                                 document, so the bubble never updated again. -->
+                                            <div v-if="msg.mediaLoadFailed" class="flex items-center gap-2 text-gray-400 text-sm py-2">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                </svg>
+                                                <span>Media not found</span>
                                             </div>
+                                            <template v-else>
+                                                <video preload="metadata"
+                                                    class="rounded-lg max-h-64 w-full pointer-events-none"
+                                                    @error="handleMediaError($event, msg)">
+                                                    <source :src="getMediaUrl(msg)" type="video/mp4">
+                                                </video>
+                                                <!-- Play overlay -->
+                                                <div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition rounded-lg">
+                                                    <div class="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                                                        <svg class="w-8 h-8 text-gray-800 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                                            <path d="M8 5v14l11-7z"/>
+                                                        </svg>
+                                                    </div>
+                                                </div>
+                                            </template>
                                         </div>
 
                                         <!-- Stickers (static/animated) -->
@@ -2224,6 +2279,11 @@
                 const archivedCount = ref(0)
                 const topics = ref([])
                 const loadingTopics = ref(false)
+                const topicsError = ref('')
+                // Same stale-response idiom as the message loaders: the topic list is
+                // keyed to one forum chat, so a response that lost the race must not
+                // paint another chat's topics under this chat's header.
+                let topicsRequestSeq = 0
 
                 const currentNav = computed(() => navStack.value[navStack.value.length - 1])
                 const canGoBack = computed(() => navStack.value.length > 1)
@@ -2767,18 +2827,36 @@
                 }
 
                 const loadTopics = async (chatId) => {
+                    const requestSeq = ++topicsRequestSeq
                     loadingTopics.value = true
+                    // Drop the previous chat's rows up front: a failure or a lost race
+                    // used to leave them on screen under the new chat's header, and
+                    // clicking one opened a topic id that does not exist in this chat.
+                    topics.value = []
+                    topicsError.value = ''
                     try {
                         const res = await fetch(`/api/chats/${chatId}/topics`, { credentials: 'include' })
+                        if (requestSeq !== topicsRequestSeq) return
                         if (res.ok) {
                             const data = await res.json()
+                            if (requestSeq !== topicsRequestSeq) return
                             topics.value = data.topics || []
+                        } else {
+                            topicsError.value = 'Failed to load topics. Please try again.'
                         }
                     } catch (e) {
+                        if (requestSeq !== topicsRequestSeq) return
                         console.error('Failed to load topics:', e)
+                        topicsError.value = 'Failed to load topics. Please try again.'
                     } finally {
-                        loadingTopics.value = false
+                        // A superseded request must not switch off the newer one's spinner.
+                        if (requestSeq === topicsRequestSeq) loadingTopics.value = false
                     }
+                }
+
+                const retryLoadTopics = () => {
+                    const nav = topicsNavEntry.value
+                    if (nav) loadTopics(nav.chatId)
                 }
 
                 const selectFolder = (folderId) => {
@@ -2925,36 +3003,46 @@
                     const container = messagesContainer.value
                     if (!container) return
                     const containerTop = container.getBoundingClientRect().top
+                    const markers = container.querySelectorAll('.date-separator')
+                    if (markers.length === 0) {
+                        floatingDateLabel.value = ''
+                        floatingDateIso.value = null
+                        return
+                    }
+                    const topOf = (index) => markers[index].getBoundingClientRect().top - containerTop
+                    // Every separator is a direct child of this one scroll container, so their
+                    // offsets are monotonic in DOM order — descending, because the list is
+                    // flex-col-reverse — and the ends say which way round it is.
+                    // This runs on every animation frame while scrolling, and a separator is
+                    // added for every distinct day paged in (nothing trims the window), so
+                    // reading a rect PER separator made scrolling slower the further back you
+                    // read — worst exactly where the pill earns its keep. Binary search reads
+                    // ~log2(days) rects per frame instead, with the same answer.
+                    const last = markers.length - 1
+                    const descending = topOf(0) > topOf(last)
+                    const nth = (rank) => (descending ? last - rank : rank)
                     // A separator sits directly ABOVE its own day's messages, so the day the
-                    // viewport is inside is the separator closest above the trip line.
-                    // One rect read per day (tens at most), never per message.
+                    // viewport is inside is the separator closest above the trip line: the
+                    // highest rank still at or above it.
                     let best = null
-                    let bestTop = -Infinity
+                    let lo = 0
+                    let hi = last
+                    while (lo <= hi) {
+                        const mid = (lo + hi) >> 1
+                        if (topOf(nth(mid)) <= FLOATING_DATE_TRIP_PX) {
+                            best = markers[nth(mid)]
+                            lo = mid + 1
+                        } else {
+                            hi = mid - 1
+                        }
+                    }
                     // Only reached when the viewport is above EVERY separator, i.e. at the
                     // very start of history: then the day on screen is the one whose
                     // separator is first BELOW the line (the oldest loaded day). Resolving
                     // that case to "newest message" would show today's date while reading
                     // the oldest day — the same wrong-date symptom, moved to the top edge.
-                    let firstBelow = null
-                    let firstBelowTop = Infinity
-                    for (const marker of container.querySelectorAll('.date-separator')) {
-                        const top = marker.getBoundingClientRect().top - containerTop
-                        if (top <= FLOATING_DATE_TRIP_PX) {
-                            if (top > bestTop) {
-                                bestTop = top
-                                best = marker
-                            }
-                        } else if (top < firstBelowTop) {
-                            firstBelowTop = top
-                            firstBelow = marker
-                        }
-                    }
+                    const firstBelow = best ? null : markers[nth(0)]
                     best = best || firstBelow
-                    if (!best) {
-                        floatingDateLabel.value = ''
-                        floatingDateIso.value = null
-                        return
-                    }
                     floatingDateLabel.value = best.dataset.dateLabel || ''
                     floatingDateIso.value = best.dataset.dateIso || null
                 }
@@ -3073,8 +3161,89 @@
                     loadingStats.value = false
                 }
 
+                // Resolve the chat a notification points at. The sidebar holds one page of
+                // 50 NON-archived chats, so looking the id up there alone silently fails
+                // for every archived chat (a notification is fired for those too) and for
+                // anything past the first page. Fall back to one wider lookup — no
+                // archived filter, so archived chats are included — before giving up.
+                const resolveChatById = async (chatId) => {
+                    const known = chats.value.find(c => c.id === chatId)
+                    if (known) return known
+                    try {
+                        const res = await fetch('/api/chats?limit=1000', { credentials: 'include' })
+                        if (res.ok) {
+                            const data = await res.json()
+                            return (data.chats || []).find(c => c.id === chatId) || null
+                        }
+                    } catch (e) {
+                        // No identifiers in the message: the chat id is PII.
+                        console.error('Failed to resolve the notification target chat')
+                    }
+                    return null
+                }
+
+                // Open what a notification points at, or say so instead of doing nothing.
+                // Returns whether the chat was opened, so the caller can decide to keep a
+                // deep link in the URL and let a refresh retry it.
+                const openNotificationTarget = async (chatId, messageId) => {
+                    const targetChat = await resolveChatById(chatId)
+                    if (!targetChat) {
+                        showToast('Could not open that chat')
+                        return false
+                    }
+                    await selectChat(targetChat)
+                    if (messageId) {
+                        await nextTick()
+                        scrollToMessage(messageId)
+                    }
+                    return true
+                }
+
+                // A notification click can arrive before initialization has loaded the
+                // chat list (the listener is registered before the first await below,
+                // so it hears clicks from the very start). Until the app can act on a
+                // click it is parked here, then replayed exactly once — never dropped.
+                let pendingNotificationClick = null
+                let notificationClickReady = false
+                const flushPendingNotificationClick = async () => {
+                    notificationClickReady = true
+                    if (!pendingNotificationClick) return
+                    const { chatId, messageId } = pendingNotificationClick
+                    pendingNotificationClick = null
+                    await openNotificationTarget(chatId, messageId)
+                }
+
                 // Auth check on mount
                 onMounted(async () => {
+                    // Listen for notification clicks when app is already open.
+                    // Registered synchronously, before the first await: the service
+                    // worker hands clicks to the page with postMessage, so a listener
+                    // attached only after auth + chats + stats had loaded left a
+                    // seconds-wide window where a click was focused but never acted on.
+                    // NOT gated on navigator.serviceWorker.controller: on the first load
+                    // after registration the worker has not taken control yet, so that
+                    // gate left the page with no receiver for the very clicks it exists
+                    // to handle.
+                    const onServiceWorkerMessage = async (event) => {
+                        if (event.data?.type !== 'NOTIFICATION_CLICK') return
+                        const { chat_id, message_id } = event.data.data || {}
+                        if (!chat_id) return
+                        // No identifiers in the log line: chat and message ids are PII.
+                        console.log('[Notification] Click received')
+                        if (!notificationClickReady) {
+                            pendingNotificationClick = { chatId: chat_id, messageId: message_id }
+                            return
+                        }
+                        await openNotificationTarget(chat_id, message_id)
+                    }
+                    if ('serviceWorker' in navigator) {
+                        navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage)
+                        // addEventListener alone does not start delivery — only an
+                        // onmessage= assignment or startMessages() does — so without
+                        // this call a click posted during page load sat queued forever.
+                        navigator.serviceWorker.startMessages?.()
+                    }
+
                     try {
                         const res = await fetch('/api/auth/check', {
                             credentials: 'include'
@@ -3134,19 +3303,16 @@
 
                                 if (chatIdParam) {
                                     const chatId = parseInt(chatIdParam)
-                                    const targetChat = chats.value.find(c => c.id === chatId)
-                                    if (targetChat) {
-                                        console.log('[Notification] Deep linking to chat:', chatId)
-                                        await selectChat(targetChat)
-                                        if (msgIdParam) {
-                                            const msgId = parseInt(msgIdParam)
-                                            console.log('[Notification] Scrolling to message:', msgId)
-                                            await nextTick()
-                                            scrollToMessage(msgId)
-                                        }
+                                    const msgId = msgIdParam ? parseInt(msgIdParam) : null
+                                    // No identifiers in the log line: chat and message ids are PII.
+                                    console.log('[Notification] Deep linking to a chat')
+                                    const opened = await openNotificationTarget(chatId, msgId)
+                                    // Clean URL without reload to prevent re-navigation on refresh —
+                                    // but only once the link actually opened, so a failed one stays
+                                    // retryable by refresh instead of being scrubbed away.
+                                    if (opened) {
+                                        window.history.replaceState({}, '', '/')
                                     }
-                                    // Clean URL without reload to prevent re-navigation on refresh
-                                    window.history.replaceState({}, '', '/')
                                 }
                             }
                         } else {
@@ -3168,26 +3334,9 @@
                     await initNotifications()
                     initWebSocket()
 
-                    // Listen for notification clicks when app is already open
-                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                        navigator.serviceWorker.addEventListener('message', async (event) => {
-                            if (event.data?.type === 'NOTIFICATION_CLICK') {
-                                const { chat_id, message_id } = event.data.data || {}
-                                if (chat_id) {
-                                    console.log('[Notification] Click received for chat:', chat_id)
-                                    const targetChat = chats.value.find(c => c.id === chat_id)
-                                    if (targetChat) {
-                                        await selectChat(targetChat)
-                                        if (message_id) {
-                                            console.log('[Notification] Scrolling to message:', message_id)
-                                            await nextTick()
-                                            scrollToMessage(message_id)
-                                        }
-                                    }
-                                }
-                            }
-                        })
-                    }
+                    // Initialization is far enough along to act on notification clicks:
+                    // replay any click that arrived while the app was still loading.
+                    await flushPendingNotificationClick()
 
                     // Mark secondary initialization complete
                     finishInitialization()
@@ -3347,10 +3496,12 @@
                             break
 
                         case 'subscribed':
-                            console.log('[WS] Subscribed to chat:', data.chat_id)
+                            // Keep the event, drop the chat id: it is PII, and the console
+                            // buffer leaves the device in screenshots and bug reports.
+                            console.log('[WS] Subscribed to a chat')
                             break
                         case 'subscribe_denied':
-                            console.warn('[WS] Subscription denied for chat:', data.chat_id)
+                            console.warn('[WS] Subscription denied for a chat')
                             break
                     }
                 }
@@ -3699,9 +3850,22 @@
                 }
 
                 // Media Gallery methods (v7.10.0)
+                let mediaGalleryRequestSeq = 0
                 const loadMediaGallery = async (append = false) => {
                     if (!selectedChat.value) return
-                    if (mediaGalleryLoading.value) return
+                    // Take a ticket rather than refuse to start. Refusing dropped the newly
+                    // selected tab's load while the previous tab's response still landed in
+                    // the (already cleared) list, so the grid filled with the wrong type's
+                    // items and stayed that way: both the skeleton and the empty state only
+                    // render while the list is empty, and no request for the visible tab was
+                    // ever issued. The chat id and tab are pinned too, because a response can
+                    // also outlive the view it was requested for.
+                    const requestSeq = ++mediaGalleryRequestSeq
+                    const requestChatId = selectedChat.value.id
+                    const requestTab = mediaGalleryTab.value
+                    const stillCurrent = () => requestSeq === mediaGalleryRequestSeq &&
+                        selectedChat.value?.id === requestChatId &&
+                        mediaGalleryTab.value === requestTab
                     mediaGalleryLoading.value = true
                     try {
                         const typeMap = {
@@ -3719,11 +3883,13 @@
                         })
                         if (lastItem) params.set('before_id', lastItem.id)
 
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/media?${params}`, {
+                        const res = await fetch(`/api/chats/${requestChatId}/media?${params}`, {
                             credentials: 'include'
                         })
+                        if (!stillCurrent()) return
                         if (!res.ok) throw new Error('Failed to load media')
                         const data = await res.json()
+                        if (!stillCurrent()) return
                         if (append) {
                             mediaGalleryItems.value.push(...data.items)
                         } else {
@@ -3731,20 +3897,30 @@
                         }
                         mediaGalleryHasMore.value = data.has_more
                     } catch (e) {
+                        if (!stillCurrent()) return
                         console.error('Failed to load media gallery:', e)
+                        // Say so: the catch used to leave the previous view's rows on screen
+                        // (or an empty grid claiming "No media") with no sign of a failure.
+                        showToast('Failed to load media')
                     } finally {
-                        mediaGalleryLoading.value = false
+                        // A superseded request must not clear the current one's spinner.
+                        if (requestSeq === mediaGalleryRequestSeq) mediaGalleryLoading.value = false
                     }
                 }
 
                 const loadMediaCounts = async () => {
                     if (!selectedChat.value) return
+                    // Same staleness as the item list: these counts are the tab badges, so a
+                    // response that outlived its chat would label this chat's tabs with the
+                    // previous chat's numbers.
+                    const requestChatId = selectedChat.value.id
                     try {
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/media/counts`, {
+                        const res = await fetch(`/api/chats/${requestChatId}/media/counts`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
                             const data = await res.json()
+                            if (selectedChat.value?.id !== requestChatId) return
                             mediaGalleryCounts.value = {
                                 photos: (data.photo || 0) + (data.video || 0) + (data.animation || 0),
                                 voice: (data.voice || 0) + (data.audio || 0),
@@ -3933,6 +4109,12 @@
                             scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0,
                             focusElement: document.activeElement instanceof HTMLElement ? document.activeElement : null
                         }
+                        // Opening is the one chokepoint for a chat change: nothing else clears
+                        // these, so the grid and the tab badges used to show the PREVIOUS
+                        // chat's media for the whole fetch (and for good if it failed).
+                        mediaGalleryItems.value = []
+                        mediaGalleryCounts.value = {}
+                        mediaGalleryHasMore.value = true
                         loadMediaGallery()
                         loadMediaCounts()
                     } else {
@@ -4514,6 +4696,28 @@
                     messages.value = []
                     resetMessagePagination()
                     await loadMessages()
+                }
+
+                // Every keystroke used to run searchMessages directly, and it defeats
+                // loadMessages' own in-flight gate by design, so a 10-character query issued
+                // 10 unindexed full-chat LIKE scans and blanked the pane on each one. Debounce
+                // it like the sidebar search (onSearchInput), and let the chatVersion bump
+                // inside searchMessages discard whatever request the last one superseded.
+                let messageSearchDebounceTimer = null
+                const onMessageSearchInput = () => {
+                    if (messageSearchDebounceTimer) {
+                        clearTimeout(messageSearchDebounceTimer)
+                    }
+                    const queryAtInput = messageSearchQuery.value
+                    const chatIdAtInput = selectedChat.value?.id ?? null
+                    messageSearchDebounceTimer = setTimeout(() => {
+                        messageSearchDebounceTimer = null
+                        // A chat/topic switch clears the box and rebuilds the pane while the
+                        // timer is pending; running the old query then would wipe the new view.
+                        if ((selectedChat.value?.id ?? null) !== chatIdAtInput) return
+                        if (messageSearchQuery.value !== queryAtInput) return
+                        searchMessages()
+                    }, 300) // 300ms debounce, same as the sidebar search
                 }
 
                 const handleScroll = (e) => {
@@ -5329,8 +5533,11 @@
                 }
 
                 const handleImageError = (event, msg) => {
-                    // Log the error for debugging (real 404s should be investigated)
-                    console.error('Failed to load image:', getMediaUrl(msg))
+                    // Log the event, never the URL: it is /media/<chat id>/<file id>_<the
+                    // sender's own filename>, i.e. exactly the identifiers the project
+                    // keeps out of logs, and the console buffer travels in screenshots,
+                    // screen shares and browser bug reports.
+                    console.error('Failed to load image')
                     // Show placeholder instead of broken image
                     const img = event.target
                     img.onerror = null  // Prevent infinite loop
@@ -5346,21 +5553,14 @@
                 }
 
                 const handleMediaError = (event, msg) => {
-                    // Log the error for debugging (real 404s should be investigated)
-                    console.error('Failed to load media:', getMediaUrl(msg))
-                    // Replace with placeholder
-                    const media = event.target
-                    const parent = media.parentElement
-                    if (parent) {
-                        parent.innerHTML = `
-                            <div class="flex items-center gap-2 text-gray-400 text-sm py-2">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                </svg>
-                                <span>Media not found</span>
-                            </div>
-                        `
-                    }
+                    // Same rule as handleImageError: the media URL carries the chat id and
+                    // the sender's original filename, so log the event only.
+                    console.error('Failed to load media')
+                    // Flag the row and let the template swap in the placeholder. Writing
+                    // the placeholder in with innerHTML destroyed the <video>, its <source>
+                    // and the play overlay that Vue still held vnode.el pointers to, so the
+                    // bubble stayed detached from the render tree for the rest of its life.
+                    msg.mediaLoadFailed = true
                 }
 
                 const openMedia = (msg) => {
@@ -6887,6 +7087,7 @@
                     loadMessagesAroundId,
                     viewingPinnedWindow,
                     searchMessages,
+                    onMessageSearchInput,
                     isOwnMessage,
                     getSenderName,
                     getCurrentSenderName,
@@ -7095,6 +7296,8 @@
                     archivedCount,
                     topics,
                     loadingTopics,
+                    topicsError,
+                    retryLoadTopics,
                     selectFolder,
                     showArchived,
                     showAllChats,
