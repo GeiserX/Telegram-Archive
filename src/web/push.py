@@ -7,6 +7,7 @@ This module handles:
 - Sending push notifications to subscribed clients
 """
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -24,6 +25,19 @@ from ..message_utils import utcnow_naive
 logger = logging.getLogger(__name__)
 
 _LOCAL_HOSTNAME_SUFFIXES = (".local", ".internal")
+
+# webpush() is pywebpush's synchronous requests.post, and it always forwards its
+# own timeout argument -- so leaving it out means requests.post(timeout=None),
+# i.e. no timeout at all. One blackholed push endpoint would then hold a thread
+# until the OS gives up on the TCP connection. Note requests applies this value
+# per socket operation (the connect, then each read), not to the request as a
+# whole: a fully silent endpoint is cut off after one interval, but an endpoint
+# that keeps trickling bytes can hold its thread longer than this value.
+_PUSH_TIMEOUT_SECONDS = 10
+# Sends run on the loop's default thread executor, which thumbnail generation
+# also uses. Cap the fan-out so a large subscriber list cannot occupy every
+# worker thread for the length of a timeout.
+_PUSH_CONCURRENCY = 8
 
 
 def validate_push_endpoint(endpoint: str) -> bool:
@@ -344,35 +358,48 @@ class PushNotificationManager:
             "timestamp": utcnow_naive().isoformat(),
         }
 
-        sent = 0
-        failed_endpoints = []
+        semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
 
-        for sub in subscriptions:
+        async def deliver(sub: dict[str, Any]) -> tuple[bool, str | None]:
+            """Send one notification. Returns (sent, endpoint to prune)."""
             try:
                 # Extract origin from endpoint for VAPID audience claim
-                from urllib.parse import urlparse
-
                 endpoint_url = urlparse(sub["endpoint"])
                 audience = f"{endpoint_url.scheme}://{endpoint_url.netloc}"
 
                 # Generate VAPID headers using py_vapid
                 vapid_headers = self._vapid.sign({"sub": self.config.vapid_contact, "aud": audience})
 
-                webpush(subscription_info=sub, data=json.dumps(payload), headers=vapid_headers)
-                sent += 1
+                async with semaphore:
+                    # webpush() blocks: run it off the event loop and bound it,
+                    # or one slow push service stalls the whole viewer.
+                    await asyncio.to_thread(
+                        webpush,
+                        subscription_info=sub,
+                        data=json.dumps(payload),
+                        headers=vapid_headers,
+                        timeout=_PUSH_TIMEOUT_SECONDS,
+                    )
+                return True, None
             except WebPushException as e:
                 if e.response and e.response.status_code in (404, 410):
                     # Subscription expired or unsubscribed
-                    failed_endpoints.append(sub["endpoint"])
                     logger.debug(f"Push subscription expired: {sub['endpoint'][:50]}...")
-                elif e.response and e.response.status_code == 403:
+                    return False, sub["endpoint"]
+                if e.response and e.response.status_code == 403:
                     # Permission denied - user blocked notifications
-                    failed_endpoints.append(sub["endpoint"])
                     logger.info(f"Push blocked by user (403): {sub['endpoint'][:50]}...")
-                else:
-                    logger.warning(f"Push notification failed: {e}")
+                    return False, sub["endpoint"]
+                logger.warning(f"Push notification failed: {e}")
+                return False, None
             except Exception as e:
                 logger.warning(f"Push notification error: {e}")
+                return False, None
+
+        results = await asyncio.gather(*(deliver(sub) for sub in subscriptions))
+
+        sent = sum(1 for delivered, _ in results if delivered)
+        failed_endpoints = [endpoint for _, endpoint in results if endpoint]
 
         # Clean up expired subscriptions
         for endpoint in failed_endpoints:
