@@ -200,6 +200,17 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # There is deliberately no ordering between this service and
+    # telegram-backup, and none is needed. telegram-backup owns the schema and
+    # migrates it on start; this image ships no alembic/ and cannot. It also no
+    # longer writes tables into a database that already has any (see
+    # _create_schema_if_absent in src/db/base.py), so starting it never
+    # corrupts a migration. The ordering that matters is enforced from the
+    # other side: a migration that rebuilds tables refuses to start while any
+    # other process holds the SQLite file, and proceeds once it is released.
+    # Do not add depends_on here expecting it to wait for migrations:
+    # depends_on waits for the container, not for the work it does, so it
+    # would only look like a guarantee.
     # Uncomment to use PostgreSQL
     # depends_on:
     #   postgres:

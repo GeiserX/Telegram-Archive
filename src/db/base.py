@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
@@ -153,13 +153,62 @@ class DatabaseManager:
         if self._is_sqlite:
             try:
                 async with self.engine.begin() as conn:
-                    await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
+                    created = await conn.run_sync(self._create_schema_if_absent)
+                if not created:
+                    logger.info("Existing schema found - leaving it to Alembic, no tables created")
             except Exception as e:
                 # Viewer containers may mount the database read-only — that's fine,
                 # the backup container is responsible for creating tables.
                 logger.warning(f"Could not create/verify tables (database may be read-only): {e}")
 
         logger.info(f"Database initialized successfully ({self._db_type()})")
+
+    @staticmethod
+    def _create_schema_if_absent(sync_conn) -> bool:
+        """Build the ORM schema, but only into a database that has none yet.
+
+        Returns True if the schema was created, False if one was already there.
+
+        The whole check-and-create runs on one connection inside ``init``'s
+        transaction, so this process cannot race itself.
+
+        Why the guard is not optional
+        -----------------------------
+        The viewer image ships no ``alembic/`` and has no ENTRYPOINT
+        (``Dockerfile.viewer``), so it never migrates — but it does reach this
+        line on every SQLite start, and ``docker compose up -d`` starts it
+        alongside the backup container that *is* migrating. Unguarded,
+        ``create_all(checkfirst=True)`` adds whole missing tables to a database
+        a migration is halfway through rebuilding: the migration's own
+        ``CREATE TABLE`` then dies with "table already exists" and the backup
+        container crash-loops, against what is usually the only copy of
+        someone's Telegram history.
+
+        Any table at all means this database is not ours to build.
+        ``alembic_version`` says so outright — Alembic owns this schema and is
+        the only thing allowed to change it. Any other table means a previous
+        run already provisioned it, and the entrypoint's stamping ladder is
+        about to read that shape to decide which revision it is; adding a table
+        underneath that read gets it stamped wrong, which is the same
+        crash-loop by a different route.
+
+        Skipping costs a viewer nothing: ``checkfirst=True`` only ever added
+        whole missing tables, never a column, so it could never have made an
+        older archive readable by a newer viewer anyway. A viewer against an
+        existing archive still opens it and still serves it — the reason this
+        fallback exists is the *fresh* database, and that case still works.
+
+        The fresh case is also the one narrow window left open: with no
+        database at all, the viewer may win the race and build the full ORM
+        schema unstamped. That is the shape ``scripts/entrypoint.sh`` already
+        detects and stamps, and that every migration is already required to
+        survive as a no-op, so it converges — and there is no history in an
+        empty database to lose while it does.
+        """
+        if inspect(sync_conn).get_table_names():
+            return False
+        Base.metadata.create_all(sync_conn, checkfirst=True)
+        return True
 
     def _setup_sqlite_pragmas(self) -> None:
         """Set up SQLite PRAGMA settings for optimal performance.
