@@ -5612,23 +5612,33 @@
                     return div.innerHTML
                 }
 
+                // Map a RAW url into href="..." in ONE pass: & escaped for attribute
+                // context, and the characters that must never sit raw inside the
+                // attribute percent-encoded. One pass is the whole point. The previous
+                // shape escaped the entire message and then decoded &amp; back to & while
+                // building the href, so message text could smuggle an entity through that
+                // second decode: `https://good.example&#x40;evil.example/` displayed
+                // good.example but the parser turned &#x40; into @ and the link navigated
+                // to evil.example.
+                const escapeUrlForAttr = (url) => {
+                    const replacements = { '&': '&amp;', '<': '%3C', '>': '%3E', '"': '%22', "'": '%27' }
+                    return [...url].map((char) => replacements[char] || char).join('')
+                }
+
                 const linkifyText = (text) => {
                     if (!text) return ''
-                    const escaped = escapeHtml(text)
-                    const urlRegex = /(https?:\/\/[^\s<]+)/g
-                    return escaped.replace(urlRegex, (match) => {
-                        // Build a safe href: decode HTML entities back to raw URL,
-                        // then percent-encode characters that break href="..." context.
-                        // Note: escapeHtml (textContent/innerHTML) does NOT encode " or '
-                        // so we must handle raw quotes directly, not just entities.
-                        const href = match
-                            .replace(/&amp;/g, '&')
-                            .replace(/&lt;/g, '%3C')
-                            .replace(/&gt;/g, '%3E')
-                            .replace(/"/g, '%22')
-                            .replace(/'/g, '%27')
-                        return `<a href="${href}" target="_blank" rel="noopener noreferrer">${match}</a>`
-                    })
+                    // Split the RAW text on the url pattern. The capture group keeps the
+                    // urls in the result, so even entries are plain text and odd entries
+                    // are urls, and each piece is escaped exactly once for the single
+                    // context it lands in — never escaped and then decoded again.
+                    // \S+ (not [^\s<]+) keeps the matched spans identical to the escaped
+                    // string the old regex ran against, where < could never appear.
+                    return String(text)
+                        .split(/(https?:\/\/\S+)/)
+                        .map((part, index) => (index % 2 === 0
+                            ? escapeHtml(part)
+                            : `<a href="${escapeUrlForAttr(part)}" target="_blank" rel="noopener noreferrer">${escapeHtml(part)}</a>`))
+                        .join('')
                 }
 
                 // Resolve the rendered row for a message id via its data-msg-id attribute.
