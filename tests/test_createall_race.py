@@ -119,7 +119,7 @@ async def open_with_manager(db_path: Path) -> None:
     await manager.close()
 
 
-async def test_alembic_owned_database_gains_nothing(tmp_path):
+async def test_alembic_owned_database_gains_nothing(tmp_path: Path) -> None:
     """The gate: an 8.0 viewer against a 7.x file creates zero tables."""
     db_path = tmp_path / "archive.db"
     build_old_database(db_path, stamped=True)
@@ -132,7 +132,7 @@ async def test_alembic_owned_database_gains_nothing(tmp_path):
     assert not (table_names(db_path) & set(MISSING_IN_OLD_DB))
 
 
-async def test_alembic_version_is_left_exactly_as_it_was(tmp_path):
+async def test_alembic_version_is_left_exactly_as_it_was(tmp_path: Path) -> None:
     """The viewer must not stamp, re-stamp or clear the revision either."""
     db_path = tmp_path / "archive.db"
     build_old_database(db_path, stamped=True)
@@ -146,7 +146,7 @@ async def test_alembic_version_is_left_exactly_as_it_was(tmp_path):
         conn.close()
 
 
-async def test_pre_alembic_database_gains_nothing(tmp_path):
+async def test_pre_alembic_database_gains_nothing(tmp_path: Path) -> None:
     """A database with tables but no alembic_version is still not ours.
 
     The entrypoint stamps this shape by inspecting which schema objects exist.
@@ -163,7 +163,7 @@ async def test_pre_alembic_database_gains_nothing(tmp_path):
     assert after == before
 
 
-async def test_the_viewers_own_startup_path_creates_nothing(tmp_path):
+async def test_the_viewers_own_startup_path_creates_nothing(tmp_path: Path) -> None:
     """Same assertion through ``init_database()``, which is what the app calls.
 
     ``src/web/main.py`` builds its manager from the environment via
@@ -183,7 +183,7 @@ async def test_the_viewers_own_startup_path_creates_nothing(tmp_path):
     assert snapshot_schema(db_path) == before
 
 
-async def test_a_genuinely_fresh_database_is_still_built(tmp_path):
+async def test_a_genuinely_fresh_database_is_still_built(tmp_path: Path) -> None:
     """The reverse check: the fallback this guard narrows must still work.
 
     A fresh install with no entrypoint — the viewer image, or ``python -m src``
@@ -197,7 +197,7 @@ async def test_a_genuinely_fresh_database_is_still_built(tmp_path):
     assert table_names(db_path) == set(Base.metadata.tables)
 
 
-async def test_an_empty_file_that_already_exists_is_still_built(tmp_path):
+async def test_an_empty_file_that_already_exists_is_still_built(tmp_path: Path) -> None:
     """A zero-byte file is fresh too — an empty mount must not read as owned."""
     db_path = tmp_path / "archive.db"
     db_path.touch()
@@ -208,7 +208,7 @@ async def test_an_empty_file_that_already_exists_is_still_built(tmp_path):
     assert table_names(db_path) == set(Base.metadata.tables)
 
 
-async def test_removing_the_guard_puts_the_tables_back(tmp_path):
+async def test_removing_the_guard_puts_the_tables_back(tmp_path: Path) -> None:
     """POSITIVE CONTROL: with the guard gone, the assertions above go red.
 
     This is the pre-fix body of ``_create_schema_if_absent``. If this test ever
@@ -216,7 +216,7 @@ async def test_removing_the_guard_puts_the_tables_back(tmp_path):
     protects the database and something else is masking the bug.
     """
 
-    def unguarded(sync_conn) -> bool:
+    def unguarded(sync_conn: sa.Connection) -> bool:
         Base.metadata.create_all(sync_conn, checkfirst=True)
         return True
 
@@ -233,7 +233,7 @@ async def test_removing_the_guard_puts_the_tables_back(tmp_path):
 
 
 @pytest.mark.parametrize("stamped", [True, False])
-async def test_repeated_starts_stay_a_no_op(tmp_path, stamped):
+async def test_repeated_starts_stay_a_no_op(tmp_path: Path, stamped: bool) -> None:
     """Restart loops must not accumulate anything either."""
     db_path = tmp_path / "archive.db"
     build_old_database(db_path, stamped=stamped)

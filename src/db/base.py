@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import Connection, event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
@@ -164,7 +164,7 @@ class DatabaseManager:
         logger.info(f"Database initialized successfully ({self._db_type()})")
 
     @staticmethod
-    def _create_schema_if_absent(sync_conn) -> bool:
+    def _create_schema_if_absent(sync_conn: Connection) -> bool:
         """Build the ORM schema, but only into a database that has none yet.
 
         Returns True if the schema was created, False if one was already there.
