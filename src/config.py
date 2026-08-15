@@ -96,9 +96,10 @@ def build_telegram_proxy_from_env() -> dict | None:
 def build_telegram_client_kwargs() -> dict:
     """Build common Telethon client keyword arguments from environment configuration.
 
-    ``flood_sleep_threshold`` stays 0: media downloads temporarily raise the
-    client threshold via ``absorb_media_floods`` (#232,
-    MEDIA_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
+    ``flood_sleep_threshold`` stays 0: media downloads and get_dialogs() calls
+    temporarily raise the client threshold via ``absorb_media_floods`` (#232
+    for media / MEDIA_FLOOD_SLEEP_THRESHOLD, #295 for dialogs /
+    DIALOG_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
     visible in app logs (#124).
     """
     kwargs: dict = {"flood_sleep_threshold": 0}
@@ -131,6 +132,15 @@ class Config:
         # chunk stream resumes in place instead of restarting from byte 0;
         # 0 = pre-7.27 raise-immediately behavior (#232).
         self.media_flood_sleep_threshold = int(os.getenv("MEDIA_FLOOD_SLEEP_THRESHOLD", "60"))
+        # Absorb short FloodWaits (up to this many seconds) during get_dialogs()'s
+        # internal pagination so Telethon sleeps and resumes the SAME page instead
+        # of the whole call aborting and call_with_flood_retry restarting from
+        # page 1. Without this, an account with enough dialogs to reliably trip a
+        # page's FloodWait can never finish an initial (non-whitelist) backup: the
+        # restart re-walks the same successful early pages and re-trips the same
+        # later page every time, regardless of retry count or schedule spacing.
+        # 0 = raise-immediately behavior (#295).
+        self.dialog_flood_sleep_threshold = int(os.getenv("DIALOG_FLOOD_SLEEP_THRESHOLD", "60"))
         # Max usable filename-component length in BYTES for the media store. Default 143
         # keeps names writable on Synology/eCryptfs encrypted shares (whose filename-
         # encryption overhead caps components at ~143 bytes, not the usual 255); the temp
@@ -766,10 +776,11 @@ class Config:
 
         ``flood_sleep_threshold=0`` forces Telethon to raise FloodWaitError
         instead of silently sleeping, so long waits become visible in the log
-        via ``iter_messages_with_flood_retry``. Media downloads temporarily
-        raise the client threshold via ``absorb_media_floods`` (#232,
-        MEDIA_FLOOD_SLEEP_THRESHOLD); everything else keeps 0 so floods stay
-        visible in app logs (#124).
+        via ``iter_messages_with_flood_retry``. Media downloads and
+        get_dialogs() calls temporarily raise the client threshold via
+        ``absorb_media_floods`` (#232 for media / MEDIA_FLOOD_SLEEP_THRESHOLD,
+        #295 for dialogs / DIALOG_FLOOD_SLEEP_THRESHOLD); everything else
+        keeps 0 so floods stay visible in app logs (#124).
         """
         kwargs: dict = {"flood_sleep_threshold": 0}
         if self.telegram_proxy is not None:

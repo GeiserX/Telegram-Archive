@@ -289,6 +289,59 @@ class TestGetDialogs(unittest.TestCase):
 
         backup.client.get_dialogs.assert_awaited_once_with(folder=0)
 
+    def test_get_dialogs_raises_threshold_during_call_and_restores_after(self):
+        """#295: get_dialogs() must run under the raised dialog_flood_sleep_threshold
+        (so Telethon absorbs per-page floods instead of aborting pagination), and the
+        client's threshold must be back to its pre-call value once the call returns."""
+        backup = _make_backup()
+        backup.config.dialog_flood_sleep_threshold = 60
+        backup.client.flood_sleep_threshold = 0
+        seen_threshold = None
+
+        async def fake_get_dialogs(**kwargs):
+            nonlocal seen_threshold
+            seen_threshold = backup.client.flood_sleep_threshold
+            return []
+
+        backup.client.get_dialogs = AsyncMock(side_effect=fake_get_dialogs)
+
+        _run(backup._get_dialogs(archived=False))
+
+        self.assertEqual(seen_threshold, 60)
+        self.assertEqual(backup.client.flood_sleep_threshold, 0)
+
+    def test_get_dialogs_restores_threshold_on_exception(self):
+        """A FloodWaitError exceeding the retry budget must still restore the
+        client's original threshold, not leave it stuck raised."""
+        backup = _make_backup()
+        backup.config.dialog_flood_sleep_threshold = 60
+        backup.client.flood_sleep_threshold = 0
+        backup.client.get_dialogs = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with self.assertRaises(RuntimeError):
+            _run(backup._get_dialogs(archived=False))
+
+        self.assertEqual(backup.client.flood_sleep_threshold, 0)
+
+    def test_get_dialogs_zero_threshold_is_noop(self):
+        """DIALOG_FLOOD_SLEEP_THRESHOLD=0 must preserve the pre-#295 raise-
+        immediately behavior - the client threshold never moves."""
+        backup = _make_backup()
+        backup.config.dialog_flood_sleep_threshold = 0
+        backup.client.flood_sleep_threshold = 0
+        seen_threshold = None
+
+        async def fake_get_dialogs(**kwargs):
+            nonlocal seen_threshold
+            seen_threshold = backup.client.flood_sleep_threshold
+            return []
+
+        backup.client.get_dialogs = AsyncMock(side_effect=fake_get_dialogs)
+
+        _run(backup._get_dialogs(archived=False))
+
+        self.assertEqual(seen_threshold, 0)
+
 
 # ===========================================================================
 # _verify_and_redownload_media (lines 499, 507-523, 544-545, 551,

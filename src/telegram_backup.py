@@ -425,16 +425,25 @@ async def call_with_flood_retry(
 
 @asynccontextmanager
 async def absorb_media_floods(client, threshold):
-    """Temporarily raise the client's flood_sleep_threshold for a media transfer.
+    """Temporarily raise the client's flood_sleep_threshold for a call.
 
-    With the app-wide ``flood_sleep_threshold=0`` (#124) any mid-download
-    FloodWait aborts ``download_media`` entirely and the outer retry restarts
-    from byte 0, so a file whose transfer outlives one flood-free window can
-    never finish (#232). Inside this context Telethon absorbs floods up to
-    ``threshold`` seconds: it sleeps and re-issues the SAME chunk request, so
-    the transfer resumes at the current offset (Telethon logs each absorbed
-    sleep at INFO on its own logger). Floods above the threshold still raise
-    and follow the normal ``call_with_flood_retry`` path.
+    Despite the name (kept for backwards compatibility - it predates its
+    second use), this is a generic, client-wide flood absorption window: any
+    caller whose retry-from-scratch would otherwise be wasteful under
+    flood_sleep_threshold=0 can use it. Used by media downloads (#232,
+    MEDIA_FLOOD_SLEEP_THRESHOLD) and by ``_get_dialogs()`` (#295,
+    DIALOG_FLOOD_SLEEP_THRESHOLD).
+
+    With the app-wide ``flood_sleep_threshold=0`` (#124) a FloodWait aborts
+    the wrapped call entirely and the outer retry restarts from scratch - for
+    media downloads that means byte 0 (#232); for get_dialogs() it means
+    re-walking every already-successful page before re-tripping the same
+    later page (#295). Inside this context Telethon absorbs floods up to
+    ``threshold`` seconds: it sleeps and re-issues the SAME request, so a
+    media transfer resumes at its current offset and get_dialogs() resumes
+    its current page (Telethon logs each absorbed sleep at INFO on its own
+    logger). Floods above the threshold still raise and follow the normal
+    ``call_with_flood_retry`` path.
 
     The threshold is a client-wide attribute and the client is shared with the
     real-time listener, so a request that floods on another task while a media
@@ -1442,11 +1451,25 @@ class TelegramBackup:
         Note: folder=0 explicitly fetches non-archived dialogs only.
         Without folder parameter, Telethon returns ALL dialogs including
         archived ones, which causes overlap with the folder=1 results.
+
+        ``get_dialogs()`` paginates internally (~100 dialogs/page via repeated
+        ``GetDialogsRequest`` calls). With the app-wide ``flood_sleep_threshold=0``
+        (#124), a FloodWait on any single page aborts the whole call, and
+        ``call_with_flood_retry`` restarts pagination from page 1 - so an account
+        with enough dialogs to reliably trip a page's FloodWait can never finish:
+        the restart re-walks the same already-successful early pages and re-trips
+        the same later page every time, regardless of retry count or how far apart
+        scheduled runs are (#295). ``absorb_media_floods`` (despite the name, a
+        generic ref-counted threshold-raise, not media-specific) is reused here so
+        Telethon absorbs floods up to ``dialog_flood_sleep_threshold`` seconds in
+        place instead of raising - the same fix #232 applied to media downloads.
         """
-        if archived:
-            dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=1)
-        else:
-            dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=0)
+        threshold = getattr(self.config, "dialog_flood_sleep_threshold", 0)
+        async with absorb_media_floods(self.client, threshold):
+            if archived:
+                dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=1)
+            else:
+                dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=0)
         return dialogs
 
     async def _verify_and_redownload_media(self) -> None:
