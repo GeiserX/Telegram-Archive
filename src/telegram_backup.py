@@ -149,9 +149,20 @@ def _is_non_retryable_media_op(exc: BaseException) -> bool:
     return is_media_location_error(exc) or isinstance(exc, TimeoutError)
 
 
+# Peak decode memory is set by pixel count, not compressed size, so the byte
+# gate in _pre_generate_thumbnail cannot bound it: a 12000x8000 flat-colour PNG
+# is well under 1 MB on disk and still costs ~370 MB to decode inside the
+# backup process. Image.MAX_IMAGE_PIXELS is no help either -- Pillow only
+# refuses above TWICE that value, so everything up to 100 MP proceeds after a
+# warning nobody reads. Mirrors _MAX_SOURCE_PIXELS in src/web/thumbnails.py;
+# keep the two in step.
+_MAX_SOURCE_PIXELS = 25_000_000
+
+
 def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
     """Pre-generate 200px WebP thumbnail for gallery grid view."""
     try:
+        import tempfile
         from pathlib import Path
 
         from PIL import Image
@@ -188,8 +199,28 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
+            # Image.open() parses only the header, so the dimensions are known
+            # before a single pixel is decoded -- refuse pixel bombs here, not
+            # after. JPEG is exempt: img.thumbnail() drafts JPEGs to decode at
+            # up to 1/8 scale so their cost stays bounded, and Image.open()
+            # itself refuses anything past twice Image.MAX_IMAGE_PIXELS.
+            pixels = img.size[0] * img.size[1]
+            if img.format != "JPEG" and pixels > _MAX_SOURCE_PIXELS:
+                logger.debug("Thumbnail pre-generation refused oversized source (%d pixels)", pixels)
+                return
             img.thumbnail((200, 200), Image.LANCZOS)
-            img.save(dest, "WEBP", quality=WEBP_QUALITY)
+            # The viewer treats dest.exists() as "complete", so saving straight
+            # to dest would let a concurrent reader see -- and cache -- a
+            # half-written file. Write to a unique temp file in the same
+            # directory and os.replace() it: dest only ever appears whole.
+            fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".thumb-", suffix=".tmp")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                img.save(tmp, "WEBP", quality=WEBP_QUALITY)
+                os.replace(tmp, dest)
+            finally:
+                tmp.unlink(missing_ok=True)
     except Exception as e:
         logger.debug("Thumbnail pre-generation failed: %s", describe_exception(e))
 

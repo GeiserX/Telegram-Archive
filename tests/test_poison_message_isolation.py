@@ -18,10 +18,16 @@ for one attempt only while never leaving a ``.part`` file behind.
 import asyncio
 import os
 import shutil
+import struct
 import tempfile
 import unittest
+import warnings
+import zlib
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from PIL import Image as PILImage
+from PIL import ImageFile
 from telethon.errors import (
     AuthKeyDuplicatedError,
     FloodWaitError,
@@ -30,7 +36,12 @@ from telethon.errors import (
 from telethon.tl.types import DocumentEmpty, MessageMediaDocument, MessageMediaPhoto
 
 from src.listener import TelegramListener
-from src.telegram_backup import TelegramBackup, call_with_flood_retry
+from src.telegram_backup import (
+    _MAX_SOURCE_PIXELS,
+    TelegramBackup,
+    _pre_generate_thumbnail,
+    call_with_flood_retry,
+)
 
 # Telethon's peer-resolution ValueError spells the id out in its message; the
 # fake below is the exact template (telethon/client/users.py).
@@ -537,6 +548,177 @@ class TestListenerMediaDownloadDiscipline(unittest.TestCase):
         self.assertEqual(samples["attempt"], [60, 60, 60])
         self.assertEqual(samples["sleep"], [0, 0])
         self.assertEqual(listener.client.flood_sleep_threshold, 0)
+
+
+class TestThumbnailPreGenerationHardening(unittest.TestCase):
+    """The archiver-side thumbnail pass must survive hostile media it just fetched.
+
+    ``_pre_generate_thumbnail`` runs inside the backup process right after a
+    media download, so a poisoned attachment reaches it before the viewer ever
+    sees the file. Its only size guard used to be the 50 MB byte gate, but
+    decode memory is set by pixel count, not compressed size: a 12000x8000
+    flat PNG is under 1 MB on disk and cost ~370 MB RSS to decode. The final
+    save also streamed straight into the cache path, so a concurrent viewer --
+    for which ``dest.exists()`` means "complete" -- could read and cache a torn
+    file. These tests are the attack: the pixel bomb must be refused from the
+    header alone, a large JPEG (draft-decoded at up to 1/8 scale) must keep its
+    thumbnail, and the destination must never exist half-written.
+    """
+
+    @staticmethod
+    def _write_flat_png(path: Path, width: int, height: int) -> None:
+        """A fully valid flat-black RGB PNG, streamed through zlib so the test
+        itself never allocates width*height*3 bytes. Under 4 MB on disk even at
+        96 MP -- comfortably inside the byte gate, which is exactly the attack.
+        """
+
+        def chunk(tag: bytes, payload: bytes) -> bytes:
+            crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+            return len(payload).to_bytes(4, "big") + tag + payload + crc.to_bytes(4, "big")
+
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        compressor = zlib.compressobj(1)
+        row = b"\x00" * (1 + width * 3)  # filter byte + RGB pixels
+        idat = bytearray()
+        for _ in range(height):
+            idat += compressor.compress(row)
+        idat += compressor.flush()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", bytes(idat)) + chunk(b"IEND", b"")
+        path.write_bytes(png)
+
+    def test_png_pixel_bomb_is_refused_without_decoding(self):
+        """The reviewer's 96 MP flat PNG: refused from the header, zero pixels decoded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "bomb.png"
+            self._write_flat_png(source, 12000, 8000)
+            self.assertGreater(12000 * 8000, _MAX_SOURCE_PIXELS)
+            self.assertLess(source.stat().st_size, 4 * 1024 * 1024)  # the byte gate cannot see it
+
+            decoded = []
+            real_load = ImageFile.ImageFile.load
+
+            def spying_load(img_self):
+                decoded.append(img_self.size)
+                return real_load(img_self)
+
+            # 96 MP is past Image.MAX_IMAGE_PIXELS (50 MP), so open() itself
+            # warns before our gate runs; silence it so the refusal behaves
+            # identically under any warnings configuration.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", PILImage.DecompressionBombWarning)
+                with patch.object(ImageFile.ImageFile, "load", spying_load):
+                    _pre_generate_thumbnail(str(source), str(media_root))
+
+            self.assertFalse((media_root / ".thumbs" / "200" / "chat1" / "bomb.webp").exists())
+            self.assertEqual(decoded, [])
+
+    def test_pixel_bomb_under_pillows_own_limit_is_still_refused(self):
+        """The gate must hold at the viewer's threshold, not at Pillow's.
+
+        32 MP sits under ``Image.MAX_IMAGE_PIXELS`` (50 MP), so Pillow neither
+        warns nor raises -- only the header gate stands between this file and a
+        ~100 MB decode per poisoned message inside the backup process.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "bomb.png"
+            self._write_flat_png(source, 8000, 4000)
+            self.assertGreater(8000 * 4000, _MAX_SOURCE_PIXELS)
+
+            _pre_generate_thumbnail(str(source), str(media_root))
+
+            self.assertFalse((media_root / ".thumbs" / "200" / "chat1" / "bomb.webp").exists())
+
+    def test_normal_photo_still_gets_a_complete_thumbnail(self):
+        """An ordinary photo passes the gate and comes out whole via os.replace()."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "photo.png"
+            source.parent.mkdir(parents=True)
+            PILImage.new("RGB", (640, 480), "blue").save(source)
+            self.assertLess(640 * 480, _MAX_SOURCE_PIXELS)
+
+            _pre_generate_thumbnail(str(source), str(media_root))
+
+            dest = media_root / ".thumbs" / "200" / "chat1" / "photo.webp"
+            self.assertTrue(dest.exists())
+            with PILImage.open(dest) as thumb:
+                self.assertEqual(thumb.format, "WEBP")
+                self.assertLessEqual(thumb.width, 200)
+                self.assertLessEqual(thumb.height, 200)
+            self.assertEqual(list(dest.parent.glob(".thumb-*.tmp")), [])
+
+    def test_oversized_jpeg_keeps_its_thumbnail(self):
+        """The gate is format-aware: a 26 MP camera JPEG is over the pixel
+        threshold but safe, because ``img.thumbnail()`` drafts JPEG decoding
+        down to 1/8 scale. Refusing it would silently strip thumbnails from
+        every full-resolution camera upload.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "camera.jpg"
+            source.parent.mkdir(parents=True)
+            self.assertGreater(6000 * 4400, _MAX_SOURCE_PIXELS)
+            PILImage.new("RGB", (6000, 4400), "green").save(source, "JPEG", quality=50)
+
+            _pre_generate_thumbnail(str(source), str(media_root))
+
+            dest = media_root / ".thumbs" / "200" / "chat1" / "camera.webp"
+            self.assertTrue(dest.exists())
+            with PILImage.open(dest) as thumb:
+                self.assertEqual(thumb.format, "WEBP")
+
+    def test_thumbnail_is_written_via_temp_file_and_atomic_replace(self):
+        """Pillow must never stream into the final cache path directly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "photo.png"
+            source.parent.mkdir(parents=True)
+            PILImage.new("RGB", (300, 200), "red").save(source)
+
+            saved_to = []
+            real_save = PILImage.Image.save
+
+            def recording_save(img_self, fp, *args, **kwargs):
+                saved_to.append(Path(fp))
+                return real_save(img_self, fp, *args, **kwargs)
+
+            with patch.object(PILImage.Image, "save", recording_save):
+                _pre_generate_thumbnail(str(source), str(media_root))
+
+            dest = media_root / ".thumbs" / "200" / "chat1" / "photo.webp"
+            self.assertEqual(len(saved_to), 1)
+            self.assertNotEqual(saved_to[0], dest)
+            self.assertEqual(saved_to[0].parent, dest.parent)  # same dir, so os.replace() is atomic
+            self.assertTrue(saved_to[0].name.startswith(".thumb-"))
+            self.assertTrue(dest.exists())
+            self.assertEqual(list(dest.parent.glob(".thumb-*.tmp")), [])
+
+    def test_interrupted_write_never_leaves_a_visible_thumbnail(self):
+        """A save that dies mid-write must not leave dest half-written.
+
+        The viewer's only completeness check is ``dest.exists()``, and it
+        serves thumbnails with a long-lived cache header -- a torn file would
+        be cached by every client that raced the write.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            media_root = Path(tmpdir)
+            source = media_root / "chat1" / "photo.png"
+            source.parent.mkdir(parents=True)
+            PILImage.new("RGB", (300, 200), "red").save(source)
+
+            def torn_save(img_self, fp, *args, **kwargs):
+                Path(fp).write_bytes(b"RIFF\x00\x00")  # half a WEBP header...
+                raise OSError(28, "No space left on device")  # ...then the disk fills
+
+            with patch.object(PILImage.Image, "save", torn_save):
+                _pre_generate_thumbnail(str(source), str(media_root))
+
+            dest = media_root / ".thumbs" / "200" / "chat1" / "photo.webp"
+            self.assertFalse(dest.exists())
+            self.assertEqual(list(dest.parent.glob("*")), [])  # and no torn temp left behind
 
 
 if __name__ == "__main__":
