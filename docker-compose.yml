@@ -28,6 +28,10 @@ services:
       # Absorb mid-download FloodWaits up to N seconds so large files resume
       # in place instead of restarting from byte 0 (issue #232). 0 disables.
       # MEDIA_FLOOD_SLEEP_THRESHOLD: ${MEDIA_FLOOD_SLEEP_THRESHOLD:-60}
+      # Absorb FloodWaits up to N seconds during get_dialogs()'s internal
+      # pagination so it resumes on the same page instead of the whole call
+      # restarting from page 1 (issue #295). 0 disables.
+      # DIALOG_FLOOD_SLEEP_THRESHOLD: ${DIALOG_FLOOD_SLEEP_THRESHOLD:-60}
       BATCH_SIZE: ${BATCH_SIZE:-100}
       CHECKPOINT_INTERVAL: ${CHECKPOINT_INTERVAL:-1}
       # DEDUPLICATE_MEDIA: ${DEDUPLICATE_MEDIA:-true}

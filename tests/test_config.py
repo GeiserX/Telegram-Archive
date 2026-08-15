@@ -1457,6 +1457,42 @@ class TestMediaFloodSleepThreshold(unittest.TestCase):
             self.assertEqual(build_telegram_client_kwargs().get("flood_sleep_threshold"), 0)
 
 
+class TestDialogFloodSleepThreshold(unittest.TestCase):
+    """DIALOG_FLOOD_SLEEP_THRESHOLD (#295) parsing, and the #124 kwargs pin."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_default_is_60(self):
+        with patch.dict(os.environ, _get_base_env(self.temp_dir), clear=True):
+            config = Config()
+        self.assertEqual(config.dialog_flood_sleep_threshold, 60)
+
+    def test_env_override(self):
+        env = _get_base_env(self.temp_dir) | {"DIALOG_FLOOD_SLEEP_THRESHOLD": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.dialog_flood_sleep_threshold, 300)
+
+    def test_env_zero_restores_raise_immediately(self):
+        env = _get_base_env(self.temp_dir) | {"DIALOG_FLOOD_SLEEP_THRESHOLD": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.dialog_flood_sleep_threshold, 0)
+
+    def test_client_kwargs_keep_flood_sleep_threshold_zero(self):
+        """#124 pin: the dialog threshold must never leak into the client kwargs —
+        absorption is scoped to absorb_media_floods, not the whole client."""
+        env = _get_base_env(self.temp_dir) | {"DIALOG_FLOOD_SLEEP_THRESHOLD": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+            self.assertEqual(config.get_telegram_client_kwargs().get("flood_sleep_threshold"), 0)
+            self.assertEqual(build_telegram_client_kwargs().get("flood_sleep_threshold"), 0)
+
+
 class TestWhitelistResolveDialogLimit(unittest.TestCase):
     """WHITELIST_RESOLVE_DIALOG_LIMIT (#234) parsing."""
 
