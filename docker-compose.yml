@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:7.7.0
+    image: drumsergio/telegram-archive:7.33.6
     container_name: telegram-backup
     restart: unless-stopped
     command: ["python", "-m", "src", "schedule"]
@@ -135,7 +135,7 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:7.7.0
+    image: drumsergio/telegram-archive-viewer:7.33.6
     container_name: telegram-viewer
     restart: unless-stopped
     ports:
@@ -208,7 +208,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:7.7.0
+  #   image: drumsergio/telegram-archive-viewer:7.33.6
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:
