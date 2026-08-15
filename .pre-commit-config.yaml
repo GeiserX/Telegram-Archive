@@ -12,7 +12,8 @@ repos:
         args: [--maxkb=500]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.1
+    # Keep in step with the ruff version in uv.lock, which is what CI runs.
+    rev: v0.15.14
     hooks:
       - id: ruff
         args: [--fix]

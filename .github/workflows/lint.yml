@@ -5,8 +5,10 @@ on:
     branches: [main, master]
     paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', '.github/workflows/lint.yml']
   pull_request:
+    # No paths filter: ruff is a required status check, so it must be able to run
+    # on every PR (a docs- or compose-only PR would otherwise never satisfy it and
+    # could never merge without admin override).
     branches: [main, master]
-    paths: ['src/**', 'tests/**', 'scripts/**', 'alembic/**', '*.py', 'pyproject.toml', 'requirements*.txt', 'uv.lock', '.github/workflows/lint.yml']
 
 jobs:
   ruff:
@@ -20,11 +22,18 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # Ruff's version is declared once, in uv.lock - an unpinned install lets
+      # an upstream release red every PR with no change to this repo.
       - name: Install Ruff
-        run: pip install ruff
+        run: uv sync --locked --extra dev --no-install-project
 
       - name: Ruff check
-        run: ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: uv run --no-sync ruff format --check .

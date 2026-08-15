@@ -13,8 +13,10 @@ RUN apt-get update && apt-get install -y \
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /bin/uv
 
 # Install dependencies (locked versions)
+# --locked fails the build if uv.lock is out of date with pyproject.toml,
+# instead of silently shipping an image that is missing a declared dependency.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project
 
 # Copy application code
 COPY src/ ./src/
