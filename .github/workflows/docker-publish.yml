@@ -34,6 +34,32 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # PostgreSQL is a first-class supported backend, so the publish gate runs
+    # against a real server, same as the Tests workflow.
+    services:
+      postgres:
+        # Same pin as docker-compose.yml. Never :latest.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: telegram
+          POSTGRES_PASSWORD: ci-not-a-secret
+          POSTGRES_DB: telegram_archive_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U telegram -d telegram_archive_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Deliberately not DATABASE_URL. src/db/base.py, alembic/env.py and
+      # scripts/entrypoint.sh all treat DATABASE_URL as "the archive", so
+      # exporting it job-wide would silently repoint every test that builds a
+      # bare DatabaseManager() at PostgreSQL — where init() does not create
+      # tables. This variable is read only by the real-engine fixtures in
+      # tests/conftest.py, which never touch the database named here: they
+      # create their own telegram_archive_pytest / _parity_* databases on it.
+      TEST_POSTGRES_URL: postgresql://telegram:ci-not-a-secret@localhost:5432/telegram_archive_ci
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -47,11 +73,26 @@ jobs:
       # Gate the publish on the exact versions this image ships (uv.lock)
       - name: Install dependencies
         run: uv sync --locked --extra dev --no-install-project
+      # -rs prints skip reasons, which the next step reads. pipefail keeps a
+      # pytest failure from being swallowed by tee.
       - name: Run lint and tests
         run: |
+          set -o pipefail
           uv run --no-sync ruff check .
           uv run --no-sync ruff format --check .
-          uv run --no-sync python -m pytest tests/ -q -p no:cacheprovider --tb=short
+          uv run --no-sync python -m pytest tests/ -q -p no:cacheprovider --tb=short -rs | tee pytest-output.log
+      # The dual-backend fixtures skip the PostgreSQL leg when no server
+      # answers, so a broken service container would turn this job green while
+      # testing half of what it claims to. Skipping is correct on a laptop
+      # without Docker; in CI it is a failure.
+      - name: Fail if the PostgreSQL leg was skipped
+        run: |
+          if grep -q "no PostgreSQL server reachable" pytest-output.log; then
+            echo "::error::PostgreSQL tests were skipped - the service container was not reachable."
+            echo "PostgreSQL is a first-class backend; this job must exercise it."
+            exit 1
+          fi
+          echo "PostgreSQL leg ran."
 
   build-and-push:
     runs-on: ubuntu-latest
