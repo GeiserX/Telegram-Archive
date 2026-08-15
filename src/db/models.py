@@ -250,7 +250,12 @@ class Reaction(Base):
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     emoji: Mapped[str] = mapped_column(String(50), nullable=False)
-    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+    # Named explicitly: migration 005 created this constraint as fk_reactions_user,
+    # and an unnamed ForeignKey() leaves PostgreSQL to invent reactions_user_id_fkey
+    # instead — the same constraint under two names on the two schema paths.
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL", name="fk_reactions_user")
+    )
     count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     # v7.23.0 (#219): retain-on-removal tombstone. When a reaction is no longer

@@ -141,9 +141,15 @@ class DatabaseManager:
             expire_on_commit=False,
         )
 
-        # Only use create_all for SQLite — Alembic manages PostgreSQL schema
-        # via entrypoint.sh, so running create_all concurrently would race with
-        # Alembic migrations and cause deadlocks.
+        # Alembic is the schema authority on both backends: scripts/entrypoint.sh
+        # runs `upgrade head` before this process starts, on SQLite whether or not
+        # the file existed. This create_all is only a fallback for a process that
+        # never passes through that entrypoint — the viewer image, which ships no
+        # alembic/ directory, or a direct `python -m src` run — and it is limited
+        # to SQLite because on PostgreSQL it would race a concurrently migrating
+        # container into a deadlock. tests/test_schema_parity.py builds both
+        # schemas on both backends and fails on any difference, so the fallback
+        # cannot quietly produce a different schema from the authority again.
         if self._is_sqlite:
             try:
                 async with self.engine.begin() as conn:
