@@ -1886,6 +1886,13 @@ class TelegramBackup:
                     if failures["frozen_id"] == message.id:
                         failures["frozen_id"] = 0
                         failures["runs"] = 0
+                    # Written before the cursor is allowed to move. A batch
+                    # checkpoint later in this run can commit a cursor past this
+                    # id, so persisting only at the end of the dialog leaves a
+                    # window where the process dies having skipped the message
+                    # with nothing on disk saying so — the silent skip this
+                    # whole mechanism exists to prevent.
+                    await self._save_message_failures(chat_id, failures)
                     if not cursor_frozen:
                         running_max_id = max(running_max_id, message.id)
                         cursor_passed_failure = True

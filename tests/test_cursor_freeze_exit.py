@@ -456,3 +456,58 @@ class TestTheExitIsBounded(CursorFreezeExitTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheRecordSurvivesACrashMidDialog(CursorFreezeExitTestCase):
+    """The give-up must be on disk before the cursor is allowed to move.
+
+    A batch checkpoint later in the same run can commit a cursor past the
+    message that was passed over. If the record were only written when the
+    dialog finishes, a process that dies in between would leave the cursor
+    beyond a message that nothing remembers skipping -- it would never be
+    retried and never be reported, which is the silent skip this whole
+    mechanism exists to prevent.
+    """
+
+    def _run_until_crash(self):
+        """A run that dies after the poison message, before the dialog ends."""
+        backup = self._make_backup()
+
+        async def commit_then_die(batch, chat_id):
+            self.db.committed.extend(m["id"] for m in batch)
+            raise RuntimeError("process died mid-dialog")
+
+        backup._commit_batch = AsyncMock(side_effect=commit_then_die)
+        with self.assertRaises(RuntimeError):
+            _run(backup._backup_dialog(MagicMock()))
+
+    def test_given_up_id_is_on_disk_even_if_the_run_dies_after_it(self):
+        self.available = list(range(1, 9))
+        self.poison_ids = {3}
+
+        # First run freezes on the poison message and records the attempt.
+        self._run_backup()
+        self.assertEqual(self.db.failure_record().get("frozen_id"), 3)
+
+        # Second run gives up on it, then the process dies before the dialog ends.
+        self._run_until_crash()
+
+        record = self.db.failure_record()
+        self.assertIn(3, record.get("given_up_ids", []), "the skip was not recorded before the crash")
+        self.assertEqual(record.get("given_up_total"), 1)
+
+    def test_a_crashed_run_does_not_leave_the_cursor_past_an_unrecorded_skip(self):
+        self.available = list(range(1, 9))
+        self.poison_ids = {3}
+
+        self._run_backup()
+        self._run_until_crash()
+
+        record = self.db.failure_record()
+        skipped = set(record.get("given_up_ids", []))
+        # Whatever the cursor reached, every id it moved past that failed must
+        # be accounted for on disk.
+        self.assertTrue(
+            self.db.cursor < 3 or 3 in skipped,
+            f"cursor {self.db.cursor} moved past message 3 with skipped={skipped}",
+        )
