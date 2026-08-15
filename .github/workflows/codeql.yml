@@ -30,3 +30,30 @@ jobs:
         uses: github/codeql-action/analyze@v4.37.3
         with:
           category: "/language:python"
+
+  # A separate job, not a matrix leg: "Analyze" is a required status check on
+  # main, and a matrix renames it, so the required check would never be
+  # reported again. A separate job also keeps the Python analysis under its
+  # existing category, so its open alerts keep their identity.
+  analyze-javascript:
+    name: Analyze JavaScript
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4.37.3
+        with:
+          # Covers the viewer SPA (the script blocks in src/web/templates) and
+          # the service worker, where archived message text is rendered.
+          languages: javascript-typescript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4.37.3
+        with:
+          category: "/language:javascript-typescript"
