@@ -544,18 +544,27 @@ class TestVideoLaneAgainstRealTools(unittest.TestCase):
 # Runs _generate_sync in a fresh interpreter and reports its peak RSS. A child
 # process is the only honest gauge here: ru_maxrss is a high-water mark, so in
 # the test process the source image we just created would mask the decode.
+# The decode size is reported instead of ru_maxrss. On Linux a forked child
+# inherits the parent's ru_maxrss high-water mark, so the number would describe
+# the pytest process (suite + coverage + the source image built above) rather
+# than the decode: measured 609 MB for a child that really used 10 MB. The
+# post-draft dimensions are the mechanism that bounds the memory, and they are
+# deterministic on every platform, so they are what this asserts.
 _CHILD_DECODE_SCRIPT = """
-import resource
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 from src.web.thumbnails import _generate_sync
 
+# Mirror the draft() call _generate_sync makes, to observe what it decodes.
+with Image.open(sys.argv[1]) as probe:
+    probe.draft(None, (400, 400))
+    drafted = probe.size[0] * probe.size[1]
+
 ok = _generate_sync(Path(sys.argv[1]), Path(sys.argv[2]), 200)
-peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-if sys.platform != "darwin":
-    peak *= 1024
-print(int(ok), peak)
+print(int(ok), drafted)
 """
 
 _REPO_ROOT = Path(thumbs.__file__).resolve().parents[2]
@@ -581,17 +590,20 @@ class TestDraftAwarePixelGate(unittest.TestCase):
                 env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
             )
             self.assertEqual(child.returncode, 0, "decode child crashed")
-            ok_flag, peak = child.stdout.split()
+            ok_flag, drafted = child.stdout.split()
 
             self.assertEqual(int(ok_flag), 1, "a 96 MP JPEG was refused; the gate ignored draft()")
             self.assertTrue(dest.exists())
             with PILImage.open(dest) as img:
                 self.assertEqual(img.format, "WEBP")
                 self.assertLessEqual(max(img.size), 200)
+            # 96 MP on disk, but draft() hands the decoder a fraction of that.
+            # If draft() ever stops applying, this is what regresses first --
+            # and the gate would then refuse the file, failing the check above.
             self.assertLess(
-                int(peak),
-                250 * 1024 * 1024,
-                f"decode peaked at {int(peak)} bytes; draft() was not applied before decoding",
+                int(drafted),
+                thumbs._MAX_SOURCE_PIXELS,
+                f"draft() decoded {int(drafted)} pixels; it was not applied before decoding",
             )
 
     def test_decodable_png_bomb_of_the_same_size_is_still_refused(self):
