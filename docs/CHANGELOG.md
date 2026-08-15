@@ -4,6 +4,109 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [7.33.6] - 2026-08-14
+
+### Changed
+- The README banner is now a single image built around the project logo, replacing the previous banner-plus-standalone-logo pair. Documentation only — nothing in the backup or viewer changed. ([#282](https://github.com/GeiserX/Telegram-Archive/pull/282))
+
+## [7.33.5] - 2026-08-14
+
+### Fixed
+- **Media whose Telegram filename contains characters Windows rejects now downloads instead of failing five times and giving up.** A file name carrying a newline, a carriage return or any of the characters Windows reserves (`<`, `>`, `:`, `"`, `|`, `?`, `*`) could not be created there, so every attempt raised the same error and the item was retried to exhaustion on every run. Such names are now cleaned on every platform — not only on Windows — so a name computed on one machine matches the one computed on another and archives stay portable; trailing dots and spaces are stripped and reserved device names (`CON`, `NUL`, `COM1` and friends, including their superscript variants) are prefixed. Existing archives are unaffected: files already stored keep serving under their stored path. ([#280](https://github.com/GeiserX/Telegram-Archive/issues/280))
+
+### Changed
+- Dependency updates: `aiohttp` and `cryptography`.
+
+## [7.33.4] - 2026-08-02
+
+### Fixed
+- **Error text no longer puts identifiers back into log lines that had just stopped naming them.** A filesystem error stringifies with the file it failed on, and a media path contains the chat-id folder, so any handler that logged the raw error reintroduced the identifier the previous two releases removed — including one line that shipped in 7.33.3 believing it was fixed. Filenames are now reduced to their basename where the parent folder is the identifier, so you can still see which file failed; avatar filenames are dropped outright, because there the identifier *is* the name. Error messages are kept wherever they cannot contain a path — a flood wait, an RPC reason — since that is where their diagnostic value is. Applied across the download, cleanup, thumbnail, deduplication and migration paths, plus the timeout and subprocess errors that print an entire command line. ([#277](https://github.com/GeiserX/Telegram-Archive/pull/277))
+
+### Changed
+- The check for this now fails on the whole class of mistake — any handler around a filesystem call that interpolates a raw error — rather than on the specific lines known to have leaked. It found seven further sites when it was introduced.
+
+## [7.33.3] - 2026-08-02
+
+### Fixed
+- **Chat ids and chat titles are no longer written to the logs.** Deletion and import lines drop the id, the startup lines report how many chats are configured rather than which ones, and the viewer reports "N configured chat(s) not found" instead of naming each. The manually-run restore script deliberately keeps its ids: they are the operator's own arguments and the line is a confirmation before a destructive send. ([#274](https://github.com/GeiserX/Telegram-Archive/issues/274))
+
+### Notes
+- This stops new leakage only. Logs already written still contain chat ids and titles — rotate or delete them if that matters for your deployment.
+
+## [7.33.2] - 2026-08-01
+
+### Fixed
+- **Your own account's first name, last name, username, phone number and Telegram id are no longer written to the logs.** Eleven places did so, all of them older than the rule that forbids it. The reason those lines existed — telling the operator that authentication succeeded and which account answered — is kept and improved: setup now compares the authenticated account against the configured phone number and reports whether they agree, instead of printing who it is. This covers the interactive setup flow too, since it logs through the same handler as the daemons and that stream may well be shipped off the machine.
+- **Setup now fails when the stored session belongs to a different account.** It previously reported success in silence — a stale session from another account looked exactly like a clean login, and nothing further down the line checks identity, only authorization. A number written with `00` or with `+` is treated as the same number.
+- A login credential that was printed to stdout, despite already being written to a private file, is no longer printed. ([#272](https://github.com/GeiserX/Telegram-Archive/issues/272))
+
+### Changed
+- A check now scans the whole source and script trees for any logging call reading an identifying attribute, rather than pinning the known lines, so this cannot quietly return.
+
+## [7.33.1] - 2026-08-01
+
+### Fixed
+- **The filename in a voice or audio message is visible again.** The per-message download button added in 7.32.0 was being stretched to the full width of the bubble by a rule meant for inline media, which left its sibling text column at zero width — so the filename did not merely shift, it disappeared. The button is now 36×36 at every screen width, and the two links that are meant to span the bubble still do. ([#270](https://github.com/GeiserX/Telegram-Archive/issues/270))
+
+## [7.33.0] - 2026-07-31
+
+### Fixed
+- **Audio auto-advance now plays through a chat of any size.** It previously stopped after roughly forty tracks in a large chat: the queue was collected by paging backwards from the newest item with a page cap, and in a big chat that walk never reached the track you were playing. The queue is now anchored on the playing track and extended in whichever direction playback is moving, so no page cap is needed. Views that are not a straight slice of the timeline — pinned-only, in-chat search, a topic pane, a jump window — seed the queue from the playing track rather than from a neighbouring row that is not really its neighbour. ([#266](https://github.com/GeiserX/Telegram-Archive/issues/266))
+- **Audio bubbles are no longer stiltingly tall.** The duration and the playback status wrapped one character per line, because the bubble's text-wrapping rule let them collapse to a single glyph wide. ([#267](https://github.com/GeiserX/Telegram-Archive/issues/267))
+- **A reply quote now shows who is being replied to** and what kind of media it was, rather than falling back to the word "Message" — which was every reply to a photo, voice note or file. Resolved for a whole page in one query, and degrading cleanly when the replied-to message is not in the archive. The pinned list shows the same. ([#268](https://github.com/GeiserX/Telegram-Archive/issues/268))
+- **Media downloads recover from a long connection outage instead of failing until the next scheduled run.** After about a minute of failures Telethon marks itself disconnected and refuses every later request; only the scheduled job reconnected, so the listener could restart into the same error indefinitely. Connections now heal before the retry budget is spent, across every kind of call, and a chat is no longer abandoned on the first connection error while its messages are being read. ([#265](https://github.com/GeiserX/Telegram-Archive/issues/265))
+- Connection logs no longer carry the account holder's name or phone number.
+
+## [7.32.0] - 2026-07-31
+
+### Added
+- **Every media message has its own download button**, and downloads arrive under the file's original name rather than the internal storage name. This also repairs the download button in the media gallery. ([#261](https://github.com/GeiserX/Telegram-Archive/issues/261))
+
+### Fixed
+- **The audio queue can no longer skip across a hole in the timeline.** A page of tracks that could not be tied back to the one playing is now left unused instead of being merged, and media pages order correctly when several items share the same timestamp (they previously sorted as text: 9, 99, 8, 89, 80, 7). Jumping from the playbar to a track outside the loaded window now loads the messages around it. ([#257](https://github.com/GeiserX/Telegram-Archive/issues/257))
+- **Media whose filename contains `#` or `?` loads instead of returning "not found."** URLs are now percent-encoded per path segment on both the client and the server. ([#258](https://github.com/GeiserX/Telegram-Archive/issues/258))
+- **Service messages captured before 7.28.0 show their text again.** They were stored with empty text and are now rendered at display time from what was captured. "added" and "removed" messages deliberately say "Someone" rather than naming anyone: the affected person was never stored, and the sender is the admin who acted, so naming them would state the wrong person. ([#259](https://github.com/GeiserX/Telegram-Archive/issues/259))
+- **The person named in a service message opens the sender popup**, for the actions where that person is the subject of the sentence. ([#260](https://github.com/GeiserX/Telegram-Archive/issues/260))
+- **The playbar shows the message's date converted to your configured viewer timezone**, so it can no longer report the wrong calendar day near midnight. ([#262](https://github.com/GeiserX/Telegram-Archive/issues/262))
+- **Voice notes captured by the real-time listener now carry their duration**, along with file size, type and dimensions, exactly like ones picked up by a scheduled backup — they previously rendered without a duration. Rows captured before this keep their empty duration until they are captured again. ([#263](https://github.com/GeiserX/Telegram-Archive/issues/263))
+- **A media file that goes missing is retried again.** A failed re-download used to leave the row marked as downloaded with a path pointing at nothing, so the every-run retry never saw it and the file was gone for good.
+
+## [7.31.2] - 2026-07-30
+
+### Fixed
+- **A failed request while loading more audio is no longer treated as "you have reached the oldest clip."** Pressing "previous" at the head of the queue silently restarted the current track when the request failed — a rate limit, an expired session, a server error — with nothing shown. The failure is now surfaced, the button keeps working so a later press can succeed, and only genuinely running out of older clips restarts the track. ([#254](https://github.com/GeiserX/Telegram-Archive/issues/254))
+
+## [7.31.1] - 2026-07-29
+
+### Added
+- **Audio auto-advance continues past the messages currently loaded on screen.** The player pages the chat's voice and music history on its own — separately from the message list, so the two cannot interfere — and "previous" at the top of the queue fetches an older page on demand. Voice notes and music stay in separate queues. ([#254](https://github.com/GeiserX/Telegram-Archive/issues/254))
+
+### Fixed
+- Closing the player while it was fetching more of the queue no longer disables "previous" for the rest of the session.
+
+## [7.31.0] - 2026-07-29
+
+### Added
+- **One global voice and audio player, replacing the separate player in every message bubble.** Starting a clip now stops the one before it, playback keeps going when you scroll away, and a persistent playbar gives you play/pause, previous/next, seeking, elapsed and total time, playback speed, the sender, chat and timestamp, and a close button. Clicking the playbar's details takes you to the source message. ([#250](https://github.com/GeiserX/Telegram-Archive/issues/250))
+- **Playback continues automatically to the next clip.** Voice notes and music are separate queues, matching the official clients, so a run of voice messages never spills into a music file.
+- **Playback speed (0.5×, 1×, 1.5×, 2×) is remembered per media type across sessions** and survives a change of track.
+- Operating-system and lock-screen media keys work where the browser supports them.
+
+### Notes
+- Auto-advance is off for viewer accounts that are not permitted to download media, and stops after repeated load failures.
+- Auto-advance does not load more messages into the list — that is left to the existing scroll behaviour — and the queue does not span chats.
+
+## [7.30.0] - 2026-07-29
+
+### Added
+- **Sender details show the sender's photo at a readable size**, with the usual initials-on-gradient fallback when there is no photo.
+- **The chat header avatar opens sender details in one-to-one chats.** Deliberately limited to private chats: in a group the header photo belongs to the group, not to a person. ([#240](https://github.com/GeiserX/Telegram-Archive/issues/240))
+
+## [7.29.2] - 2026-07-29
+
+### Fixed
+- **The floating date while you scroll a chat shows the day you are actually looking at.** Every day's separator pinned itself to the top of the message list at the same time, so several dates stacked in one place and whichever painted last won — routinely a day unrelated to what was on screen. There is now a single date indicator above the message list that follows the topmost visible message, stays correct after an older page loads, reads the oldest loaded day when you are at the very beginning of a chat's history, and still opens the date picker when clicked. ([#249](https://github.com/GeiserX/Telegram-Archive/issues/249))
+
 ## [7.29.1] - 2026-07-28
 
 ### Fixed

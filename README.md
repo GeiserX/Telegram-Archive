@@ -61,7 +61,8 @@
 
 ## 🗺️ Roadmap
 
-See **[docs/CHANGELOG.md](docs/CHANGELOG.md)** for complete version history.
+See **[docs/ROADMAP.md](docs/ROADMAP.md)** for what's planned, and
+**[docs/CHANGELOG.md](docs/CHANGELOG.md)** for complete version history.
 
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
@@ -154,7 +155,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:7.7.0 \
+  drumsergio/telegram-archive:7.33.6 \
   python -m src auth
 ```
 
@@ -165,7 +166,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:7.7.0 \
+  drumsergio/telegram-archive:7.33.6 \
   python -m src auth
 
 # Then restart the backup container
@@ -206,7 +207,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:7.7.0
+    image: drumsergio/telegram-archive-viewer:7.33.6
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -253,6 +254,9 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `MEDIA_MAX_FILENAME_BYTES` | `143` | B | Usable filename byte budget for downloaded media. Raise to `255` on plain ext4/xfs; keep `143` for Synology/eCryptfs encrypted shares |
 | `MEDIA_MAX_DOWNLOAD_ATTEMPTS` | `5` | B | Stop retrying a file's download after this many failed attempts. Re-requesting the download resets the counter |
 | `MEDIA_FLOOD_SLEEP_THRESHOLD` | `60` | B | Mid-download FloodWaits up to this many seconds are absorbed in place so the transfer resumes instead of restarting from byte 0 (issue #232). `0` restores the old raise-immediately behavior. Absorbed pauses count toward `DOWNLOAD_TIMEOUT_SECONDS` |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `3600` | B | Give up on a single media download after this many seconds. `0` disables the timeout |
+| `MEDIA_REFRESH_MAX_ATTEMPTS` | `3` | B | How many times a media item whose file reference expired is re-fetched and retried before it is left for the next scheduled run |
+| `MEDIA_REFRESH_TIMEOUT_SECONDS` | `120` | B | Upper bound on one message-refresh round trip, so a wedged connection cannot stall the run |
 | `PARALLEL_DOWNLOAD_ENABLED` | `false` | B | Fetch large files over several connections to lift the single-stream speed cap (see below) |
 | `PARALLEL_DOWNLOAD_MIN_SIZE_MB` | `20` | B | Only files at least this large use the parallel path (min 1) |
 | `PARALLEL_DOWNLOAD_CONNECTIONS` | `4` | B | Concurrent connections per file (clamped 2–8) |
@@ -261,21 +265,32 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `CHECKPOINT_INTERVAL` | `1` | B | Save backup progress every N batch inserts (lower = safer resume after crash) |
 | `DATABASE_TIMEOUT` | `60.0` | B/V | Database operation timeout in seconds |
 | `SESSION_NAME` | `telegram_backup` | B | Telethon session file name |
+| `SESSION_DIR` | `/data/session` | B | Directory holding the session file. Defaults to a `session/` directory alongside `BACKUP_PATH` |
 | `DEDUPLICATE_MEDIA` | `true` | B | Symlink identical media files across chats to save disk space |
 | `SYNC_DELETIONS_EDITS` | `false` | B | Batch-check ALL messages for edits/deletions each run (expensive!) |
 | `VERIFY_MEDIA` | `false` | B | Re-download missing or corrupted media files |
+| `FILL_GAPS` | `false` | B | After each scheduled backup, look for runs of missing message IDs and fetch them |
+| `GAP_THRESHOLD` | `50` | B | How many consecutive missing message IDs count as a gap worth filling |
 | `STATS_CALCULATION_HOUR` | `3` | B | Hour (0-23) to recalculate backup statistics daily |
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
 | `SKIP_MEDIA_DELETE_EXISTING` | `true` | B | Delete existing media files and DB records for chats in skip list to reclaim storage |
 | `SKIP_TOPIC_IDS` | - | B | Skip specific topics in forum supergroups (format: `chat_id:topic_id,...`) |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
+| **Flood & Retry Tuning** | | | |
+| `MAX_FLOOD_RETRIES` | `5` | B | How many times a Telegram call is retried after a FloodWait before it gives up |
+| `MAX_FLOOD_WAIT_SECONDS` | `3600` | B | A FloodWait longer than this is not waited out — the call fails instead |
+| `BACKOFF_MIN_SECONDS` | `2.0` | B | First delay of the exponential backoff used for transient connection errors |
+| `BACKOFF_MAX_SECONDS` | `300.0` | B | Ceiling for that backoff delay |
+| `FLOOD_WAIT_LOG_THRESHOLD` | `10` | B | FloodWaits shorter than this are routine and logged at `DEBUG` instead of `WARNING`. `0` logs every one |
 | **Chat Filtering** | | | See [Chat Filtering](#chat-filtering) below |
 | `CHAT_IDS` | - | B | **Whitelist mode**: backup ONLY these chats (ignores all other filters) |
 | `WHITELIST_RESOLVE_DIALOG_LIMIT` | `1000` | B | When a `CHAT_IDS` entry cannot be resolved (typically a DM on a fresh session), scan up to this many dialogs once to warm the entity cache — it then resolves permanently (issue #234). `0` disables |
 | `CHAT_TYPES` | `private,groups,channels` | B | **Type-based mode**: comma-separated chat types to backup |
 | `GLOBAL_EXCLUDE_CHAT_IDS` | - | B | Exclude specific chats (any type) |
 | `GLOBAL_INCLUDE_CHAT_IDS` | - | B | Force-include specific chats (any type) |
+| `EXCLUDE_CHAT_IDS` | - | B | Legacy alias for `GLOBAL_EXCLUDE_CHAT_IDS`, read only when that variable is unset or empty |
+| `INCLUDE_CHAT_IDS` | - | B | Legacy alias for `GLOBAL_INCLUDE_CHAT_IDS`, read only when that variable is unset or empty |
 | `PRIVATE_EXCLUDE_CHAT_IDS` | - | B | Exclude specific private chats |
 | `PRIVATE_INCLUDE_CHAT_IDS` | - | B | Force-include specific private chats |
 | `GROUPS_EXCLUDE_CHAT_IDS` | - | B | Exclude specific groups |
@@ -310,6 +325,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `POSTGRES_USER` | `telegram` | B/V | PostgreSQL username |
 | `POSTGRES_PASSWORD` | - | B/V | PostgreSQL password (required when using PostgreSQL) |
 | `POSTGRES_DB` | `telegram_backup` | B/V | PostgreSQL database name |
+| `DB_ECHO` | `false` | B/V | Log every SQL statement. Debugging only — extremely verbose |
 | **Viewer & Authentication** | | | |
 | `VIEWER_USERNAME` | - | V | Master web viewer username |
 | `VIEWER_PASSWORD` | - | V | Master web viewer password |
@@ -325,11 +341,13 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VIEWER_PORT` | `8080` | B | Viewer port for SQLite realtime push from backup/listener |
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
+| `THUMBNAIL_CACHE_DIR` | `$BACKUP_PATH/media/.thumbs` | V | Where generated thumbnails are cached. Falls back to `/tmp/telegram-archive-thumbs` when the media directory is not writable |
 | **Security** | | | |
 | `CORS_ORIGINS` | `*` | V | Allowed CORS origins, comma-separated (e.g., `https://my.domain.com`). Credentials auto-disabled when `*` |
 | `SECURE_COOKIES` | `auto` | V | `Secure` flag on auth cookies. Auto-detects from request protocol (`X-Forwarded-Proto` / scheme). Override with `true` or `false` |
 | **Notifications** | | | |
 | `PUSH_NOTIFICATIONS` | `basic` | V | `off` = disabled, `basic` = in-browser only, `full` = Web Push (works with browser closed) |
+| `ENABLE_NOTIFICATIONS` | `false` | V | Older master switch kept for compatibility. Notifications are active when this is `true` **or** `PUSH_NOTIFICATIONS` is `basic`/`full` — prefer `PUSH_NOTIFICATIONS` |
 | `VAPID_PRIVATE_KEY` | *auto-generated* | V | Custom VAPID private key for Web Push |
 | `VAPID_PUBLIC_KEY` | *auto-generated* | V | Custom VAPID public key for Web Push |
 | `VAPID_CONTACT` | `mailto:admin@example.com` | V | Contact email included in Web Push requests |
@@ -470,6 +488,13 @@ Telegram Archive supports **SQLite** (default, zero-config) and **PostgreSQL** (
 
 **SQLite path resolution** (highest priority first): `DATABASE_URL` → `DATABASE_PATH` → `DATABASE_DIR` → `DB_PATH` → `$BACKUP_PATH/telegram_backup.db`
 
+> **Using `DATABASE_URL` for SQLite? Count the slashes.** Four slashes is an absolute
+> path; three is a path relative to the container's working directory (`/app`), which
+> is not the mounted volume — the archive would be written outside your data directory
+> and lost on the next container recreate. Use
+> `DATABASE_URL=sqlite:////data/backups/telegram_backup.db`. The `DB_PATH` route does
+> not have this trap; it always resolves to an absolute path.
+
 **Using PostgreSQL:**
 
 1. Uncomment the `postgres` service in `docker-compose.yml`
@@ -481,43 +506,46 @@ Telegram Archive supports **SQLite** (default, zero-config) and **PostgreSQL** (
 
 ### Using Pre-built Images (Recommended)
 
-If you're using the default `docker-compose.yml` with images from Docker Hub:
+The shipped `docker-compose.yml` pins an exact release rather than `latest`, so
+you always know which version is running and nothing changes underneath you. That
+also means `docker compose pull` on its own gets you nothing — it re-pulls the tag
+you already have. **Moving the pin is the upgrade.**
 
 ```bash
-# Pull latest images and recreate containers
-docker compose pull
-docker compose up -d
-```
-
-Or in one command:
-```bash
-docker compose up -d --pull always
-```
-
-> **Note:** Running `git pull` only updates source code, not Docker images. You must use `docker compose pull` to get new container versions.
-
-### Building from Source
-
-If you've modified the code or prefer building locally:
-
-```bash
+# Take the new compose file, which carries the new pin
 git pull
-docker build -t drumsergio/telegram-archive:latest .
-docker build -t drumsergio/telegram-archive-viewer:latest -f Dockerfile.viewer .
+
+# Then recreate the containers on it
 docker compose up -d
 ```
 
-### Pinning Versions
-
-For production stability, pin to specific versions instead of `latest`:
+If you keep your own compose file, edit the two `image:` tags to the release you
+want and run `docker compose up -d`:
 
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:7.7.0  # Pin to a reviewed release
+    image: drumsergio/telegram-archive:7.33.6
+  telegram-viewer:
+    image: drumsergio/telegram-archive-viewer:7.33.6
 ```
 
-Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available versions.
+Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available
+versions, and [docs/CHANGELOG.md](docs/CHANGELOG.md) for what changed. Only the
+newest release gets fixes — see [SECURITY.md](SECURITY.md).
+
+### Building from Source
+
+If you've modified the code or prefer building locally, build under the tag your
+compose file already references, so the images you just built are the ones that
+start:
+
+```bash
+git pull
+docker build -t drumsergio/telegram-archive:7.33.6 .
+docker build -t drumsergio/telegram-archive-viewer:7.33.6 -f Dockerfile.viewer .
+docker compose up -d
+```
 
 ## ⚠️ Upgrading (Breaking Changes)
 

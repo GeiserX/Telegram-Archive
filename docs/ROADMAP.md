@@ -10,8 +10,6 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 
 ### Security Hardening
 
-- [ ] Rate limiting on `/api/login` endpoint (slowapi or similar)
-- [ ] JWT or session tokens with expiration (replace static PBKDF2 token)
 - [ ] Search input validation and length limits
 - [ ] Telegram session file encryption at rest
 - [ ] Docker HEALTHCHECK instructions in Dockerfiles
@@ -33,7 +31,7 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 - [x] Media Gallery Phase 1+2 (grid view for photos/videos, list view for voice/files) — v7.10.0
 - [ ] Media Gallery Phase 3: Links tab (shared URLs extracted from messages)
 - [ ] Custom themes (light mode, OLED dark, Telegram classic)
-- [ ] Voice message player with waveform visualization
+- [ ] Waveform visualization in the voice/audio player
 - [ ] Keyboard shortcuts (j/k navigation, Esc to close, etc.)
 - [ ] Message deep links (shareable URLs to specific messages)
 - [ ] i18n / localization (viewer is English-only currently)
@@ -47,9 +45,10 @@ For version history and changes, see [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
-## v7.0.0 — Search & Discovery
+## Search & Discovery
 
-### Full-text Search
+Substring search over chat names and message text already ships. What is left is
+the indexed and semantic work, which is not scheduled against a version yet.
 
 - [ ] Elasticsearch or Meilisearch integration for full-text search across all messages
 - [ ] Semantic search (find by meaning, not just keywords)
@@ -126,7 +125,6 @@ AUDIT_LOG_RETENTION=forever
 - [ ] Single instance serving multiple users
 - [ ] Per-user isolated databases or schemas
 - [ ] Shared channel access between users
-- [ ] Admin panel for user management
 
 ### Authentication Providers
 
@@ -137,10 +135,7 @@ AUDIT_LOG_RETENTION=forever
 
 ### Role-Based Permissions
 
-- [ ] Admin: full access, user management
 - [ ] Archivist: backup operations, no deletion
-- [ ] Viewer: read-only access to assigned chats
-- [ ] Per-chat access control lists
 
 ---
 
@@ -198,6 +193,12 @@ Features that were previously on this roadmap and have been implemented:
 | Ruff linter/formatter | v6.2.3 | CI enforcement + pre-commit hooks |
 | Security hardening | v6.2.3 | CSP, CORS, secure cookies, container hardening |
 | PBKDF2 auth tokens | v6.2.4 | Replaced weak SHA256 hashing |
+| Login rate limiting | v7.0.0 | Sliding window on the login and share-token endpoints |
+| Session tokens with expiration | v7.0.0 | Random per-login tokens honoring `AUTH_SESSION_DAYS`; DB-backed and restart-safe since v7.1.0 |
+| Admin panel for user management | v7.0.0 | Create, edit and delete viewer accounts from the viewer |
+| Per-chat access control lists | v7.0.0 | Per-account chat whitelists, enforced on messages and media |
+| Read-only access to assigned chats | v7.0.0 | Viewer accounts see only their chats; writes stay with the master account |
+| Voice/audio player | v7.31.0 | One global player with a queue and auto-advance; waveform display is still open |
 
 ---
 
@@ -205,4 +206,4 @@ Features that were previously on this roadmap and have been implemented:
 
 Have a feature request? [Open an issue](https://github.com/GeiserX/Telegram-Archive/issues)!
 
-See [AGENTS.md](../AGENTS.md) for development guidelines.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.

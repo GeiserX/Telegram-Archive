@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 7.x.x  | :white_check_mark: |
-| 6.x.x  | :white_check_mark: |
-| 5.x.x  | :x:                |
-| < 5.0   | :x:                |
+**Only the latest release is supported.** That is `7.33.6` today; see
+[Releases](https://github.com/GeiserX/Telegram-Archive/releases) for the current one.
+
+There are no maintenance branches and nothing is backported. Every fix lands on
+`main` and ships as a new tag, so the remedy for any advisory is always "upgrade
+to the newest release". If you are pinned to an older tag — including an older
+7.x — you are not receiving fixes, however recent that tag looks.
 
 ## Reporting a Vulnerability
 
