@@ -523,6 +523,7 @@ class DatabaseAdapter:
 
     # ========== Metadata Operations ==========
 
+    @retry_on_locked()
     async def set_metadata(self, key: str, value: str) -> None:
         """Set a metadata key-value pair."""
         async with self.db_manager.async_session_factory() as session:
@@ -536,6 +537,7 @@ class DatabaseAdapter:
             await session.execute(stmt)
             await session.commit()
 
+    @retry_on_locked()
     async def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key."""
         async with self.db_manager.async_session_factory() as session:
