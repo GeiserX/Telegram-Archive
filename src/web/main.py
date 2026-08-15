@@ -7,13 +7,13 @@ v5.0: WebSocket support for real-time updates and notifications.
 """
 
 import asyncio
-import glob
 import hashlib
 import json
 import logging
 import os
 import secrets
 import time
+import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
@@ -89,7 +90,11 @@ class ConnectionManager:
     async def broadcast_to_chat(self, chat_id: int, message: dict):
         """Broadcast a message to all connections subscribed to a chat."""
         disconnected = []
-        for websocket, subscribed_chats in self.active_connections.items():
+        # Snapshot first: send_json suspends, and a connect/disconnect landing in
+        # another task during that await mutates active_connections. Iterating it
+        # live raises RuntimeError at the `for`, which aborts the whole broadcast
+        # and silently drops the event for every client not yet reached.
+        for websocket, subscribed_chats in list(self.active_connections.items()):
             allowed = self._allowed_chats.get(websocket)
             if allowed is not None and chat_id not in allowed:
                 continue
@@ -107,7 +112,8 @@ class ConnectionManager:
     async def broadcast_to_all(self, message: dict):
         """Broadcast a message to all connected clients."""
         disconnected = []
-        for websocket in self.active_connections:
+        # Same snapshot rule as broadcast_to_chat: the dict can change under us.
+        for websocket in list(self.active_connections):
             try:
                 await websocket.send_json(message)
             except Exception as e:
@@ -556,6 +562,16 @@ def _verify_password(password: str, salt: str, password_hash: str) -> bool:
     return secrets.compare_digest(_hash_password(password, salt), password_hash)
 
 
+def _hash_token(plaintext_token: str, salt: str) -> str:
+    """Share-token twin of _hash_password: token salts are hex, password salts are raw.
+
+    600k rounds take ~50ms, so every caller must run this via asyncio.to_thread —
+    inline it would stall the event loop for the duration (matches the login/
+    create-viewer/update-viewer hashing sites).
+    """
+    return hashlib.pbkdf2_hmac("sha256", plaintext_token.encode(), bytes.fromhex(salt), 600_000).hex()
+
+
 def _check_rate_limit(ip: str) -> bool:
     """Returns True if the request is within rate limits."""
     now = time.time()
@@ -798,10 +814,18 @@ async def _resolve_proxy_user(proxy_username: str) -> UserContext:
     raise HTTPException(status_code=503, detail="Database required for proxy authentication")
 
 
-async def require_auth(
-    request: Request, auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)
-) -> UserContext:
-    """Dependency that enforces session-based auth. Returns UserContext."""
+async def _resolve_user_context(proxy_header_value: str | None, auth_cookie: str | None) -> UserContext:
+    """Resolve the authenticated principal from a proxy header value and a session cookie.
+
+    One resolver for every transport. The proxy header is tried first and, when
+    it is absent, resolution FALLS THROUGH to the session cookie — enabling
+    AUTH_PROXY_HEADER never turns the cookie check off. The WebSocket upgrade
+    used to make that decision on its own and skipped the cookie branch whenever
+    proxy auth was configured, which admitted credential-less sockets and gave
+    authenticated viewers a socket with no chat ACL.
+
+    Raises HTTPException when the caller cannot be tied to a principal.
+    """
     if not AUTH_ENABLED and not _PROXY_AUTH_ENABLED:
         if ALLOW_ANONYMOUS_VIEWER:
             # Read-only viewer, not master: anonymous internet users must never get
@@ -811,7 +835,7 @@ async def require_auth(
 
     # Trusted proxy header authentication (v7.9.0)
     if _PROXY_AUTH_ENABLED:
-        proxy_user = request.headers.get(AUTH_PROXY_HEADER, "").strip()
+        proxy_user = (proxy_header_value or "").strip()
         if proxy_user:
             return await _resolve_proxy_user(proxy_user)
 
@@ -836,6 +860,14 @@ async def require_auth(
         allowed_chat_ids=session.allowed_chat_ids,
         no_download=session.no_download,
     )
+
+
+async def require_auth(
+    request: Request, auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME)
+) -> UserContext:
+    """Dependency that enforces session-based auth. Returns UserContext."""
+    proxy_header_value = request.headers.get(AUTH_PROXY_HEADER) if _PROXY_AUTH_ENABLED else None
+    return await _resolve_user_context(proxy_header_value, auth_cookie)
 
 
 def require_master(request: Request, user: UserContext = Depends(require_auth)) -> UserContext:
@@ -970,6 +1002,50 @@ _media_root = Path(config.media_path).resolve() if os.path.exists(config.media_p
 _thumb_cache_dir: Path | None = None
 
 
+def _checked_media_path(path: str) -> str:
+    """Return the single media path string used for BOTH the ACL and the file read.
+
+    The folder segment IS the authorization key (_enforce_media_acl reads
+    parts[0] as the chat id), so the string that is authorized has to be the
+    string that selects bytes on disk. A traversal segment breaks exactly that:
+    the ASGI server percent-decodes before routing, so ``%2e%2e`` reaches the
+    route as a real ``..`` and lets the ACL read one folder while the filesystem
+    reads another. Every media route funnels its request path through here
+    first, and passes the returned value on unchanged, so the two can never
+    disagree again.
+    """
+    if path.startswith("/") or ".." in path.split("/"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return path
+
+
+# Types the viewer renders inline. Anything else is served as a download, so an
+# archived file can never become an active document on the viewer's own origin.
+_INLINE_MEDIA_FAMILIES = frozenset({"image", "video", "audio"})
+_INLINE_MEDIA_EXTRA = frozenset({"application/pdf"})
+_INLINE_MEDIA_BLOCKED = frozenset({"image/svg+xml"})
+
+
+def _inline_media_type(filename: str) -> str | None:
+    """Content type to serve a media file with inline, or None when it must download.
+
+    The stored name is chosen by whoever sent the file: sanitize_media_filename
+    strips separators but keeps the extension verbatim, so a contact can archive
+    ``report.html``. Serving that with its guessed type makes it a same-origin
+    document holding the viewer's session — stored XSS with a plain attachment.
+    Only the families the viewer actually renders inline (<img>, <video>,
+    <audio>, plus PDF) get a real type; everything else, including SVG (an SVG
+    navigated to directly executes its script), becomes an octet-stream
+    attachment.
+    """
+    guessed, _ = mimetypes.guess_type(filename)
+    if not guessed or guessed in _INLINE_MEDIA_BLOCKED:
+        return None
+    if guessed in _INLINE_MEDIA_EXTRA or guessed.split("/", 1)[0] in _INLINE_MEDIA_FAMILIES:
+        return guessed
+    return None
+
+
 # Thumbnail endpoint MUST be defined before the catch-all /media/{path:path} route
 @app.get("/media/thumb/{size}/{folder:path}/{filename}")
 async def serve_thumbnail(size: int, folder: str, filename: str, user: UserContext = Depends(require_auth)):
@@ -977,12 +1053,22 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
+    # Traversal check FIRST: an "avatars/../<chat>" folder would otherwise skip
+    # the no_download rule below on its way to another chat's media.
+    requested = _checked_media_path(f"{folder}/{filename}")
+    folder, _, filename = requested.rpartition("/")
+    if not folder:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if user.no_download and not folder.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
+    # `requested` is now the ONLY path string in this handler: it is what the ACL
+    # below authorizes and, split back into folder/filename, what ensure_thumbnail
+    # reads. ensure_thumbnail resolves it and bounds it at the media root, so a
+    # symlink cannot take it outside either.
     # Early ACL check on requested path (prevents existence leakage).
     # Member avatars (avatars/users/) are gated by a visible-membership probe.
-    requested = f"{folder}/{filename}"
     member_ok = await _avatar_user_visible_member(requested, user)
     _enforce_media_acl(requested, user, thumbnail=True, member_ok=member_ok)
 
@@ -1003,7 +1089,9 @@ async def serve_thumbnail(size: int, folder: str, filename: str, user: UserConte
         resolved_member_ok = await _avatar_user_visible_member(resolved, user)
         _enforce_media_acl(resolved, user, thumbnail=True, member_ok=resolved_member_ok)
 
-    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
+    # Access-controlled bytes: private, so a shared proxy cache can never hand
+    # one viewer's thumbnail to another.
+    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/media/{path:path}")
@@ -1012,15 +1100,16 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
+    # Reject path traversal and absolute paths before anything else reads the
+    # path — the no_download rule below tests a prefix, and a prefix means
+    # nothing until the path is known to stay in the folder it names.
+    path = _checked_media_path(path)
+
     # Server-side download restriction. Original media bytes are not served to
     # no-download users because a direct GET is indistinguishable from browser
     # inline rendering once the URL is known. Avatars stay available for UI chrome.
     if user.no_download and not path.startswith("avatars/"):
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
-
-    # Reject path traversal and absolute paths before any filesystem operations
-    if ".." in path.split("/") or path.startswith("/"):
-        raise HTTPException(status_code=403, detail="Access denied")
 
     # Construct and resolve path, then verify it stays within media root
     candidate = _media_root / path
@@ -1081,9 +1170,11 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     # model the call as a filesystem sink and raise py/path-injection on
     # `resolved`, which is a false positive: containment is already enforced above
     # (reject ../absolute, resolve(strict=True), is_relative_to(_media_root)).
-    # Default (no download param) stays inline: <img>/<video> use the same URL.
-    response = FileResponse(resolved)
-    if download:
+    # Default (no download param) stays inline for the types the viewer renders
+    # inline; everything else is handed over as a download (see _inline_media_type).
+    inline_type = _inline_media_type(resolved.name)
+    response = FileResponse(resolved, media_type=inline_type or "application/octet-stream")
+    if download or inline_type is None:
         download_name = media_display_filename(path.rsplit("/", 1)[-1])
         quoted = quote(download_name)
         response.headers["Content-Disposition"] = (
@@ -1091,8 +1182,10 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
             if quoted != download_name
             else f'attachment; filename="{download_name}"'
         )
-    if path.startswith("avatars/"):
-        response.headers["Cache-Control"] = "public, max-age=86400"
+    # Every byte this route serves is access-controlled, so no shared cache may
+    # store it. Avatars keep their long browser TTL; the rest stays as cacheable
+    # per-browser as it was, just never in a proxy that skips the ACL.
+    response.headers["Cache-Control"] = "private, max-age=86400" if path.startswith("avatars/") else "private"
     return response
 
 
@@ -1105,14 +1198,107 @@ async def read_root():
     )
 
 
+def _redacted_error_response(route_template: str, exc: Exception) -> JSONResponse:
+    """Log an unhandled exception under the PII-redaction rule and build its response.
+
+    Shared by RedactingErrorMiddleware (the normal path) and the FastAPI
+    exception handler below (a defence-in-depth fallback) so BOTH emit the exact
+    same redacted log line and the exact same 500/503 JSON body — the 503 split
+    for DB-connection errors, 500 for everything else.
+
+    Never the concrete path: a media URL is /media/<chat_id>/<file_id>_<the
+    sender's document name>, so logging it logs a chat id and a person's file
+    name. The route template is what an operator needs to find the endpoint,
+    and it carries no identifiers. describe_exception keeps the same rule for
+    the exception text (OSError stringifies with the offending path).
+    """
+    if _is_db_connection_error(exc):
+        logger.error(f"Database connection error on {route_template}: {describe_exception(exc)}")
+        return JSONResponse(status_code=503, content={"detail": "Database temporarily unavailable"})
+    # exc_info is banned on this branch too: the log formatter ends a traceback
+    # with the exception's own str() (and its __cause__/__context__ chain), and
+    # non-OSError exceptions carry paths there — subprocess.TimeoutExpired /
+    # CalledProcessError stringify with the full ffmpeg argv, which contains a
+    # media path (a chat id and the sender's file name). describe_exception
+    # already refuses those messages, so log only the frame list (file, line,
+    # function, source text — never a runtime value): the crash site stays
+    # diagnosable while nothing an exception smuggled in can reach the log.
+    frames = "".join(traceback.format_tb(exc.__traceback__)).rstrip()
+    detail = f"Unhandled error on {route_template}: {describe_exception(exc)}"
+    logger.error(f"{detail}\n{frames}" if frames else detail)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+class RedactingErrorMiddleware:
+    """Handle unhandled exceptions at the ASGI layer, one level inside ServerErrorMiddleware.
+
+    The exception handler below already logs a redacted line, but that alone is
+    not enough. Starlette's ServerErrorMiddleware re-raises the exception after
+    the handler returns (errors.py ends its except block with ``raise exc``), and
+    uvicorn's ``run_asgi`` then logs "Exception in ASGI application" with exc_info
+    UNCONDITIONALLY. That traceback ends with the exception's own str() — and a
+    thumbnail failure raises subprocess.TimeoutExpired whose argv is the ffmpeg
+    command, i.e. a media path carrying the chat id and the sender's file name.
+    So the redaction has to happen where the exception can be STOPPED, not merely
+    logged.
+
+    Registered via app.add_middleware after every other middleware, this becomes
+    the outermost user middleware: it wraps the whole app yet still sits inside
+    ServerErrorMiddleware (Starlette forces that one outermost). It catches the
+    unhandled exception first, logs the identical redacted line, sends the
+    identical 500/503 JSON response, and does NOT re-raise. ServerErrorMiddleware
+    and uvicorn therefore never see the exception, so no traceback can leak.
+
+    A failure after the response has started (a streaming FileResponse that dies
+    mid-body) cannot be answered with a clean JSON body, so it is re-raised and
+    behaves exactly as before; the assigned exploit raises before the response
+    starts and is fully handled here.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:
+            if response_started:
+                raise
+            route_template = getattr(scope.get("route"), "path", None) or "unrouted request"
+            response = _redacted_error_response(route_template, exc)
+            await response(scope, receive, send)
+
+
+# Added last, so it is the OUTERMOST user middleware: it wraps CORS and the
+# security-headers middleware and sits just inside ServerErrorMiddleware, which
+# lets it catch and answer an unhandled exception before ServerErrorMiddleware
+# can re-raise it into uvicorn (where the traceback would leak the media path).
+app.add_middleware(RedactingErrorMiddleware)
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    """Catch unhandled exceptions and return 503 for DB connection errors."""
-    if _is_db_connection_error(exc):
-        logger.error(f"Database connection error on {request.url.path}: {exc}")
-        return JSONResponse(status_code=503, content={"detail": "Database temporarily unavailable"})
-    logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    """Fallback 500/503 handler for any path that bypasses the middleware.
+
+    RedactingErrorMiddleware is what catches in the normal path (so uvicorn never
+    logs the traceback); this handler stays registered so the same redacted-log +
+    503-for-DB / 500-for-everything-else contract still holds for any code that
+    reaches ServerErrorMiddleware directly.
+    """
+    route_template = getattr(request.scope.get("route"), "path", None) or "unrouted request"
+    return _redacted_error_response(route_template, exc)
 
 
 @app.get("/api/health")
@@ -1217,7 +1403,9 @@ async def login(request: Request):
             viewer = None
 
         if viewer and viewer["is_active"]:
-            if _verify_password(password, viewer["salt"], viewer["password_hash"]):
+            # 600k-round PBKDF2: off the event loop, or one login attempt stalls
+            # every other request, WebSocket frame and health check on the way.
+            if await asyncio.to_thread(_verify_password, password, viewer["salt"], viewer["password_hash"]):
                 allowed = None
                 if viewer["allowed_chat_ids"]:
                     try:
@@ -1416,6 +1604,64 @@ async def auth_via_token(request: Request):
     return response
 
 
+# One directory read per avatars/ subfolder, reused until that folder changes:
+# {directory: (directory mtime, {id: [filenames]})}. A glob per id scandirs the
+# whole folder every time, so a page of 50 senders cost 50 full directory scans
+# on the event loop; a lookup now costs one stat of the folder.
+_avatar_dir_index: dict[str, tuple[int, dict[int, list[str]]]] = {}
+
+
+def _avatar_dir_listing(avatar_dir: str, force: bool = False) -> dict[int, list[str]]:
+    """Map {id: [avatar filenames]} for one avatars/ subfolder.
+
+    Cached against the directory's own mtime, which changes whenever a file is
+    added or removed there — so a newly downloaded avatar is picked up on the
+    next request without a timer, and nothing can serve a listing for a folder
+    that has since changed.
+    """
+    try:
+        stamp = os.stat(avatar_dir).st_mtime_ns
+    except OSError:
+        _avatar_dir_index.pop(avatar_dir, None)
+        return {}
+
+    cached = _avatar_dir_index.get(avatar_dir)
+    if cached is not None and cached[0] == stamp and not force:
+        return cached[1]
+
+    listing: dict[int, list[str]] = {}
+    try:
+        with os.scandir(avatar_dir) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".jpg"):
+                    continue
+                # "{id}_{photo_id}.jpg" and the legacy "{id}.jpg" both key on id.
+                try:
+                    avatar_id = int(entry.name[:-4].split("_", 1)[0])
+                except ValueError:
+                    continue
+                listing.setdefault(avatar_id, []).append(entry.name)
+    except OSError:
+        return {}
+
+    _avatar_dir_index[avatar_dir] = (stamp, listing)
+    return listing
+
+
+def _newest_avatar_file(avatar_dir: str, names: list[str] | None) -> str | None:
+    """Most recently modified of the candidate files that are still on disk."""
+    newest_name: str | None = None
+    newest_mtime: float | None = None
+    for name in names or ():
+        try:
+            mtime = os.path.getmtime(os.path.join(avatar_dir, name))
+        except OSError:
+            continue  # deleted since the folder was read
+        if newest_mtime is None or mtime > newest_mtime:
+            newest_name, newest_mtime = name, mtime
+    return newest_name
+
+
 def _find_avatar_path(chat_id: int, chat_type: str) -> str | None:
     """Find avatar file path for a chat.
 
@@ -1426,22 +1672,14 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> str | None:
     avatar_folder = "users" if chat_type == "private" else "chats"
     avatar_dir = os.path.join(config.media_path, "avatars", avatar_folder)
 
-    if not os.path.exists(avatar_dir):
-        return None
+    candidates = _avatar_dir_listing(avatar_dir).get(chat_id)
+    avatar_file = _newest_avatar_file(avatar_dir, candidates)
+    if avatar_file is None and candidates:
+        # Every candidate has vanished — re-read the folder once and retry, so a
+        # deletion is never served from a listing that outlived it.
+        avatar_file = _newest_avatar_file(avatar_dir, _avatar_dir_listing(avatar_dir, force=True).get(chat_id))
 
-    # Look for avatar file matching chat_id
-    pattern = os.path.join(avatar_dir, f"{chat_id}_*.jpg")
-    matches = glob.glob(pattern)
-
-    # Legacy fallback: files saved without photo_id suffix
-    legacy_path = os.path.join(avatar_dir, f"{chat_id}.jpg")
-    if os.path.exists(legacy_path):
-        matches.append(legacy_path)
-
-    if matches:
-        # Return the most recently modified avatar (newest profile photo)
-        newest_avatar = max(matches, key=os.path.getmtime)
-        avatar_file = os.path.basename(newest_avatar)
+    if avatar_file:
         return f"avatars/{avatar_folder}/{avatar_file}"
 
     return None
@@ -1816,6 +2054,10 @@ async def get_chat_media(
 
             if user.no_download:
                 item.pop("file_path", None)
+                # serve_thumbnail refuses derived bytes for these accounts, so a
+                # thumb_url here would only render as a broken image; dropping it
+                # lights up the gallery's own placeholder instead.
+                item["thumb_url"] = None
             else:
                 item["media_url"] = f"/media/{_encode_media_path(file_path)}"
 
@@ -2455,7 +2697,7 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
         raise HTTPException(status_code=409, detail="Username already exists")
 
     salt = secrets.token_hex(32)
-    password_hash = _hash_password(password, salt)
+    password_hash = await asyncio.to_thread(_hash_password, password, salt)
 
     chat_ids_json = None
     if allowed_chat_ids is not None:
@@ -2509,7 +2751,7 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
         if len(pwd) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
         salt = secrets.token_hex(32)
-        updates["password_hash"] = _hash_password(pwd, salt)
+        updates["password_hash"] = await asyncio.to_thread(_hash_password, pwd, salt)
         updates["salt"] = salt
 
     if "allowed_chat_ids" in data:
@@ -2664,7 +2906,7 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
     # Generate token: 32 bytes = 64 hex chars
     plaintext_token = secrets.token_hex(32)
     salt = secrets.token_hex(32)
-    token_hash = hashlib.pbkdf2_hmac("sha256", plaintext_token.encode(), bytes.fromhex(salt), 600_000).hex()
+    token_hash = await asyncio.to_thread(_hash_token, plaintext_token, salt)
 
     token_record = await db.create_viewer_token(
         label=label,
@@ -2845,37 +3087,20 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4003, reason="Forbidden origin")
         return
 
-    # Validate auth from cookie before accepting
-    cookies = websocket.cookies
-    auth_cookie = cookies.get(AUTH_COOKIE_NAME)
-    ws_user_chat_ids: set[int] | None = None
-
-    # Trusted proxy header auth for WebSocket upgrade
-    if _PROXY_AUTH_ENABLED:
-        proxy_user = websocket.headers.get(AUTH_PROXY_HEADER, "").strip()
-        if proxy_user:
-            try:
-                user_ctx = await _resolve_proxy_user(proxy_user)
-                ws_user_chat_ids = get_user_chat_ids(user_ctx)
-            except HTTPException:
-                await websocket.close(code=4001, reason="Proxy auth failed")
-                return
-        elif not AUTH_ENABLED and not ALLOW_ANONYMOUS_VIEWER:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-    elif AUTH_ENABLED:
-        if not auth_cookie:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-        session = await _resolve_session(auth_cookie)
-        if not session or time.time() - session.created_at > AUTH_SESSION_SECONDS:
-            await websocket.close(code=4001, reason="Session expired")
-            return
-        user_ctx = UserContext(session.username, session.role, session.allowed_chat_ids)
-        ws_user_chat_ids = get_user_chat_ids(user_ctx)
-    elif not ALLOW_ANONYMOUS_VIEWER:
-        await websocket.close(code=4001, reason="Viewer authentication is not configured")
+    # Validate auth before accepting, through the SAME resolver the HTTP routes
+    # use: proxy header first, then the session cookie, then the anonymous
+    # fallback. A socket that resolves to no principal is closed rather than
+    # connected, and the ACL it carries is that principal's ACL.
+    try:
+        user_ctx = await _resolve_user_context(
+            websocket.headers.get(AUTH_PROXY_HEADER) if _PROXY_AUTH_ENABLED else None,
+            websocket.cookies.get(AUTH_COOKIE_NAME),
+        )
+    except HTTPException as exc:
+        await websocket.close(code=4001, reason=exc.detail)
         return
+
+    ws_user_chat_ids = get_user_chat_ids(user_ctx)
 
     await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
 
