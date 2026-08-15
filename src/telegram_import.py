@@ -740,6 +740,14 @@ class TelegramImporter:
             if msg.get("forwarded_from"):
                 raw_data["forward_from_name"] = msg["forwarded_from"]
 
+            # Telegram Desktop exports carry no outgoing flag, no pinned flag and
+            # no forwarder id (forwarded_from is a bare display name, kept in
+            # raw_data above). Supplying hard-coded stand-ins here made the
+            # upsert treat them as observations, so `import --merge` overwrote
+            # the captured is_outgoing/is_pinned/forward_from_id on every
+            # overlapping row. Absent keys instead: a fresh insert still gets the
+            # correct defaults from the adapter, and a merge leaves the archived
+            # values alone.
             message_data = {
                 "id": msg_id,
                 "chat_id": chat_id,
@@ -748,11 +756,8 @@ class TelegramImporter:
                 "date": date,
                 "text": text,
                 "reply_to_msg_id": msg.get("reply_to_message_id"),
-                "forward_from_id": None,
                 "edit_date": parse_edited_date(msg),
                 "raw_data": raw_data,
-                "is_outgoing": 0,
-                "is_pinned": 0,
             }
 
             batch.append(message_data)

@@ -100,7 +100,13 @@ class Message(Base):
         foreign_keys="[Message.sender_id]",
     )
     reactions: Mapped[list[Reaction]] = relationship("Reaction", back_populates="message", lazy="dynamic")
-    media_items: Mapped[list[Media]] = relationship("Media", back_populates="message", lazy="selectin")
+    # lazy="select": every read path that needs media (get_messages_paginated,
+    # get_pinned_messages, find_message_by_date*, the streaming export) already
+    # outer-joins the media table and reads the columns from that join. Under
+    # lazy="selectin" SQLAlchemy fired a SECOND full media read per page whose
+    # ORM objects were built and thrown away — nothing in src/ reads
+    # Message.media_items.
+    media_items: Mapped[list[Media]] = relationship("Media", back_populates="message", lazy="select")
     versions: Mapped[list[MessageVersion]] = relationship("MessageVersion", back_populates="message", lazy="dynamic")
 
     __table_args__ = (
@@ -429,6 +435,16 @@ class ViewerAuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45))
     user_agent: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
+
+    # These two indexes are also created by migration 007. A fresh SQLite install
+    # is provisioned by create_all() and then stamped straight at the head
+    # revision, so 007 never runs there and the table was left unindexed forever
+    # — the lone index-level drift between a create_all schema and a migrated one.
+    # They serve get_audit_logs: `WHERE username = ? ORDER BY created_at DESC`.
+    __table_args__ = (
+        Index("idx_audit_log_username", "username"),
+        Index("idx_audit_log_created", "created_at"),
+    )
 
 
 class ViewerSession(Base):
