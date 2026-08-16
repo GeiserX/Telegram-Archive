@@ -587,6 +587,8 @@ docker compose up -d
 
 ## ⚠️ Upgrading (Breaking Changes)
 
+> 📦 **Upgrading to 8.0.0?** See **[docs/UPGRADING-8.0.md](docs/UPGRADING-8.0.md)** first — the database is rewritten once, and every viewer URL changes.
+
 For major version upgrades with breaking changes and migration scripts, see **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
 
 ## CLI Commands
