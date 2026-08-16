@@ -24,6 +24,7 @@ import secrets
 from datetime import datetime
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     DateTime,
     Float,
@@ -35,6 +36,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -197,7 +199,40 @@ class Message(Base):
         Index("idx_messages_reply_to", "chat_id", "reply_to_msg_id"),
         # v6.2.0: Index for topic message lookups in forum chats
         Index("idx_messages_topic", "chat_id", "reply_to_top_id"),
+        # PostgreSQL-only (#295-perf): the viewer's text search is
+        # Message.text.ilike('%term%') - a leading wildcard, which a B-tree
+        # can't serve at all, so every search was a full sequential scan
+        # that gets linearly slower as the archive grows. A GIN trigram
+        # index turns it into a bounded-cost lookup regardless of table
+        # size (measured ~95x faster on a ~100k-row instance: 41.8ms ->
+        # 0.4ms). ``postgresql_using``/``postgresql_ops`` are dialect-
+        # scoped kwargs - SQLAlchemy drops them for every dialect other
+        # than PostgreSQL. ddl_if scopes creation itself to PostgreSQL: a
+        # same-name B-tree on SQLite would copy the entire text column into
+        # an index no SQLite query plan can use - on a multi-gigabyte
+        # archive that is real, permanent file growth for nothing. The
+        # pg_trgm extension is created by the DDL hook below (create_all()
+        # path) and by migration 023 (Alembic path).
+        Index(
+            "idx_messages_text_trgm",
+            "text",
+            postgresql_using="gin",
+            postgresql_ops={"text": "gin_trgm_ops"},
+        ).ddl_if(dialect="postgresql"),
     )
+
+
+# idx_messages_text_trgm's gin_trgm_ops needs the pg_trgm extension to exist
+# before create_all() reaches that index - fired here rather than relying on
+# migration 023 alone, since create_all() (the SQLite-and-test-fixture path,
+# not the app's own PostgreSQL runtime path - see 021's docstring) never
+# runs Alembic. execute_if scopes this to PostgreSQL only; SQLite's
+# create_all() run never touches it.
+event.listen(
+    Message.__table__,
+    "before_create",
+    DDL("CREATE EXTENSION IF NOT EXISTS pg_trgm").execute_if(dialect="postgresql"),
+)
 
 
 class MessageVersion(Base):
