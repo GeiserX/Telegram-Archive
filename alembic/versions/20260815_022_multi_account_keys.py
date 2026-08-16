@@ -50,6 +50,18 @@ second rebuild of the same tables:
   (account 123, chat 456) grants access rather than denying it. Every restricted
   row is converted here rather than left NULL, because NULL means "unrestricted".
 
+One repair rides in front of all of it. Archives that lived through Telegram's
+group→supergroup renumbering — or that arrived through a bulk copy which ran
+with enforcement disabled, as data movers and restores routinely do — hold
+messages, sync rows, topics or folder members whose ``chats`` row no longer
+exists, and on PostgreSQL the 7.x constraint's ``convalidated`` flag still
+reads true over them because nothing ever re-checked it. Recreating the
+foreign keys below re-checks every row, so the first orphan used to abort the
+whole upgrade. Every distinct chat id those tables still reference and
+``chats`` no longer holds now gets a neutral placeholder row first — see
+``_create_placeholder_chats`` — after which the formerly orphaned rows are
+first-class and the viewer can serve them under their placeholder-titled chat.
+
 Safety, in the order it matters:
 
 1. **The first statement is DML.** Alembic sets ``transactional_ddl = False`` for
@@ -145,6 +157,16 @@ ACCOUNT_ID_TABLES: tuple[str, ...] = (
     "chat_folders",
     "chat_folder_members",
 )
+
+# Tables whose rows name a parent chat. A row in any of these whose chat id has
+# no chats row is an orphan, and recreating the foreign keys below would refuse
+# the whole upgrade over the first one it meets.
+CHATS_REFERENCING_TABLES: tuple[str, ...] = ("messages", "sync_status", "forum_topics", "chat_folder_members")
+
+# The marked-id convention this project stores (see telegram_backup's marked
+# ids): supergroups and channels are -100 followed by the internal id, so they
+# sit below -10^12; legacy basic groups are small negatives; users are positive.
+SUPERGROUP_ID_CEILING = -(10**12)
 
 # New primary keys, in column order. Leading with account_id makes it the
 # partition key of every seek instead of a filter applied after one.
@@ -529,6 +551,75 @@ def _create_accounts_table(conn: sa.Connection, inspector: sa.Inspector) -> None
                 "SELECT setval(pg_get_serial_sequence('accounts', 'id'), (SELECT COALESCE(MAX(id), 1) FROM accounts))"
             )
         )
+
+
+def _create_placeholder_chats(conn: sa.Connection, inspector: sa.Inspector) -> None:
+    """Give every orphaned row a parent chat before anything writes to its table.
+
+    Archives that lived through Telegram's group→supergroup renumbering — or a
+    bulk copy that ran with enforcement disabled, which is how the SQLite→
+    PostgreSQL path moves data — hold messages, sync rows, topics and folder
+    members whose ``chats`` row is long gone. PostgreSQL's ``convalidated``
+    flag still reads true for the 7.x constraint over such rows, because a
+    trigger-bypassing copy never re-checks it; recreating ``fk_messages_chat``
+    below re-checks every row and used to abort the whole upgrade on the first
+    orphan. Refusing was the wrong answer: the rows are the user's history, and
+    a rollback keeps them hostage on 7.x forever.
+
+    So, before ref minting and before any statement writes to a table that
+    references ``chats``, every distinct chat id that ``messages``,
+    ``sync_status``, ``forum_topics`` or ``chat_folder_members`` still points
+    at and ``chats`` no longer holds gets a placeholder row. Type comes from
+    the id pattern alone (supergroup below -10^12, group for other negatives,
+    private otherwise), the title is empty, the cursors are zero and the
+    timestamps are the database's now — never a value derived from message
+    content. Running right after ``_create_accounts_table`` is what lets the
+    stubs ride the same machinery as every real chat: ``_add_account_id_columns``
+    backfills them to account 1, ``_mint_chat_refs`` mints their ref, and the
+    recreated foreign keys cover them — after which the formerly orphaned rows
+    are first-class and the viewer serves them under a placeholder-titled chat.
+
+    One INSERT..SELECT, identical on both backends, idempotent by its
+    NOT EXISTS. Only columns the live pre-rebuild table actually has are named,
+    with values every 020-era NOT NULL column accepts; everything else keeps
+    its default or NULL.
+    """
+    present = _tables(inspector)
+    if "chats" not in present:
+        return
+    sources = [table for table in CHATS_REFERENCING_TABLES if table in present]
+    if not sources:
+        return
+
+    placeholder = {
+        "id": "missing.chat_id",
+        "type": (
+            f"CASE WHEN missing.chat_id < {SUPERGROUP_ID_CEILING} THEN 'supergroup' "
+            "WHEN missing.chat_id < 0 THEN 'group' ELSE 'private' END"
+        ),
+        "title": "''",
+        "is_forum": "0",
+        "is_archived": "0",
+        "last_synced_message_id": "0",
+        "created_at": "CURRENT_TIMESTAMP",
+        "updated_at": "CURRENT_TIMESTAMP",
+    }
+    live = _column_names(inspector, "chats")
+    columns = [column for column in placeholder if column in live]
+    referenced = " UNION ".join(f'SELECT chat_id FROM "{table}"' for table in sources)
+    names = ", ".join(f'"{column}"' for column in columns)
+    values = ", ".join(placeholder[column] for column in columns)
+    created = conn.execute(
+        sa.text(
+            f"INSERT INTO chats ({names}) "
+            f"SELECT {values} FROM ({referenced}) AS missing "
+            "WHERE missing.chat_id IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM chats WHERE chats.id = missing.chat_id)"
+        )
+    ).rowcount
+    if created:
+        # Count only - a chat id is PII in this project's logs.
+        logger.info("022: created %d placeholder chat row(s) for rows whose chat no longer exists", created)
 
 
 def _add_account_id_columns(conn: sa.Connection, inspector: sa.Inspector) -> None:
@@ -950,6 +1041,7 @@ def upgrade() -> None:
         try:
             _open_write_transaction(conn, inspector)
             _create_accounts_table(conn, sa.inspect(conn))
+            _create_placeholder_chats(conn, sa.inspect(conn))
             _add_account_id_columns(conn, sa.inspect(conn))
             _mint_chat_refs(conn, sa.inspect(conn))
             _add_entitlement_columns(conn, sa.inspect(conn))

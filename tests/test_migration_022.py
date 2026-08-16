@@ -22,10 +22,17 @@ covers is removed.
   important, must NOT refuse when they are alone. The first version of the
   exclusive-access check used a second connection, which in WAL mode sees
   Alembic's own connection and would have refused every real upgrade there is.
+* **The 8.0.0 field failure** is reproduced the way production had it: orphaned
+  messages and sync rows planted through a trigger-bypassing path, so on
+  PostgreSQL the 7.x constraint's ``convalidated`` flag reads true over rows
+  that violate it. Recreating ``fk_messages_chat`` then aborted the whole
+  upgrade. The upgrade must now heal the archive with neutral placeholder
+  chats instead of refusing — creating nothing on an archive that needs none.
 """
 
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -831,6 +838,418 @@ class TestResult:
         finally:
             engine.dispose()
         assert after == before
+
+
+# ---------------------------------------------------------------------------
+# The 8.0.0 field failure: rows whose chat no longer exists
+# ---------------------------------------------------------------------------
+
+# Synthetic vanished chats in all three id shapes: plain-negative legacy
+# groups and -100-prefixed supergroups (what the group→supergroup renumbering
+# leaves behind), plus a positive-id private chat (a deleted account), with a
+# lopsided, roughly binomial spread of messages over six of them, the way a
+# real archive has it. Every id is synthetic.
+VANISHED_GROUPS = (-990001, -990002)
+VANISHED_SUPERGROUPS = (-1009900000001, -1009900000002, -1009900000003)
+VANISHED_PRIVATE = (990003,)
+ORPHAN_MESSAGES: dict[int, int] = {
+    VANISHED_GROUPS[0]: 1,
+    VANISHED_GROUPS[1]: 4,
+    VANISHED_SUPERGROUPS[0]: 6,
+    VANISHED_SUPERGROUPS[1]: 4,
+    VANISHED_SUPERGROUPS[2]: 1,
+    VANISHED_PRIVATE[0]: 2,
+}
+ORPHAN_MESSAGE_TOTAL = sum(ORPHAN_MESSAGES.values())
+EXPECTED_PLACEHOLDER_TYPES = {
+    **{chat_id: "group" for chat_id in VANISHED_GROUPS},
+    **{chat_id: "supergroup" for chat_id in VANISHED_SUPERGROUPS},
+    **{chat_id: "private" for chat_id in VANISHED_PRIVATE},
+}
+PLACEHOLDER_LOG_LINE = (
+    f"022: created {len(EXPECTED_PLACEHOLDER_TYPES)} placeholder chat row(s) for rows whose chat no longer exists"
+)
+
+# Tables whose pre-upgrade rows must come through the healed upgrade
+# byte-for-byte (projected onto their pre-upgrade columns; the placeholder
+# chats are the only permitted additions).
+STABLE_TABLES = (
+    "chats",
+    "users",
+    "messages",
+    "media",
+    "reactions",
+    "message_versions",
+    "sync_status",
+    "forum_topics",
+    "chat_folders",
+    "chat_folder_members",
+    "viewer_accounts",
+    "viewer_tokens",
+    "viewer_sessions",
+    "push_subscriptions",
+)
+
+
+def plant_orphans(sync_url: str) -> None:
+    """Insert messages and sync_status rows whose chats row does not exist.
+
+    On PostgreSQL this goes through ``session_replication_role = replica`` so
+    the 7.x foreign key's triggers never fire — the exact state a bulk
+    trigger-bypassing copy leaves behind, where ``convalidated`` still reads
+    true over rows that violate the constraint. On SQLite plain inserts do it:
+    nothing in this project ever turns ``PRAGMA foreign_keys`` on.
+    """
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                conn.execute(sa.text("SET session_replication_role = replica"))
+            message_id = 9000
+            for chat_id, count in ORPHAN_MESSAGES.items():
+                for _ in range(count):
+                    message_id += 1
+                    conn.execute(
+                        sa.text(
+                            "INSERT INTO messages (id, chat_id, sender_id, sender_name, date, text, raw_data, "
+                            "created_at, is_outgoing, is_pinned, is_deleted) "
+                            "VALUES (:id, :chat_id, 7001, 'S', :when, :text, :raw, :when, 0, 0, 0)"
+                        ),
+                        {
+                            "id": message_id,
+                            "chat_id": chat_id,
+                            "when": WHEN,
+                            "text": f"orphan {message_id}",
+                            "raw": json.dumps({"n": message_id}),
+                        },
+                    )
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO sync_status (chat_id, last_message_id, last_sync_date, message_count) "
+                        "VALUES (:chat_id, :last, :when, :count)"
+                    ),
+                    {"chat_id": chat_id, "last": message_id, "when": WHEN, "count": count},
+                )
+    finally:
+        engine.dispose()
+
+
+def orphan_counts(sync_url: str) -> dict[str, int]:
+    """Rows per chats-referencing table whose chat id has no chats row."""
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            return {
+                table: conn.execute(
+                    sa.text(
+                        f'SELECT COUNT(*) FROM "{table}" t LEFT JOIN chats c ON c.id = t.chat_id WHERE c.id IS NULL'
+                    )
+                ).scalar()
+                for table in ("messages", "sync_status", "forum_topics", "chat_folder_members")
+            }
+    finally:
+        engine.dispose()
+
+
+def count_rows(sync_url: str, table: str) -> int:
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(sa.text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
+    finally:
+        engine.dispose()
+
+
+def pre_upgrade_columns(sync_url: str, tables: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    engine = sa.create_engine(sync_url)
+    try:
+        inspector = sa.inspect(engine)
+        return {table: tuple(column["name"] for column in inspector.get_columns(table)) for table in tables}
+    finally:
+        engine.dispose()
+
+
+def stable_digest(sync_url: str, columns_by_table: dict[str, tuple[str, ...]]) -> dict[str, set[frozenset]]:
+    """Every row of every listed table, projected onto the given columns.
+
+    Values are stringified so the same data reads identically before and after
+    the migration on either backend; rows are frozensets of (column, value) so
+    the comparison survives column reordering by a rebuild.
+    """
+    out: dict[str, set[frozenset]] = {}
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            for table, columns in columns_by_table.items():
+                select = ", ".join(f'"{column}"' for column in columns)
+                out[table] = {
+                    frozenset(
+                        (column, None if value is None else str(value))
+                        for column, value in zip(columns, row, strict=True)
+                    )
+                    for row in conn.execute(sa.text(f'SELECT {select} FROM "{table}"'))
+                }
+    finally:
+        engine.dispose()
+    return out
+
+
+def placeholder_rows(sync_url: str) -> dict[int, dict]:
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT id, account_id, type, title, is_archived, last_synced_message_id, ref, "
+                        "created_at, updated_at FROM chats WHERE id IN :ids"
+                    ).bindparams(sa.bindparam("ids", expanding=True)),
+                    {"ids": list(EXPECTED_PLACEHOLDER_TYPES)},
+                )
+                .mappings()
+                .all()
+            )
+            return {row["id"]: dict(row) for row in rows}
+    finally:
+        engine.dispose()
+
+
+def pg_constraint(sync_url: str, table: str, name: str) -> tuple[bool, str] | None:
+    """(convalidated, definition) of the named constraint, or None."""
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT convalidated, pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conname = :name AND conrelid = CAST(:table AS regclass)"
+                ),
+                {"name": name, "table": table},
+            ).first()
+        return None if row is None else (bool(row[0]), str(row[1]))
+    finally:
+        engine.dispose()
+
+
+def revalidate_for_real(sync_url: str, table: str, name: str) -> None:
+    """Drop and re-add the constraint verbatim, forcing a fresh full scan.
+
+    ``VALIDATE CONSTRAINT`` skips a constraint already flagged valid, and the
+    flag is exactly what the field incident taught us not to trust — an
+    archive can arrive with ``convalidated = true`` over rows that violate the
+    constraint. Re-adding validates unconditionally, so an orphan left behind
+    raises here instead of hiding behind the flag.
+    """
+    state = pg_constraint(sync_url, table, name)
+    assert state is not None, f"{name} does not exist on {table}"
+    _validated, definition = state
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f'ALTER TABLE "{table}" DROP CONSTRAINT "{name}"'))
+            conn.execute(sa.text(f'ALTER TABLE "{table}" ADD CONSTRAINT "{name}" {definition}'))
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def orphaned_020(tmp_path_factory) -> Path:
+    """A seeded SQLite archive at revision 020 carrying the field failure.
+
+    Revision 020 because that is where the production archive stood when 8.0.0
+    refused it, so the run under test crosses 021 over the orphans as well.
+    """
+    path = tmp_path_factory.mktemp("orphaned") / "archive.db"
+    upgrade_to(f"sqlite+aiosqlite:///{path}", "020")
+    seed(f"sqlite:///{path}")
+    plant_orphans(f"sqlite:///{path}")
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def orphaned_archive(orphaned_020, tmp_path) -> Path:
+    path = tmp_path / "archive.db"
+    shutil.copy(orphaned_020, path)
+    return path
+
+
+class TestOrphanedChats:
+    """An archive whose messages outlived their chats must upgrade, healed."""
+
+    def _assert_healed(self, sync_url: str, before: dict, columns: dict) -> None:
+        # Exactly the vanished chats came back, as neutral placeholders typed
+        # by their id pattern — never anything read from message content.
+        stubs = placeholder_rows(sync_url)
+        assert set(stubs) == set(EXPECTED_PLACEHOLDER_TYPES)
+        for chat_id, row in stubs.items():
+            assert row["type"] == EXPECTED_PLACEHOLDER_TYPES[chat_id], f"type wrong for a {row['type']} stub"
+            assert row["title"] == ""
+            assert int(row["account_id"]) == 1
+            assert int(row["is_archived"]) == 0
+            assert int(row["last_synced_message_id"]) == 0
+            assert row["ref"] and len(row["ref"]) == 22
+            # Database-now timestamps, not the messages' dates.
+            assert row["created_at"] is not None and str(row["created_at"]) != str(WHEN)
+            assert row["updated_at"] is not None and str(row["updated_at"]) != str(WHEN)
+
+        # The stubs' refs are real minted refs: present and globally unique.
+        assert count_rows(sync_url, "chats") == len(CHAT_IDS) + len(EXPECTED_PLACEHOLDER_TYPES)
+        engine = sa.create_engine(sync_url)
+        try:
+            with engine.connect() as conn:
+                total, distinct = conn.execute(sa.text("SELECT COUNT(*), COUNT(DISTINCT ref) FROM chats")).first()
+            assert (total, distinct) == (len(CHAT_IDS) + len(EXPECTED_PLACEHOLDER_TYPES),) * 2
+        finally:
+            engine.dispose()
+
+        # Every orphan is still there and none of them is an orphan any more.
+        assert count_rows(sync_url, "messages") == len(CHAT_IDS) * 3 + ORPHAN_MESSAGE_TOTAL
+        assert count_rows(sync_url, "sync_status") == len(CHAT_IDS) + len(EXPECTED_PLACEHOLDER_TYPES)
+        assert orphan_counts(sync_url) == {
+            "messages": 0,
+            "sync_status": 0,
+            "forum_topics": 0,
+            "chat_folder_members": 0,
+        }
+
+        # And not because anything was rewritten: every pre-existing row of
+        # every table survived byte-for-byte on its pre-upgrade columns.
+        after = stable_digest(sync_url, columns)
+        stub_ids = {str(chat_id) for chat_id in EXPECTED_PLACEHOLDER_TYPES}
+        for table, rows in before.items():
+            survivors = after[table]
+            if table == "chats":
+                survivors = {row for row in survivors if not any(("id", stub) in row for stub in stub_ids)}
+            assert survivors == rows, f"{table}: pre-existing rows changed"
+
+    def _assert_log_discipline(self, caplog) -> None:
+        lines = [record.getMessage() for record in caplog.records if "placeholder chat row" in record.getMessage()]
+        assert lines == [PLACEHOLDER_LOG_LINE]
+        # Counts only, never ids: no vanished chat id may appear in any log.
+        for chat_id in EXPECTED_PLACEHOLDER_TYPES:
+            assert str(abs(chat_id)) not in caplog.text
+
+    def test_the_field_signature_upgrades_on_sqlite(self, orphaned_archive, caplog):
+        caplog.set_level(logging.INFO, logger="alembic.runtime.migration")
+        sync_url = f"sqlite:///{orphaned_archive}"
+        assert alembic_version(orphaned_archive) == "020"
+        assert orphan_counts(sync_url) == {
+            "messages": ORPHAN_MESSAGE_TOTAL,
+            "sync_status": len(EXPECTED_PLACEHOLDER_TYPES),
+            "forum_topics": 0,
+            "chat_folder_members": 0,
+        }
+        columns = pre_upgrade_columns(sync_url, STABLE_TABLES)
+        before = stable_digest(sync_url, columns)
+
+        upgrade_to(f"sqlite+aiosqlite:///{orphaned_archive}")
+
+        assert alembic_version(orphaned_archive) == chain_head()
+        self._assert_healed(sync_url, before, columns)
+        conn = sqlite3.connect(str(orphaned_archive))
+        try:
+            # SQLite's own referee agrees: nothing dangles after the rebuild.
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        self._assert_log_discipline(caplog)
+
+    def test_the_field_signature_upgrades_on_postgresql(self, require_postgres, make_postgres_database, caplog):
+        """The production failure, in miniature: ``convalidated`` lies.
+
+        Orphans are planted through ``session_replication_role = replica``, the
+        same trigger-bypassing path a bulk copy uses, so the 7.x constraint's
+        flag keeps saying the constraint holds while the planted rows violate it.
+        8.0.0 died recreating ``fk_messages_chat`` here; the upgrade must now
+        succeed, heal, and withstand a genuinely fresh validation.
+        """
+        caplog.set_level(logging.INFO, logger="alembic.runtime.migration")
+        async_url, sync_url = make_postgres_database("telegram_archive_migration_022_orphans")
+        upgrade_to(async_url, "020")
+        seed(sync_url)
+        plant_orphans(sync_url)
+
+        # The field archive's lie, reproduced exactly: the flag says validated,
+        # the rows say violated.
+        for table, name in (("messages", "messages_chat_id_fkey"), ("sync_status", "sync_status_chat_id_fkey")):
+            state = pg_constraint(sync_url, table, name)
+            assert state is not None and state[0] is True, f"{name} should read convalidated"
+        assert orphan_counts(sync_url) == {
+            "messages": ORPHAN_MESSAGE_TOTAL,
+            "sync_status": len(EXPECTED_PLACEHOLDER_TYPES),
+            "forum_topics": 0,
+            "chat_folder_members": 0,
+        }
+        columns = pre_upgrade_columns(sync_url, STABLE_TABLES)
+        before = stable_digest(sync_url, columns)
+
+        upgrade_to(async_url)
+
+        self._assert_healed(sync_url, before, columns)
+        # Validated for real: drop and re-add each recreated chats constraint
+        # verbatim, forcing PostgreSQL to rescan every row.
+        revalidate_for_real(sync_url, "messages", "fk_messages_chat")
+        revalidate_for_real(sync_url, "sync_status", "fk_sync_status_chat")
+        self._assert_log_discipline(caplog)
+
+    def test_every_chats_referencing_table_earns_stubs(self, archive, caplog):
+        """forum_topics and chat_folder_members orphans get parents too.
+
+        The field archive had orphans only in messages and sync_status, but
+        ``fk_forum_topics_chat`` and ``fk_folder_members_chat`` would abort on
+        these just the same, so the repair covers the whole family.
+        """
+        caplog.set_level(logging.INFO, logger="alembic.runtime.migration")
+        vanished_topic_chat, vanished_member_chat = -1009900000777, -990777
+        conn = sqlite3.connect(str(archive))
+        try:
+            conn.execute(
+                "INSERT INTO forum_topics (id, chat_id, title, is_closed, is_pinned, is_hidden, date, "
+                "created_at, updated_at) VALUES (7, ?, 'T', 0, 0, 0, ?, ?, ?)",
+                (vanished_topic_chat, str(WHEN), str(WHEN), str(WHEN)),
+            )
+            conn.execute(
+                "INSERT INTO chat_folder_members (folder_id, chat_id) VALUES (2, ?)",
+                (vanished_member_chat,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        upgrade_to(f"sqlite+aiosqlite:///{archive}")
+
+        conn = sqlite3.connect(str(archive))
+        try:
+            created = dict(
+                conn.execute(
+                    "SELECT id, type FROM chats WHERE id IN (?, ?)",
+                    (vanished_topic_chat, vanished_member_chat),
+                ).fetchall()
+            )
+            assert created == {vanished_topic_chat: "supergroup", vanished_member_chat: "group"}
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert "022: created 2 placeholder chat row(s) for rows whose chat no longer exists" in caplog.text
+
+    def test_a_clean_archive_creates_no_placeholders_and_stays_quiet(self, archive, caplog):
+        caplog.set_level(logging.INFO, logger="alembic.runtime.migration")
+        upgrade_to(f"sqlite+aiosqlite:///{archive}")
+        assert count_rows(f"sqlite:///{archive}", "chats") == len(CHAT_IDS)
+        assert "placeholder" not in caplog.text
+
+    def test_rerunning_over_a_healed_archive_creates_nothing_more(self, orphaned_archive, caplog):
+        upgrade_to(f"sqlite+aiosqlite:///{orphaned_archive}")
+        once = sqlite_digest(orphaned_archive)
+        caplog.set_level(logging.INFO, logger="alembic.runtime.migration")
+        caplog.clear()
+        upgrade_to(f"sqlite+aiosqlite:///{orphaned_archive}")
+        assert sqlite_digest(orphaned_archive) == once
+        assert "placeholder" not in caplog.text
 
 
 class TestEntrypointLadder(unittest.TestCase):
