@@ -14,7 +14,7 @@ import os
 import secrets
 import time
 import traceback
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -54,6 +54,22 @@ mimetypes.add_type("video/webm", ".webm")
 mimetypes.add_type("image/webp", ".webp")
 
 
+@dataclass(frozen=True)
+class ConnectionIdentity:
+    """A socket's revocation coordinates: how a revoking path finds it again.
+
+    The UserContext a socket carries is a SNAPSHOT of the grant it was admitted
+    with, so it can never answer "is this principal still allowed in?". These
+    three fields can: the session that admitted the socket, the principal that
+    owns it, and the share token that minted the session (token sessions only).
+    Proxy-header and anonymous sockets carry a username and nothing else.
+    """
+
+    username: str
+    session_key: str | None = None
+    source_token_id: int | None = None
+
+
 # WebSocket Connection Manager for real-time updates
 class ConnectionManager:
     """Manages WebSocket connections for real-time updates.
@@ -63,22 +79,69 @@ class ConnectionManager:
     is enforced by the endpoint through the SAME resolver the HTTP routes use;
     broadcast_to_chat re-checks the chat against the socket's context so a frame
     can never outrun the grant it rode in on.
+
+    A socket also carries its ConnectionIdentity, which is what makes revocation
+    reach it: the grant snapshot cannot notice that its principal was logged
+    out, disabled, deleted, revoked or expired, so close_for() closes the socket
+    from the outside when any of those happen.
     """
 
     def __init__(self):
         self.active_connections: dict[WebSocket, set[str]] = {}
         self._contexts: dict[WebSocket, UserContext] = {}
+        self._identities: dict[WebSocket, ConnectionIdentity] = {}
 
-    async def connect(self, websocket: WebSocket, user: UserContext):
+    async def connect(self, websocket: WebSocket, user: UserContext, identity: ConnectionIdentity | None = None):
         await websocket.accept()
         self.active_connections[websocket] = set()
         self._contexts[websocket] = user
+        self._identities[websocket] = identity or ConnectionIdentity(username=user.username)
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.pop(websocket, None)
         self._contexts.pop(websocket, None)
+        self._identities.pop(websocket, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def close_for(
+        self,
+        *,
+        username: str | None = None,
+        session_keys: Iterable[str] | None = None,
+        source_token_id: int | None = None,
+    ) -> int:
+        """Close every socket held by a revoked principal. Returns how many.
+
+        A socket matches when ANY supplied coordinate matches its identity —
+        each caller passes exactly the coordinate it is revoking (one session
+        key on logout and on expiry, a username on viewer disable/delete, a
+        token id on share-token revoke). 4001 is the same code the upgrade
+        path already closes with when a socket cannot be tied to a live
+        principal, so a client sees one "you are no longer authenticated"
+        signal however the grant ended.
+        """
+        keys = set(session_keys) if session_keys is not None else set()
+        revoked = [
+            websocket
+            for websocket, identity in self._identities.items()
+            if (username is not None and identity.username == username)
+            or (identity.session_key is not None and identity.session_key in keys)
+            or (source_token_id is not None and identity.source_token_id == source_token_id)
+        ]
+        for websocket in revoked:
+            # Drop the socket's state BEFORE awaiting the close: a broadcast
+            # landing in another task while the close frame is in flight must
+            # not find a revoked socket still subscribed.
+            self.disconnect(websocket)
+            try:
+                await websocket.close(code=4001, reason="Session revoked")
+            except Exception as e:
+                # Already-closing sockets raise here; the state is gone either way.
+                logger.debug(f"Closing a revoked websocket raised {type(e).__name__}")
+        if revoked:
+            logger.info(f"Closed {len(revoked)} websocket(s) for a revoked principal")
+        return len(revoked)
 
     def subscribe(self, websocket: WebSocket, chat_ref: str) -> bool:
         """Record a subscription for an already-authorized chat ref."""
@@ -349,6 +412,14 @@ async def session_cleanup_task():
                 _sessions.pop(k, None)
             if expired:
                 logger.info(f"Cleaned up {len(expired)} expired sessions from cache")
+                # An expired session must lose its socket too, or the principal
+                # keeps receiving frames from the grant it was admitted with.
+                # Closing them HERE rather than re-checking the session on the
+                # broadcast path is the choice that cannot regress delivery
+                # latency: this runs once per sweep over a list the sweep has
+                # already built, while a per-frame check would add a session
+                # lookup to every message for every subscribed socket.
+                await ws_manager.close_for(session_keys=expired)
             # Also clean DB
             if db:
                 try:
@@ -473,7 +544,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if config.push_notifications == "full":
         from .push import PushNotificationManager
 
-        push_manager = PushNotificationManager(db, config)
+        push_manager = PushNotificationManager(db, config, configured_principals=_configured_principals())
         push_enabled = await push_manager.initialize()
         if push_enabled:
             logger.info("Web Push notifications enabled (PUSH_NOTIFICATIONS=full)")
@@ -793,13 +864,17 @@ async def _create_session(
     user_sessions = [(k, v) for k, v in _sessions.items() if v.username == username]
     if len(user_sessions) >= _MAX_SESSIONS_PER_USER:
         user_sessions.sort(key=lambda x: x[1].created_at)
-        for token, _ in user_sessions[: len(user_sessions) - _MAX_SESSIONS_PER_USER + 1]:
+        evicted = [token for token, _ in user_sessions[: len(user_sessions) - _MAX_SESSIONS_PER_USER + 1]]
+        for token in evicted:
             _sessions.pop(token, None)
             if db:
                 try:
                     await db.delete_session(token)
                 except Exception:
                     pass
+        # Eviction deletes a session like any other revocation, so it closes
+        # that session's sockets too.
+        await ws_manager.close_for(session_keys=evicted)
 
     now = time.time()
     token = secrets.token_urlsafe(32)
@@ -841,8 +916,40 @@ async def _create_session(
     return token
 
 
+async def _purge_push_subscriptions(username: str) -> None:
+    """Delete every stored push channel owned by ``username``.
+
+    A push subscription outlives every session: the push service delivers to
+    the browser with no cookie and no socket involved, so revoking sessions
+    alone leaves a revoked principal still being notified. Best-effort by
+    design — a failure here must not abort the rest of a revocation, and
+    PushNotificationManager.get_subscriptions re-checks owner liveness at send
+    time as the backstop for exactly that case.
+
+    Deletion is per USERNAME, not per browser: the server cannot tell which
+    endpoint belongs to which session, so logging out of one browser drops the
+    user's other browsers' subscriptions too. They re-subscribe on their next
+    load; the reverse (leaving a revoked channel armed) is the unsafe half.
+    """
+    if not db:
+        return
+    try:
+        deleted = await db.delete_push_subscriptions_for_username(username=username)
+    except Exception as e:
+        logger.warning(f"Failed to delete push subscriptions ({type(e).__name__})")
+        return
+    if deleted:
+        logger.info(f"Deleted {deleted} push subscription(s) for a revoked principal")
+
+
 async def _invalidate_user_sessions(username: str) -> None:
-    """Remove all sessions for a given username."""
+    """Revoke everything a username holds: sessions, open sockets, push channels.
+
+    The single choke point for viewer update/disable/delete. Sessions are only
+    the credential; the socket and the push subscription are live delivery
+    channels that keep working after the session row is gone, so all three end
+    here.
+    """
     to_remove = [k for k, v in _sessions.items() if v.username == username]
     for k in to_remove:
         _sessions.pop(k, None)
@@ -851,18 +958,43 @@ async def _invalidate_user_sessions(username: str) -> None:
             await db.delete_user_sessions(username)
         except Exception as e:
             logger.warning(f"Failed to delete DB sessions for {username}: {e}")
+    await ws_manager.close_for(username=username)
+    await _purge_push_subscriptions(username)
 
 
 async def _invalidate_token_sessions(token_id: int) -> None:
-    """Remove all sessions created from a specific share token (on revoke/delete/update)."""
-    to_remove = [k for k, v in _sessions.items() if v.source_token_id == token_id]
-    for k in to_remove:
+    """Revoke everything a share token holds (on revoke/delete/update).
+
+    The token's push channels are stored under the session username the token
+    minted, so they are purged for each username the revoked sessions carried.
+    A token whose sessions are all already gone leaves no username to purge
+    here — get_subscriptions' owner-liveness check is what silences that row.
+    """
+    to_remove = [(k, v.username) for k, v in _sessions.items() if v.source_token_id == token_id]
+    for k, _ in to_remove:
         _sessions.pop(k, None)
     if db:
         try:
             await db.delete_sessions_by_source_token_id(token_id)
         except Exception as e:
             logger.warning(f"Failed to delete token sessions for token_id={token_id}: {e}")
+    await ws_manager.close_for(source_token_id=token_id)
+    for username in {username for _, username in to_remove}:
+        await _purge_push_subscriptions(username)
+
+
+def _configured_principals() -> set[str]:
+    """Usernames that exist by CONFIGURATION rather than by a viewer_accounts row.
+
+    The env master, the trusted-proxy admins and the anonymous viewer never
+    have an account row, so a liveness check against viewer_accounts would read
+    them as deleted and silence their push notifications. The database cannot
+    prove a configured principal dead; only the operator's config can.
+    """
+    names = {VIEWER_USERNAME, *AUTH_PROXY_ADMIN_USERS}
+    if ALLOW_ANONYMOUS_VIEWER:
+        names.add("anonymous")
+    return {name for name in names if name}
 
 
 def _get_secure_cookies(request: Request) -> bool:
@@ -994,7 +1126,11 @@ async def _resolve_user_context(proxy_header_value: str | None, auth_cookie: str
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     if time.time() - session.created_at > AUTH_SESSION_SECONDS:
+        # This request expires the session ahead of the sweep, which then never
+        # sees it — so the socket it admitted has to be closed from here, or it
+        # outlives every path that could have closed it.
         _sessions.pop(auth_cookie, None)
+        await ws_manager.close_for(session_keys=(auth_cookie,))
         raise HTTPException(status_code=401, detail="Session expired")
 
     session.last_accessed = time.time()
@@ -1005,6 +1141,24 @@ async def _resolve_user_context(proxy_header_value: str | None, auth_cookie: str
         allowed_chat_refs=session.allowed_chat_refs,
         no_download=session.no_download,
     )
+
+
+def _socket_identity(user: UserContext, auth_cookie: str | None) -> ConnectionIdentity:
+    """The revocation coordinates to file a new socket under.
+
+    Cookie-authenticated sockets are filed under their session key and, for a
+    share-token session, the token that minted it — the two coordinates the
+    revoking paths know. Proxy-header and anonymous sockets have no session, so
+    the username is all there is; revoking such a principal is a viewer
+    disable/delete, which matches on the username anyway. A cookie that
+    resolved to a DIFFERENT principal than the one admitted (proxy auth won,
+    with a stale cookie still attached) is not this socket's key and is
+    ignored.
+    """
+    session = _sessions.get(auth_cookie) if auth_cookie else None
+    if session is None or session.username != user.username:
+        return ConnectionIdentity(username=user.username)
+    return ConnectionIdentity(username=user.username, session_key=auth_cookie, source_token_id=session.source_token_id)
 
 
 async def require_auth(
@@ -1573,7 +1727,10 @@ async def check_auth(request: Request, auth_cookie: str | None = Cookie(default=
     if not session:
         return {"authenticated": False, "auth_required": True}
     if time.time() - session.created_at > AUTH_SESSION_SECONDS:
+        # Same rule as _resolve_user_context: whoever expires the session owns
+        # closing the sockets it admitted.
         _sessions.pop(auth_cookie, None)
+        await ws_manager.close_for(session_keys=(auth_cookie,))
         return {"authenticated": False, "auth_required": True}
 
     return {
@@ -1715,9 +1872,15 @@ async def logout(
     request: Request,
     auth_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
 ):
-    """Invalidate current session and clear cookie."""
+    """Invalidate current session and clear cookie.
+
+    Logout revokes the BROWSER's channels, not the account's: this session's
+    sockets are closed and this user's push subscriptions are deleted, while
+    the user's other sessions stay live.
+    """
     if auth_cookie:
         session = _sessions.pop(auth_cookie, None)
+        await ws_manager.close_for(session_keys=(auth_cookie,))
         if db:
             # Always attempt DB delete (session may exist in DB but not in memory cache)
             try:
@@ -1736,6 +1899,8 @@ async def logout(
                     endpoint="/api/logout",
                     ip_address=request.client.host if request.client else None,
                 )
+        if session:
+            await _purge_push_subscriptions(session.username)
 
     response = JSONResponse({"success": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
@@ -3265,16 +3430,17 @@ async def websocket_endpoint(websocket: WebSocket):
     # use: proxy header first, then the session cookie, then the anonymous
     # fallback. A socket that resolves to no principal is closed rather than
     # connected, and the ACL it carries is that principal's ACL.
+    auth_cookie = websocket.cookies.get(AUTH_COOKIE_NAME)
     try:
         user_ctx = await _resolve_user_context(
             websocket.headers.get(AUTH_PROXY_HEADER) if _PROXY_AUTH_ENABLED else None,
-            websocket.cookies.get(AUTH_COOKIE_NAME),
+            auth_cookie,
         )
     except HTTPException as exc:
         await websocket.close(code=4001, reason=exc.detail)
         return
 
-    await ws_manager.connect(websocket, user_ctx)
+    await ws_manager.connect(websocket, user_ctx, _socket_identity(user_ctx, auth_cookie))
 
     try:
         while True:

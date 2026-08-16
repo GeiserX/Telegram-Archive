@@ -3842,6 +3842,15 @@
                 }
 
                 const performLogout = async () => {
+                    // Drop this browser's push channel first: /api/push/unsubscribe
+                    // is session-authenticated, so it has to run while the cookie is
+                    // still valid, and push_enabled must go or the next load
+                    // re-subscribes automatically. Best-effort only — the server
+                    // purge in /api/logout is the guarantee.
+                    try {
+                        await unsubscribeFromPush()
+                    } catch (e) { /* ignore */ }
+                    localStorage.removeItem('push_enabled')
                     try {
                         await fetch('/api/logout', { method: 'POST', credentials: 'include' })
                     } catch (e) { /* ignore */ }

@@ -12,6 +12,7 @@ import ipaddress
 import json
 import logging
 import socket
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +27,9 @@ from ..message_utils import utcnow_naive
 logger = logging.getLogger(__name__)
 
 _LOCAL_HOSTNAME_SUFFIXES = (".local", ".internal")
+
+# Share-token sessions (and so their push rows) are stored under this prefix.
+_TOKEN_USERNAME_PREFIX = "token:"
 
 # webpush() is pywebpush's synchronous requests.post, and it always forwards its
 # own timeout argument -- so leaving it out means requests.post(timeout=None),
@@ -110,9 +114,13 @@ def validate_push_endpoint(endpoint: str) -> bool:
 class PushNotificationManager:
     """Manages Web Push notifications for the viewer."""
 
-    def __init__(self, db_adapter, config):
+    def __init__(self, db_adapter, config, *, configured_principals: Iterable[str] = ()):
         self.db = db_adapter
         self.config = config
+        # Usernames that exist by configuration rather than by a viewer_accounts
+        # row (the env master, proxy admins, the anonymous viewer). The owner
+        # liveness check below can never prove those dead, so it leaves them be.
+        self.configured_principals = frozenset(configured_principals)
         self._vapid: Vapid | None = None
         self._public_key: str | None = None
         self._private_key: str | None = None
@@ -311,6 +319,11 @@ class PushNotificationManager:
         exists only there (or cannot be parsed) receives nothing, exactly like
         the viewer's own resolver. Without a chat context only unrestricted
         subscriptions qualify.
+
+        The grant is a SNAPSHOT taken at subscribe time, so it cannot notice
+        that its owner was disabled, deleted or revoked since; owner liveness
+        is therefore checked here as well, as the backstop for a revocation
+        whose push purge never ran.
         """
         try:
             from sqlalchemy import or_, select
@@ -326,7 +339,7 @@ class PushNotificationManager:
                 result = await session.execute(query)
                 subs = result.scalars().all()
 
-                filtered = []
+                entitled = []
                 for sub in subs:
                     accounts = parse_entitlement_column(sub.allowed_accounts, int)
                     refs = parse_entitlement_column(sub.allowed_chat_refs, str)
@@ -339,13 +352,78 @@ class PushNotificationManager:
                         continue
                     if refs is not None and chat_ref not in refs:
                         continue
-                    filtered.append({"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}})
+                    entitled.append(sub)
 
-                return filtered
+                live = await self._live_owners(session, {sub.username for sub in entitled if sub.username})
+
+                return [
+                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}}
+                    for sub in entitled
+                    if not sub.username or sub.username in live
+                ]
 
         except Exception as e:
             logger.error(f"Failed to get push subscriptions: {e}")
             return []
+
+    async def _live_owners(self, session, usernames: set[str]) -> set[str]:
+        """Which of ``usernames`` still resolve to a principal allowed to receive.
+
+        Two queries at most, never one per row: ``token:`` owners are checked
+        against the share tokens, everyone else against the viewer accounts.
+        A name is live when
+
+        - it is a configured principal (see ``configured_principals``), or
+        - it is an ACTIVE viewer account, or
+        - it is the session username of a share token that is neither revoked
+          nor expired.
+
+        Everything else — a deleted account, a disabled one, a revoked or
+        expired token — is dropped. A row with no owner recorded predates
+        ownership and is left to the grant columns, which still gate it.
+
+        Share-token labels are not unique, so two tokens sharing a label also
+        share one session username, and revoking just one of them leaves that
+        name live. The purge on the revoking path is the precise instrument;
+        this is the backstop behind it.
+        """
+        if not usernames:
+            return set()
+
+        from sqlalchemy import or_, select
+
+        from src.db.models import ViewerAccount, ViewerToken
+
+        live = {name for name in usernames if name in self.configured_principals}
+        remaining = usernames - live
+        token_names = {name for name in remaining if name.startswith(_TOKEN_USERNAME_PREFIX)}
+        account_names = remaining - token_names
+
+        if account_names:
+            result = await session.execute(
+                select(ViewerAccount.username).where(
+                    ViewerAccount.username.in_(account_names), ViewerAccount.is_active == 1
+                )
+            )
+            live.update(result.scalars().all())
+
+        if token_names:
+            now = utcnow_naive()
+            result = await session.execute(
+                select(ViewerToken.id, ViewerToken.label).where(
+                    ViewerToken.is_revoked == 0,
+                    or_(ViewerToken.expires_at.is_(None), ViewerToken.expires_at > now),
+                )
+            )
+            for token_id, label in result.all():
+                # Mirrors the username auth_via_token mints in main.py:
+                # f"token:{label or f'token:{id}'}". A label-less token really
+                # does end up doubled, and reversing it must match exactly.
+                minted = f"{_TOKEN_USERNAME_PREFIX}{label or f'{_TOKEN_USERNAME_PREFIX}{token_id}'}"
+                if minted in token_names:
+                    live.add(minted)
+
+        return live
 
     async def send_notification(
         self,
