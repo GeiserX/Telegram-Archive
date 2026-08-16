@@ -1150,12 +1150,15 @@ const console = { error: () => {} };
     assert.deepEqual(chatStats.value, { message_count: 9 },
         "chat 333's HTTP failure blanked chat 444's header");
 
-    // The CURRENT chat's HTTP failure still clears.
+    // A CURRENT chat's non-ok response leaves the header as it was: unlike the
+    // pinned banner, loadChatStats has no else-branch write — only a network
+    // error clears the header.
     loadChatStats(444);
     await flush();
     respondError(7, 500);
     await flush();
-    assert.equal(chatStats.value, null, 'a live HTTP failure no longer clears the header');
+    assert.deepEqual(chatStats.value, { message_count: 9 },
+        'a live non-ok response started clearing the header');
 })().catch(error => {
     process.stderr.write(`${error.stack}\\n`);
     process.exitCode = 1;
