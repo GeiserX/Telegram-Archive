@@ -113,7 +113,7 @@ Follow these conventions:
 
 - **`src/telegram_backup.py`** — Scheduled backup flow: `backup_all()` → `_backup_dialog()` → iterates messages → `_process_message()` → `_commit_batch()`. Gap filling: `_fill_gaps()` → `_fill_gap_range()`. Forum topics: `_backup_forum_topics()`.
 - **`src/listener.py`** — Real-time event handlers: `on_new_message`, `on_message_edited`, `on_message_deleted`, `on_chat_action`, `on_pinned_messages`. Instantiated with `TelegramListener(config, db, client)`.
-- **`src/config.py`** — All config from env vars. Required: `API_ID`, `API_HASH`, `PHONE_NUMBER`. Properties are lazy-parsed from env.
+- **`src/config.py`** — All config from env vars. The backup requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or indexed `TG_ACCOUNT_<N>_*` accounts since 8.0); the viewer runs without credentials. Properties are lazy-parsed from env.
 - **`src/message_utils.py`** — Shared utility module. Contains `extract_topic_id(message)` used by both backup and listener.
 - **`src/db/adapter.py`** — Database operations. `src/db/models.py` — SQLAlchemy models. `src/db/base.py` — DB manager.
 
@@ -170,8 +170,8 @@ config.should_skip_topic = MagicMock(return_value=False)
 ### Test Style
 
 - Existing tests use `unittest.TestCase` with `MagicMock`/`AsyncMock` — follow this pattern for consistency
-- Config tests use `patch.dict(os.environ, {...}, clear=True)` — required env vars: `API_ID`, `API_HASH`, `PHONE_NUMBER`
-- Async tests use `pytest.mark.asyncio`
+- Config tests use `patch.dict(os.environ, {...}, clear=True)` — required env vars: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (or a complete `TG_ACCOUNT_<N>_*` triple)
+- Async tests need no decorator: `asyncio_mode = "auto"` in pyproject.toml
 - The `TelegramBackup` is instantiated via `TelegramBackup.__new__(TelegramBackup)` with mocked `db`, `client`, `config`
 
 ### Frameworks
