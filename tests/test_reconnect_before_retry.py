@@ -454,6 +454,7 @@ class TestMediaRefreshPassesItsClient:
         client.get_messages = get_messages
 
         backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
         backup.client = client
         backup.config = MagicMock()
 
@@ -607,7 +608,7 @@ class TestListenerRestartAfterAGiveUp:
 
         class StubListener:
             @classmethod
-            async def create(cls, config, client=None):
+            async def create(cls, config, client=None, *, account_id):
                 listener = cls()
                 listener.client = client
                 return listener

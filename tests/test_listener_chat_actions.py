@@ -71,7 +71,7 @@ def _build(**config_overrides):
     db = AsyncMock()
     db.insert_message = AsyncMock()
     db.upsert_chat = AsyncMock()
-    listener = TelegramListener(_config(**config_overrides), db)
+    listener = TelegramListener(_config(**config_overrides), db, account_id=1)
     listener._tracked_chat_ids = {TRACKED}
     listener._get_marked_id = MagicMock(return_value=TRACKED)
     listener._download_avatar = AsyncMock()

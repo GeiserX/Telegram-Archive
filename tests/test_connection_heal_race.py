@@ -173,7 +173,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
 
     class _StubListener:
         @classmethod
-        async def create(cls, config, client=None):
+        async def create(cls, config, client=None, *, account_id):
             listener = cls()
             listener.client = client
             return listener
@@ -398,7 +398,7 @@ class TestTheOriginalFailureStillHeals:
 
         class StubListener:
             @classmethod
-            async def create(cls, config, client=None):
+            async def create(cls, config, client=None, *, account_id):
                 listener = cls()
                 listener.client = client
                 return listener

@@ -114,7 +114,7 @@ class TestGetMessageIdsSince:
             session.add(Message(id=99, chat_id=-200, date=now, text="other"))  # different chat
             await session.commit()
 
-        ids = await adapter.get_message_ids_since(CHAT, now - timedelta(days=7), 500)
+        ids = await adapter.get_message_ids_since(CHAT, now - timedelta(days=7), 500, account_id=1)
         assert ids == [3, 2, 1]  # newest id first; old + other-chat excluded
 
     async def test_cap_limits_results_newest_first(self, adapter):
@@ -124,7 +124,7 @@ class TestGetMessageIdsSince:
                 session.add(Message(id=i, chat_id=CHAT, date=base, text="x"))
             await session.commit()
 
-        ids = await adapter.get_message_ids_since(CHAT, base - timedelta(days=1), 3)
+        ids = await adapter.get_message_ids_since(CHAT, base - timedelta(days=1), 3, account_id=1)
         assert ids == [10, 9, 8]
 
     async def test_empty_when_nothing_in_window(self, adapter):
@@ -132,7 +132,7 @@ class TestGetMessageIdsSince:
         async with adapter.db_manager.async_session_factory() as session:
             session.add(Message(id=1, chat_id=CHAT, date=base - timedelta(days=100), text="a"))
             await session.commit()
-        assert await adapter.get_message_ids_since(CHAT, base - timedelta(days=7), 500) == []
+        assert await adapter.get_message_ids_since(CHAT, base - timedelta(days=7), 500, account_id=1) == []
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,7 @@ class TestGetMessageIdsSince:
 
 def _backup(days=7.0, max_per_chat=500, delay=0.0):
     b = TelegramBackup.__new__(TelegramBackup)
+    b.account_id = 1
     b.config = MagicMock()
     b.config.reaction_resweep_days = days
     b.config.reaction_resweep_max_per_chat = max_per_chat
@@ -268,6 +269,7 @@ class TestResweepReactions:
 
 def _dialog_backup(days):
     b = TelegramBackup.__new__(TelegramBackup)
+    b.account_id = 1
     b.config = MagicMock()
     b.config.batch_size = 100
     b.config.checkpoint_interval = 1

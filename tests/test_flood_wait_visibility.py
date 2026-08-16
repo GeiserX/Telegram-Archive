@@ -798,6 +798,7 @@ async def test_fetch_media_bytes_sets_flood_threshold_during_download(fake_db):
     from src.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     config = MagicMock()
     config.media_flood_sleep_threshold = 60
     backup.config = config  # `is True` gate keeps MagicMock configs single-stream
@@ -850,6 +851,7 @@ def _make_media_backup():
     from src.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     backup.config = MagicMock()  # non-int download_timeout_seconds → no wait_for bound
     backup.db = AsyncMock()
     backup.client = AsyncMock()

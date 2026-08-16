@@ -137,6 +137,7 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
 
         # Set up backup instance
         backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
         backup.config = MagicMock()
         backup.config.media_path = self.media_path
         backup.config.deduplicate_media = True
@@ -187,6 +188,7 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.deduplicate_media = True
@@ -315,6 +317,7 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.verify_media = True
@@ -441,6 +444,7 @@ class TestShutilMoveFallback(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.deduplicate_media = True
@@ -565,6 +569,7 @@ class TestListenerDownloadMediaDedup(unittest.TestCase):
         self.listener.config.deduplicate_media = True
         self.listener.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.listener.client = AsyncMock()
+        self.listener.account_id = 1
         self.listener.db = AsyncMock()
         self.listener.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
@@ -771,6 +776,7 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.deduplicate_media = True
@@ -882,6 +888,7 @@ class TestBackupNonDedupCapturesReturnValue(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.deduplicate_media = False
@@ -946,6 +953,7 @@ class TestBackupDedupSymlinkFailFallback(unittest.TestCase):
         os.makedirs(self.media_path)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = MagicMock()
         self.backup.config.media_path = self.media_path
         self.backup.config.deduplicate_media = True

@@ -29,7 +29,7 @@ BASE_DATE = datetime(2026, 3, 1, 12, 0, 0)
 
 async def _seed_chat(adapter, chat_id: int) -> None:
     """Insert the parent chat row messages and sync_status point at."""
-    await adapter.upsert_chat({"id": chat_id, "type": "group", "title": "fixture chat"})
+    await adapter.upsert_chat({"id": chat_id, "type": "group", "title": "fixture chat"}, account_id=1)
 
 
 def _message(chat_id: int, message_id: int, *, text: str | None = None, offset_minutes: int = 0) -> dict:
@@ -55,13 +55,13 @@ class TestUpdateSyncStatusRealEngine:
         """
         await _seed_chat(real_adapter, 900001)
 
-        await real_adapter.update_sync_status(900001, 500, 50)
+        await real_adapter.update_sync_status(900001, 500, 50, account_id=1)
         async with real_adapter.db_manager.async_session_factory() as session:
             row = (await session.execute(SyncStatus.__table__.select())).mappings().one()
         assert row["last_message_id"] == 500
         assert row["message_count"] == 50
 
-        await real_adapter.update_sync_status(900001, 750, 25)
+        await real_adapter.update_sync_status(900001, 750, 25, account_id=1)
         async with real_adapter.db_manager.async_session_factory() as session:
             row = (await session.execute(SyncStatus.__table__.select())).mappings().one()
         assert row["last_message_id"] == 750
@@ -70,10 +70,10 @@ class TestUpdateSyncStatusRealEngine:
     async def test_last_message_id_round_trips(self, real_adapter):
         """get_last_message_id reads back what the upsert wrote."""
         await _seed_chat(real_adapter, 900002)
-        assert await real_adapter.get_last_message_id(900002) == 0
+        assert await real_adapter.get_last_message_id(900002, account_id=1) == 0
 
-        await real_adapter.update_sync_status(900002, 1234, 7)
-        assert await real_adapter.get_last_message_id(900002) == 1234
+        await real_adapter.update_sync_status(900002, 1234, 7, account_id=1)
+        assert await real_adapter.get_last_message_id(900002, account_id=1) == 1234
 
 
 class TestMessageUpsertConflictRealEngine:
@@ -82,8 +82,8 @@ class TestMessageUpsertConflictRealEngine:
     async def test_reinserting_identical_message_is_a_no_op(self, real_adapter):
         """A re-scan of an unchanged message must not duplicate or mutate it."""
         await _seed_chat(real_adapter, 900003)
-        await real_adapter.insert_message(_message(900003, 10, text="hello"))
-        await real_adapter.insert_message(_message(900003, 10, text="hello"))
+        await real_adapter.insert_message(_message(900003, 10, text="hello"), account_id=1)
+        await real_adapter.insert_message(_message(900003, 10, text="hello"), account_id=1)
 
         messages = await real_adapter.get_messages_paginated(900003, limit=10)
         assert len(messages) == 1
@@ -97,11 +97,11 @@ class TestMessageUpsertConflictRealEngine:
         no-op ``UPDATE`` that acquires the write lock. Both are exercised here.
         """
         await _seed_chat(real_adapter, 900004)
-        await real_adapter.insert_message(_message(900004, 11, text="first"))
+        await real_adapter.insert_message(_message(900004, 11, text="first"), account_id=1)
 
         edited = _message(900004, 11, text="second")
         edited["edit_date"] = BASE_DATE + timedelta(minutes=5)
-        await real_adapter.insert_message(edited)
+        await real_adapter.insert_message(edited, account_id=1)
 
         messages = await real_adapter.get_messages_paginated(900004, limit=10)
         assert len(messages) == 1
@@ -114,8 +114,8 @@ class TestMessageUpsertConflictRealEngine:
         """The same message id in two chats is two rows, not a conflict."""
         await _seed_chat(real_adapter, 900005)
         await _seed_chat(real_adapter, 900006)
-        await real_adapter.insert_message(_message(900005, 12, text="in chat A"))
-        await real_adapter.insert_message(_message(900006, 12, text="in chat B"))
+        await real_adapter.insert_message(_message(900005, 12, text="in chat A"), account_id=1)
+        await real_adapter.insert_message(_message(900006, 12, text="in chat B"), account_id=1)
 
         assert (await real_adapter.get_messages_paginated(900005, limit=10))[0]["text"] == "in chat A"
         assert (await real_adapter.get_messages_paginated(900006, limit=10))[0]["text"] == "in chat B"
@@ -128,7 +128,9 @@ class TestPaginationRealEngine:
         """The (date, id) cursor returns every row exactly once, in order."""
         await _seed_chat(real_adapter, 900007)
         for index in range(6):
-            await real_adapter.insert_message(_message(900007, 100 + index, text=f"m{index}", offset_minutes=index))
+            await real_adapter.insert_message(
+                _message(900007, 100 + index, text=f"m{index}", offset_minutes=index), account_id=1
+            )
 
         first = await real_adapter.get_messages_paginated(900007, limit=4)
         assert [m["id"] for m in first] == [105, 104, 103, 102]
@@ -146,8 +148,8 @@ class TestPaginationRealEngine:
         backend honours it can only be settled by running the query.
         """
         await _seed_chat(real_adapter, 900008)
-        await real_adapter.insert_message(_message(900008, 200, text="100% done", offset_minutes=0))
-        await real_adapter.insert_message(_message(900008, 201, text="nothing here", offset_minutes=1))
+        await real_adapter.insert_message(_message(900008, 200, text="100% done", offset_minutes=0), account_id=1)
+        await real_adapter.insert_message(_message(900008, 201, text="nothing here", offset_minutes=1), account_id=1)
 
         hits = await real_adapter.get_messages_paginated(900008, limit=10, search="100%")
         assert [m["id"] for m in hits] == [200]

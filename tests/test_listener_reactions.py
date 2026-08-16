@@ -48,7 +48,7 @@ def _reactions(*pairs, is_min=False):
 def _build(listen_reactions=True):
     db = AsyncMock()
     db.reconcile_reactions = AsyncMock(return_value="reconciled")
-    listener = TelegramListener(_config(listen_reactions), db)
+    listener = TelegramListener(_config(listen_reactions), db, account_id=1)
     listener._tracked_chat_ids = {TRACKED}
     listener._get_marked_id = MagicMock(return_value=TRACKED)
     listener._notifier = None
@@ -111,7 +111,9 @@ class TestReactionHandler:
         asyncio.run(handler(_event(reactions=_reactions(("👍", 3)))))
         asyncio.run(listener._flush_reactions())
 
-        db.reconcile_reactions.assert_awaited_once_with(42, TRACKED, [{"emoji": "👍", "count": 3}], mark_removed=True)
+        db.reconcile_reactions.assert_awaited_once_with(
+            42, TRACKED, [{"emoji": "👍", "count": 3}], account_id=1, mark_removed=True
+        )
         listener._notify_update.assert_awaited_once()
         args = listener._notify_update.await_args[0]
         assert args[0] == "reaction"
@@ -160,7 +162,7 @@ def _build_all(listen_reactions=True, listen_edits=True, listen_new_messages=Tru
     config = _config(listen_reactions)
     config.listen_edits = listen_edits
     config.listen_new_messages = listen_new_messages
-    listener = TelegramListener(config, db)
+    listener = TelegramListener(config, db, account_id=1)
     listener._tracked_chat_ids = {TRACKED}
     listener._get_marked_id = MagicMock(return_value=TRACKED)
     listener._notifier = None
@@ -201,7 +203,9 @@ class TestEditVectorReactions:
         listener, handlers, db = _build_all()
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("🔥", 1)))))
         asyncio.run(listener._flush_reactions())
-        db.reconcile_reactions.assert_awaited_once_with(42, TRACKED, [{"emoji": "🔥", "count": 1}], mark_removed=True)
+        db.reconcile_reactions.assert_awaited_once_with(
+            42, TRACKED, [{"emoji": "🔥", "count": 1}], account_id=1, mark_removed=True
+        )
 
     def test_edit_without_reactions_object_not_buffered(self):
         # A missing reactions object conveys NO information (review finding:

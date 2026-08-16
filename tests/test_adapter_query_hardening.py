@@ -42,7 +42,8 @@ async def sqlite_adapter(tmp_path):
 
 async def _get_message(adapter: DatabaseAdapter, message_id: int, chat_id: int) -> Message:
     async with adapter.db_manager.async_session_factory() as session:
-        message = await session.get(Message, (message_id, chat_id))
+        # v8.0.0 PK order: (account_id, chat_id, id).
+        message = await session.get(Message, (1, chat_id, message_id))
         assert message is not None
         return message
 
@@ -110,7 +111,8 @@ async def _archive_backup_message(adapter: DatabaseAdapter, message_id: int, dat
             "raw_data": {"grouped_id": "5150", "action_type": "chat_migrate_to", "migrate_to_id": -1009999999999},
             "is_outgoing": 1,
             "is_pinned": 1,
-        }
+        },
+        account_id=1,
     )
 
 
@@ -120,7 +122,7 @@ async def test_merge_import_upsert_keeps_columns_it_never_supplied(sqlite_adapte
     date = datetime(2026, 3, 1, 12, 0)
     await _archive_backup_message(sqlite_adapter, 1, date)
 
-    await sqlite_adapter.insert_messages_batch([_merge_import_message(1, date=date)])
+    await sqlite_adapter.insert_messages_batch([_merge_import_message(1, date=date)], account_id=1)
 
     message = await _get_message(sqlite_adapter, 1, CHAT_ID)
     # Absent from the import payload -> the archived value stands. Losing
@@ -136,7 +138,7 @@ async def test_merge_import_upsert_keeps_columns_it_never_supplied(sqlite_adapte
     # extras are gone: grouped_id drives album rendering and migrate_to_id is
     # what get_migration_markers reads back.
     assert '"grouped_id": "5150"' in message.raw_data
-    assert (CHAT_ID, -1009999999999) in await sqlite_adapter.get_migration_markers()
+    assert (CHAT_ID, -1009999999999) in await sqlite_adapter.get_migration_markers(account_id=1)
 
 
 @pytest.mark.asyncio
@@ -145,7 +147,7 @@ async def test_upsert_without_optional_keys_preserves_every_archived_column(sqli
     date = datetime(2026, 3, 1, 12, 0)
     await _archive_backup_message(sqlite_adapter, 2, date)
 
-    await sqlite_adapter.insert_message({"id": 2, "chat_id": CHAT_ID, "date": date})
+    await sqlite_adapter.insert_message({"id": 2, "chat_id": CHAT_ID, "date": date}, account_id=1)
 
     message = await _get_message(sqlite_adapter, 2, CHAT_ID)
     assert message.reply_to_top_id == 77
@@ -174,7 +176,8 @@ async def test_upsert_still_writes_the_columns_it_does_supply(sqlite_adapter):
             "forward_from_id": 1234,
             "is_pinned": 0,
             "raw_data": {"grouped_id": "6000"},
-        }
+        },
+        account_id=1,
     )
 
     message = await _get_message(sqlite_adapter, 3, CHAT_ID)
@@ -188,7 +191,7 @@ async def test_upsert_still_writes_the_columns_it_does_supply(sqlite_adapter):
 async def test_upsert_may_hydrate_a_column_that_was_never_captured(sqlite_adapter):
     """An absent-key rule must not block filling a genuinely empty column."""
     date = datetime(2026, 3, 1, 12, 0)
-    await sqlite_adapter.insert_message({"id": 4, "chat_id": CHAT_ID, "date": date, "text": "hello"})
+    await sqlite_adapter.insert_message({"id": 4, "chat_id": CHAT_ID, "date": date, "text": "hello"}, account_id=1)
 
     await sqlite_adapter.insert_message(
         {
@@ -197,7 +200,8 @@ async def test_upsert_may_hydrate_a_column_that_was_never_captured(sqlite_adapte
             "date": date,
             "reply_to_top_id": 77,
             "raw_data": {"grouped_id": "7000"},
-        }
+        },
+        account_id=1,
     )
 
     message = await _get_message(sqlite_adapter, 4, CHAT_ID)
@@ -240,7 +244,7 @@ def _write_export(tmp_path) -> str:
 @pytest.mark.asyncio
 async def test_fresh_import_still_defaults_the_flags_it_cannot_know(sqlite_adapter, tmp_path):
     """First-time import: absent keys must still land as sane column defaults."""
-    importer = TelegramImporter(sqlite_adapter, media_path=str(tmp_path / "media"))
+    importer = TelegramImporter(sqlite_adapter, media_path=str(tmp_path / "media"), account_id=1)
 
     await importer.run(_write_export(tmp_path), skip_media=True)
 
@@ -265,7 +269,7 @@ async def test_merge_import_preserves_outgoing_pinned_and_forward_source(sqlite_
     """
     date = datetime(2026, 3, 1, 12, 0)
     await _archive_backup_message(sqlite_adapter, 1, date)
-    importer = TelegramImporter(sqlite_adapter, media_path=str(tmp_path / "media"))
+    importer = TelegramImporter(sqlite_adapter, media_path=str(tmp_path / "media"), account_id=1)
 
     await importer.run(_write_export(tmp_path), merge=True, skip_media=True)
 
@@ -414,7 +418,11 @@ async def test_chat_list_does_not_aggregate_the_whole_messages_table(sqlite_adap
     statement = reads[0]
     assert "GROUP BY" not in statement, "the message aggregate must not be an unbounded GROUP BY"
     assert "max(messages.date)" in statement
-    assert "WHERE messages.chat_id = chats.id" in statement, "the aggregate must be correlated to the chat row"
+    # v8.0.0: the correlation carries the account too — a chat id repeats
+    # across accounts, so correlating on chat_id alone reads both copies.
+    assert "WHERE messages.account_id = chats.account_id AND messages.chat_id = chats.id" in statement, (
+        "the aggregate must be correlated to the chat row"
+    )
 
     async with sqlite_adapter.db_manager.engine.connect() as conn:
         plan = await conn.exec_driver_sql("EXPLAIN QUERY PLAN " + statement.replace("?", "50"))

@@ -71,13 +71,13 @@ class _FakeDb:
         self.metadata_reads: list[str] = []
         self.set_metadata_failures: list[Exception] = []
 
-    async def upsert_chat(self, chat_data):
+    async def upsert_chat(self, chat_data, *, account_id):
         return None
 
-    async def get_last_message_id(self, chat_id):
+    async def get_last_message_id(self, chat_id, *, account_id):
         return self.cursor
 
-    async def update_sync_status(self, chat_id, last_message_id, message_count):
+    async def update_sync_status(self, chat_id, last_message_id, message_count, *, account_id):
         self.cursor = last_message_id
         self.sync_writes.append(last_message_id)
 
@@ -125,6 +125,7 @@ class CursorFreezeExitTestCase(unittest.TestCase):
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.config = config
         backup.db = self.db
+        backup.account_id = 1
         backup.client = MagicMock()
         backup._cleaned_media_chats = set()
         backup._get_marked_id = MagicMock(return_value=CHAT_ID)

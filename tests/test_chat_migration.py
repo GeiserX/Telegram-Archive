@@ -81,6 +81,7 @@ def _make_service_message(action, text=""):
 
 def _make_process_backup():
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     backup.config = MagicMock()
     # Bare MagicMock attrs are truthy — pin should_skip_topic so a future
     # topic-skip code path can't be silently short-circuited (documented pitfall).
@@ -131,6 +132,7 @@ _LOGGER = "src.telegram_backup"
 
 def _make_reconcile_backup(follow=False):
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     cfg = MagicMock()
     cfg.follow_chat_migrations = follow
     cfg.chat_ids = set()
@@ -170,6 +172,9 @@ class TestReconcileMigrationsWarn(unittest.TestCase):
         new_id = get_peer_id(PeerChannel(555))
         with self.assertLogs(_LOGGER, level="WARNING") as cm:
             _run(backup._reconcile_migrations([_migrated_dialog(555)], set()))
+        # Pin the account scope: AsyncMock would also accept an unscoped call,
+        # and the real adapter signature requires the keyword.
+        backup.db.get_migration_markers.assert_awaited_once_with(account_id=1)
         joined = "\n".join(cm.output)
         self.assertIn("migrated to a supergroup not in scope", joined)
         self.assertIn("1 tracked group", joined)
@@ -400,7 +405,7 @@ class TestListenerFollowScope(unittest.TestCase):
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[{"id": -111}])
         db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         _run(listener._load_tracked_chats())
         self.assertIn(followed, listener._tracked_chat_ids)
         self.assertIn(followed, listener._followed_live)
@@ -413,7 +418,7 @@ class TestListenerFollowScope(unittest.TestCase):
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[])
         db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         _run(listener._load_tracked_chats())
         self.assertIn(followed, listener._followed_live)
         self.assertTrue(listener._should_process_chat(followed))  # via follow
@@ -424,7 +429,7 @@ class TestListenerFollowScope(unittest.TestCase):
         cfg = _make_listener_config(follow=False)
         db = AsyncMock()
         db.get_metadata = AsyncMock(return_value=json.dumps([-1]))
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         self.assertEqual(_run(listener._load_followed_migration_ids()), set())
         db.get_metadata.assert_not_awaited()
 
@@ -433,21 +438,21 @@ class TestListenerFollowScope(unittest.TestCase):
         cfg = _make_listener_config(follow=True)
         db = AsyncMock()
         db.get_metadata = AsyncMock(return_value=json.dumps([followed]))
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         self.assertEqual(_run(listener._load_followed_migration_ids()), {followed})
 
     def test_load_followed_malformed_degrades_to_empty(self):
         cfg = _make_listener_config(follow=True)
         db = AsyncMock()
         db.get_metadata = AsyncMock(return_value="not json{")
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         self.assertEqual(_run(listener._load_followed_migration_ids()), set())
 
     def test_load_followed_missing_degrades_to_empty(self):
         cfg = _make_listener_config(follow=True)
         db = AsyncMock()
         db.get_metadata = AsyncMock(return_value=None)
-        listener = TelegramListener(cfg, db)
+        listener = TelegramListener(cfg, db, account_id=1)
         self.assertEqual(_run(listener._load_followed_migration_ids()), set())
 
 
@@ -467,6 +472,7 @@ class _Ent:
 
 def _make_sweep_backup(*, followed, whitelist_mode, chat_ids, main_dialogs, archived_dialogs):
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     cfg = MagicMock()
     cfg.whitelist_mode = whitelist_mode
     cfg.chat_ids = chat_ids
@@ -592,22 +598,22 @@ class TestGetMigrationMarkers(unittest.TestCase):
             }
         )
         adapter = self._adapter_returning([(-777, raw)])
-        self.assertEqual(_run(adapter.get_migration_markers()), [(-777, get_peer_id(PeerChannel(555)))])
+        self.assertEqual(_run(adapter.get_migration_markers(account_id=1)), [(-777, get_peer_id(PeerChannel(555)))])
 
     def test_skips_non_migration_rows(self):
         raw = json.dumps({"action_type": "chat_edit_title", "new_title": "x"})
         adapter = self._adapter_returning([(-1, raw)])
-        self.assertEqual(_run(adapter.get_migration_markers()), [])
+        self.assertEqual(_run(adapter.get_migration_markers(account_id=1)), [])
 
     def test_skips_malformed_and_empty_rows(self):
         adapter = self._adapter_returning([(-1, "not valid json"), (-2, None)])
-        self.assertEqual(_run(adapter.get_migration_markers()), [])
+        self.assertEqual(_run(adapter.get_migration_markers(account_id=1)), [])
 
     def test_skips_when_pointer_missing_or_non_int(self):
         no_ptr = json.dumps({"action_type": "chat_migrate_to"})
         bad_ptr = json.dumps({"action_type": "chat_migrate_to", "migrate_to_id": "nope"})
         adapter = self._adapter_returning([(-1, no_ptr), (-2, bad_ptr)])
-        self.assertEqual(_run(adapter.get_migration_markers()), [])
+        self.assertEqual(_run(adapter.get_migration_markers(account_id=1)), [])
 
 
 if __name__ == "__main__":

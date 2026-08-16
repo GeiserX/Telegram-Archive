@@ -297,6 +297,14 @@ if has_tables and not has_alembic:
     # already has, so detecting them could only push the stamp past data-only
     # 019. It reads the live schema per column and does nothing where the
     # target shape is already in place, so re-running it here is a no-op.
+    # 022 adds no rung, for the same reason and by the same design. Its
+    # artifacts -- account_id in the keys, chats.ref, the accounts table -- are
+    # exactly what a schema built from current ORM metadata already carries, so
+    # a '022' rung could only skip data-only 019. 022 asks the live schema
+    # whether each key already has its account dimension and rebuilds only what
+    # does not, so an 8.0.0 create_all schema stamped here at 018 runs 019, then
+    # guarded 020 and 021, then 022 as a complete no-op. Verified in
+    # tests/test_migration_022.py against a create_all-provisioned 8.0.0 schema.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
@@ -510,6 +518,14 @@ if has_tables and not has_alembic:
     # has, so detecting them could only push the stamp past data-only 019. It
     # inspects the live schema per column and rebuilds only the tables that
     # still differ, so re-running it against such a database does nothing.
+    # 022 adds no rung, for the same reason and by the same design. Its
+    # artifacts -- account_id in the keys, chats.ref, the accounts table -- are
+    # exactly what a schema built from current ORM metadata already carries, so
+    # a '022' rung could only skip data-only 019. 022 asks the live schema
+    # whether each key already has its account dimension and rebuilds only what
+    # does not, so an 8.0.0 create_all schema stamped here at 018 runs 019, then
+    # guarded 020 and 021, then 022 as a complete no-op. Verified in
+    # tests/test_migration_022.py against a create_all-provisioned 8.0.0 schema.
     if has_018_reaction_removed_at and has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:
         stamp_version = '018'
     elif has_017_chat_id_id_index and has_016_download_attempts and has_015_message_versions and has_014_soft_delete:

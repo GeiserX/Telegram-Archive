@@ -57,7 +57,7 @@ class TestRetryCap:
         await _add(adapter, "over_cap", attempts=9)  # past cap
         await _add(adapter, "done", downloaded=1, attempts=0)  # already downloaded
 
-        pending = await adapter.get_pending_media_downloads(max_attempts=5)
+        pending = await adapter.get_pending_media_downloads(max_attempts=5, account_id=1)
         ids = {p["id"] for p in pending}
 
         assert ids == {"under"}
@@ -68,14 +68,14 @@ class TestRetryCap:
         await _add(adapter, "a", attempts=99)
         await _add(adapter, "b", attempts=0)
 
-        pending = await adapter.get_pending_media_downloads()  # max_attempts=None → no cap
+        pending = await adapter.get_pending_media_downloads(account_id=1)  # max_attempts=None → no cap
         assert {p["id"] for p in pending} == {"a", "b"}
 
     @pytest.mark.asyncio
     async def test_increment_bumps_and_eventually_excludes(self, adapter):
         await _add(adapter, "m", attempts=4)
 
-        await adapter.increment_media_download_attempts("m")
+        await adapter.increment_media_download_attempts("m", account_id=1)
 
         async with adapter.db_manager.async_session_factory() as session:
             from sqlalchemy import select
@@ -83,7 +83,7 @@ class TestRetryCap:
             val = (await session.execute(select(Media.download_attempts).where(Media.id == "m"))).scalar()
         assert val == 5
         # now at the cap → no longer pending
-        assert await adapter.get_pending_media_downloads(max_attempts=5) == []
+        assert await adapter.get_pending_media_downloads(max_attempts=5, account_id=1) == []
 
     @pytest.mark.asyncio
     async def test_metadata_types_never_pending(self, adapter):
@@ -91,7 +91,7 @@ class TestRetryCap:
         await _add(adapter, "poll", mtype="poll")
         await _add(adapter, "real", mtype="document")
 
-        pending = await adapter.get_pending_media_downloads(max_attempts=5)
+        pending = await adapter.get_pending_media_downloads(max_attempts=5, account_id=1)
         assert {p["id"] for p in pending} == {"real"}
 
     @pytest.mark.asyncio
@@ -102,13 +102,13 @@ class TestRetryCap:
         await _add(adapter, "done", downloaded=1, attempts=9)  # downloaded → not counted
         await _add(adapter, "geo_capped", attempts=9, mtype="geo")  # metadata → not counted
 
-        assert await adapter.count_capped_media_downloads(5) == 2  # at_cap + over_cap
+        assert await adapter.count_capped_media_downloads(5, account_id=1) == 2  # at_cap + over_cap
 
     @pytest.mark.asyncio
     async def test_mark_for_redownload_resets_attempts(self, adapter):
         await _add(adapter, "capped", downloaded=1, attempts=9)
 
-        await adapter.mark_media_for_redownload("capped")
+        await adapter.mark_media_for_redownload("capped", account_id=1)
 
         # attempts reset to 0 and downloaded cleared → eligible for retry again
         async with adapter.db_manager.async_session_factory() as session:
@@ -122,4 +122,4 @@ class TestRetryCap:
         assert row.download_attempts == 0
         assert row.downloaded == 0
         assert row.file_path is None
-        assert {p["id"] for p in await adapter.get_pending_media_downloads(max_attempts=5)} == {"capped"}
+        assert {p["id"] for p in await adapter.get_pending_media_downloads(max_attempts=5, account_id=1)} == {"capped"}
