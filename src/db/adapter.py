@@ -195,9 +195,12 @@ def retry_on_locked(
 
                     last_exception = e
                     if attempt < max_retries:
+                        # Type name only: the raw exception text can carry the SQL
+                        # statement, bound values, or a connection DSN, and this
+                        # wraps writers whose payloads identify chats.
                         logger.warning(
                             f"Database error on {func.__name__}, attempt {attempt + 1}/{max_retries + 1}. "
-                            f"Retrying in {delay:.2f}s... Error: {e}"
+                            f"Retrying in {delay:.2f}s... Error type: {type(e).__name__}"
                         )
                         await asyncio.sleep(delay)
                         delay = min(delay * backoff_factor, max_delay)
