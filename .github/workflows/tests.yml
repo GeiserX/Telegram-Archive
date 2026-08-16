@@ -14,6 +14,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Repository-controlled code runs here; the token needs nothing but checkout.
+    permissions:
+      contents: read
 
     # PostgreSQL is a first-class supported backend, so the gate runs against a
     # real server. Without this the "postgres" tests were mock assertions that
