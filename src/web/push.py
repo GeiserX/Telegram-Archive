@@ -20,6 +20,7 @@ from py_vapid import Vapid
 from py_vapid.utils import b64urlencode
 from pywebpush import WebPushException, webpush
 
+from ..db.adapter import parse_entitlement_column
 from ..message_utils import utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,8 @@ class PushNotificationManager:
         chat_id: int | None = None,
         user_agent: str | None = None,
         username: str | None = None,
-        allowed_chat_ids: list[int] | None = None,
+        allowed_accounts: list[int] | None = None,
+        allowed_chat_refs: list[str] | None = None,
     ) -> bool:
         """
         Store a push subscription with user ownership.
@@ -211,10 +213,16 @@ class PushNotificationManager:
             endpoint: Push service URL
             p256dh: Client public key (base64)
             auth: Auth secret (base64)
-            chat_id: Optional chat ID for chat-specific subscriptions
+            chat_id: Optional resolved chat ID for chat-specific subscriptions
+                (the API takes a chat_ref; the caller resolves it before this)
             user_agent: Browser user agent for debugging
             username: The authenticated user who created this subscription
-            allowed_chat_ids: Snapshot of the user's allowed chats (None = master/all access)
+            allowed_accounts: Snapshot of the user's account grant (None = all)
+            allowed_chat_refs: Snapshot of the user's chat-ref grant (None = all)
+
+        The legacy ``allowed_chat_ids`` column is written as a rollback
+        tombstone only — "[]" for a restricted subscriber so a 7.x binary
+        denies, NULL for an unrestricted one. 8.0 code never reads it.
 
         Returns:
             True if subscription was stored successfully
@@ -224,7 +232,10 @@ class PushNotificationManager:
 
             from src.db.models import PushSubscription
 
-            allowed_json = json.dumps(allowed_chat_ids) if allowed_chat_ids is not None else None
+            accounts_json = json.dumps(allowed_accounts) if allowed_accounts is not None else None
+            refs_json = json.dumps(allowed_chat_refs) if allowed_chat_refs is not None else None
+            restricted = accounts_json is not None or refs_json is not None
+            legacy_tombstone = "[]" if restricted else None
 
             async with self.db.db_manager.async_session_factory() as session:
                 result = await session.execute(select(PushSubscription).where(PushSubscription.endpoint == endpoint))
@@ -236,7 +247,9 @@ class PushNotificationManager:
                     existing.chat_id = chat_id
                     existing.user_agent = user_agent
                     existing.username = username
-                    existing.allowed_chat_ids = allowed_json
+                    existing.allowed_chat_ids = legacy_tombstone
+                    existing.allowed_accounts = accounts_json
+                    existing.allowed_chat_refs = refs_json
                     existing.last_used_at = utcnow_naive()
                 else:
                     sub = PushSubscription(
@@ -246,7 +259,9 @@ class PushNotificationManager:
                         chat_id=chat_id,
                         user_agent=user_agent,
                         username=username,
-                        allowed_chat_ids=allowed_json,
+                        allowed_chat_ids=legacy_tombstone,
+                        allowed_accounts=accounts_json,
+                        allowed_chat_refs=refs_json,
                         created_at=utcnow_naive(),
                     )
                     session.add(sub)
@@ -279,13 +294,23 @@ class PushNotificationManager:
             logger.error(f"Failed to remove push subscription: {e}")
             return False
 
-    async def get_subscriptions(self, chat_id: int | None = None) -> list[dict[str, Any]]:
+    async def get_subscriptions(
+        self,
+        chat_id: int | None = None,
+        *,
+        account_id: int | None = None,
+        chat_ref: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
-        Get push subscriptions for a given chat, filtered by per-user permissions.
+        Get push subscriptions entitled to a given chat, fail-closed.
 
-        Only returns subscriptions where:
-        - The user is master (allowed_chat_ids is NULL) and subscribed globally or to this chat
-        - The user is a viewer whose allowed_chat_ids includes this chat_id
+        ``chat_id`` narrows to subscriptions whose TOPIC is this chat (or
+        global); ``account_id``/``chat_ref`` are the chat's identity for the
+        entitlement check against the v8.0.0 grant columns. The legacy
+        ``allowed_chat_ids`` column is never read — a subscription whose grant
+        exists only there (or cannot be parsed) receives nothing, exactly like
+        the viewer's own resolver. Without a chat context only unrestricted
+        subscriptions qualify.
         """
         try:
             from sqlalchemy import or_, select
@@ -303,13 +328,17 @@ class PushNotificationManager:
 
                 filtered = []
                 for sub in subs:
-                    if sub.allowed_chat_ids is not None:
-                        try:
-                            user_chats = json.loads(sub.allowed_chat_ids)
-                            if chat_id not in user_chats:
-                                continue
-                        except json.JSONDecodeError, TypeError:
-                            continue
+                    accounts = parse_entitlement_column(sub.allowed_accounts, int)
+                    refs = parse_entitlement_column(sub.allowed_chat_refs, str)
+                    # Deny-only legacy guard, the twin of main._grants_from_row:
+                    # a legacy grant with BOTH new columns NULL is an unconverted
+                    # 7.x restriction and must deny, never widen.
+                    if accounts is None and refs is None and sub.allowed_chat_ids is not None:
+                        continue
+                    if accounts is not None and account_id not in accounts:
+                        continue
+                    if refs is not None and chat_ref not in refs:
+                        continue
                     filtered.append({"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}})
 
                 return filtered
@@ -326,6 +355,9 @@ class PushNotificationManager:
         data: dict[str, Any] | None = None,
         icon: str | None = None,
         tag: str | None = None,
+        *,
+        account_id: int | None = None,
+        chat_ref: str | None = None,
     ) -> int:
         """
         Send push notification to all relevant subscribers.
@@ -333,10 +365,13 @@ class PushNotificationManager:
         Args:
             title: Notification title
             body: Notification body text
-            chat_id: Optional chat ID to filter subscribers
+            chat_id: Optional chat ID to filter subscribers (topic match only —
+                it never reaches the payload; the ref is the outward identity)
             data: Additional data to include in notification
             icon: URL for notification icon
             tag: Tag for notification grouping/replacement
+            account_id: The chat's account, for the entitlement filter
+            chat_ref: The chat's opaque ref, for the entitlement filter and tag
 
         Returns:
             Number of notifications successfully sent
@@ -344,7 +379,7 @@ class PushNotificationManager:
         if not self.is_enabled:
             return 0
 
-        subscriptions = await self.get_subscriptions(chat_id)
+        subscriptions = await self.get_subscriptions(chat_id, account_id=account_id, chat_ref=chat_ref)
 
         if not subscriptions:
             return 0
@@ -353,7 +388,7 @@ class PushNotificationManager:
             "title": title,
             "body": body,
             "icon": icon or "/static/favicon.ico",
-            "tag": tag or f"telegram-archive-{chat_id or 'all'}",
+            "tag": tag or f"telegram-archive-{chat_ref or 'all'}",
             "data": data or {},
             "timestamp": utcnow_naive().isoformat(),
         }
@@ -411,17 +446,28 @@ class PushNotificationManager:
         return sent
 
     async def notify_new_message(
-        self, chat_id: int, chat_title: str, sender_name: str, message_text: str, message_id: int
+        self,
+        chat_id: int,
+        chat_ref: str,
+        chat_title: str,
+        sender_name: str,
+        message_text: str,
+        message_id: int,
+        *,
+        account_id: int | None = None,
     ) -> int:
         """
         Send notification for a new message.
 
         Args:
-            chat_id: The chat ID where the message was posted
+            chat_id: The chat ID where the message was posted (topic filter only)
+            chat_ref: The chat's opaque ref — the ONLY chat identity that enters
+                the payload, its URL, and the grouping tag
             chat_title: Display name of the chat
             sender_name: Name of the message sender
             message_text: Preview of the message text
             message_id: ID of the message (for click navigation)
+            account_id: The chat's account, for the entitlement filter
 
         Returns:
             Number of notifications sent
@@ -438,11 +484,13 @@ class PushNotificationManager:
             chat_id=chat_id,
             data={
                 "type": "new_message",
-                "chat_id": chat_id,
+                "chat_ref": chat_ref,
                 "message_id": message_id,
-                "url": f"/?chat={chat_id}&msg={message_id}",
+                "url": f"/?chat={chat_ref}&msg={message_id}",
             },
-            tag=f"chat-{chat_id}",  # Group by chat, replace previous
+            tag=f"chat-{chat_ref}",  # Group by chat, replace previous
+            account_id=account_id,
+            chat_ref=chat_ref,
         )
 
 

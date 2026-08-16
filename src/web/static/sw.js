@@ -96,14 +96,16 @@ self.addEventListener('notificationclick', (event) => {
     
     notification.close();
     
-    // Determine the URL to open
+    // Determine the URL to open. The fallback builds the same ref-addressed
+    // deep link the server sends in data.url — the chat's opaque ref, never
+    // the chat id, so no chat id reaches browser history or access logs.
     let url = '/';
     if (data.url) {
         url = data.url;
-    } else if (data.chat_id) {
-        url = `/?chat=${data.chat_id}`;
+    } else if (data.chat_ref) {
+        url = `/?chat=${encodeURIComponent(data.chat_ref)}`;
         if (data.message_id) {
-            url += `&msg=${data.message_id}`;
+            url += `&msg=${encodeURIComponent(data.message_id)}`;
         }
     }
     

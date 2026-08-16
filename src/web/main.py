@@ -32,9 +32,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
+from ..db.adapter import parse_entitlement_column
 from ..message_utils import describe_exception, media_display_filename
 from ..realtime import RealtimeListener
-from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates, legacy_marked_chat_ids
+from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
     from .push import PushNotificationManager
@@ -55,55 +56,64 @@ mimetypes.add_type("image/webp", ".webp")
 
 # WebSocket Connection Manager for real-time updates
 class ConnectionManager:
-    """Manages WebSocket connections for real-time updates."""
+    """Manages WebSocket connections for real-time updates.
+
+    Phase 4: subscriptions are keyed by the chat's opaque ref, and each socket
+    carries the UserContext it authenticated with. Entitlement for a subscribe
+    is enforced by the endpoint through the SAME resolver the HTTP routes use;
+    broadcast_to_chat re-checks the chat against the socket's context so a frame
+    can never outrun the grant it rode in on.
+    """
 
     def __init__(self):
-        self.active_connections: dict[WebSocket, set[int]] = {}
-        self._allowed_chats: dict[WebSocket, set[int] | None] = {}
+        self.active_connections: dict[WebSocket, set[str]] = {}
+        self._contexts: dict[WebSocket, UserContext] = {}
 
-    async def connect(self, websocket: WebSocket, allowed_chat_ids: set[int] | None = None):
+    async def connect(self, websocket: WebSocket, user: UserContext):
         await websocket.accept()
         self.active_connections[websocket] = set()
-        self._allowed_chats[websocket] = allowed_chat_ids
+        self._contexts[websocket] = user
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.pop(websocket, None)
-        self._allowed_chats.pop(websocket, None)
+        self._contexts.pop(websocket, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
-    def subscribe(self, websocket: WebSocket, chat_id: int) -> bool:
-        """Subscribe a connection to updates for a specific chat. Returns False if denied by ACL."""
+    def subscribe(self, websocket: WebSocket, chat_ref: str) -> bool:
+        """Record a subscription for an already-authorized chat ref."""
         if websocket in self.active_connections:
-            allowed = self._allowed_chats.get(websocket)
-            if allowed is not None and chat_id not in allowed:
-                return False
-            self.active_connections[websocket].add(chat_id)
+            self.active_connections[websocket].add(chat_ref)
             return True
         return False
 
-    def unsubscribe(self, websocket: WebSocket, chat_id: int):
+    def unsubscribe(self, websocket: WebSocket, chat_ref: str):
         """Unsubscribe a connection from a specific chat."""
         if websocket in self.active_connections:
-            self.active_connections[websocket].discard(chat_id)
+            self.active_connections[websocket].discard(chat_ref)
 
-    async def broadcast_to_chat(self, chat_id: int, message: dict):
-        """Broadcast a message to all connections subscribed to a chat."""
+    async def broadcast_to_chat(self, chat: dict, message: dict):
+        """Broadcast a message to every connection subscribed AND entitled to ``chat``.
+
+        ``chat`` is the resolved chat row (id, account_id, ref); ``message`` is
+        the ref-addressed frame to deliver.
+        """
         disconnected = []
         # Snapshot first: send_json suspends, and a connect/disconnect landing in
         # another task during that await mutates active_connections. Iterating it
         # live raises RuntimeError at the `for`, which aborts the whole broadcast
         # and silently drops the event for every client not yet reached.
-        for websocket, subscribed_chats in list(self.active_connections.items()):
-            allowed = self._allowed_chats.get(websocket)
-            if allowed is not None and chat_id not in allowed:
+        for websocket, subscribed_refs in list(self.active_connections.items()):
+            if chat["ref"] not in subscribed_refs:
                 continue
-            if chat_id in subscribed_chats:
-                try:
-                    await websocket.send_json(message)
-                except Exception as e:
-                    logger.warning(f"Failed to send to websocket: {e}")
-                    disconnected.append(websocket)
+            user = self._contexts.get(websocket)
+            if user is None or not _chat_visible(user, chat):
+                continue
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to send to websocket: {e}")
+                disconnected.append(websocket)
 
         # Clean up disconnected sockets
         for ws in disconnected:
@@ -208,6 +218,36 @@ realtime_listener: RealtimeListener | None = None
 push_manager: PushNotificationManager | None = None
 
 
+# The realtime/push side resolves a writer-side chat id to its row (ref, account,
+# title) once per event; a short TTL keeps a busy chat from re-querying per event.
+_broadcast_chat_cache: dict[int, tuple[float, dict | None]] = {}
+_BROADCAST_CHAT_CACHE_TTL_SECONDS = 60
+
+
+async def _broadcast_chat_row(chat_id: int) -> dict | None:
+    """Chat row for a realtime event's chat id, or None when it cannot be addressed.
+
+    The writer side (listener/backup) speaks chat ids; every outward frame and
+    push payload speaks refs. An id that resolves to no row — or ambiguously,
+    once a second account shares it (phase 5) — drops the event rather than
+    emit a frame that names a chat id.
+    """
+    if not db:
+        return None
+    cached = _broadcast_chat_cache.get(chat_id)
+    if cached is not None and time.monotonic() - cached[0] <= _BROADCAST_CHAT_CACHE_TTL_SECONDS:
+        return cached[1]
+    try:
+        chat = await db.get_chat_by_id(chat_id)
+    except Exception as e:
+        logger.warning(f"Realtime chat resolution failed ({type(e).__name__}); dropping event")
+        return None
+    if chat is not None and not chat.get("ref"):
+        chat = None
+    _broadcast_chat_cache[chat_id] = (time.monotonic(), chat)
+    return chat
+
+
 async def handle_realtime_notification(payload: dict):
     """Handle real-time notifications and broadcast to WebSocket clients + push notifications."""
     notification_type = payload.get("type")
@@ -219,17 +259,20 @@ async def handle_realtime_notification(payload: dict):
         # This viewer is restricted to specific chats, ignore notifications for other chats
         return
 
+    chat = await _broadcast_chat_row(chat_id)
+    if chat is None:
+        return
+    chat_ref = chat["ref"]
+
     if notification_type == "new_message":
         await ws_manager.broadcast_to_chat(
-            chat_id, {"type": "new_message", "chat_id": chat_id, "message": data.get("message")}
+            chat, {"type": "new_message", "chat_ref": chat_ref, "message": data.get("message")}
         )
 
         # Send Web Push notification for new messages
         if push_manager and push_manager.is_enabled:
             message = data.get("message", {})
-            # Get chat info for the notification
-            chat = await db.get_chat_by_id(chat_id) if db else None
-            chat_title = chat.get("title", "Telegram") if chat else "Telegram"
+            chat_title = chat.get("title") or "Telegram"
 
             snapshot_name = message.get("sender_name")
             sender_name = snapshot_name.strip() if isinstance(snapshot_name, str) else ""
@@ -243,18 +286,20 @@ async def handle_realtime_notification(payload: dict):
 
             await push_manager.notify_new_message(
                 chat_id=chat_id,
+                chat_ref=chat_ref,
                 chat_title=chat_title,
                 sender_name=sender_name,
                 message_text=message.get("text", "") or "[Media]",
                 message_id=message.get("id", 0),
+                account_id=chat.get("account_id"),
             )
 
     elif notification_type == "edit":
         await ws_manager.broadcast_to_chat(
-            chat_id,
+            chat,
             {
                 "type": "edit",
-                "chat_id": chat_id,
+                "chat_ref": chat_ref,
                 "message_id": data.get("message_id"),
                 "new_text": data.get("new_text"),
                 "edit_date": data.get("edit_date"),
@@ -262,10 +307,10 @@ async def handle_realtime_notification(payload: dict):
         )
     elif notification_type == "delete":
         await ws_manager.broadcast_to_chat(
-            chat_id,
+            chat,
             {
                 "type": "delete",
-                "chat_id": chat_id,
+                "chat_ref": chat_ref,
                 "message_id": data.get("message_id"),
                 "deletion_mode": data.get("deletion_mode", "hard"),
                 "deleted_at": data.get("deleted_at"),
@@ -273,20 +318,20 @@ async def handle_realtime_notification(payload: dict):
         )
     elif notification_type == "pin":
         await ws_manager.broadcast_to_chat(
-            chat_id,
+            chat,
             {
                 "type": "pin",
-                "chat_id": chat_id,
+                "chat_ref": chat_ref,
                 "message_ids": data.get("message_ids", []),
                 "pinned": data.get("pinned", True),
             },
         )
     elif notification_type == "reaction":
         await ws_manager.broadcast_to_chat(
-            chat_id,
+            chat,
             {
                 "type": "reaction",
-                "chat_id": chat_id,
+                "chat_ref": chat_ref,
                 "message_id": data.get("message_id"),
                 "reactions": data.get("reactions", []),
             },
@@ -388,17 +433,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             for row in rows:
                 if now - row["created_at"] > AUTH_SESSION_SECONDS:
                     continue  # skip expired, cleanup task will purge from DB
-                allowed = None
-                if row["allowed_chat_ids"]:
-                    try:
-                        allowed = set(json.loads(row["allowed_chat_ids"]))
-                    except json.JSONDecodeError, TypeError:
-                        logger.warning(f"Skipping session with corrupted allowed_chat_ids for {row['username']}")
-                        continue
+                # Grants come from the v8.0.0 columns only; an unreadable grant
+                # restores as an EMPTY one (sees nothing) rather than being
+                # dropped or widened. The legacy allowed_chat_ids is never read.
+                allowed_accounts, allowed_chat_refs = _grants_from_row(row)
                 _sessions[row["token"]] = SessionData(
                     username=row["username"],
                     role=row["role"],
-                    allowed_chat_ids=allowed,
+                    allowed_accounts=allowed_accounts,
+                    allowed_chat_refs=allowed_chat_refs,
                     no_download=bool(row.get("no_download", 0)),
                     source_token_id=row.get("source_token_id"),
                     created_at=row["created_at"],
@@ -533,9 +576,18 @@ else:
 
 @dataclass
 class UserContext:
+    """The authenticated principal and its v8.0.0 entitlement.
+
+    ``allowed_accounts``/``allowed_chat_refs``: None = unrestricted; a set is
+    the grant, and the EMPTY set (what an unparseable stored grant parses to)
+    denies everything. The legacy allowed_chat_ids column no longer reaches
+    this context — 8.0 code never reads it.
+    """
+
     username: str
     role: str  # "master", "viewer", or "token"
-    allowed_chat_ids: set[int] | None = None  # None = all chats
+    allowed_accounts: set[int] | None = None  # None = all accounts
+    allowed_chat_refs: set[str] | None = None  # None = all chats
     no_download: bool = False  # v7.2.0: restrict file downloads
 
 
@@ -543,7 +595,8 @@ class UserContext:
 class SessionData:
     username: str
     role: str
-    allowed_chat_ids: set[int] | None = None
+    allowed_accounts: set[int] | None = None
+    allowed_chat_refs: set[str] | None = None
     no_download: bool = False
     source_token_id: int | None = None  # v7.2.0: tracks originating share token for revocation
     created_at: float = field(default_factory=time.time)
@@ -552,6 +605,93 @@ class SessionData:
 
 _sessions: dict[str, SessionData] = {}
 _login_attempts: dict[str, list[float]] = {}  # ip -> list of timestamps
+
+
+def _grants_from_row(row: dict) -> tuple[set[int] | None, set[str] | None]:
+    """(allowed_accounts, allowed_chat_refs) of a viewer/session/token row, fail-closed.
+
+    The grant lives ONLY in the v8.0.0 columns migration 022 populated. Each
+    parses independently — NULL means unrestricted, anything unreadable becomes
+    the empty set, which denies. The legacy allowed_chat_ids is never a grant
+    source; its one permitted use is the deny-only guard below: a row carrying
+    a legacy grant while BOTH new columns are NULL is an unconverted 7.x
+    restriction (022 converts every such row, so a live one means the migration
+    was bypassed), and reading it as unrestricted would be exactly the fail-open
+    this design exists to prevent. Such a row gets the empty grant.
+    """
+    accounts = parse_entitlement_column(row.get("allowed_accounts"), int)
+    refs = parse_entitlement_column(row.get("allowed_chat_refs"), str)
+    if accounts is None and refs is None and row.get("allowed_chat_ids") is not None:
+        logger.warning("Viewer identity carries an unconverted legacy grant; denying all chats")
+        return set(), set()
+    return accounts, refs
+
+
+@dataclass(frozen=True)
+class ChatContext:
+    """One resolved, entitlement-checked chat: what a ref-addressed route works with."""
+
+    account_id: int
+    chat_id: int
+    ref: str
+    type: str | None = None
+
+
+def _chat_visible(user: UserContext, chat: dict) -> bool:
+    """Whether ``user`` may see ``chat`` (a row dict carrying id, account_id, ref).
+
+    One rule for every surface — HTTP routes, list filtering, websocket
+    broadcast, and the resolver below all decide through here. The operator's
+    DISPLAY_CHAT_IDS filter binds every role (as get_user_chat_ids did);
+    entitlements bind sessions whose grant is a set (masters carry None).
+    """
+    if config.display_chat_ids and chat["id"] not in config.display_chat_ids:
+        return False
+    if user.allowed_accounts is not None and chat["account_id"] not in user.allowed_accounts:
+        return False
+    if user.allowed_chat_refs is not None and chat["ref"] not in user.allowed_chat_refs:
+        return False
+    return True
+
+
+def _user_is_restricted(user: UserContext) -> bool:
+    """True when the visible-chat set is narrower than "everything"."""
+    return bool(config.display_chat_ids) or user.allowed_accounts is not None or user.allowed_chat_refs is not None
+
+
+async def _visible_chat_id_set(user: UserContext) -> set[int] | None:
+    """Chat ids the user may see, or None when unrestricted.
+
+    The bridge that lets id-keyed internals (folder counts, cached stats) keep
+    working: entitlements are ref-based, so the set is computed by filtering
+    the chat list. Single-account caveat: the ids are bare (phase 5 will need
+    account-qualified sets once a second account can collide on an id).
+    """
+    if not _user_is_restricted(user):
+        return None
+    chats = await db.get_all_chats()
+    return {c["id"] for c in chats if _chat_visible(user, c)}
+
+
+async def _resolve_chat_ref(chat_ref: str, user: UserContext) -> ChatContext:
+    """The ONE resolver: opaque ref -> entitled ChatContext, or 404.
+
+    Unknown, malformed, and forbidden refs are indistinguishable — same status,
+    same body, and the same single indexed SELECT for every candidate string,
+    so neither the response nor its latency says whether a chat exists. A 503
+    (database down) is the only other outcome; it carries no per-chat signal.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        chat = await db.get_chat_by_ref(chat_ref)
+    except Exception as e:
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise
+    if not chat or not _chat_visible(user, chat):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return ChatContext(account_id=chat["account_id"], chat_id=chat["id"], ref=chat["ref"], type=chat.get("type"))
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -644,7 +784,8 @@ def _is_db_connection_error(exc: Exception) -> bool:
 async def _create_session(
     username: str,
     role: str,
-    allowed_chat_ids: set[int] | None = None,
+    allowed_accounts: set[int] | None = None,
+    allowed_chat_refs: set[str] | None = None,
     no_download: bool = False,
     source_token_id: int | None = None,
 ) -> str:
@@ -665,7 +806,8 @@ async def _create_session(
     _sessions[token] = SessionData(
         username=username,
         role=role,
-        allowed_chat_ids=allowed_chat_ids,
+        allowed_accounts=allowed_accounts,
+        allowed_chat_refs=allowed_chat_refs,
         no_download=no_download,
         source_token_id=source_token_id,
         created_at=now,
@@ -675,12 +817,19 @@ async def _create_session(
     # Persist to database
     if db:
         try:
-            chat_ids_json = json.dumps(list(allowed_chat_ids)) if allowed_chat_ids is not None else None
+            accounts_json = json.dumps(sorted(allowed_accounts)) if allowed_accounts is not None else None
+            refs_json = json.dumps(sorted(allowed_chat_refs)) if allowed_chat_refs is not None else None
+            restricted = accounts_json is not None or refs_json is not None
             await db.save_session(
                 token=token,
                 username=username,
                 role=role,
-                allowed_chat_ids=chat_ids_json,
+                # Rollback tombstone: a 7.x binary reads allowed_chat_ids, and
+                # NULL there means "everything" — so a restricted 8.0 session
+                # writes the empty grant, which denies under rollback too.
+                allowed_chat_ids="[]" if restricted else None,
+                allowed_accounts=accounts_json,
+                allowed_chat_refs=refs_json,
                 created_at=now,
                 last_accessed=now,
                 no_download=1 if no_download else 0,
@@ -743,18 +892,14 @@ async def _resolve_session(auth_cookie: str) -> SessionData | None:
     if not row or time.time() - row["created_at"] > AUTH_SESSION_SECONDS:
         return None
 
-    allowed = None
-    if row["allowed_chat_ids"]:
-        try:
-            allowed = set(json.loads(row["allowed_chat_ids"]))
-        except json.JSONDecodeError, TypeError:
-            logger.warning(f"Corrupted allowed_chat_ids for session {row['username']}, denying access")
-            return None
+    # v8.0.0 grant columns only; unreadable parses to the empty grant (denies).
+    allowed_accounts, allowed_chat_refs = _grants_from_row(row)
 
     session = SessionData(
         username=row["username"],
         role=row["role"],
-        allowed_chat_ids=allowed,
+        allowed_accounts=allowed_accounts,
+        allowed_chat_refs=allowed_chat_refs,
         no_download=bool(row.get("no_download", 0)),
         source_token_id=row.get("source_token_id"),
         created_at=row["created_at"],
@@ -772,7 +917,7 @@ async def _resolve_proxy_user(proxy_username: str) -> UserContext:
     AUTH_PROXY_DEFAULT_ACCESS (none = no chats until admin grants, all = full access).
     """
     if proxy_username in AUTH_PROXY_ADMIN_USERS:
-        return UserContext(username=proxy_username, role="master", allowed_chat_ids=None)
+        return UserContext(username=proxy_username, role="master")
 
     # Look up or auto-create viewer account
     if db:
@@ -780,35 +925,34 @@ async def _resolve_proxy_user(proxy_username: str) -> UserContext:
         if viewer:
             if not viewer["is_active"]:
                 raise HTTPException(status_code=403, detail="Account disabled")
-            allowed = None
-            if viewer["allowed_chat_ids"]:
-                try:
-                    allowed = set(json.loads(viewer["allowed_chat_ids"]))
-                except json.JSONDecodeError, TypeError:
-                    allowed = set()
+            allowed_accounts, allowed_chat_refs = _grants_from_row(viewer)
             return UserContext(
                 username=proxy_username,
                 role="viewer",
-                allowed_chat_ids=allowed,
+                allowed_accounts=allowed_accounts,
+                allowed_chat_refs=allowed_chat_refs,
                 no_download=bool(viewer.get("no_download", 0)),
             )
 
-        # Auto-create with configured default access
-        allowed_json = None  # None = all chats
+        # Auto-create with configured default access. The grant lives in
+        # allowed_chat_refs; allowed_chat_ids carries the matching rollback
+        # tombstone ("[]" = nothing under 7.x too, never fail-open NULL).
+        refs_json = None  # None = all chats
         if AUTH_PROXY_DEFAULT_ACCESS != "all":
-            allowed_json = "[]"  # Empty = no chats until admin grants access
+            refs_json = "[]"  # Empty = no chats until admin grants access
         await db.create_viewer_account(
             username=proxy_username,
             password_hash="",
             salt="proxy-auth",
-            allowed_chat_ids=allowed_json,
+            allowed_chat_ids=refs_json,
+            allowed_chat_refs=refs_json,
             created_by="proxy-auth",
             is_active=1,
         )
         logger.info(f"Auto-created proxy-authenticated viewer account: {proxy_username}")
 
-        allowed_set: set[int] | None = None if AUTH_PROXY_DEFAULT_ACCESS == "all" else set()
-        return UserContext(username=proxy_username, role="viewer", allowed_chat_ids=allowed_set)
+        refs_set: set[str] | None = None if AUTH_PROXY_DEFAULT_ACCESS == "all" else set()
+        return UserContext(username=proxy_username, role="viewer", allowed_chat_refs=refs_set)
 
     # No DB — proxy admin users are the only ones that work without DB
     raise HTTPException(status_code=503, detail="Database required for proxy authentication")
@@ -830,7 +974,7 @@ async def _resolve_user_context(proxy_header_value: str | None, auth_cookie: str
         if ALLOW_ANONYMOUS_VIEWER:
             # Read-only viewer, not master: anonymous internet users must never get
             # admin capabilities (create viewers, mint tokens, read audit log, settings).
-            return UserContext(username="anonymous", role="viewer", allowed_chat_ids=None, no_download=False)
+            return UserContext(username="anonymous", role="viewer", no_download=False)
         raise HTTPException(status_code=503, detail="Viewer authentication is not configured")
 
     # Trusted proxy header authentication (v7.9.0)
@@ -857,7 +1001,8 @@ async def _resolve_user_context(proxy_header_value: str | None, auth_cookie: str
     return UserContext(
         username=session.username,
         role=session.role,
-        allowed_chat_ids=session.allowed_chat_ids,
+        allowed_accounts=session.allowed_accounts,
+        allowed_chat_refs=session.allowed_chat_refs,
         no_download=session.no_download,
     )
 
@@ -879,82 +1024,24 @@ def require_master(request: Request, user: UserContext = Depends(require_auth)) 
     return user
 
 
-def get_user_chat_ids(user: UserContext) -> set[int] | None:
-    """Get the effective chat IDs a user can access.
+async def require_chat(chat_ref: str, user: UserContext = Depends(require_auth)) -> ChatContext:
+    """Dependency behind every {chat_ref} route: resolve + entitle, or a uniform 404.
 
-    Returns None if the user can see all chats (no restriction).
+    This single dependency replaces the per-route ACL preambles: by the time a
+    handler body runs, the chat exists AND the caller may see it. FastAPI's
+    per-request dependency cache shares the require_auth resolution with the
+    handler's own ``user`` parameter.
     """
-    master_filter = config.display_chat_ids or None  # empty set -> None
-
-    if user.role == "master":
-        return master_filter
-
-    # Viewer: use their allowed_chat_ids, intersected with master filter
-    if user.allowed_chat_ids is None:
-        return master_filter
-    if master_filter is None:
-        return user.allowed_chat_ids
-    return user.allowed_chat_ids & master_filter
-
-
-def _enforce_media_acl(path: str, user: UserContext, *, thumbnail: bool = False, member_ok: bool = False) -> None:
-    """Enforce chat-scoped access for a media URL path before serving bytes.
-
-    member_ok is a pre-resolved membership verdict for user-avatar paths
-    (avatars/users/{user_id}_...): the async endpoints run the SELECT-only
-    probe and pass True when the requested user has spoken in a chat the
-    viewer is authorized for. It is only honored for the avatars/users/
-    branch; avatars/chats/ and regular media ACL are unchanged.
-    """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is None:
-        return
-
-    parts = path.split("/")
-    if len(parts) < 2:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    if parts[0] == "avatars":
-        # Avatar path: avatars/{users|chats}/{id}_{photo_id}.jpg
-        if len(parts) < 3:
-            raise HTTPException(status_code=403, detail="Access denied")
-        subfolder = parts[1]
-        name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
-        try:
-            avatar_id = int(name.split("_")[0])
-        except ValueError:
-            raise HTTPException(status_code=403, detail="Access denied")
-        # Direct grant: a chat avatar for an allowed chat, or a 1:1 contact
-        # avatar whose user id == the private chat id the viewer can see.
-        if avatar_id in user_chat_ids:
-            return
-        # avatars/users/{user_id}: the first segment is a USER id, not a chat
-        # id. Serve it when that user is a member of a visible chat (they have
-        # spoken in a chat the viewer is authorized for). member_ok carries
-        # that pre-resolved DB verdict from the endpoint.
-        if subfolder == "users" and member_ok:
-            return
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    try:
-        media_chat_id = int(parts[0])
-    except ValueError:
-        logger.warning("Blocked restricted media request for non-numeric folder")
-        raise HTTPException(status_code=403, detail="Access denied")
-    if media_chat_id not in user_chat_ids:
-        # Legacy fallback: positive folder may correspond to negative marked ID
-        if media_chat_id > 0 and any(mid in user_chat_ids for mid in legacy_marked_chat_ids(media_chat_id)):
-            logger.debug("ACL legacy grant: positive folder mapped to allowed chat via marked-ID convention")
-        else:
-            raise HTTPException(status_code=403, detail="Access denied")
+    return await _resolve_chat_ref(chat_ref, user)
 
 
 def _strip_original_media_paths(messages: list[dict]) -> None:
-    """Remove original media file paths from API responses for no-download sessions."""
+    """Remove original media file paths and URLs from API responses for no-download sessions."""
     for message in messages:
         media = message.get("media")
         if isinstance(media, dict):
             media["file_path"] = None
+            media["url"] = None
             media["downloaded"] = False
             media["no_download"] = True
         media_items = message.get("media_items")
@@ -962,13 +1049,19 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
             for item in media_items:
                 if isinstance(item, dict):
                     item["file_path"] = None
+                    item["url"] = None
                     item["downloaded"] = False
                     item["no_download"] = True
 
 
 def _export_chat_metadata(chat: dict) -> dict:
-    """Return the minimal chat metadata needed by JSON exports."""
-    return {key: chat.get(key) for key in ("id", "type", "title", "username")}
+    """Return the minimal chat metadata needed by JSON exports.
+
+    The export FILE keeps the chat id — it is the user's own data leaving the
+    system, not a URL — and gains the ref so an export can be correlated with
+    the viewer's addressing.
+    """
+    return {key: chat.get(key) for key in ("id", "ref", "type", "title", "username")}
 
 
 # Setup paths
@@ -1003,16 +1096,15 @@ _thumb_cache_dir: Path | None = None
 
 
 def _checked_media_path(path: str) -> str:
-    """Return the single media path string used for BOTH the ACL and the file read.
+    """The traversal predicate every media-file path must pass before a read.
 
-    The folder segment IS the authorization key (_enforce_media_acl reads
-    parts[0] as the chat id), so the string that is authorized has to be the
-    string that selects bytes on disk. A traversal segment breaks exactly that:
-    the ASGI server percent-decodes before routing, so ``%2e%2e`` reaches the
-    route as a real ``..`` and lets the ACL read one folder while the filesystem
-    reads another. Every media route funnels its request path through here
-    first, and passes the returned value on unchanged, so the two can never
-    disagree again.
+    Historically the folder segment WAS the authorization key (the pre-8.0
+    path ACL read parts[0] as the chat id), and a traversal segment let the
+    ACL read one folder while the filesystem read another: the ASGI server
+    percent-decodes before routing, so ``%2e%2e`` reaches a route as a real
+    ``..``. Authorization is row-mediated now, but the predicate still bounds
+    every path that reaches the disk — avatar files funnel through here, and
+    _media_relative_path applies the same rule to media rows' file_path.
     """
     if path.startswith("/") or ".." in path.split("/"):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1046,84 +1138,66 @@ def _inline_media_type(filename: str) -> str | None:
     return None
 
 
-# Thumbnail endpoint MUST be defined before the catch-all /media/{path:path} route
-@app.get("/media/thumb/{size}/{folder:path}/{filename}")
-async def serve_thumbnail(size: int, folder: str, filename: str, user: UserContext = Depends(require_auth)):
-    """Serve on-demand generated thumbnails with auth and path traversal protection."""
-    if not _media_root:
-        raise HTTPException(status_code=404, detail="Media directory not configured")
+def _parse_media_key(media_key: str) -> tuple[int, str] | None:
+    """Split the URL's ``{message_id}_{type}`` media key, or None when malformed.
 
-    # Traversal check FIRST: an "avatars/../<chat>" folder would otherwise skip
-    # the no_download rule below on its way to another chat's media.
-    requested = _checked_media_path(f"{folder}/{filename}")
-    folder, _, filename = requested.rpartition("/")
-    if not folder:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    if user.no_download and not folder.startswith("avatars/"):
-        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
-
-    # `requested` is now the ONLY path string in this handler: it is what the ACL
-    # below authorizes and, split back into folder/filename, what ensure_thumbnail
-    # reads. ensure_thumbnail resolves it and bounds it at the media root, so a
-    # symlink cannot take it outside either.
-    # Early ACL check on requested path (prevents existence leakage).
-    # Member avatars (avatars/users/) are gated by a visible-membership probe.
-    member_ok = await _avatar_user_visible_member(requested, user)
-    _enforce_media_acl(requested, user, thumbnail=True, member_ok=member_ok)
-
-    from .thumbnails import ensure_thumbnail, resolve_cache_dir
-
-    global _thumb_cache_dir
-    if _thumb_cache_dir is None:
-        _thumb_cache_dir = resolve_cache_dir(_media_root)
-
-    result = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
-    if not result:
-        raise HTTPException(status_code=404, detail="Thumbnail not available")
-
-    thumb_path, resolved_folder = result
-    # Secondary ACL on resolved path if it differs (prevents bypass via legacy fallback)
-    if resolved_folder != folder:
-        resolved = f"{resolved_folder}/{filename}"
-        resolved_member_ok = await _avatar_user_visible_member(resolved, user)
-        _enforce_media_acl(resolved, user, thumbnail=True, member_ok=resolved_member_ok)
-
-    # Access-controlled bytes: private, so a shared proxy cache can never hand
-    # one viewer's thumbnail to another.
-    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+    The type may itself contain underscores (``video_note``), so the split is
+    on the FIRST separator only — mirroring how the storage key
+    ``{chat_id}_{message_id}_{type}`` is built by the writers.
+    """
+    message_part, _, type_part = media_key.partition("_")
+    if not type_part:
+        return None
+    try:
+        message_id = int(message_part)
+    except ValueError:
+        return None
+    return message_id, type_part
 
 
-@app.get("/media/{path:path}")
-async def serve_media(path: str, download: int = Query(0), user: UserContext = Depends(require_auth)):
-    """Serve media files with authentication, path traversal protection, and no_download enforcement."""
-    if not _media_root:
-        raise HTTPException(status_code=404, detail="Media directory not configured")
+def _media_relative_path(file_path: str | None) -> str | None:
+    """Normalize a media row's file_path to a media-root-relative path, or None.
 
-    # Reject path traversal and absolute paths before anything else reads the
-    # path — the no_download rule below tests a prefix, and a prefix means
-    # nothing until the path is known to stay in the folder it names.
-    path = _checked_media_path(path)
+    Same rules the gallery has always applied before building URLs: absolute
+    paths must live under the media root (older archives stored them absolute),
+    and the result must pass the traversal predicate _checked_media_path
+    enforces — a row whose path cannot be proven to stay inside the root serves
+    nothing.
+    """
+    if not file_path:
+        return None
+    path = file_path
+    if path.startswith("/"):
+        if not _media_root:
+            return None
+        media_root_str = str(_media_root) + "/"
+        if not path.startswith(media_root_str):
+            return None
+        path = path[len(media_root_str) :]
+    if path.startswith("/") or ".." in path.split("/"):
+        return None
+    return path
 
-    # Server-side download restriction. Original media bytes are not served to
-    # no-download users because a direct GET is indistinguishable from browser
-    # inline rendering once the URL is known. Avatars stay available for UI chrome.
-    if user.no_download and not path.startswith("avatars/"):
-        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
 
-    # Construct and resolve path, then verify it stays within media root
-    candidate = _media_root / path
+def _resolve_media_file(relative_path: str):
+    """Resolve a root-relative media path to a real file inside the media root.
+
+    Same containment contract as the pre-8.0 serve path: resolve(strict=True),
+    the legacy positive/negative folder fallback for pre-v4.0.5 archives, and
+    the is_relative_to bound that keeps a symlink from escaping the root.
+    Returns the resolved Path or None.
+    """
+    candidate = _media_root / relative_path
     try:
         resolved = candidate.resolve(strict=True)
     except OSError, ValueError:
         # Legacy fallback: pre-v4.0.5 paths used positive IDs, disk uses negative marked IDs.
         # Try alternate folder names: X→-X (basic group), X→-100X (channel/supergroup)
-        parts = path.split("/", 1)
+        parts = relative_path.split("/", 1)
         resolved = None
         if len(parts) == 2:
             folder, rest = parts
-            alt_folders = legacy_folder_alternates(folder)
-            for alt in alt_folders:
+            for alt in legacy_folder_alternates(folder):
                 try:
                     resolved = (_media_root / alt / rest).resolve(strict=True)
                     logger.debug("Legacy fallback: served media via alternate folder resolution")
@@ -1131,25 +1205,171 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
                 except OSError, ValueError, RuntimeError:
                     continue
         if resolved is None:
-            raise HTTPException(status_code=404, detail="File not found")
+            return None
     if not resolved.is_relative_to(_media_root):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # ACL uses the original request path (chat folder), not the resolved symlink
-    # target — symlinks into _shared/ don't carry chat folder context.
-    # Member avatars (avatars/users/) are gated by a visible-membership probe.
-    member_ok = await _avatar_user_visible_member(path, user)
-    _enforce_media_acl(path, user, member_ok=member_ok)
-
+        return None
     if not resolved.is_file():
+        return None
+    return resolved
+
+
+async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
+    """Media row for an already-entitled chat + URL key, or the uniform 404.
+
+    The row lookup IS the authorization for the bytes: the storage key is
+    reconstructed as ``{chat_id}_{message_id}_{type}`` from the resolved chat,
+    so a key can only ever select media belonging to the chat the ref named.
+    A malformed key and a missing row answer identically.
+    """
+    parsed = _parse_media_key(media_key)
+    row = None
+    if parsed is not None:
+        message_id, media_type = parsed
+        row = await db.get_media_by_id(f"{chat.chat_id}_{message_id}_{media_type}", account_id=chat.account_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return row
+
+
+def _avatar_file_response(avatar_path: str):
+    """Serve an avatars/ file with the containment and caching avatars always had."""
+    checked = _checked_media_path(avatar_path)
+    try:
+        resolved = (_media_root / checked).resolve(strict=True)
+    except OSError, ValueError:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not resolved.is_relative_to(_media_root) or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely; keep
+    # the long private TTL so avatar URLs are not refetched on every page.
+    return FileResponse(resolved, headers={"Cache-Control": "private, max-age=86400"})
+
+
+# Sender resolution for /media/avatar/{chat_ref}/{message_id}: one indexed
+# message lookup per (chat, message), cached briefly so a page of avatars does
+# not re-query per request.
+_sender_lookup_cache: dict[tuple[int, int, int], tuple[float, int | None]] = {}
+_SENDER_LOOKUP_CACHE_TTL_SECONDS = 300
+
+
+async def _message_sender_id(chat: ChatContext, message_id: int) -> int | None:
+    key = (chat.account_id, chat.chat_id, message_id)
+    cached = _sender_lookup_cache.get(key)
+    if cached is not None and time.monotonic() - cached[0] <= _SENDER_LOOKUP_CACHE_TTL_SECONDS:
+        return cached[1]
+    sender_id = await db.get_message_sender_id(chat.chat_id, message_id, account_id=chat.account_id)
+    _sender_lookup_cache[key] = (time.monotonic(), sender_id)
+    return sender_id
+
+
+# Route order matters only for /media/avatar/{chat_ref}: it shares the
+# two-segment shape with /media/{chat_ref}/{media_key}, and registration order
+# is what makes the literal win. A real ref can never collide with the literal
+# — token_urlsafe(16) is always 22 characters.
+@app.get("/media/thumb/{size}/{chat_ref}/{media_key}")
+async def serve_thumbnail(
+    size: int,
+    media_key: str,
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+):
+    """Serve on-demand generated thumbnails, addressed by chat ref + media key."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    row = await _entitled_media_row(chat, media_key)
+    relative = _media_relative_path(row.get("file_path"))
+    if relative is None:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+    folder, _, filename = relative.rpartition("/")
+    if not folder:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    from .thumbnails import ensure_thumbnail, resolve_cache_dir
+
+    global _thumb_cache_dir
+    if _thumb_cache_dir is None:
+        _thumb_cache_dir = resolve_cache_dir(_media_root)
+
+    # ensure_thumbnail resolves the path and bounds it at the media root, so a
+    # symlink cannot take the read outside it; authorization is the media row.
+    result = await ensure_thumbnail(_media_root, size, folder, filename, cache_dir=_thumb_cache_dir)
+    if not result:
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    thumb_path, _resolved_folder = result
+    # Access-controlled bytes: private, so a shared proxy cache can never hand
+    # one viewer's thumbnail to another.
+    return FileResponse(thumb_path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/media/avatar/{chat_ref}/{message_id}")
+async def serve_sender_avatar(message_id: int, chat: ChatContext = Depends(require_chat)):
+    """Serve the avatar of the sender of one message in an entitled chat.
+
+    Addressed by (chat ref, message id) so no user id appears in the URL — for
+    a private chat the peer's user id IS the chat id. Being entitled to the
+    chat is the membership proof: the sender is resolved from the message row,
+    which replaces the old visible-membership probe. Available for no-download
+    accounts like every avatar (UI chrome, not archive content).
+    """
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    sender_id = await _message_sender_id(chat, message_id)
+    if not sender_id or sender_id <= 0:
+        raise HTTPException(status_code=404, detail="File not found")
+    avatar_path = _get_cached_avatar_path(sender_id, "private")
+    if not avatar_path:
+        raise HTTPException(status_code=404, detail="File not found")
+    return _avatar_file_response(avatar_path)
+
+
+@app.get("/media/avatar/{chat_ref}")
+async def serve_chat_avatar(chat: ChatContext = Depends(require_chat)):
+    """Serve a chat's avatar, addressed by its ref alone."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    avatar_path = _get_cached_avatar_path(chat.chat_id, chat.type or "private")
+    if not avatar_path:
+        raise HTTPException(status_code=404, detail="File not found")
+    return _avatar_file_response(avatar_path)
+
+
+@app.get("/media/{chat_ref}/{media_key}")
+async def serve_media(
+    media_key: str,
+    download: int = Query(0),
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+):
+    """Serve original media bytes, addressed by chat ref + ``{message_id}_{type}`` key.
+
+    The bytes are selected THROUGH the media row (its file_path is the storage
+    location; nothing moved on disk), and the resolved path still passes the
+    same traversal/symlink containment the path-addressed route enforced.
+    """
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+
+    # Server-side download restriction. Original media bytes are not served to
+    # no-download users because a direct GET is indistinguishable from browser
+    # inline rendering once the URL is known. Avatars have their own routes.
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    row = await _entitled_media_row(chat, media_key)
+    relative = _media_relative_path(row.get("file_path"))
+    if relative is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    resolved = _resolve_media_file(relative)
+    if resolved is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Avatars are content-addressed (…_{photo_id}.jpg) and change rarely — let
-    # them cache like serve_thumbnail's output so avatar URLs aren't refetched on
-    # every page. The Cache-Control is set on the response after construction so
-    # the FileResponse(resolved) call is unchanged; the containment check above
-    # (reject ../absolute, resolve strict, is_relative_to media root) is the
-    # actual path-traversal protection.
     # ?download=1 forces a save instead of inline rendering. The saved name is the
     # DISPLAY name, not the storage name: on disk every file carries a uniqueness
     # prefix (``<file_id>_holiday.jpg``), and Media.file_name holds that same
@@ -1175,7 +1395,7 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
     inline_type = _inline_media_type(resolved.name)
     response = FileResponse(resolved, media_type=inline_type or "application/octet-stream")
     if download or inline_type is None:
-        download_name = media_display_filename(path.rsplit("/", 1)[-1])
+        download_name = media_display_filename(row.get("file_name") or resolved.name)
         quoted = quote(download_name)
         response.headers["Content-Disposition"] = (
             f"attachment; filename*=utf-8''{quoted}"
@@ -1183,9 +1403,8 @@ async def serve_media(path: str, download: int = Query(0), user: UserContext = D
             else f'attachment; filename="{download_name}"'
         )
     # Every byte this route serves is access-controlled, so no shared cache may
-    # store it. Avatars keep their long browser TTL; the rest stays as cacheable
-    # per-browser as it was, just never in a proxy that skips the ACL.
-    response.headers["Cache-Control"] = "private, max-age=86400" if path.startswith("avatars/") else "private"
+    # store it — never a proxy that skips the entitlement.
+    response.headers["Cache-Control"] = "private"
     return response
 
 
@@ -1406,16 +1625,19 @@ async def login(request: Request):
             # 600k-round PBKDF2: off the event loop, or one login attempt stalls
             # every other request, WebSocket frame and health check on the way.
             if await asyncio.to_thread(_verify_password, password, viewer["salt"], viewer["password_hash"]):
-                allowed = None
-                if viewer["allowed_chat_ids"]:
-                    try:
-                        allowed = set(json.loads(viewer["allowed_chat_ids"]))
-                    except json.JSONDecodeError, TypeError:
-                        logger.warning("Corrupted allowed_chat_ids for viewer %s, denying login", username)
-                        raise HTTPException(status_code=403, detail="Invalid viewer scope")
+                # v8.0.0 grant columns only; an unreadable grant logs the viewer
+                # in with the EMPTY grant (sees nothing) — fail-closed without
+                # turning a data problem into a login oracle.
+                allowed_accounts, allowed_chat_refs = _grants_from_row(viewer)
 
                 viewer_no_download = bool(viewer.get("no_download", 0))
-                token = await _create_session(username, "viewer", allowed, no_download=viewer_no_download)
+                token = await _create_session(
+                    username,
+                    "viewer",
+                    allowed_accounts=allowed_accounts,
+                    allowed_chat_refs=allowed_chat_refs,
+                    no_download=viewer_no_download,
+                )
                 response = JSONResponse({"success": True, "role": "viewer", "username": username})
                 response.set_cookie(
                     key=AUTH_COOKIE_NAME,
@@ -1444,7 +1666,7 @@ async def login(request: Request):
     if secrets.compare_digest(username, VIEWER_USERNAME) and secrets.compare_digest(password, VIEWER_PASSWORD):
         if viewer_only:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        token = await _create_session(username, "master", None)
+        token = await _create_session(username, "master")
         response = JSONResponse({"success": True, "role": "master", "username": username})
         response.set_cookie(
             key=AUTH_COOKIE_NAME,
@@ -1558,20 +1780,17 @@ async def auth_via_token(request: Request):
         )
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    allowed = None
-    if token_record["allowed_chat_ids"]:
-        try:
-            allowed = set(json.loads(token_record["allowed_chat_ids"]))
-        except json.JSONDecodeError, TypeError:
-            logger.warning("Corrupted allowed_chat_ids for share token %s, denying login", token_record["id"])
-            raise HTTPException(status_code=403, detail="Invalid token scope")
+    # v8.0.0 grant columns only; an unreadable grant authenticates into the
+    # EMPTY grant (sees nothing). The legacy allowed_chat_ids is never read.
+    allowed_accounts, allowed_chat_refs = _grants_from_row(token_record)
 
     token_no_download = bool(token_record.get("no_download", 0))
     token_label = token_record.get("label") or f"token:{token_record['id']}"
     session_token = await _create_session(
         username=f"token:{token_label}",
         role="token",
-        allowed_chat_ids=allowed,
+        allowed_accounts=allowed_accounts,
+        allowed_chat_refs=allowed_chat_refs,
         no_download=token_no_download,
         source_token_id=token_record["id"],
     )
@@ -1690,36 +1909,12 @@ _avatar_cache: dict[int, str | None] = {}
 _avatar_cache_time: datetime | None = None
 AVATAR_CACHE_TTL_SECONDS = 300  # 5 minutes
 
-# Cache avatar membership verdicts to avoid a DB probe per avatar request.
-# Keyed by (avatar_user_id, frozenset(user_chat_ids)) — the verdict depends on
-# both. Mirrors the avatar-path cache's TTL sweep.
-_avatar_member_cache: dict[tuple[int, frozenset[int]], bool] = {}
-_avatar_member_cache_time: datetime | None = None
-AVATAR_MEMBER_CACHE_TTL_SECONDS = 300  # 5 minutes
 
-
-def _encode_media_path(path: str) -> str:
-    """Percent-encode each segment of a media path, keeping "/" separators intact.
-
-    Media filenames come from Telegram document names, so they can contain "#"
-    or "?" — unencoded, those truncate the URL into a fragment/query and the
-    request never reaches /media/{path:path} (#258). Encoding per segment (rather
-    than the whole string) keeps the folder/filename structure routable; Starlette
-    decodes the path before the traversal guard in serve_media sees it.
-
-    Applied to avatar paths too, even though ``_find_avatar_path`` builds them
-    from ``{chat_id}_{photo_id}.jpg`` and cannot itself produce a reserved
-    character: the name is whatever the glob found on disk, so encoding keeps a
-    single rule for everything served under /media/ rather than two.
-
-    The viewer builds the same URLs client-side with ``encodeURIComponent`` per
-    segment. The two agree on every character that matters here (both encode
-    "#", "?", "/" and space) and differ only on ``!*'()``, which ``quote`` escapes
-    and ``encodeURIComponent`` leaves literal — both spellings decode to the same
-    path server-side, so they resolve to the same file and differ only as cache
-    keys.
-    """
-    return "/".join(quote(segment, safe="") for segment in path.split("/"))
+def _encode_media_key(media_key: str) -> str:
+    """Percent-encode a URL media key. The key is ``{message_id}_{type}`` — both
+    server-minted — but the single rule keeps every /media/ URL builder safe
+    even if a type ever grows a reserved character."""
+    return quote(media_key, safe="")
 
 
 def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
@@ -1744,78 +1939,40 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     return avatar_path
 
 
-def _sender_avatar_url(sender_id: int | None) -> str | None:
-    """Resolve a per-message member avatar URL from files ALREADY on disk.
+def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
+    """Give message payloads their ref-addressed URLs; no chat id survives in any URL.
 
-    A member avatar exists only when a prior backup happened to download it
-    (in practice because the sender is also a 1:1 contact). Proactive
-    member-avatar download is intentionally deferred (slice 2b) — it is
-    flood-sensitive, so nothing here fetches arbitrary member photos. The
-    initials circle in the viewer is the always-available render; a served
-    file is a bonus. Returns None when no file is present.
-
-    User ids are positive and map to avatars/users/ (same folder + naming as a
-    private chat with that id), so the shared avatar cache resolves them with
-    no collision against negative group/channel chat ids.
+    - ``media.id`` is rewritten from the storage key to the chat-free URL key
+      ``{message_id}_{type}`` (the ref in the route scopes it), and ``media.url``
+      is added — the viewer must build no /media/ URL from file_path anymore.
+    - ``sender_avatar_url`` becomes ``/media/avatar/{ref}/{message_id}``, present
+      only when the sender's avatar file is already on disk. A member avatar
+      exists only when a prior backup happened to download it (proactive
+      download stays deferred — flood-sensitive); the initials circle is the
+      always-available render, a served file is a bonus.
     """
-    if not sender_id or sender_id <= 0:
-        return None
-    avatar_path = _get_cached_avatar_path(sender_id, "private")
-    return f"/media/{_encode_media_path(avatar_path)}" if avatar_path else None
-
-
-async def _avatar_user_visible_member(path: str, user: UserContext) -> bool:
-    """Pre-resolve whether an avatars/users/ path is for a visible member.
-
-    Runs the SELECT-only membership probe for the avatars/users/{user_id}_...
-    case only, so the sync _enforce_media_acl can stay signature-stable. A user
-    avatar is allowed iff the requested user has spoken in a chat the viewer is
-    authorized for. Returns True (no DB hit) when the id is already directly
-    allowed (a 1:1 chat the viewer can see); returns False (no DB hit) for every
-    other path and for unrestricted viewers (the ACL short-circuits anyway). On
-    any DB error the probe fails CLOSED (returns False → the avatar is denied).
-    Never logs ids.
-    """
-    parts = path.split("/")
-    if len(parts) < 3 or parts[0] != "avatars" or parts[1] != "users":
-        return False
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is None:
-        return False
-    name = parts[2].rsplit(".", 1)[0] if "." in parts[2] else parts[2]
-    try:
-        avatar_user_id = int(name.split("_")[0])
-    except ValueError:
-        return False
-    if avatar_user_id in user_chat_ids:
-        # Directly allowed as a 1:1 chat — no membership probe needed.
-        return True
-
-    # Cache the DB verdict (short TTL) so repeated avatar requests on a page
-    # don't each run the membership probe.
-    global _avatar_member_cache_time
-    now = datetime.utcnow()
-    if (
-        _avatar_member_cache_time
-        and (now - _avatar_member_cache_time).total_seconds() > AVATAR_MEMBER_CACHE_TTL_SECONDS
-    ):
-        _avatar_member_cache.clear()
-        _avatar_member_cache_time = None
-    cache_key = (avatar_user_id, frozenset(user_chat_ids))
-    if cache_key in _avatar_member_cache:
-        return _avatar_member_cache[cache_key]
-
-    try:
-        verdict = await db.sender_has_message_in_chats(avatar_user_id, user_chat_ids)
-    except Exception as exc:
-        # Fail closed: a transient DB error must deny the avatar (403), never
-        # surface as an uncaught 500. Log the exception class only (no ids).
-        logger.warning("Avatar membership probe failed (%s); denying avatar", exc.__class__.__name__)
-        return False
-    _avatar_member_cache[cache_key] = verdict
-    if _avatar_member_cache_time is None:
-        _avatar_member_cache_time = now
-    return verdict
+    prefix = f"{chat.chat_id}_"
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        sender_id = message.get("sender_id")
+        message["sender_avatar_url"] = (
+            f"/media/avatar/{chat.ref}/{message.get('id')}"
+            if sender_id and sender_id > 0 and _get_cached_avatar_path(sender_id, "private")
+            else None
+        )
+        media = message.get("media")
+        if not isinstance(media, dict):
+            continue
+        media_key = None
+        raw_id = media.get("id")
+        if isinstance(raw_id, str) and raw_id.startswith(prefix):
+            media_key = raw_id[len(prefix) :]
+            media["id"] = media_key
+        if media_key and _media_relative_path(media.get("file_path")):
+            media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
+        else:
+            media["url"] = None
 
 
 @app.get("/api/chats")
@@ -1835,12 +1992,12 @@ async def get_chats(
     v6.2.0: Added archived and folder_id filters.
     """
     try:
-        user_chat_ids = get_user_chat_ids(user)
         # If user has chat restrictions, we need to load all matching chats
+        # (entitlements are ref/account-based, so filtering happens here).
         # Otherwise, use pagination
-        if user_chat_ids is not None:
+        if _user_is_restricted(user):
             chats = await db.get_all_chats(search=search, archived=archived, folder_id=folder_id)
-            chats = [c for c in chats if c["id"] in user_chat_ids]
+            chats = [c for c in chats if _chat_visible(user, c)]
             total = len(chats)
             # Apply pagination after filtering
             chats = chats[offset : offset + limit]
@@ -1850,14 +2007,12 @@ async def get_chats(
             )
             total = await db.get_chat_count(search=search, archived=archived, folder_id=folder_id)
 
-        # Add avatar URLs using cache
+        # Ref-addressed avatar URLs; the avatar bytes route re-resolves at serve
+        # time, this only decides whether the viewer renders an <img> at all.
         for chat in chats:
             try:
                 avatar_path = _get_cached_avatar_path(chat["id"], chat.get("type", "private"))
-                if avatar_path:
-                    chat["avatar_url"] = f"/media/{_encode_media_path(avatar_path)}"
-                else:
-                    chat["avatar_url"] = None
+                chat["avatar_url"] = f"/media/avatar/{chat['ref']}" if avatar_path else None
             except Exception as e:
                 logger.error(f"Error finding avatar for a chat: {e}")
                 chat["avatar_url"] = None
@@ -1876,9 +2031,9 @@ async def get_chats(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/messages")
+@app.get("/api/chats/{chat_ref}/messages")
 async def get_messages(
-    chat_id: int,
+    chat: ChatContext = Depends(require_chat),
     user: UserContext = Depends(require_auth),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -1901,10 +2056,6 @@ async def get_messages(
 
     Cursor-based pagination is preferred for infinite scroll.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     # Parse before_date if provided
     parsed_before_date = None
     if before_date:
@@ -1918,7 +2069,7 @@ async def get_messages(
 
     try:
         messages = await db.get_messages_paginated(
-            chat_id=chat_id,
+            chat_id=chat.chat_id,
             limit=limit,
             offset=offset,
             search=search,
@@ -1926,17 +2077,12 @@ async def get_messages(
             before_id=before_id,
             after_id=after_id,
             topic_id=topic_id,
+            account_id=chat.account_id,
         )
-        # Slice 2a: attach a member-avatar URL inferred from files already on
-        # disk (globbed via the shared avatar cache). Null when absent — the
-        # viewer falls back to the initials circle. No new DB column; proactive
-        # member-avatar download stays deferred (slice 2b, flood-sensitive).
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.
         if isinstance(messages, list):
-            for message in messages:
-                if isinstance(message, dict):
-                    message["sender_avatar_url"] = _sender_avatar_url(message.get("sender_id"))
+            _attach_message_payload_urls(messages, chat)
         if user.no_download:
             _strip_original_media_paths(messages)
         return messages
@@ -1947,20 +2093,17 @@ async def get_messages(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/messages/{message_id}/versions")
+@app.get("/api/chats/{chat_ref}/messages/{message_id}/versions")
 async def get_message_versions(
-    chat_id: int,
     message_id: int,
-    user: UserContext = Depends(require_auth),
+    chat: ChatContext = Depends(require_chat),
     limit: int = Query(100, ge=1, le=500),
 ):
     """Get preserved previous versions for a message."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     try:
-        return await db.get_message_versions(chat_id=chat_id, message_id=message_id, limit=limit)
+        return await db.get_message_versions(
+            chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
+        )
     except Exception as e:
         logger.error(f"Error fetching message versions: {e}", exc_info=True)
         if _is_db_connection_error(e):
@@ -1968,15 +2111,16 @@ async def get_message_versions(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/pinned")
-async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_ref}/pinned")
+async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
     """Get all pinned messages for a chat, ordered by date descending (newest first)."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     try:
-        pinned_messages = await db.get_pinned_messages(chat_id)
+        pinned_messages = await db.get_pinned_messages(chat.chat_id, account_id=chat.account_id)
+        # Same renderer as the message list, so the same ref-addressed URLs.
+        if isinstance(pinned_messages, list):
+            _attach_message_payload_urls(pinned_messages, chat)
+        if user.no_download:
+            _strip_original_media_paths(pinned_messages)
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
         logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
@@ -1985,27 +2129,24 @@ async def get_pinned_messages(chat_id: int, user: UserContext = Depends(require_
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/media")
+@app.get("/api/chats/{chat_ref}/media")
 async def get_chat_media(
-    chat_id: int,
     types: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=200),
     before_id: str = Query(default=""),
     after_id: str = Query(default=""),
+    chat: ChatContext = Depends(require_chat),
     user: UserContext = Depends(require_auth),
 ):
     """Get paginated media items for a chat, with optional type filtering.
 
     ``before_id`` pages BACKWARD (older) and ``after_id`` pages FORWARD (newer);
-    both are the same opaque composite media-id token. They are mutually
-    exclusive — asking for a page both before X and after Y has no meaning here,
-    so it is rejected instead of silently honouring one. An unresolvable or
-    foreign token yields an empty page in either direction (#266).
+    both are the CHAT-FREE ``{message_id}_{type}`` key this endpoint returns as
+    each item's ``id`` — the chat id no longer rides in the query string. They
+    are mutually exclusive — asking for a page both before X and after Y has no
+    meaning here, so it is rejected instead of silently honouring one. An
+    unresolvable or foreign token yields an empty page in either direction (#266).
     """
-    allowed = get_user_chat_ids(user)
-    if allowed is not None and chat_id not in allowed:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
 
@@ -2014,41 +2155,37 @@ async def get_chat_media(
 
     media_types = [t.strip() for t in types.split(",") if t.strip()] or None
 
+    # The adapter's cursor is the storage key; the URL token is its chat-free
+    # suffix. An old-format (full) token reconstructs to a key that resolves to
+    # no row, which is the same empty page a deleted cursor yields.
+    key_prefix = f"{chat.chat_id}_"
+
     try:
         result = await db.get_media_paginated(
-            chat_id,
+            chat.chat_id,
             media_types=media_types,
             limit=limit,
-            before_id=before_id or None,
-            after_id=after_id or None,
+            before_id=f"{key_prefix}{before_id}" if before_id else None,
+            after_id=f"{key_prefix}{after_id}" if after_id else None,
+            account_id=chat.account_id,
         )
         for item in result["items"]:
-            file_path = item.get("file_path", "") or ""
-            # Strip media root prefix for absolute paths stored in DB
-            if _media_root and file_path.startswith("/"):
-                media_root_str = str(_media_root) + "/"
-                if file_path.startswith(media_root_str):
-                    file_path = file_path[len(media_root_str) :]
-                else:
-                    item["thumb_url"] = None
-                    item.pop("file_path", None)
-                    continue
-            if ".." in file_path.split("/") or file_path.startswith("/"):
+            media_key = None
+            raw_id = item.get("id")
+            if isinstance(raw_id, str) and raw_id.startswith(key_prefix):
+                media_key = raw_id[len(key_prefix) :]
+                item["id"] = media_key
+
+            relative = _media_relative_path(item.get("file_path", "") or "")
+            if relative is None or media_key is None:
                 item["thumb_url"] = None
                 item.pop("file_path", None)
                 continue
 
-            parts = file_path.split("/", 1)
-            if len(parts) == 2:
-                # The split only gates on "has a folder component" and reads the
-                # extension; the URL below re-uses ``file_path`` itself, which is
-                # exactly ``folder/filename``.
-                filename = parts[1]
-                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-                if ext in THUMBNAIL_EXTENSIONS:
-                    item["thumb_url"] = f"/media/thumb/200/{_encode_media_path(file_path)}"
-                else:
-                    item["thumb_url"] = None
+            filename = relative.rsplit("/", 1)[-1]
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if ext in THUMBNAIL_EXTENSIONS:
+                item["thumb_url"] = f"/media/thumb/200/{chat.ref}/{_encode_media_key(media_key)}"
             else:
                 item["thumb_url"] = None
 
@@ -2059,7 +2196,7 @@ async def get_chat_media(
                 # lights up the gallery's own placeholder instead.
                 item["thumb_url"] = None
             else:
-                item["media_url"] = f"/media/{_encode_media_path(file_path)}"
+                item["media_url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
 
         return result
     except Exception as e:
@@ -2069,21 +2206,14 @@ async def get_chat_media(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/media/counts")
-async def get_chat_media_counts(
-    chat_id: int,
-    user: UserContext = Depends(require_auth),
-):
+@app.get("/api/chats/{chat_ref}/media/counts")
+async def get_chat_media_counts(chat: ChatContext = Depends(require_chat)):
     """Get media type counts for a chat."""
-    allowed = get_user_chat_ids(user)
-    if allowed is not None and chat_id not in allowed:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
-        counts = await db.get_media_counts(chat_id)
+        counts = await db.get_media_counts(chat.chat_id, account_id=chat.account_id)
         return counts
     except Exception as e:
         logger.error(f"Error fetching media counts: {e}", exc_info=True)
@@ -2099,8 +2229,8 @@ async def get_folders(user: UserContext = Depends(require_auth)):
     v6.2.0: Returns user-created Telegram folders (dialog filters).
     """
     try:
-        user_chat_ids = get_user_chat_ids(user)
-        folders = await db.get_all_folders(allowed_chat_ids=user_chat_ids)
+        visible_chat_ids = await _visible_chat_id_set(user)
+        folders = await db.get_all_folders(allowed_chat_ids=visible_chat_ids)
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {e}", exc_info=True)
@@ -2109,18 +2239,14 @@ async def get_folders(user: UserContext = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/topics")
-async def get_chat_topics(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_ref}/topics")
+async def get_chat_topics(chat: ChatContext = Depends(require_chat)):
     """Get forum topics for a chat.
 
     v6.2.0: Returns topic list with message counts for forum-enabled chats.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     try:
-        topics = await db.get_forum_topics(chat_id)
+        topics = await db.get_forum_topics(chat.chat_id, account_id=chat.account_id)
         return {"topics": topics}
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
@@ -2137,10 +2263,9 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
     Respects DISPLAY_CHAT_IDS so restricted viewers only see relevant archived chats.
     """
     try:
-        user_chat_ids = get_user_chat_ids(user)
-        if user_chat_ids is not None:
+        if _user_is_restricted(user):
             all_archived = await db.get_all_chats(archived=True)
-            count = sum(1 for c in all_archived if c["id"] in user_chat_ids)
+            count = sum(1 for c in all_archived if _chat_visible(user, c))
         else:
             count = await db.get_archived_chat_count()
         return {"count": count}
@@ -2158,7 +2283,7 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         stats = await db.get_cached_statistics()
 
         # Filter per-chat stats to only chats the user can access
-        user_chat_ids = get_user_chat_ids(user)
+        user_chat_ids = await _visible_chat_id_set(user)
         per_chat = stats.get("per_chat_message_counts", {})
         if user_chat_ids is not None and per_chat:
             # JSON keys are strings after json.loads(), user_chat_ids are ints
@@ -2247,7 +2372,7 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
     - endpoint: Push service URL
     - keys.p256dh: Client public key (base64)
     - keys.auth: Auth secret (base64)
-    - chat_id: Optional chat ID for chat-specific subscriptions
+    - chat_ref: Optional chat ref for chat-specific subscriptions
     """
     if not push_manager or not push_manager.is_enabled:
         raise HTTPException(status_code=400, detail="Push notifications not enabled. Set PUSH_NOTIFICATIONS=full")
@@ -2259,10 +2384,15 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
         keys = data.get("keys", {})
         p256dh = keys.get("p256dh")
         auth = keys.get("auth")
-        chat_id = data.get("chat_id")
+        chat_ref = data.get("chat_ref")
 
         if not endpoint or not p256dh or not auth:
             raise HTTPException(status_code=400, detail="Missing required subscription data")
+
+        # The 7.x field is refused rather than ignored: silently dropping a
+        # scoping request would store a GLOBAL subscription — a widening.
+        if data.get("chat_id") is not None:
+            raise HTTPException(status_code=400, detail="chat_id is no longer accepted; send chat_ref")
 
         from .push import validate_push_endpoint
 
@@ -2278,26 +2408,27 @@ async def push_subscribe(request: Request, user: UserContext = Depends(require_a
             logger.warning("Rejected push subscription with invalid endpoint")
             raise HTTPException(status_code=400, detail="Invalid subscription endpoint")
 
-        if chat_id:
-            user_chat_ids = get_user_chat_ids(user)
-            if user_chat_ids is not None and chat_id not in user_chat_ids:
-                raise HTTPException(status_code=403, detail="Access denied to this chat")
+        # A chat-scoped subscription resolves + entitles through the SAME
+        # resolver as every route: forbidden/unknown/malformed refs 404 alike.
+        chat_ctx: ChatContext | None = None
+        if chat_ref:
+            chat_ctx = await _resolve_chat_ref(str(chat_ref), user)
 
         user_agent = request.headers.get("user-agent", "")[:500]
-        user_chat_ids_list = get_user_chat_ids(user)
 
         success = await push_manager.subscribe(
             endpoint=endpoint,
             p256dh=p256dh,
             auth=auth,
-            chat_id=chat_id,
+            chat_id=chat_ctx.chat_id if chat_ctx else None,
             user_agent=user_agent,
             username=user.username,
-            allowed_chat_ids=list(user_chat_ids_list) if user_chat_ids_list is not None else None,
+            allowed_accounts=sorted(user.allowed_accounts) if user.allowed_accounts is not None else None,
+            allowed_chat_refs=sorted(user.allowed_chat_refs) if user.allowed_chat_refs is not None else None,
         )
 
         if success:
-            return {"status": "subscribed", "chat_id": chat_id}
+            return {"status": "subscribed", "chat_ref": chat_ctx.ref if chat_ctx else None}
         else:
             raise HTTPException(status_code=500, detail="Failed to store subscription")
 
@@ -2402,43 +2533,43 @@ async def internal_push(request: Request):
         return {"status": "error", "detail": "Internal push processing failed"}
 
 
-# Cache chat stats to avoid re-running 3 aggregate queries on every chat open
-_chat_stats_cache: dict[int, tuple[float, dict]] = {}
+# Cache chat stats to avoid re-running 3 aggregate queries on every chat open.
+# Keyed by (account_id, chat_id): a chat id alone repeats across accounts.
+_chat_stats_cache: dict[tuple[int, int], tuple[float, dict]] = {}
 CHAT_STATS_CACHE_TTL_SECONDS = 60
 
 
-def _get_cached_chat_stats(chat_id: int) -> dict | None:
-    """Return cached stats for chat_id if still fresh, else None."""
-    entry = _chat_stats_cache.get(chat_id)
+def _get_cached_chat_stats(key: tuple[int, int]) -> dict | None:
+    """Return cached stats for (account_id, chat_id) if still fresh, else None."""
+    entry = _chat_stats_cache.get(key)
     if entry is None:
         return None
     cached_at, stats = entry
     if time.monotonic() - cached_at > CHAT_STATS_CACHE_TTL_SECONDS:
-        _chat_stats_cache.pop(chat_id, None)
+        _chat_stats_cache.pop(key, None)
         return None
     return stats
 
 
-def _set_cached_chat_stats(chat_id: int, stats: dict) -> None:
-    _chat_stats_cache[chat_id] = (time.monotonic(), stats)
+def _set_cached_chat_stats(key: tuple[int, int], stats: dict) -> None:
+    _chat_stats_cache[key] = (time.monotonic(), stats)
 
 
-@app.get("/api/chats/{chat_id}/stats")
-async def get_chat_stats(chat_id: int, user: UserContext = Depends(require_auth)):
-    """Get statistics for a specific chat (message count, media files, size)."""
-    # ACL check runs unconditionally, before any cache lookup, so a cache hit
-    # never bypasses access control.
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
+@app.get("/api/chats/{chat_ref}/stats")
+async def get_chat_stats(chat: ChatContext = Depends(require_chat)):
+    """Get statistics for a specific chat (message count, media files, size).
 
-    cached = _get_cached_chat_stats(chat_id)
+    Resolution + entitlement run in the dependency, before any cache lookup, so
+    a cache hit never bypasses access control.
+    """
+    cache_key = (chat.account_id, chat.chat_id)
+    cached = _get_cached_chat_stats(cache_key)
     if cached is not None:
         return cached
 
     try:
-        stats = await db.get_chat_stats(chat_id)
-        _set_cached_chat_stats(chat_id, stats)
+        stats = await db.get_chat_stats(chat.chat_id, account_id=chat.account_id)
+        _set_cached_chat_stats(cache_key, stats)
         return stats
     except Exception as e:
         logger.error(f"Error getting chat stats: {e}", exc_info=True)
@@ -2447,9 +2578,9 @@ async def get_chat_stats(chat_id: int, user: UserContext = Depends(require_auth)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/messages/by-date")
+@app.get("/api/chats/{chat_ref}/messages/by-date")
 async def get_message_by_date(
-    chat_id: int,
+    chat: ChatContext = Depends(require_chat),
     user: UserContext = Depends(require_auth),
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     timezone: str = Query(None, description="Timezone for date interpretation (e.g., 'Europe/Madrid')"),
@@ -2459,10 +2590,6 @@ async def get_message_by_date(
     Find the first message on or after a specific date for navigation.
     Used by the date picker to jump to a specific date.
     """
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     if timezone is not None:
         if len(timezone) > 255:
             raise HTTPException(status_code=400, detail="Invalid timezone")
@@ -2493,11 +2620,16 @@ async def get_message_by_date(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
     try:
-        message = await db.find_message_by_date_with_joins(chat_id, target_date, topic_id)
+        message = await db.find_message_by_date_with_joins(
+            chat.chat_id, target_date, topic_id, account_id=chat.account_id
+        )
 
         if not message:
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
+        _attach_message_payload_urls([message], chat)
+        if user.no_download:
+            _strip_original_media_paths([message])
         return message
     except HTTPException:
         raise
@@ -2508,19 +2640,14 @@ async def get_message_by_date(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/messages/dates")
+@app.get("/api/chats/{chat_ref}/messages/dates")
 async def get_message_dates(
-    chat_id: int,
-    user: UserContext = Depends(require_auth),
+    chat: ChatContext = Depends(require_chat),
     month: str = Query(..., description="Month in YYYY-MM format"),
     timezone: str = Query(..., description="IANA timezone"),
     topic_id: int | None = None,
 ):
     """Return the local calendar dates containing messages in a month."""
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     try:
         month_start = datetime.strptime(month, "%Y-%m")
     except OverflowError, ValueError:
@@ -2569,7 +2696,7 @@ async def get_message_dates(
         raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
 
     try:
-        dates = await db.get_message_dates(chat_id, day_ranges, topic_id)
+        dates = await db.get_message_dates(chat.chat_id, day_ranges, topic_id, account_id=chat.account_id)
         return JSONResponse(
             content={
                 "month": month,
@@ -2586,31 +2713,30 @@ async def get_message_dates(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/chats/{chat_id}/export")
-async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
+@app.get("/api/chats/{chat_ref}/export")
+async def export_chat(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
     """Export chat history to JSON."""
     if user.no_download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
-    user_chat_ids = get_user_chat_ids(user)
-    if user_chat_ids is not None and chat_id not in user_chat_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        chat = await db.get_chat_by_id(chat_id)
-        if not chat:
+        chat_row = await db.get_chat_by_id(chat.chat_id, account_id=chat.account_id)
+        if not chat_row:
             raise HTTPException(status_code=404, detail="Chat not found")
 
-        chat_name = chat.get("title") or chat.get("username") or str(chat_id)
+        # The download filename never falls back to the chat id: the saved name
+        # lands in filesystem listings, which are the same surface as a URL.
+        chat_name = chat_row.get("title") or chat_row.get("username") or chat.ref
         # Sanitize filename
         safe_name = "".join(c for c in chat_name if c.isalnum() or c in (" ", "-", "_")).strip()
         filename = f"{safe_name}_export.json"
 
         async def iter_json():
             yield "{\n"
-            yield f'  "chat": {json.dumps(_export_chat_metadata(chat), ensure_ascii=False, default=str)},\n'
+            yield f'  "chat": {json.dumps(_export_chat_metadata(chat_row), ensure_ascii=False, default=str)},\n'
             yield '  "messages": [\n'
             first = True
-            async for msg in db.get_messages_for_export(chat_id):
+            async for msg in db.get_messages_for_export(chat.chat_id, account_id=chat.account_id):
                 if not first:
                     yield ",\n"
                 first = False
@@ -2621,7 +2747,7 @@ async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
             # so it must never be materialized into a single list/dumps here.
             yield '  "message_versions": [\n'
             first_version = True
-            async for version in db.iter_message_versions_for_export(chat_id):
+            async for version in db.iter_message_versions_for_export(chat.chat_id, account_id=chat.account_id):
                 if not first_version:
                     yield ",\n"
                 first_version = False
@@ -2650,6 +2776,45 @@ async def export_chat(chat_id: int, user: UserContext = Depends(require_auth)):
 # ============================================================================
 
 
+def _reject_legacy_grant_key(data: dict) -> None:
+    """Refuse a 7.x ``allowed_chat_ids`` in an admin write, loudly.
+
+    Ignoring it would create/leave the identity UNRESTRICTED — a widening the
+    caller did not ask for. The error names the replacement so an old client
+    fails toward the fix, not toward full access.
+    """
+    if "allowed_chat_ids" in data:
+        raise HTTPException(status_code=400, detail="allowed_chat_ids is no longer accepted; send allowed_chat_refs")
+
+
+def _refs_grant_json(value) -> str | None:
+    """Validate an ``allowed_chat_refs`` payload: None, or a list of ref strings."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(ref, str) and 0 < len(ref) <= 64 for ref in value):
+        raise HTTPException(status_code=400, detail="Invalid chat ref format")
+    return json.dumps(sorted(set(value)))
+
+
+def _accounts_grant_json(value) -> str | None:
+    """Validate an ``allowed_accounts`` payload: None, or a list of account ids."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="Invalid account id format")
+    try:
+        accounts = sorted({int(account) for account in value})
+    except TypeError, ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account id format")
+    return json.dumps(accounts)
+
+
+def _grant_list(raw: str | None, element_type: type) -> list | None:
+    """Render a stored grant column for an admin response (unreadable → [], as enforced)."""
+    parsed = parse_entitlement_column(raw, element_type)
+    return sorted(parsed) if parsed is not None else None
+
+
 @app.get("/api/admin/viewers")
 async def list_viewers(user: UserContext = Depends(require_master)):
     """List all viewer accounts."""
@@ -2660,7 +2825,8 @@ async def list_viewers(user: UserContext = Depends(require_master)):
             {
                 "id": v["id"],
                 "username": v["username"],
-                "allowed_chat_ids": json.loads(v["allowed_chat_ids"]) if v["allowed_chat_ids"] else None,
+                "allowed_accounts": _grant_list(v.get("allowed_accounts"), int),
+                "allowed_chat_refs": _grant_list(v.get("allowed_chat_refs"), str),
                 "is_active": v["is_active"],
                 "no_download": v.get("no_download", 0),
                 "created_by": v["created_by"],
@@ -2679,9 +2845,9 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    _reject_legacy_grant_key(data)
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
-    allowed_chat_ids = data.get("allowed_chat_ids")
     is_active = 1 if data.get("is_active", 1) else 0
     viewer_no_download = 1 if data.get("no_download", 0) else 0
 
@@ -2699,18 +2865,19 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     salt = secrets.token_hex(32)
     password_hash = await asyncio.to_thread(_hash_password, password, salt)
 
-    chat_ids_json = None
-    if allowed_chat_ids is not None:
-        try:
-            chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
-        except ValueError, TypeError:
-            raise HTTPException(status_code=400, detail="Invalid chat ID format")
+    accounts_json = _accounts_grant_json(data.get("allowed_accounts"))
+    refs_json = _refs_grant_json(data.get("allowed_chat_refs"))
+    restricted = accounts_json is not None or refs_json is not None
 
     account = await db.create_viewer_account(
         username=username,
         password_hash=password_hash,
         salt=salt,
-        allowed_chat_ids=chat_ids_json,
+        # Rollback tombstone: "[]" denies under a 7.x binary too; never NULL
+        # for a restricted viewer. 8.0 code does not read this column.
+        allowed_chat_ids="[]" if restricted else None,
+        allowed_accounts=accounts_json,
+        allowed_chat_refs=refs_json,
         created_by=user.username,
         is_active=is_active,
         no_download=viewer_no_download,
@@ -2727,7 +2894,8 @@ async def create_viewer(request: Request, user: UserContext = Depends(require_ma
     return {
         "id": account["id"],
         "username": account["username"],
-        "allowed_chat_ids": json.loads(chat_ids_json) if chat_ids_json else None,
+        "allowed_accounts": _grant_list(accounts_json, int),
+        "allowed_chat_refs": _grant_list(refs_json, str),
         "is_active": account["is_active"],
         "no_download": account["no_download"],
     }
@@ -2741,6 +2909,7 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    _reject_legacy_grant_key(data)
     existing = await db.get_viewer_account(viewer_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Viewer not found")
@@ -2754,15 +2923,17 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
         updates["password_hash"] = await asyncio.to_thread(_hash_password, pwd, salt)
         updates["salt"] = salt
 
-    if "allowed_chat_ids" in data:
-        allowed = data["allowed_chat_ids"]
-        if allowed is None:
-            updates["allowed_chat_ids"] = None
-        else:
-            try:
-                updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
-            except ValueError, TypeError:
-                raise HTTPException(status_code=400, detail="Invalid chat ID format")
+    if "allowed_accounts" in data:
+        updates["allowed_accounts"] = _accounts_grant_json(data["allowed_accounts"])
+    if "allowed_chat_refs" in data:
+        updates["allowed_chat_refs"] = _refs_grant_json(data["allowed_chat_refs"])
+    if "allowed_accounts" in data or "allowed_chat_refs" in data:
+        # Keep the rollback tombstone in step with the FINAL grant state, so a
+        # viewer widened to unrestricted loses the "[]" and a narrowed one
+        # gains it (checking the reverse of the create path).
+        final_accounts = updates.get("allowed_accounts", existing.get("allowed_accounts"))
+        final_refs = updates.get("allowed_chat_refs", existing.get("allowed_chat_refs"))
+        updates["allowed_chat_ids"] = "[]" if (final_accounts is not None or final_refs is not None) else None
 
     if "is_active" in data:
         updates["is_active"] = 1 if data["is_active"] else 0
@@ -2787,7 +2958,8 @@ async def update_viewer(viewer_id: int, request: Request, user: UserContext = De
     return {
         "id": account["id"],
         "username": account["username"],
-        "allowed_chat_ids": json.loads(account["allowed_chat_ids"]) if account["allowed_chat_ids"] else None,
+        "allowed_accounts": _grant_list(account.get("allowed_accounts"), int),
+        "allowed_chat_refs": _grant_list(account.get("allowed_chat_refs"), str),
         "is_active": account["is_active"],
     }
 
@@ -2826,6 +2998,8 @@ async def admin_list_chats(user: UserContext = Depends(require_master)):
         result.append(
             {
                 "id": c["id"],
+                "ref": c.get("ref"),
+                "account_id": c.get("account_id"),
                 "title": title,
                 "type": c.get("type"),
                 "username": c.get("username"),
@@ -2865,7 +3039,8 @@ async def list_tokens(user: UserContext = Depends(require_master)):
                 "id": t["id"],
                 "label": t["label"],
                 "created_by": t["created_by"],
-                "allowed_chat_ids": json.loads(t["allowed_chat_ids"]) if t["allowed_chat_ids"] else None,
+                "allowed_accounts": _grant_list(t.get("allowed_accounts"), int),
+                "allowed_chat_refs": _grant_list(t.get("allowed_chat_refs"), str),
                 "is_revoked": t["is_revoked"],
                 "no_download": t["no_download"],
                 "expires_at": t["expires_at"],
@@ -2885,8 +3060,9 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    _reject_legacy_grant_key(data)
     label = (data.get("label") or "").strip() or None
-    allowed_chat_ids = data.get("allowed_chat_ids")
+    allowed_chat_refs = data.get("allowed_chat_refs")
     no_download = 1 if data.get("no_download") else 0
     expires_at = None
     if data.get("expires_at"):
@@ -2895,13 +3071,10 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expires_at format. Use ISO 8601.")
 
-    if not allowed_chat_ids or not isinstance(allowed_chat_ids, list):
-        raise HTTPException(status_code=400, detail="allowed_chat_ids is required (list of chat IDs)")
-
-    try:
-        chat_ids_json = json.dumps([int(cid) for cid in allowed_chat_ids])
-    except ValueError, TypeError:
-        raise HTTPException(status_code=400, detail="Invalid chat ID format")
+    # A share token is ALWAYS scoped: no refs, no token.
+    if not allowed_chat_refs or not isinstance(allowed_chat_refs, list):
+        raise HTTPException(status_code=400, detail="allowed_chat_refs is required (list of chat refs)")
+    refs_json = _refs_grant_json(allowed_chat_refs)
 
     # Generate token: 32 bytes = 64 hex chars
     plaintext_token = secrets.token_hex(32)
@@ -2913,7 +3086,9 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
         token_hash=token_hash,
         token_salt=salt,
         created_by=user.username,
-        allowed_chat_ids=chat_ids_json,
+        # NOT NULL rollback tombstone: under a 7.x binary this token grants nothing.
+        allowed_chat_ids="[]",
+        allowed_chat_refs=refs_json,
         no_download=no_download,
         expires_at=expires_at,
     )
@@ -2930,7 +3105,7 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
         "id": token_record["id"],
         "label": token_record["label"],
         "token": plaintext_token,  # Only returned once at creation time
-        "allowed_chat_ids": json.loads(chat_ids_json),
+        "allowed_chat_refs": _grant_list(refs_json, str),
         "no_download": token_record["no_download"],
         "expires_at": token_record["expires_at"],
         "created_at": token_record["created_at"],
@@ -2939,23 +3114,22 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
 
 @app.put("/api/admin/tokens/{token_id}")
 async def update_token(token_id: int, request: Request, user: UserContext = Depends(require_master)):
-    """Update a share token (label, allowed_chat_ids, is_revoked, no_download)."""
+    """Update a share token (label, allowed_chat_refs, is_revoked, no_download)."""
     try:
         data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    _reject_legacy_grant_key(data)
     updates = {}
     if "label" in data:
         updates["label"] = (data["label"] or "").strip() or None
-    if "allowed_chat_ids" in data:
-        allowed = data["allowed_chat_ids"]
-        if allowed is None or not isinstance(allowed, list):
-            raise HTTPException(status_code=400, detail="allowed_chat_ids must be a list")
-        try:
-            updates["allowed_chat_ids"] = json.dumps([int(cid) for cid in allowed])
-        except ValueError, TypeError:
-            raise HTTPException(status_code=400, detail="Invalid chat ID format")
+    if "allowed_chat_refs" in data:
+        allowed = data["allowed_chat_refs"]
+        if allowed is None or not isinstance(allowed, list) or not allowed:
+            raise HTTPException(status_code=400, detail="allowed_chat_refs must be a non-empty list")
+        updates["allowed_chat_refs"] = _refs_grant_json(allowed)
+        updates["allowed_chat_ids"] = "[]"  # keep the rollback tombstone denying
     if "is_revoked" in data:
         updates["is_revoked"] = 1 if data["is_revoked"] else 0
     if "no_download" in data:
@@ -2969,7 +3143,7 @@ async def update_token(token_id: int, request: Request, user: UserContext = Depe
         raise HTTPException(status_code=404, detail="Token not found")
 
     # Invalidate all active sessions from this token when scope/access changes
-    scope_changed = any(k in updates for k in ("is_revoked", "allowed_chat_ids", "no_download"))
+    scope_changed = any(k in updates for k in ("is_revoked", "allowed_chat_refs", "no_download"))
     if scope_changed:
         await _invalidate_token_sessions(token_id)
 
@@ -2984,7 +3158,7 @@ async def update_token(token_id: int, request: Request, user: UserContext = Depe
     return {
         "id": updated["id"],
         "label": updated["label"],
-        "allowed_chat_ids": json.loads(updated["allowed_chat_ids"]) if updated["allowed_chat_ids"] else None,
+        "allowed_chat_refs": _grant_list(updated.get("allowed_chat_refs"), str),
         "is_revoked": updated["is_revoked"],
         "no_download": updated["no_download"],
         "expires_at": updated["expires_at"],
@@ -3100,9 +3274,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4001, reason=exc.detail)
         return
 
-    ws_user_chat_ids = get_user_chat_ids(user_ctx)
-
-    await ws_manager.connect(websocket, allowed_chat_ids=ws_user_chat_ids)
+    await ws_manager.connect(websocket, user_ctx)
 
     try:
         while True:
@@ -3110,18 +3282,24 @@ async def websocket_endpoint(websocket: WebSocket):
             action = data.get("action")
 
             if action == "subscribe":
-                chat_id = data.get("chat_id")
-                if chat_id:
-                    if ws_manager.subscribe(websocket, chat_id):
-                        await websocket.send_json({"type": "subscribed", "chat_id": chat_id})
+                chat_ref = data.get("chat_ref")
+                if isinstance(chat_ref, str) and chat_ref:
+                    # The SAME resolver + entitlement as every HTTP route (the
+                    # parity requirement): unknown, malformed and forbidden refs
+                    # are denied identically, and a DB outage denies too.
+                    try:
+                        await _resolve_chat_ref(chat_ref, user_ctx)
+                    except HTTPException:
+                        await websocket.send_json({"type": "subscribe_denied", "chat_ref": chat_ref})
                     else:
-                        await websocket.send_json({"type": "subscribe_denied", "chat_id": chat_id})
+                        ws_manager.subscribe(websocket, chat_ref)
+                        await websocket.send_json({"type": "subscribed", "chat_ref": chat_ref})
 
             elif action == "unsubscribe":
-                chat_id = data.get("chat_id")
-                if chat_id:
-                    ws_manager.unsubscribe(websocket, chat_id)
-                    await websocket.send_json({"type": "unsubscribed", "chat_id": chat_id})
+                chat_ref = data.get("chat_ref")
+                if isinstance(chat_ref, str) and chat_ref:
+                    ws_manager.unsubscribe(websocket, chat_ref)
+                    await websocket.send_json({"type": "unsubscribed", "chat_ref": chat_ref})
 
             elif action == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -3139,27 +3317,42 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def broadcast_new_message(chat_id: int, message: dict):
-    """Broadcast a new message to subscribed clients."""
-    await ws_manager.broadcast_to_chat(chat_id, {"type": "new_message", "chat_id": chat_id, "message": message})
+    """Broadcast a new message to subscribed clients (frames are ref-addressed)."""
+    chat = await _broadcast_chat_row(chat_id)
+    if chat is None:
+        return
+    await ws_manager.broadcast_to_chat(chat, {"type": "new_message", "chat_ref": chat["ref"], "message": message})
 
 
 async def broadcast_message_edit(chat_id: int, message_id: int, new_text: str, edit_date: str):
-    """Broadcast a message edit to subscribed clients."""
+    """Broadcast a message edit to subscribed clients (frames are ref-addressed)."""
+    chat = await _broadcast_chat_row(chat_id)
+    if chat is None:
+        return
     await ws_manager.broadcast_to_chat(
-        chat_id,
-        {"type": "edit", "chat_id": chat_id, "message_id": message_id, "new_text": new_text, "edit_date": edit_date},
+        chat,
+        {
+            "type": "edit",
+            "chat_ref": chat["ref"],
+            "message_id": message_id,
+            "new_text": new_text,
+            "edit_date": edit_date,
+        },
     )
 
 
 async def broadcast_message_delete(
     chat_id: int, message_id: int, deletion_mode: str = "hard", deleted_at: str | None = None
 ) -> None:
-    """Broadcast a message deletion to subscribed clients."""
+    """Broadcast a message deletion to subscribed clients (frames are ref-addressed)."""
+    chat = await _broadcast_chat_row(chat_id)
+    if chat is None:
+        return
     await ws_manager.broadcast_to_chat(
-        chat_id,
+        chat,
         {
             "type": "delete",
-            "chat_id": chat_id,
+            "chat_ref": chat["ref"],
             "message_id": message_id,
             "deletion_mode": deletion_mode,
             "deleted_at": deleted_at,

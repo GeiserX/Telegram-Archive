@@ -27,13 +27,16 @@ def _reset_auth_module():
 
 def _make_mock_db():
     db = AsyncMock()
+    # v8.0.0 chat rows always carry account_id and the opaque ref — the
+    # entitlement filter and the payload builders read both.
     db.get_all_chats = AsyncMock(
         return_value=[
-            {"id": -1001, "title": "Chat A", "type": "channel"},
-            {"id": -1002, "title": "Chat B", "type": "channel"},
-            {"id": -1003, "title": "Chat C", "type": "channel"},
+            {"id": -1001, "account_id": 1, "ref": "refchatAchatAchatAchat", "title": "Chat A", "type": "channel"},
+            {"id": -1002, "account_id": 1, "ref": "refchatBchatBchatBchat", "title": "Chat B", "type": "channel"},
+            {"id": -1003, "account_id": 1, "ref": "refchatCchatCchatCchat", "title": "Chat C", "type": "channel"},
         ]
     )
+    db.get_chat_by_ref = AsyncMock(return_value=None)
     db.get_chat_count = AsyncMock(return_value=3)
     db.get_cached_statistics = AsyncMock(return_value={"total_chats": 3, "total_messages": 100})
     db.get_metadata = AsyncMock(return_value=None)
@@ -192,7 +195,10 @@ class TestViewerLogin:
                 "username": "viewer1",
                 "password_hash": pw_hash,
                 "salt": salt,
-                "allowed_chat_ids": json.dumps([-1001]),
+                # 8.0 shape: the grant lives in allowed_chat_refs; the legacy
+                # column holds only the "[]" rollback tombstone.
+                "allowed_chat_ids": "[]",
+                "allowed_chat_refs": json.dumps(["refchatAchatAchatAchat"]),
                 "is_active": 1,
                 "created_by": "admin",
                 "created_at": "2026-01-01T00:00:00",
@@ -231,7 +237,9 @@ class TestPerUserFiltering:
                 "username": "restricted",
                 "password_hash": pw_hash,
                 "salt": salt,
-                "allowed_chat_ids": json.dumps([-1001]),
+                # 8.0 grant: one chat by REF; the legacy column is a tombstone.
+                "allowed_chat_ids": "[]",
+                "allowed_chat_refs": json.dumps(["refchatAchatAchatAchat"]),
                 "is_active": 1,
                 "created_by": "admin",
                 "created_at": "2026-01-01T00:00:00",
@@ -244,6 +252,9 @@ class TestPerUserFiltering:
         cookie = login_resp.cookies.get("viewer_auth")
         resp = client.get("/api/chats", cookies={"viewer_auth": cookie})
         assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert [chat["id"] for chat in data["chats"]] == [-1001]
 
 
 class TestRateLimiting:
@@ -374,7 +385,12 @@ class TestMediaAuth:
 
     def test_media_requires_auth(self, auth_env):
         client, _, _ = _get_client()
+        # A 7.x id-addressed one-segment path no longer routes at all: it dies
+        # 404 at routing, BEFORE auth even runs.
         resp = client.get("/media/test.jpg")
+        assert resp.status_code == 404
+        # The ref-addressed shape routes, and without a session it is refused.
+        resp = client.get("/media/aaaaaaaaaaaaaaaaaaaaaa/1_photo")
         assert resp.status_code == 401
 
     def test_path_traversal_blocked(self, auth_env):

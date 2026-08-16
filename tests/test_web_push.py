@@ -418,7 +418,12 @@ class TestNotifyNewMessage(unittest.IsolatedAsyncioTestCase):
 
         long_text = "x" * 200
         await mgr.notify_new_message(
-            chat_id=1, chat_title="Chat", sender_name="Alice", message_text=long_text, message_id=99
+            chat_id=1,
+            chat_ref="pushRefChat000001ABC",
+            chat_title="Chat",
+            sender_name="Alice",
+            message_text=long_text,
+            message_id=99,
         )
 
         call_kwargs = mgr.send_notification.call_args.kwargs
@@ -431,7 +436,12 @@ class TestNotifyNewMessage(unittest.IsolatedAsyncioTestCase):
         mgr.send_notification = AsyncMock(return_value=1)
 
         await mgr.notify_new_message(
-            chat_id=1, chat_title="Chat", sender_name="Bob", message_text="Hello", message_id=10
+            chat_id=1,
+            chat_ref="pushRefChat000001ABC",
+            chat_title="Chat",
+            sender_name="Bob",
+            message_text="Hello",
+            message_id=10,
         )
 
         call_kwargs = mgr.send_notification.call_args.kwargs
@@ -442,24 +452,40 @@ class TestNotifyNewMessage(unittest.IsolatedAsyncioTestCase):
         mgr = _make_manager()
         mgr.send_notification = AsyncMock(return_value=1)
 
-        await mgr.notify_new_message(chat_id=1, chat_title="Group", sender_name="", message_text="Hi", message_id=5)
+        await mgr.notify_new_message(
+            chat_id=1,
+            chat_ref="pushRefChat000001ABC",
+            chat_title="Group",
+            sender_name="",
+            message_text="Hi",
+            message_id=5,
+        )
 
         call_kwargs = mgr.send_notification.call_args.kwargs
         self.assertEqual(call_kwargs["body"], "Hi")
 
     async def test_data_includes_url_and_message_id(self):
-        """notify_new_message passes correct data with url and type."""
+        """notify_new_message passes ref-addressed data: the chat id never enters
+        the payload, its URL, or the grouping tag."""
         mgr = _make_manager()
         mgr.send_notification = AsyncMock(return_value=1)
 
-        await mgr.notify_new_message(chat_id=42, chat_title="Test", sender_name="X", message_text="msg", message_id=7)
+        await mgr.notify_new_message(
+            chat_id=42,
+            chat_ref="pushRefChat000042ABC",
+            chat_title="Test",
+            sender_name="X",
+            message_text="msg",
+            message_id=7,
+        )
 
         call_kwargs = mgr.send_notification.call_args.kwargs
         self.assertEqual(call_kwargs["data"]["type"], "new_message")
-        self.assertEqual(call_kwargs["data"]["chat_id"], 42)
+        self.assertEqual(call_kwargs["data"]["chat_ref"], "pushRefChat000042ABC")
+        self.assertNotIn("chat_id", call_kwargs["data"])
         self.assertEqual(call_kwargs["data"]["message_id"], 7)
-        self.assertEqual(call_kwargs["data"]["url"], "/?chat=42&msg=7")
-        self.assertEqual(call_kwargs["tag"], "chat-42")
+        self.assertEqual(call_kwargs["data"]["url"], "/?chat=pushRefChat000042ABC&msg=7")
+        self.assertEqual(call_kwargs["tag"], "chat-pushRefChat000042ABC")
 
 
 # ============================================================================

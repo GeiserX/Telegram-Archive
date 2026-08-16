@@ -30,6 +30,16 @@ def _skip_unless_web_main(cls_or_fn):
     return unittest.skipUnless(_WEB_MAIN_AVAILABLE, "web_main import failed (pydantic mismatch)")(cls_or_fn)
 
 
+def _user(role="master", **kwargs):
+    """A UserContext for ConnectionManager tests (v8.0: sockets carry their principal)."""
+    return web_main.UserContext(username="u", role=role, **kwargs)
+
+
+def _chat_row(chat_id, ref, account_id=1):
+    """The resolved chat row shape broadcast_to_chat consumes (id, account_id, ref)."""
+    return {"id": chat_id, "account_id": account_id, "ref": ref, "type": "group"}
+
+
 # ============================================================================
 # ConnectionManager (pure async, no FastAPI dependency beyond WebSocket type)
 # ============================================================================
@@ -45,21 +55,22 @@ class TestConnectionManagerConnect(unittest.IsolatedAsyncioTestCase):
     async def test_connect_adds_websocket(self):
         """connect() adds websocket to active_connections."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
+        await self.mgr.connect(ws, _user())
         self.assertIn(ws, self.mgr.active_connections)
 
     async def test_connect_initializes_empty_subscription_set(self):
         """connect() creates an empty subscription set for the websocket."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
+        await self.mgr.connect(ws, _user())
         self.assertEqual(self.mgr.active_connections[ws], set())
 
     async def test_disconnect_removes_websocket(self):
-        """disconnect() removes websocket from active_connections."""
+        """disconnect() removes websocket and its user context."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
+        await self.mgr.connect(ws, _user())
         self.mgr.disconnect(ws)
         self.assertNotIn(ws, self.mgr.active_connections)
+        self.assertNotIn(ws, self.mgr._contexts)
 
     async def test_disconnect_nonexistent_is_noop(self):
         """disconnect() does not raise for unknown websocket."""
@@ -69,59 +80,73 @@ class TestConnectionManagerConnect(unittest.IsolatedAsyncioTestCase):
 
 @_skip_unless_web_main
 class TestConnectionManagerSubscribe(unittest.IsolatedAsyncioTestCase):
-    """Test ConnectionManager.subscribe and unsubscribe."""
+    """Test ConnectionManager.subscribe and unsubscribe (ref-keyed since v8.0)."""
 
     def setUp(self):
         self.mgr = web_main.ConnectionManager()
+        self._saved_display = web_main.config.display_chat_ids
+        web_main.config.display_chat_ids = set()
 
-    async def test_subscribe_adds_chat_id(self):
-        """subscribe() adds chat_id to connection's subscriptions."""
+    def tearDown(self):
+        web_main.config.display_chat_ids = self._saved_display
+
+    async def test_subscribe_adds_chat_ref(self):
+        """subscribe() adds the chat ref to the connection's subscriptions."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
-        result = self.mgr.subscribe(ws, 42)
+        await self.mgr.connect(ws, _user())
+        result = self.mgr.subscribe(ws, "refSubscribeAdd0000042")
         self.assertTrue(result)
-        self.assertIn(42, self.mgr.active_connections[ws])
+        self.assertIn("refSubscribeAdd0000042", self.mgr.active_connections[ws])
 
     async def test_subscribe_returns_false_for_unknown_ws(self):
         """subscribe() returns False for unregistered websocket."""
         ws = AsyncMock()
-        result = self.mgr.subscribe(ws, 42)
+        result = self.mgr.subscribe(ws, "refUnknownSocket000042")
         self.assertFalse(result)
 
-    async def test_subscribe_denied_by_acl(self):
-        """subscribe() returns False when chat_id not in allowed set."""
+    async def test_subscription_outside_grant_is_never_delivered(self):
+        """Entitlement moved to the endpoint resolver: subscribe() records the ref,
+        and the delivery re-check in broadcast_to_chat is what keeps a frame from
+        outrunning the grant (e.g. a grant revoked after subscribe)."""
         ws = AsyncMock()
-        await self.mgr.connect(ws, allowed_chat_ids={100, 200})
-        result = self.mgr.subscribe(ws, 999)
-        self.assertFalse(result)
-
-    async def test_subscribe_allowed_by_acl(self):
-        """subscribe() returns True when chat_id is in allowed set."""
-        ws = AsyncMock()
-        await self.mgr.connect(ws, allowed_chat_ids={100, 200})
-        result = self.mgr.subscribe(ws, 100)
+        await self.mgr.connect(ws, _user(role="viewer", allowed_chat_refs={"refGranted0000000100AA"}))
+        result = self.mgr.subscribe(ws, "refForbidden000000999A")
         self.assertTrue(result)
 
-    async def test_subscribe_allowed_when_acl_is_none(self):
-        """subscribe() allows any chat when allowed_chat_ids is None."""
-        ws = AsyncMock()
-        await self.mgr.connect(ws, allowed_chat_ids=None)
-        result = self.mgr.subscribe(ws, 999)
-        self.assertTrue(result)
+        await self.mgr.broadcast_to_chat(_chat_row(999, "refForbidden000000999A"), {"type": "test"})
+        ws.send_json.assert_not_awaited()
 
-    async def test_unsubscribe_removes_chat_id(self):
-        """unsubscribe() removes chat_id from subscriptions."""
+    async def test_subscription_within_grant_is_delivered(self):
+        """A subscription to a ref inside the session's grant receives frames."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
-        self.mgr.subscribe(ws, 42)
-        self.mgr.unsubscribe(ws, 42)
-        self.assertNotIn(42, self.mgr.active_connections[ws])
+        await self.mgr.connect(ws, _user(role="viewer", allowed_chat_refs={"refGranted0000000100AA"}))
+        self.mgr.subscribe(ws, "refGranted0000000100AA")
+
+        await self.mgr.broadcast_to_chat(_chat_row(100, "refGranted0000000100AA"), {"type": "test"})
+        ws.send_json.assert_awaited_once_with({"type": "test"})
+
+    async def test_unrestricted_user_receives_any_subscribed_ref(self):
+        """A None grant (unrestricted) delivers frames for any subscribed chat."""
+        ws = AsyncMock()
+        await self.mgr.connect(ws, _user(allowed_chat_refs=None))
+        self.mgr.subscribe(ws, "refAnyChatAtAll0000999A")
+
+        await self.mgr.broadcast_to_chat(_chat_row(999, "refAnyChatAtAll0000999A"), {"type": "test"})
+        ws.send_json.assert_awaited_once_with({"type": "test"})
+
+    async def test_unsubscribe_removes_chat_ref(self):
+        """unsubscribe() removes the chat ref from subscriptions."""
+        ws = AsyncMock()
+        await self.mgr.connect(ws, _user())
+        self.mgr.subscribe(ws, "refUnsubscribe00000042")
+        self.mgr.unsubscribe(ws, "refUnsubscribe00000042")
+        self.assertNotIn("refUnsubscribe00000042", self.mgr.active_connections[ws])
 
     async def test_unsubscribe_nonexistent_chat_is_noop(self):
         """unsubscribe() does not raise when chat was never subscribed."""
         ws = AsyncMock()
-        await self.mgr.connect(ws)
-        self.mgr.unsubscribe(ws, 999)  # should not raise
+        await self.mgr.connect(ws, _user())
+        self.mgr.unsubscribe(ws, "refNeverSubscribed999A")  # should not raise
 
 
 @_skip_unless_web_main
@@ -130,47 +155,54 @@ class TestConnectionManagerBroadcast(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.mgr = web_main.ConnectionManager()
+        self._saved_display = web_main.config.display_chat_ids
+        web_main.config.display_chat_ids = set()
+
+    def tearDown(self):
+        web_main.config.display_chat_ids = self._saved_display
 
     async def test_broadcast_to_chat_sends_to_subscribed(self):
-        """broadcast_to_chat sends message to connections subscribed to that chat."""
+        """broadcast_to_chat sends message to connections subscribed to that chat's ref."""
         ws1 = AsyncMock()
         ws2 = AsyncMock()
-        await self.mgr.connect(ws1)
-        await self.mgr.connect(ws2)
-        self.mgr.subscribe(ws1, 42)
-        # ws2 is not subscribed to 42
+        await self.mgr.connect(ws1, _user())
+        await self.mgr.connect(ws2, _user())
+        self.mgr.subscribe(ws1, "refBroadcast0000000042")
+        # ws2 is not subscribed to the ref
 
-        await self.mgr.broadcast_to_chat(42, {"type": "test"})
+        await self.mgr.broadcast_to_chat(_chat_row(42, "refBroadcast0000000042"), {"type": "test"})
 
         ws1.send_json.assert_awaited_once_with({"type": "test"})
         # Empty subscriptions no longer receive chat-specific events.
         ws2.send_json.assert_not_awaited()
 
     async def test_broadcast_to_chat_respects_acl(self):
-        """broadcast_to_chat skips connections whose ACL excludes the chat."""
+        """broadcast_to_chat re-checks each socket's grant against the chat at delivery."""
         ws = AsyncMock()
-        await self.mgr.connect(ws, allowed_chat_ids={100})
-        self.mgr.subscribe(ws, 100)
+        await self.mgr.connect(ws, _user(role="viewer", allowed_chat_refs={"refGranted0000000100AA"}))
+        # Force a subscription the grant does not cover: the delivery re-check
+        # is the guard, not the subscription set.
+        self.mgr.subscribe(ws, "refForbidden000000999A")
 
-        await self.mgr.broadcast_to_chat(999, {"type": "test"})
+        await self.mgr.broadcast_to_chat(_chat_row(999, "refForbidden000000999A"), {"type": "test"})
         ws.send_json.assert_not_awaited()
 
     async def test_broadcast_to_chat_disconnects_failed_ws(self):
         """broadcast_to_chat removes websockets that fail to send."""
         ws = AsyncMock()
         ws.send_json.side_effect = Exception("broken pipe")
-        await self.mgr.connect(ws)
-        self.mgr.subscribe(ws, 1)
+        await self.mgr.connect(ws, _user())
+        self.mgr.subscribe(ws, "refBrokenPipe000000001")
 
-        await self.mgr.broadcast_to_chat(1, {"type": "test"})
+        await self.mgr.broadcast_to_chat(_chat_row(1, "refBrokenPipe000000001"), {"type": "test"})
         self.assertNotIn(ws, self.mgr.active_connections)
 
     async def test_broadcast_to_all_sends_to_every_connection(self):
         """broadcast_to_all sends to all connected websockets."""
         ws1 = AsyncMock()
         ws2 = AsyncMock()
-        await self.mgr.connect(ws1)
-        await self.mgr.connect(ws2)
+        await self.mgr.connect(ws1, _user())
+        await self.mgr.connect(ws2, _user())
 
         await self.mgr.broadcast_to_all({"type": "ping"})
         ws1.send_json.assert_awaited_once()
@@ -180,7 +212,7 @@ class TestConnectionManagerBroadcast(unittest.IsolatedAsyncioTestCase):
         """broadcast_to_all removes broken websockets."""
         ws = AsyncMock()
         ws.send_json.side_effect = RuntimeError("closed")
-        await self.mgr.connect(ws)
+        await self.mgr.connect(ws, _user())
 
         await self.mgr.broadcast_to_all({"type": "ping"})
         self.assertNotIn(ws, self.mgr.active_connections)
@@ -404,53 +436,77 @@ class TestGetSecureCookies(unittest.TestCase):
 
 
 # ============================================================================
-# get_user_chat_ids (access control logic)
+# _visible_chat_id_set (access control logic; replaced get_user_chat_ids in v8.0)
 # ============================================================================
 
 
 @_skip_unless_web_main
-class TestGetUserChatIds(unittest.TestCase):
-    """Test get_user_chat_ids access control merging."""
+class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
+    """Test _visible_chat_id_set: ref-based grants merged with DISPLAY_CHAT_IDS.
+
+    Entitlements are ref-keyed since v8.0, so the id set is computed by
+    filtering the chat list through _chat_visible rather than intersecting
+    id sets directly.
+    """
 
     def setUp(self):
         self._saved_display = web_main.config.display_chat_ids
+        self._saved_db = web_main.db
         web_main.config.display_chat_ids = set()
+        web_main.db = AsyncMock()
+        web_main.db.get_all_chats = AsyncMock(
+            return_value=[
+                _chat_row(5, "refChat0000000000005A"),
+                _chat_row(10, "refChat0000000000010A"),
+                _chat_row(20, "refChat0000000000020A"),
+                _chat_row(40, "refChat0000000000040A"),
+            ]
+        )
 
     def tearDown(self):
         web_main.config.display_chat_ids = self._saved_display
+        web_main.db = self._saved_db
 
-    def test_master_no_filter_returns_none(self):
+    async def test_master_no_filter_returns_none(self):
         """Master with no display_chat_ids returns None (all chats)."""
         user = web_main.UserContext(username="admin", role="master")
-        self.assertIsNone(web_main.get_user_chat_ids(user))
+        self.assertIsNone(await web_main._visible_chat_id_set(user))
 
-    def test_master_with_filter_returns_filter(self):
-        """Master with display_chat_ids returns the filter set."""
-        web_main.config.display_chat_ids = {1, 2, 3}
-        user = web_main.UserContext(username="admin", role="master")
-        self.assertEqual(web_main.get_user_chat_ids(user), {1, 2, 3})
-
-    def test_viewer_no_restrictions_no_filter_returns_none(self):
-        """Viewer with allowed_chat_ids=None and no display filter returns None."""
-        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_ids=None)
-        self.assertIsNone(web_main.get_user_chat_ids(user))
-
-    def test_viewer_with_allowed_no_filter_returns_allowed(self):
-        """Viewer with allowed_chat_ids returns those IDs when no master filter."""
-        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_ids={10, 20})
-        self.assertEqual(web_main.get_user_chat_ids(user), {10, 20})
-
-    def test_viewer_with_allowed_and_filter_returns_intersection(self):
-        """Viewer's allowed_chat_ids intersected with master display filter."""
-        web_main.config.display_chat_ids = {10, 20, 30}
-        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_ids={20, 40})
-        self.assertEqual(web_main.get_user_chat_ids(user), {20})
-
-    def test_viewer_allowed_none_with_filter_returns_filter(self):
-        """Viewer with no restriction but master filter returns the filter."""
+    async def test_master_with_filter_returns_filter(self):
+        """Master with display_chat_ids sees only the filtered chats."""
         web_main.config.display_chat_ids = {5, 10}
-        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_ids=None)
-        self.assertEqual(web_main.get_user_chat_ids(user), {5, 10})
+        user = web_main.UserContext(username="admin", role="master")
+        self.assertEqual(await web_main._visible_chat_id_set(user), {5, 10})
+
+    async def test_viewer_no_restrictions_no_filter_returns_none(self):
+        """Viewer with allowed_chat_refs=None and no display filter returns None."""
+        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_refs=None)
+        self.assertIsNone(await web_main._visible_chat_id_set(user))
+
+    async def test_viewer_with_allowed_no_filter_returns_allowed(self):
+        """Viewer with a ref grant sees exactly those chats' ids."""
+        user = web_main.UserContext(
+            username="viewer1",
+            role="viewer",
+            allowed_chat_refs={"refChat0000000000010A", "refChat0000000000020A"},
+        )
+        self.assertEqual(await web_main._visible_chat_id_set(user), {10, 20})
+
+    async def test_viewer_with_allowed_and_filter_returns_intersection(self):
+        """A ref grant and the master display filter both bind (intersection)."""
+        web_main.config.display_chat_ids = {10, 20, 30}
+        user = web_main.UserContext(
+            username="viewer1",
+            role="viewer",
+            allowed_chat_refs={"refChat0000000000020A", "refChat0000000000040A"},
+        )
+        self.assertEqual(await web_main._visible_chat_id_set(user), {20})
+
+    async def test_viewer_allowed_none_with_filter_returns_filter(self):
+        """Viewer with no restriction but master filter sees the filtered chats."""
+        web_main.config.display_chat_ids = {5, 10}
+        user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_refs=None)
+        self.assertEqual(await web_main._visible_chat_id_set(user), {5, 10})
 
 
 # ============================================================================
@@ -611,10 +667,11 @@ class TestSessionData(unittest.TestCase):
         self.assertLessEqual(session.created_at, after)
         self.assertGreaterEqual(session.last_accessed, before)
 
-    def test_allowed_chat_ids_default_none(self):
-        """SessionData defaults allowed_chat_ids to None."""
+    def test_grant_fields_default_none(self):
+        """SessionData defaults both v8.0 grant fields to None (unrestricted)."""
         session = web_main.SessionData(username="u", role="master")
-        self.assertIsNone(session.allowed_chat_ids)
+        self.assertIsNone(session.allowed_accounts)
+        self.assertIsNone(session.allowed_chat_refs)
 
     def test_no_download_default_false(self):
         """SessionData defaults no_download to False."""
@@ -631,10 +688,11 @@ class TestUserContext(unittest.TestCase):
         user = web_main.UserContext(username="u", role="master")
         self.assertFalse(user.no_download)
 
-    def test_allowed_chat_ids_default_none(self):
-        """UserContext defaults allowed_chat_ids to None."""
+    def test_grant_fields_default_none(self):
+        """UserContext defaults both v8.0 grant fields to None (unrestricted)."""
         user = web_main.UserContext(username="u", role="viewer")
-        self.assertIsNone(user.allowed_chat_ids)
+        self.assertIsNone(user.allowed_accounts)
+        self.assertIsNone(user.allowed_chat_refs)
 
 
 # ============================================================================
@@ -684,10 +742,18 @@ class TestCreateSession(unittest.IsolatedAsyncioTestCase):
         count_after = len([s for s in web_main._sessions.values() if s.username == "user1"])
         self.assertEqual(count_after, web_main._MAX_SESSIONS_PER_USER)
 
-    async def test_preserves_allowed_chat_ids(self):
-        """_create_session stores allowed_chat_ids in session."""
-        token = await web_main._create_session("v1", "viewer", allowed_chat_ids={1, 2, 3})
-        self.assertEqual(web_main._sessions[token].allowed_chat_ids, {1, 2, 3})
+    async def test_preserves_grants(self):
+        """_create_session stores both v8.0 grant fields in the session."""
+        token = await web_main._create_session(
+            "v1",
+            "viewer",
+            allowed_accounts={1, 2},
+            allowed_chat_refs={"refGrantA0000000000001", "refGrantB0000000000002"},
+        )
+        self.assertEqual(web_main._sessions[token].allowed_accounts, {1, 2})
+        self.assertEqual(
+            web_main._sessions[token].allowed_chat_refs, {"refGrantA0000000000001", "refGrantB0000000000002"}
+        )
 
 
 @_skip_unless_web_main
@@ -751,17 +817,29 @@ class TestInvalidateTokenSessions(unittest.IsolatedAsyncioTestCase):
 
 @_skip_unless_web_main
 class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
-    """Test handle_realtime_notification dispatch logic."""
+    """Test handle_realtime_notification dispatch logic.
+
+    v8.0: the writer-side chat id is resolved to its row once, and every
+    outward frame is ref-addressed — no chat_id may appear in a frame.
+    """
 
     def setUp(self):
         self._saved_display = web_main.config.display_chat_ids
         self._saved_push = web_main.push_manager
+        self._saved_db = web_main.db
         web_main.config.display_chat_ids = set()
         web_main.push_manager = None
+        web_main.db = AsyncMock()
+        web_main.db.get_chat_by_id = AsyncMock(
+            side_effect=lambda chat_id, **kwargs: _chat_row(chat_id, f"refRealtime{chat_id:011d}")
+        )
+        web_main._broadcast_chat_cache.clear()
 
     def tearDown(self):
         web_main.config.display_chat_ids = self._saved_display
         web_main.push_manager = self._saved_push
+        web_main.db = self._saved_db
+        web_main._broadcast_chat_cache.clear()
 
     async def test_ignores_notification_for_restricted_chat(self):
         """handle_realtime_notification ignores chats not in display_chat_ids."""
@@ -771,7 +849,7 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
         mock_bc.assert_not_awaited()
 
     async def test_broadcasts_new_message(self):
-        """handle_realtime_notification broadcasts new_message events."""
+        """handle_realtime_notification broadcasts ref-addressed new_message frames."""
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
             await web_main.handle_realtime_notification(
                 {
@@ -782,8 +860,10 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
             )
         mock_bc.assert_awaited_once()
         call_args = mock_bc.call_args
-        self.assertEqual(call_args[0][0], 42)
+        self.assertEqual(call_args[0][0]["id"], 42)
         self.assertEqual(call_args[0][1]["type"], "new_message")
+        self.assertEqual(call_args[0][1]["chat_ref"], "refRealtime00000000042")
+        self.assertNotIn("chat_id", call_args[0][1])
 
     async def test_broadcasts_edit_event(self):
         """handle_realtime_notification broadcasts edit events."""
@@ -797,6 +877,7 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
             )
         mock_bc.assert_awaited_once()
         self.assertEqual(mock_bc.call_args[0][1]["type"], "edit")
+        self.assertEqual(mock_bc.call_args[0][1]["chat_ref"], "refRealtime00000000010")
 
     async def test_broadcasts_delete_event(self):
         """handle_realtime_notification broadcasts delete events."""
@@ -810,6 +891,7 @@ class TestHandleRealtimeNotification(unittest.IsolatedAsyncioTestCase):
             )
         mock_bc.assert_awaited_once()
         self.assertEqual(mock_bc.call_args[0][1]["type"], "delete")
+        self.assertNotIn("chat_id", mock_bc.call_args[0][1])
 
     async def test_broadcasts_pin_event(self):
         """handle_realtime_notification broadcasts pin events."""
@@ -878,28 +960,31 @@ class TestSecurityHelpers(unittest.TestCase):
         with patch.dict(os.environ, {"CORS_ORIGINS": "https://other.example"}):
             self.assertFalse(web_main._websocket_origin_allowed(websocket))
 
-    def test_enforce_media_acl_allows_unrestricted_user(self):
-        """Master/unrestricted users can access any normalized media path."""
-        user = web_main.UserContext(username="master", role="master", allowed_chat_ids=None)
-        web_main._enforce_media_acl("123/file.jpg", user)
+    def test_parse_media_key_splits_on_first_underscore(self):
+        """The URL's {message_id}_{type} key splits on the FIRST underscore only,
+        so multi-underscore types (video_note) survive intact — mirroring how the
+        storage key {chat_id}_{message_id}_{type} is built by the writers."""
+        self.assertEqual(web_main._parse_media_key("12_photo"), (12, "photo"))
+        self.assertEqual(web_main._parse_media_key("9_video_note"), (9, "video_note"))
 
-    def test_enforce_media_acl_avatar_branches(self):
-        """Restricted users only get avatars for allowed chat IDs."""
-        user = web_main.UserContext(username="viewer", role="viewer", allowed_chat_ids={123})
-        web_main._enforce_media_acl("avatars/chats/123_456.jpg", user)
+    def test_parse_media_key_rejects_malformed(self):
+        """Keys without a type or with a non-numeric message id parse to None
+        (the route then answers the same 404 as a missing media row)."""
+        for key in ("noseparator", "12_", "abc_photo", "_photo", "12.5_photo"):
+            with self.subTest(key=key):
+                self.assertIsNone(web_main._parse_media_key(key))
 
-        for path in ("avatars/chats", "avatars/chats/not-a-number.jpg", "avatars/chats/999_456.jpg"):
-            with self.subTest(path=path), self.assertRaises(web_main.HTTPException) as ctx:
-                web_main._enforce_media_acl(path, user)
-            self.assertEqual(ctx.exception.status_code, 403)
+    def test_media_relative_path_normalizes_absolute_under_root(self):
+        """A media row's absolute file_path under the media root normalizes to a
+        root-relative path; anything that cannot be proven inside stays None
+        (rejection branches are pinned in test_viewer_acl_hardening.py)."""
+        from pathlib import Path
 
-    def test_enforce_media_acl_rejects_malformed_or_unallowed_media_path(self):
-        """Restricted users cannot access non-chat folders or unallowed chat IDs."""
-        user = web_main.UserContext(username="viewer", role="viewer", allowed_chat_ids={123})
-        for path in ("one-segment", "_shared/file.jpg", "999/file.jpg"):
-            with self.subTest(path=path), self.assertRaises(web_main.HTTPException) as ctx:
-                web_main._enforce_media_acl(path, user)
-            self.assertEqual(ctx.exception.status_code, 403)
+        with patch.object(web_main, "_media_root", Path("/srv/media")):
+            self.assertEqual(web_main._media_relative_path("/srv/media/123/file.jpg"), "123/file.jpg")
+            self.assertEqual(web_main._media_relative_path("123/file.jpg"), "123/file.jpg")
+            self.assertIsNone(web_main._media_relative_path(None))
+            self.assertIsNone(web_main._media_relative_path(""))
 
     def test_strip_original_media_paths_handles_media_items(self):
         """No-download sessions strip both legacy media and multi-media item paths."""

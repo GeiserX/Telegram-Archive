@@ -1,10 +1,11 @@
-"""Tests for #261 (?download=1 forces attachment) and #258 (URL percent-encoding).
+"""Tests for #261 (?download=1 forces attachment) and #258 (URL round-tripping).
 
 Both defects made a media file unreachable or unsaveable from the viewer:
 - serve_media accepted a ``download`` query param and ignored it, so the gallery's
   download button just opened/played the file inline.
-- Server-built media URLs were plain f-strings, so a Telegram filename containing
-  "#" or "?" produced a URL that truncated into a fragment/query.
+- Server-built media URLs used to carry the filename and needed per-segment
+  percent-encoding; since v8.0 the URL is ``/media/{chat_ref}/{message_id}_{type}``
+  resolved through the media row, so the filename never enters a URL at all.
 """
 
 import importlib
@@ -29,6 +30,8 @@ ANON_ENV = {
     "ALLOW_ANONYMOUS_VIEWER": "true",
 }
 
+CHAT_REF = "dispositionRef1001AB0A"
+
 
 def _reload_main(media_root=None):
     """Reload src.web.main under anonymous auth and return (client, module)."""
@@ -41,6 +44,20 @@ def _reload_main(media_root=None):
     return TestClient(main_mod.app, raise_server_exceptions=False), main_mod
 
 
+def _wire_chat_and_media(main_mod, filename: str, chat_id: int = -1001, folder: str | None = None):
+    """Point the mock db at one chat (ref CHAT_REF) holding one media row."""
+    main_mod.db.get_chat_by_ref = AsyncMock(
+        return_value={"id": chat_id, "account_id": 1, "ref": CHAT_REF, "type": "channel"}
+    )
+    main_mod.db.get_media_by_id = AsyncMock(
+        return_value={
+            "id": f"{chat_id}_5_photo",
+            "file_path": f"{folder or chat_id}/{filename}",
+            "file_name": filename,
+        }
+    )
+
+
 class TestDownloadDisposition:
     """#261: ?download=1 must emit Content-Disposition: attachment."""
 
@@ -51,10 +68,9 @@ class TestDownloadDisposition:
             with open(os.path.join(chat_dir, filename), "wb") as handle:
                 handle.write(b"bytes")
             with patch.dict(os.environ, ANON_ENV):
-                client, _ = _reload_main(media_root=tmpdir)
-                from urllib.parse import quote
-
-                return client.get(f"/media/-1001/{quote(filename, safe='')}{query}")
+                client, main_mod = _reload_main(media_root=tmpdir)
+                _wire_chat_and_media(main_mod, filename)
+                return client.get(f"/media/{CHAT_REF}/5_photo{query}")
 
     def test_download_flag_sets_attachment_disposition(self) -> None:
         resp = self._serve("clip.mp4", "?download=1")
@@ -163,26 +179,31 @@ class TestDownloadDisposition:
                 {"VIEWER_USERNAME": "admin", "VIEWER_PASSWORD": "test@value/here", "SECURE_COOKIES": "false"},
             ):
                 client, main_mod = _reload_main(media_root=tmpdir)
+                _wire_chat_and_media(main_mod, "photo.jpg")
                 main_mod.AUTH_ENABLED = True
                 token = "no-download-token"
                 main_mod._sessions[token] = main_mod.SessionData(username="viewer1", role="viewer", no_download=True)
-                resp = client.get("/media/-1001/photo.jpg?download=1", cookies={"viewer_auth": token})
+                resp = client.get(f"/media/{CHAT_REF}/5_photo?download=1", cookies={"viewer_auth": token})
                 assert resp.status_code == 403
 
 
 class TestMediaUrlEncoding:
-    """#258: server-built media URLs must percent-encode each path segment."""
+    """#258's successor: media URLs are ref+key addressed, so the filename —
+    the only attacker-influenced string — never enters a URL. What remains to
+    pin is that key URLs are encoded defensively and that a hostile filename
+    still round-trips URL → row → bytes."""
 
-    def test_encode_helper_escapes_reserved_chars_per_segment(self) -> None:
+    def test_encode_helper_escapes_reserved_chars(self) -> None:
         with patch.dict(os.environ, ANON_ENV):
             _, main_mod = _reload_main()
-        encoded = main_mod._encode_media_path("-1001/we#1 who are? .jpg")
-        assert encoded == "-1001/we%231%20who%20are%3F%20.jpg"
-        assert encoded.count("/") == 1, "path separators must survive"
+        # Server-minted keys are untouched; a reserved character would be escaped.
+        assert main_mod._encode_media_key("5_video_note") == "5_video_note"
+        assert main_mod._encode_media_key("5_a#b?c") == "5_a%23b%3Fc"
 
-    def test_gallery_urls_encode_hash_and_question_mark(self) -> None:
+    def test_gallery_urls_carry_the_key_not_the_filename(self) -> None:
         with patch.dict(os.environ, ANON_ENV):
             client, main_mod = _reload_main()
+            _wire_chat_and_media(main_mod, "we#1 who? are.jpg")
             main_mod.db.get_media_paginated = AsyncMock(
                 return_value={
                     "items": [
@@ -198,17 +219,20 @@ class TestMediaUrlEncoding:
                     "has_more": False,
                 }
             )
-            resp = client.get("/api/chats/-1001/media")
+            resp = client.get(f"/api/chats/{CHAT_REF}/media")
 
         assert resp.status_code == 200
         item = resp.json()["items"][0]
-        assert item["media_url"] == "/media/-1001/we%231%20who%3F%20are.jpg"
-        assert item["thumb_url"] == "/media/thumb/200/-1001/we%231%20who%3F%20are.jpg"
+        assert item["id"] == "5_photo"
+        assert item["media_url"] == f"/media/{CHAT_REF}/5_photo"
+        assert item["thumb_url"] == f"/media/thumb/200/{CHAT_REF}/5_photo"
+        assert "we%231" not in item["media_url"] and "#" not in item["media_url"]
 
-    def test_plain_filenames_are_unchanged(self) -> None:
-        """Existing URLs must not shift — the gallery and tests round-trip them."""
+    def test_plain_filenames_produce_the_same_key_urls(self) -> None:
+        """The URL shape is filename-independent — the gallery round-trips item.id."""
         with patch.dict(os.environ, ANON_ENV):
             client, main_mod = _reload_main()
+            _wire_chat_and_media(main_mod, "photo_123.jpg")
             main_mod.db.get_media_paginated = AsyncMock(
                 return_value={
                     "items": [
@@ -224,32 +248,41 @@ class TestMediaUrlEncoding:
                     "has_more": False,
                 }
             )
-            resp = client.get("/api/chats/-1001/media")
+            resp = client.get(f"/api/chats/{CHAT_REF}/media")
 
         item = resp.json()["items"][0]
-        assert item["media_url"] == "/media/-1001/photo_123.jpg"
-        assert item["thumb_url"] == "/media/thumb/200/-1001/photo_123.jpg"
+        assert item["media_url"] == f"/media/{CHAT_REF}/5_photo"
+        assert item["thumb_url"] == f"/media/thumb/200/{CHAT_REF}/5_photo"
 
-    def test_chat_avatar_url_is_encoded(self) -> None:
+    def test_chat_avatar_url_is_ref_addressed(self) -> None:
+        """The avatar URL names the chat's ref only — never the on-disk avatar file."""
         with patch.dict(os.environ, ANON_ENV):
             client, main_mod = _reload_main()
-            main_mod.db.get_all_chats = AsyncMock(return_value=[{"id": -1001, "title": "Chat A", "type": "channel"}])
+            main_mod.db.get_all_chats = AsyncMock(
+                return_value=[{"id": -1001, "account_id": 1, "ref": CHAT_REF, "title": "Chat A", "type": "channel"}]
+            )
             main_mod.db.get_chat_count = AsyncMock(return_value=1)
             main_mod.db.get_archived_chat_count = AsyncMock(return_value=0)
             with patch.object(main_mod, "_get_cached_avatar_path", return_value="avatars/chats/-1001_a#b.jpg"):
                 resp = client.get("/api/chats")
 
         assert resp.status_code == 200
-        assert resp.json()["chats"][0]["avatar_url"] == "/media/avatars/chats/-1001_a%23b.jpg"
+        assert resp.json()["chats"][0]["avatar_url"] == f"/media/avatar/{CHAT_REF}"
 
-    def test_sender_avatar_url_is_encoded(self) -> None:
+    def test_sender_avatar_url_is_ref_and_message_addressed(self) -> None:
+        """Message payloads point at /media/avatar/{ref}/{message_id}: no user id,
+        no filename (for a private chat the peer's user id IS the chat id)."""
         with patch.dict(os.environ, ANON_ENV):
             _, main_mod = _reload_main()
+        chat = main_mod.ChatContext(account_id=1, chat_id=-1001, ref=CHAT_REF, type="channel")
+        message = {"id": 7, "sender_id": 42}
         with patch.object(main_mod, "_get_cached_avatar_path", return_value="avatars/users/42_a?b.jpg"):
-            assert main_mod._sender_avatar_url(42) == "/media/avatars/users/42_a%3Fb.jpg"
+            main_mod._attach_message_payload_urls([message], chat)
+        assert message["sender_avatar_url"] == f"/media/avatar/{CHAT_REF}/7"
 
-    def test_encoded_thumb_url_routes_with_decoded_segments(self) -> None:
-        """The encoded thumb URL must still match /media/thumb/{size}/{folder:path}/{filename}."""
+    def test_thumb_url_resolves_folder_and_filename_from_the_row(self) -> None:
+        """The key URL routes, and ensure_thumbnail receives the ROW's on-disk
+        folder/filename — hostile characters and all — never URL segments."""
         ensure = AsyncMock(return_value=None)
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -257,16 +290,16 @@ class TestMediaUrlEncoding:
             patch("src.web.thumbnails.ensure_thumbnail", ensure),
         ):
             client, main_mod = _reload_main(media_root=tmpdir)
-            encoded = main_mod._encode_media_path("-1001/we#1 who? are.jpg")
-            resp = client.get(f"/media/thumb/200/{encoded}")
+            _wire_chat_and_media(main_mod, "we#1 who? are.jpg")
+            resp = client.get(f"/media/thumb/200/{CHAT_REF}/5_photo")
 
         assert resp.status_code == 404, "route matched but no thumbnail exists — 404 is the expected miss"
         assert ensure.await_count == 1
         _, size, folder, filename = ensure.await_args[0]
         assert (size, folder, filename) == (200, "-1001", "we#1 who? are.jpg")
 
-    def test_encoded_url_round_trips_through_serve_media(self) -> None:
-        """The encoded URL must resolve back to the same file on disk."""
+    def test_hostile_filename_round_trips_through_serve_media(self) -> None:
+        """A filename full of reserved characters is reachable through its key URL."""
         with tempfile.TemporaryDirectory() as tmpdir:
             chat_dir = os.path.join(tmpdir, "-1001")
             os.makedirs(chat_dir)
@@ -274,8 +307,8 @@ class TestMediaUrlEncoding:
                 handle.write(b"jpegbytes")
             with patch.dict(os.environ, ANON_ENV):
                 client, main_mod = _reload_main(media_root=tmpdir)
-                encoded = main_mod._encode_media_path("-1001/we#1 who? are.jpg")
-                resp = client.get(f"/media/{encoded}")
+                _wire_chat_and_media(main_mod, "we#1 who? are.jpg")
+                resp = client.get(f"/media/{CHAT_REF}/5_photo")
 
         assert resp.status_code == 200
         assert resp.content == b"jpegbytes"

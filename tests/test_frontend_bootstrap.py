@@ -604,7 +604,7 @@ def test_gallery_close_restores_reading_position_and_focus():
     assert "galleryReturnState = null" in jump_body
     # Restore happens after the observer reconnect, inside the same guarded block.
     assert watcher_body.index("setupMessagesScrollObserver()") < watcher_body.index(
-        "returnState.chatId === (selectedChat.value?.id ?? null)"
+        "returnState.chatRef === (selectedChat.value?.ref ?? null)"
     )
 
 
@@ -697,8 +697,9 @@ def test_reaction_ws_case_patches_message_reactions():
     assert "case 'reaction':" in ws_body
     reaction_start = ws_body.index("case 'reaction':")
     reaction_body = ws_body[reaction_start : ws_body.index("case 'delete':", reaction_start)]
-    # Same chat-scope guard as the 'edit' case, wholesale-replace the reactions array.
-    assert "selectedChat.value?.id !== data.chat_id" in reaction_body
+    # Same chat-scope guard as the 'edit' case (ref-addressed frames since v8.0),
+    # wholesale-replace the reactions array.
+    assert "selectedChat.value?.ref !== data.chat_ref" in reaction_body
     assert "reactionMsg.reactions = data.reactions" in reaction_body
     # The reactions block renders the aggregate shape the server sends.
     assert 'v-for="reaction in msg.reactions"' in html
@@ -800,7 +801,7 @@ def test_calendar_availability_is_topic_scoped_stale_safe_and_fail_open():
 
     availability_start = html.index("const loadCalendarAvailability = async (year, month) =>")
     availability_body = html[availability_start : html.index("const openDatePicker", availability_start)]
-    assert "calendarAvailabilityKey(chatId, topicId, timezone, monthKey)" in availability_body
+    assert "calendarAvailabilityKey(chatRef, topicId, timezone, monthKey)" in availability_body
     assert "url += `&topic_id=${topicId}`" in availability_body
     assert availability_body.count("requestSeq !== calendarAvailabilityRequestSeq") >= 2
     assert "calendarAvailableDates.value = null" in availability_body
@@ -1393,7 +1394,7 @@ def test_audio_auto_advance_does_not_drive_pagination():
 # --- Pagination-aware audio queue (#254) ---------------------------------------
 
 _AUDIO_QUEUE_DECLARATIONS = (
-    "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>",
+    "const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') =>",
     "const seedAudioQueueAroundTrack = async (track) =>",
     "const extendAudioQueueFromMedia = async (track) =>",
     "const extendAudioQueueNewer = async () =>",
@@ -1411,8 +1412,8 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>")
-    assert "`/api/chats/${chatId}/media?${params}`" in fetch_body
+    fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') =>")
+    assert "`/api/chats/${encodeURIComponent(chatRef)}/media?${params}`" in fetch_body
     assert "types: audioQueueTypes(kind)," in fetch_body
     assert "limit: String(AUDIO_QUEUE_PAGE_SIZE)," in fetch_body
     # One cursor shape, two directions: before_id walks older, after_id newer.
@@ -1424,7 +1425,7 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
 
     extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
     assert "for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++)" in extend_body
-    assert "await fetchAudioQueuePage(track.chatId, track.kind, cursor, 'older')" in extend_body
+    assert "await fetchAudioQueuePage(track.chatRef, track.kind, cursor, 'older')" in extend_body
     assert "cursor = items[items.length - 1].id" in extend_body
     # Stop as soon as the playing track is in hand, or nothing older is left.
     assert "items.some(item => item.message_id === track.id)" in extend_body
@@ -1435,7 +1436,7 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
 
     # "Previous" at the head of the queue pages one more time from the same cursor.
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
-    assert "await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor, 'older')" in older_body
+    assert "await fetchAudioQueuePage(track.chatRef, track.kind, audioQueueCursor, 'older')" in older_body
     prev_body = _setup_slice(html, "const playPrevAudio = async () =>")
     assert "await extendAudioQueueOlder()" in prev_body
     assert "seekAudioTo(0)" in prev_body
@@ -1484,7 +1485,7 @@ def test_audio_queue_extension_never_drives_message_pagination():
 
     # The queue holds copied descriptors, so emptying messages.value on a chat
     # switch cannot invalidate it.
-    item_body = _setup_slice(html, "const audioTrackFromMediaItem = (item, kind, chatName) =>")
+    item_body = _setup_slice(html, "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>")
     assert "id: item.message_id," in item_body
     assert "chatId: item.chat_id," in item_body
     assert "url: item.media_url || ''," in item_body
@@ -1569,17 +1570,17 @@ def test_audio_queue_keeps_voice_and_music_on_separate_types():
     # direction — a forward page that dropped the kind would roll a voice run
     # into music the moment auto-advance left the seeded window.
     extend_body = _setup_slice(html, "const extendAudioQueueFromMedia = async (track) =>")
-    assert "fetchAudioQueuePage(track.chatId, track.kind, cursor, 'older')" in extend_body
+    assert "fetchAudioQueuePage(track.chatRef, track.kind, cursor, 'older')" in extend_body
     older_body = _setup_slice(html, "const extendAudioQueueOlder = async () =>")
-    assert "fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor, 'older')" in older_body
+    assert "fetchAudioQueuePage(track.chatRef, track.kind, audioQueueCursor, 'older')" in older_body
     seed_body = _setup_slice(html, "const seedAudioQueueAroundTrack = async (track) =>")
-    assert "fetchAudioQueuePage(track.chatId, track.kind, track.mediaId, 'older')" in seed_body
+    assert "fetchAudioQueuePage(track.chatRef, track.kind, track.mediaId, 'older')" in seed_body
     newer_body = _setup_slice(html, "const extendAudioQueueNewer = async () =>")
-    assert "track.chatId, track.kind, audioQueueCursorNewer, 'newer')" in newer_body
+    assert "track.chatRef, track.kind, audioQueueCursorNewer, 'newer')" in newer_body
 
     # Fetched descriptors inherit that kind, so a merged queue stays single-class.
     tracks_body = _setup_slice(html, "const audioTracksFromMediaItems = (items, track) =>")
-    assert "audioTrackFromMediaItem(item, track.kind, track.chatName)" in tracks_body
+    assert "audioTrackFromMediaItem(item, track.kind, track.chatName, track.chatRef)" in tracks_body
 
 
 def test_audio_queue_in_flight_flag_cannot_leak():
@@ -1624,7 +1625,7 @@ class TestAudioQueuePagingOutcomes(unittest.TestCase):
         same falsy result as an exhausted cursor and "previous" restarted the
         current track as though the oldest message had been reached.
         """
-        fetch_body = self._slice("const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>")
+        fetch_body = self._slice("const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') =>")
         self.assertIn("error.status = res.status", fetch_body)
         # Stale pages are aborted rather than landing on a closed player.
         self.assertIn("new AbortController()", fetch_body)
@@ -1754,7 +1755,7 @@ class TestAudioQueueHoleGuard(unittest.TestCase):
         prelude = """
 const noDownload = { value: false }
 const audioQueue = { value: [] }
-const audioTrack = { value: { chatId: 7, kind: 'voice' } }
+const audioTrack = { value: { chatId: 7, chatRef: 'r7', kind: 'voice' } }
 const audioTrackFromMediaItem = (item, kind, chatName) => ({
     id: item.message_id, chatId: item.chat_id, kind, chatName,
     date: item.message_date, url: item.media_url,
@@ -1782,8 +1783,8 @@ const scenario = async (pages) => {
     audioQueueHasOlder = false
     // The seeded window queue around the playing track, which the guard
     // protects when the walk cannot be trusted.
-    audioQueue.value = [{ id: 999, chatId: 7, kind: 'voice', date: '2026-07-09T00:00:00' }]
-    await extendAudioQueueFromMedia({ chatId: 7, kind: 'voice', id: 999, chatName: 'c' })
+    audioQueue.value = [{ id: 999, chatId: 7, chatRef: 'r7', kind: 'voice', date: '2026-07-09T00:00:00' }]
+    await extendAudioQueueFromMedia({ chatId: 7, chatRef: 'r7', kind: 'voice', id: 999, chatName: 'c' })
     return {
         cursor: audioQueueCursor,
         hasOlder: audioQueueHasOlder,
@@ -1880,7 +1881,7 @@ _AUDIO_QUEUE_EXEC_DECLARATIONS = (
     # (request id, fetch seq, both cursors, both has-more flags, fetching), which
     # is why none of them may be re-declared in a prelude.
     "const AUDIO_QUEUE_MAX_PAGES = ",
-    "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+    "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
     "const audioTracksFromMediaItems = (items, track) =>",
     "const audioTrackTime = (track) =>",
     "const mergeAudioQueue = (tracks) =>",
@@ -1897,7 +1898,7 @@ const audioTrack = { value: null }
 let PAGES = []
 let REPEAT = null
 const REQUESTED = []
-const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
     REQUESTED.push([cursor ?? null, direction])
     return PAGES.shift() ?? REPEAT ?? { items: [], has_more: false }
 }
@@ -1911,7 +1912,7 @@ const mediaItem = (n) => ({
 // page of these adds NOTHING even though it was a perfectly successful fetch.
 const unplayableItem = (n) => ({ ...mediaItem(n), media_url: '' })
 const seedTrack = (n) => ({
-    id: n, chatId: 7, kind: 'voice', mediaId: `m${n}`,
+    id: n, chatId: 7, chatRef: 'r7', kind: 'voice', mediaId: `m${n}`,
     date: `2026-07-01T00:00:${String(n).padStart(2, '0')}`, url: `/media/${n}.ogg`,
 })
 """
@@ -1938,7 +1939,7 @@ class TestAudioQueueExtendsInTheDirectionOfTravel(unittest.TestCase):
     def test_forward_paging_uses_the_after_id_cursor(self) -> None:
         """The endpoint pages backward by default; forward needs the #266 cursor."""
         fetch_body = _setup_slice(
-            self.html, "const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') =>"
+            self.html, "const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') =>"
         )
         self.assertIn("params.set(direction === 'newer' ? 'after_id' : 'before_id', cursor)", fetch_body)
         # One cursor per request: before_id and after_id are mutually exclusive
@@ -1985,7 +1986,7 @@ const scenario = async (pages, repeat) => {
     audioQueueCursor = null
     audioQueueHasOlder = false
     audioQueue.value = [seedTrack(10)]
-    audioTrack.value = { chatId: 7, kind: 'voice', id: 10, chatName: 'c', mediaId: 'm10' }
+    audioTrack.value = { chatId: 7, chatRef: 'r7', kind: 'voice', id: 10, chatName: 'c', mediaId: 'm10' }
     audioQueueCursorNewer = audioQueueEdgeMediaId(true)
     audioQueueHasNewer = true
     const outcome = await extendAudioQueueNewer()
@@ -2068,7 +2069,7 @@ const scenario = async (track, pages) => {
     audioQueueCursorNewer = null
     audioQueueHasNewer = false
     audioQueue.value = [seedTrack(500)]
-    audioTrack.value = { chatId: 7, kind: 'voice', id: 500, chatName: 'c' }
+    audioTrack.value = { chatId: 7, chatRef: 'r7', kind: 'voice', id: 500, chatName: 'c' }
     await extendAudioQueueFromMedia(track)
     return {
         cursor: audioQueueCursor,
@@ -2080,7 +2081,7 @@ const scenario = async (track, pages) => {
     }
 };
 (async () => {
-    const anchored = { chatId: 7, kind: 'voice', id: 500, chatName: 'c', mediaId: 'm500' };
+    const anchored = { chatId: 7, chatRef: 'r7', kind: 'voice', id: 500, chatName: 'c', mediaId: 'm500' };
     // The endpoint answers a backward page newest-first.
     const seeded = await scenario(anchored, [
         { items: [mediaItem(499), mediaItem(498)], has_more: true },
@@ -2100,7 +2101,7 @@ const scenario = async (track, pages) => {
         { items: [mediaItem(501), mediaItem(502)], has_more: true },
     ]);
     // No id to anchor on at all -> straight to the walk.
-    const noAnchor = await scenario({ chatId: 7, kind: 'voice', id: 500, chatName: 'c' }, [
+    const noAnchor = await scenario({ chatId: 7, chatRef: 'r7', kind: 'voice', id: 500, chatName: 'c' }, [
         { items: [mediaItem(501), mediaItem(500)], has_more: false },
     ]);
     console.log(JSON.stringify({ seeded, unresolvable, oldestOfItsKind, noAnchor }));
@@ -2152,18 +2153,20 @@ const scenario = async (track, pages) => {
 
     def test_media_id_is_carried_on_every_descriptor(self) -> None:
         """A cursor the queue cannot name is a queue that cannot page."""
-        item_body = _setup_slice(self.html, "const audioTrackFromMediaItem = (item, kind, chatName) =>")
+        item_body = _setup_slice(self.html, "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>")
         self.assertIn("mediaId: item.id ?? null,", item_body)
 
         msg_body = _setup_slice(self.html, "const audioTrackFromMessage = (msg) =>")
         self.assertIn("mediaId: audioMessageMediaId(msg),", msg_body)
 
         # #268: taken from the payload first — the rebuild is only the fallback.
+        # v8.0: the cursor is the CHAT-FREE `{message_id}_{type}` key, so the
+        # rebuild no longer needs (or embeds) the chat id.
         built = _setup_slice(self.html, "const audioMessageMediaId = (msg) =>")
         self.assertIn("const delivered = msg?.media?.id", built)
-        self.assertLess(built.index("msg?.media?.id"), built.index("`${chatId}_${msg.id}_${type}`"))
-        self.assertIn("return `${chatId}_${msg.id}_${type}`", built)
-        self.assertIn("if (chatId == null || msg?.id == null || !type) return null", built)
+        self.assertLess(built.index("msg?.media?.id"), built.index("`${msg.id}_${type}`"))
+        self.assertIn("return `${msg.id}_${type}`", built)
+        self.assertIn("if (msg?.id == null || !type) return null", built)
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_rebuilt_media_id_executed(self) -> None:
@@ -2179,11 +2182,13 @@ const selectedChat = { value: null }
 const cases = [
     { id: 12, chat_id: -100, media: { type: 'voice' } },
     { id: 12, chat_id: -100, media: {} },
+    // v8.0: the rebuilt cursor is chat-free, so a missing chat_id no longer
+    // matters — the ref in the request path is what scopes it.
     { id: 12, media: { type: 'voice' } },
 ]
 """,
         )
-        self.assertEqual(out, ["-100_12_voice", None, None])
+        self.assertEqual(out, ["12_voice", None, "12_voice"])
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_delivered_media_id_wins_over_the_rebuild_executed(self) -> None:
@@ -2209,18 +2214,19 @@ const cases = [
             prelude="""
 const selectedChat = { value: null }
 const cases = [
-    // Imported archive: the rebuild would have produced "-100_12_voice".
+    // Imported archive: the rebuild would have produced "12_voice".
     { id: 12, chat_id: -100, media: { id: 'import_-100_12', type: 'voice' } },
-    // Capture path: same shape as the rebuild, still taken from the payload.
+    // A payload predating the v8.0 chat-free rewrite: delivered verbatim, and
+    // the server answers the empty page it answers for any unresolvable cursor.
     { id: 12, chat_id: -100, media: { id: '-100_12_voice', type: 'voice' } },
     // Numeric ids survive the trip as cursor strings.
     { id: 12, chat_id: -100, media: { id: 4242, type: 'voice' } },
-    // No id delivered -> the documented best-effort rebuild.
+    // No id delivered -> the documented best-effort (chat-free) rebuild.
     { id: 12, chat_id: -100, media: { type: 'voice' } },
 ]
 """,
         )
-        self.assertEqual(out, ["import_-100_12", "-100_12_voice", "4242", "-100_12_voice"])
+        self.assertEqual(out, ["import_-100_12", "-100_12_voice", "4242", "12_voice"])
 
     @unittest.skipUnless(NODE, "node is required to execute the helper")
     def test_forward_walk_stops_on_a_cursor_it_has_already_asked_from(self) -> None:
@@ -2239,7 +2245,7 @@ const cases = [
 const noDownload = { value: false }
 const audioError = { value: '' }
 const audioQueue = { value: [] }
-const audioTrack = { value: { chatId: 7, kind: 'voice', id: 10 } }
+const audioTrack = { value: { chatId: 7, chatRef: 'r7', kind: 'voice', id: 10 } }
 const REQUESTED = []
 let CALLS = 0
 // Downloaded but unplayable for this viewer, so no page ever adds a track and
@@ -2268,7 +2274,7 @@ const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'newer') =>
             self.html,
             (
                 "const AUDIO_QUEUE_MAX_PAGES = ",
-                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
                 "const audioTracksFromMediaItems = (items, track) =>",
                 "const audioTrackTime = (track) =>",
                 "const mergeAudioQueue = (tracks) =>",
@@ -2303,7 +2309,7 @@ const unseenMessageCount = { value: 0 }
 const messageWindowIsContiguous = { value: false }
 const isAuthenticated = { value: true }
 const messageSearchQuery = { value: '' }
-const selectedChat = { value: { id: 7, title: 'chat' } }
+const selectedChat = { value: { id: 7, ref: 'r7', title: 'chat' } }
 let oldestMessageCursor = null
 let loadFailureStreak = 0
 let newestMessageId = null
@@ -2572,7 +2578,7 @@ const REQUESTED = []
 // A faithful stand-in for get_media_paginated: an opaque cursor resolved
 // against the table, paged away from it in the requested direction, answering
 // an unresolvable cursor with an empty page in EITHER direction.
-const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
     REQUESTED.push([cursor ?? null, direction])
     const at = cursor ? MEDIA.findIndex(m => m.id === cursor) : -1
     if (cursor && at < 0) return { items: [], has_more: false }
@@ -2651,7 +2657,7 @@ const run = async ({ search = '', topic = null, pinnedIds = null, rowIds }, clic
                 "const audioTrackFromMessage = (msg) =>",
                 "const audioQueueSeedIsContiguous = () =>",
                 "const buildAudioQueue = (msg) =>",
-                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
                 "const audioTracksFromMediaItems = (items, track) =>",
                 "const audioTrackTime = (track) =>",
                 "const mergeAudioQueue = (tracks) =>",
@@ -2719,7 +2725,7 @@ const audioQueue = { value: [] }
 const audioTrack = { value: null }
 const audioAutoAdvanceHalted = { value: false }
 let audioConsecutiveFailures = 0
-const selectedChat = { value: { id: 7, title: 'chat' } }
+const selectedChat = { value: { id: 7, ref: 'r7', title: 'chat' } }
 // The clicked row comes from a SPARSE view (search results), which is what
 // leaves the queue one entry long until the anchored seed lands.
 const messageView = { value: { contiguous: false } }
@@ -2803,7 +2809,7 @@ const MEDIA = Array.from({ length: 12 }, (_, i) => mediaRow(i + 1))
 // The seed page is held until RELEASE is called: everything that happens in
 // between happens while the fetch is genuinely in flight.
 let RELEASE = null
-const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
     REQUESTED.push([cursor ?? null, direction])
     if (direction === 'older' && !RELEASE) {
         return new Promise(resolve => { RELEASE = () => resolve(answerPage(MEDIA, cursor, direction)) })
@@ -2849,7 +2855,7 @@ const scenario = async (duringHold) => {
     //    THAT track and replay 2.
     const switched = await scenario(() => {
         audioTrack.value = {
-            id: 1, chatId: 7, kind: 'voice', chatName: 'chat',
+            id: 1, chatId: 7, chatRef: 'r7', kind: 'voice', chatName: 'chat',
             mediaId: 'm1', url: '/media/1.ogg', date: stamp(1),
         }
     })
@@ -2868,7 +2874,7 @@ const scenario = async (duringHold) => {
                 "const audioTrackFromMessage = (msg) =>",
                 "const audioQueueSeedIsContiguous = () =>",
                 "const buildAudioQueue = (msg) =>",
-                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
                 "const audioTracksFromMediaItems = (items, track) =>",
                 "const audioTrackTime = (track) =>",
                 "const mergeAudioQueue = (tracks) =>",
@@ -2940,7 +2946,7 @@ const MEDIA = Array.from({ length: 12 }, (_, i) => {
     const row = mediaRow(i + 1)
     return (i + 1 >= 9 && i + 1 <= 11) ? { ...row, media_url: '' } : row
 })
-const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
     REQUESTED.push([cursor ?? null, direction])
     return answerPage(MEDIA, cursor, direction)
 }
@@ -2999,7 +3005,7 @@ const scenario = async ({ contiguous, visible, clicked }) => {
                 "const audioTrackFromMessage = (msg) =>",
                 "const audioQueueSeedIsContiguous = () =>",
                 "const buildAudioQueue = (msg) =>",
-                "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+                "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
                 "const audioTracksFromMediaItems = (items, track) =>",
                 "const audioTrackTime = (track) =>",
                 "const mergeAudioQueue = (tracks) =>",
@@ -3069,7 +3075,7 @@ const viewingPinnedWindow = ref(false)
 const unseenMessageCount = ref(0)
 const isAuthenticated = ref(true)
 const messageSearchQuery = ref('')
-const selectedChat = ref({ id: 7, title: 'chat' })
+const selectedChat = ref({ id: 7, ref: 'r7', title: 'chat' })
 const selectedPaneTopic = ref(null)
 const pinnedMessages = ref([])
 const showPinnedOnly = ref(false)
@@ -3139,7 +3145,7 @@ const PLAYED = []
 const loadAudioTrack = (track) => { audioTrack.value = track; PLAYED.push(track.id) }
 const MEDIA_PAGE = 3
 const REQUESTED = []
-const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
     REQUESTED.push([cursor ?? null, direction])
     const table = SERVER.map(n => ({
         id: `m${n}`, message_id: n, chat_id: 7,
@@ -3224,7 +3230,7 @@ _APPEND_DECLARATIONS = (
     "const audioTrackFromMessage = (msg) =>",
     "const audioQueueSeedIsContiguous = () =>",
     "const buildAudioQueue = (msg) =>",
-    "const audioTrackFromMediaItem = (item, kind, chatName) =>",
+    "const audioTrackFromMediaItem = (item, kind, chatName, chatRef) =>",
     "const audioTracksFromMediaItems = (items, track) =>",
     "const audioTrackTime = (track) =>",
     "const mergeAudioQueue = (tracks) =>",
@@ -3386,13 +3392,13 @@ class TestAppendsCannotPunchAHoleInTheWindow(unittest.TestCase):
     await openChat([1, 2, 3])
     // The socket was down while 4..12 were archived; on reconnect it delivers 12.
     SERVER = Array.from({ length: 12 }, (_, i) => i + 1)
-    handleWebSocketMessage({ type: 'new_message', chat_id: 7, message: messageRow(12) })
+    handleWebSocketMessage({ type: 'new_message', chat_ref: 'r7', message: messageRow(12) })
     const afterGap = windowState()
     const playback = await playFrom(3)
     // The live case: the pane is the tail and the frame is the next message.
     await openChat([1, 2, 3])
     SERVER = [1, 2, 3, 4]
-    handleWebSocketMessage({ type: 'new_message', chat_id: 7, message: messageRow(4) })
+    handleWebSocketMessage({ type: 'new_message', chat_ref: 'r7', message: messageRow(4) })
     emit(JSON.stringify({ afterGap, playback, live: windowState() }))
 })();
 """)
@@ -3553,19 +3559,25 @@ const cases = [
 
 
 class TestMediaUrlEncoding(unittest.TestCase):
-    """#258: '#' or '?' in a filename truncated the URL inside the browser."""
+    """#258's successor: the client never assembles a /media/ URL at all.
+
+    v8.0 removed the client-side URL builder — the server hands ref-addressed
+    URLs (media.url, media_url, thumb_url, avatar_url, sender_avatar_url) and
+    the client uses them verbatim, so a filename can no longer truncate a URL
+    and the chat id never enters a request path.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
-    def test_get_media_url_encodes_each_segment(self) -> None:
+    def test_get_media_url_returns_the_server_url_verbatim(self) -> None:
         body = _setup_slice(self.html, "const getMediaUrl = (msg) =>")
-        self.assertIn("encodeURIComponent(folder)", body)
-        self.assertIn("encodeURIComponent(filename)", body)
-        # Per-segment only: encoding the assembled path would escape the '/'.
-        self.assertNotIn("encodeURIComponent(`/media/", body)
-        self.assertNotIn("encodeURI(`/media/", body)
+        self.assertIn("return msg.media?.url || ''", body)
+        # The old file_path builder must stay deleted: rebuilding from file_path
+        # would put the chat id back into requests and access logs.
+        self.assertNotIn("file_path", _code_only(body))
+        self.assertNotIn("`/media/${", body)
 
     def test_server_provided_urls_are_not_encoded_again(self) -> None:
         """media_url / thumb_url / avatar_url arrive already encoded server-side."""
@@ -4188,24 +4200,24 @@ class TestAudioBubbleDownload(unittest.TestCase):
         """``getMediaUrl(msg)`` in the ``v-if`` is NOT a dead term.
 
         The bubble renders on ``isAudioFile(msg)``, which is satisfied by
-        ``media.type`` alone — and a media row exists with ``type`` set but NO
-        ``file_path`` whenever the file was never written: an oversized voice
+        ``media.type`` alone — and a media row exists with ``type`` set but no
+        downloadable file whenever the file was never written: an oversized voice
         note (``_process_media`` returns ``downloaded: False`` with no path once
         it exceeds ``MAX_MEDIA_SIZE``) or a row still queued for the pending
-        -media retry loop (``downloaded=0``, ``file_path`` NULL). The adapter
-        emits ``msg.media`` for every row whose ``media_type`` is set, so those
-        rows reach the client verbatim and ``getMediaUrl`` returns ``''``.
+        -media retry loop (``downloaded=0``, ``file_path`` NULL). v8.0: the
+        SERVER expresses that as ``media.url: null`` (no local file, or a
+        no_download session), and ``getMediaUrl`` returns ``''`` for it.
 
         Without the term the anchor would render ``href="?download=1"`` — a link
         to the viewer page itself, offered as if the audio were downloadable.
         """
         rows = [
-            # Oversized voice note: typed, never written.
-            {"id": 1, "media": {"id": "7_1_voice", "type": "voice", "file_path": None}},
+            # Oversized voice note: typed, never written -> the server sends url null.
+            {"id": 1, "media": {"id": "1_voice", "type": "voice", "url": None}},
             # Pending download of an audio document, name known, file not there.
-            {"id": 2, "media": {"id": "7_2_audio", "type": "audio", "file_name": "note.ogg", "file_path": None}},
-            # Downloaded: both terms true, anchor renders.
-            {"id": 3, "media": {"id": "7_3_voice", "type": "voice", "file_path": "/data/media/7/7_3_voice.ogg"}},
+            {"id": 2, "media": {"id": "2_audio", "type": "audio", "file_name": "note.ogg", "url": None}},
+            # Downloaded: both terms true, anchor renders the server's ref URL.
+            {"id": 3, "media": {"id": "3_voice", "type": "voice", "url": "/media/audioChatRef07AB/3_voice"}},
         ]
         verdicts = _run_setup_helpers(
             self.html,
@@ -4222,7 +4234,7 @@ class TestAudioBubbleDownload(unittest.TestCase):
             [
                 [True, ""],
                 [True, ""],
-                [True, "/media/7/7_3_voice.ogg"],
+                [True, "/media/audioChatRef07AB/3_voice"],
             ],
         )
 
