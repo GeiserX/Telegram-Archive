@@ -72,6 +72,11 @@ class BackupScheduler:
         self.scheduler = AsyncIOScheduler()
         self.running = False
         self._backup_lock = asyncio.Lock()
+        # Serializes account-row resolution: the sweep, a listener start and the
+        # initial backup can all call it concurrently, and accounts has no
+        # DB-level unique on telegram_user_id, so two interleaved misses would
+        # both INSERT a row for the same account.
+        self._resolve_rows_lock = asyncio.Lock()
 
         # Per-account runtime state (one shared connection + listener each),
         # populated by _connect() in config order. Sweeps iterate it in order.
@@ -102,21 +107,24 @@ class BackupScheduler:
         next sweep or listener start. Uses one short-lived adapter, the same
         engine lifecycle run_backup itself uses per run.
         """
-        pending = [e for e in self._accounts if e.row_id is None and e.connection.me is not None]
-        if not pending:
-            return
-        from .db import create_adapter
+        async with self._resolve_rows_lock:
+            # Recomputed under the lock: a caller that queued behind a completed
+            # resolution finds nothing pending and does no database work.
+            pending = [e for e in self._accounts if e.row_id is None and e.connection.me is not None]
+            if not pending:
+                return
+            from .db import create_adapter
 
-        db = await create_adapter()
-        try:
-            for entry in pending:
-                entry.row_id = await db.ensure_account(
-                    telegram_user_id=entry.connection.me.id,
-                    env_index=entry.account.index,
-                    label=entry.account.label,
-                )
-        finally:
-            await db.close()
+            db = await create_adapter()
+            try:
+                for entry in pending:
+                    entry.row_id = await db.ensure_account(
+                        telegram_user_id=entry.connection.me.id,
+                        env_index=entry.account.index,
+                        label=entry.account.label,
+                    )
+            finally:
+                await db.close()
 
     async def _sweep_account(self, entry: _AccountRuntime) -> bool:
         """One account's full scheduled sweep: backup, then optional gap-fill.
@@ -333,7 +341,10 @@ class BackupScheduler:
             await entry.connection.ensure_connected()
         except Exception as e:
             logger.warning(
-                f"{entry.log_prefix}Could not re-establish the shared connection before starting the listener: {e}"
+                # Exception text can embed the DSN or host; type name only, like
+                # the sibling handlers in this file.
+                f"{entry.log_prefix}Could not re-establish the shared connection before starting the listener: "
+                f"{type(e).__name__}"
             )
 
         if not entry.connection.is_connected:

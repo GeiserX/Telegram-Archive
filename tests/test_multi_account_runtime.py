@@ -394,3 +394,49 @@ class TestSequentialSweeps:
         assert "RuntimeError" in log_text, "the failure is reported by exception type"
         for pii in (PHONE_ONE, PHONE_TWO, str(UID_ONE), str(UID_TWO)):
             assert pii not in log_text
+
+
+class TestResolutionIsSerialized:
+    """The sweep, a listener start and the initial backup can all ask for row
+    resolution concurrently; without serialization two interleaved misses would
+    both INSERT a row for the same Telegram account (accounts has no DB-level
+    unique on telegram_user_id)."""
+
+    async def test_concurrent_resolvers_call_ensure_account_once_per_account(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import patch as mock_patch
+
+        from src.scheduler import BackupScheduler, _AccountRuntime
+
+        with mock_patch("src.scheduler.signal.signal"):
+            config = MagicMock()
+            scheduler = BackupScheduler.__new__(BackupScheduler)
+            scheduler.config = config
+            scheduler._resolve_rows_lock = asyncio.Lock()
+            scheduler._accounts = [
+                _AccountRuntime(
+                    account=SimpleNamespace(index=n, label=f"account{n}"),
+                    connection=SimpleNamespace(me=SimpleNamespace(id=900_000 + n)),
+                )
+                for n in (1, 2)
+            ]
+
+        calls: list[int] = []
+
+        async def slow_ensure_account(*, telegram_user_id, env_index, label):
+            calls.append(telegram_user_id)
+            # Long enough that an unserialized second resolver re-reads
+            # row_id=None and duplicates every call.
+            await asyncio.sleep(0.05)
+            return env_index
+
+        adapter = SimpleNamespace(ensure_account=slow_ensure_account, close=AsyncMock())
+        with mock_patch("src.db.create_adapter", AsyncMock(return_value=adapter)):
+            await asyncio.gather(
+                scheduler._resolve_account_rows(),
+                scheduler._resolve_account_rows(),
+            )
+
+        assert sorted(calls) == [900_001, 900_002], calls
+        assert [e.row_id for e in scheduler._accounts] == [1, 2]
