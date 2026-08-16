@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.0.1] - 2026-08-16
+
+### Fixed
+
+- **An archive holding messages whose chat no longer exists can now upgrade.** The first real production archive to attempt the 8.0 upgrade was refused by it: years of Telegram's group→supergroup renumbering had left messages and sync rows whose `chats` row was long gone, and recreating the composite foreign keys re-checks every row, so migration `022` aborted on the first orphan it met — on PostgreSQL these rows hide behind a `convalidated` flag that still reads true, because the bulk copies that let them in (the SQLite→PostgreSQL mover among them) run with enforcement disabled and nothing ever re-checks. The transaction rolled back cleanly, exactly as designed, but a refusal keeps that history hostage on 7.x forever — and an archive old enough to carry renumbering scars is precisely the archive 8.0 exists for. Migration `022` now creates a neutral placeholder chat for every distinct chat id that `messages`, `sync_status`, `forum_topics` or `chat_folder_members` still references and `chats` no longer holds — typed by the id pattern alone, empty title, never anything derived from message content — before it touches those tables. The placeholders ride the same machinery as every real chat (account 1, minted ref, recreated keys), so the formerly orphaned history becomes first-class and the viewer serves it under its placeholder chat: after this upgrade you may find chats with no title in your sidebar, and they are exactly that recovered history. SQLite archives carried the same orphans *through* `022` silently instead of failing on them; the same step now heals them too, so both backends land on the same end state. The one case this cannot reach is a SQLite archive that already completed the 8.0.0 upgrade with orphans aboard — `022` never runs twice, so that history stays as unreachable as it was on 7.x. ([#308](https://github.com/GeiserX/Telegram-Archive/pull/308))
+
 ## [8.0.0] - 2026-08-16
 
 ### Breaking
