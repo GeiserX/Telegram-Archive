@@ -4435,7 +4435,7 @@
                     try {
                         // Get latest messages (just first page)
                         // v6.2.12: Include topic_id filter when viewing a forum topic
-                        let refreshUrl = `/api/chats/${selectedChat.value.ref}/messages?limit=50&offset=0`
+                        let refreshUrl = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=50&offset=0`
                         const topicId = activeTopicId()
                         if (topicId != null) {
                             refreshUrl += `&topic_id=${topicId}`
@@ -4527,7 +4527,7 @@
                     loading.value = true
                     try {
                         const limit = 50
-                        let url = `/api/chats/${selectedChat.value.ref}/messages?limit=${limit}`
+                        let url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=${limit}`
 
                         // v6.2.0: Add topic_id filter if the displayed pane is scoped to a topic.
                         const topicId = activeTopicId()
@@ -4552,7 +4552,7 @@
                         if (messageSearchQuery.value) {
                             // Search still uses offset for simplicity
                             const offset = page.value * limit
-                            url = `/api/chats/${selectedChat.value.ref}/messages?limit=${limit}&offset=${offset}`
+                            url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                             // Also pass topic_id for search within a topic
                             if (topicId != null) {
@@ -4649,7 +4649,7 @@
                     try {
                         const limit = 50
                         const res = await fetch(
-                            `/api/chats/${chatRef}/messages?after_id=${newestMessageId}&limit=${limit}${topicParam}`,
+                            `/api/chats/${encodeURIComponent(chatRef)}/messages?after_id=${newestMessageId}&limit=${limit}${topicParam}`,
                             { credentials: 'include' }
                         )
                         if (requestSeq !== newerLoadRequestSeq || chatVersion !== myVersion ||
@@ -5118,7 +5118,7 @@
 
                 const exportChat = () => {
                     if (!selectedChat.value) return
-                    const url = `/api/chats/${selectedChat.value.ref}/export`
+                    const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/export`
                     window.open(url, '_blank')
                 }
 
@@ -6667,7 +6667,7 @@
                     calendarAvailabilityLoading.value = true
                     calendarAvailabilityError.value = ''
                     try {
-                        let url = `/api/chats/${chatRef}/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}`
+                        let url = `/api/chats/${encodeURIComponent(chatRef)}/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}`
                         if (topicId != null) {
                             url += `&topic_id=${topicId}`
                         }
@@ -6822,7 +6822,7 @@
                         // Fetch message for the selected date
                         // Pass timezone so backend can convert the displayed date to correct UTC bounds
                         const tz = encodeURIComponent(viewerTimezone.value)
-                        let dateUrl = `/api/chats/${chatRefAtStart}/messages/by-date?date=${selectedDateAtStart}&timezone=${tz}`
+                        let dateUrl = `/api/chats/${encodeURIComponent(chatRefAtStart)}/messages/by-date?date=${selectedDateAtStart}&timezone=${tz}`
                         if (topicIdAtStart != null) {
                             dateUrl += `&topic_id=${topicIdAtStart}`
                         }

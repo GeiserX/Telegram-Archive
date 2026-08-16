@@ -588,7 +588,8 @@ async def test_websocket_restricted_socket_sees_only_entitled_events(viewer_app)
 
         # Delivery re-check: force a subscription the grant does not cover
         # (a stale subscription from before a narrowing) …
-        server_socket = next(iter(web_main.ws_manager.active_connections))
+        # Exactly one live socket by construction; unpacking fails loudly otherwise.
+        [server_socket] = list(web_main.ws_manager.active_connections)
         web_main.ws_manager.active_connections[server_socket].add(archive.ref_b)
 
         # … broadcast for the forbidden chat FIRST, then the entitled one.

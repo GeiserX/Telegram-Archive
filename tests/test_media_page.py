@@ -16,6 +16,10 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+MEDIA_CHAT_REF = "opaque-media-a"
+# Every ref the mock resolver recognizes; anything else - numeric ids included - is nothing.
+KNOWN_CHAT_REFS = {MEDIA_CHAT_REF, "mediaChatRef01001ABC"}
+
 
 @pytest.fixture(autouse=True)
 def _reset_auth_module():
@@ -36,11 +40,13 @@ def _make_mock_db():
             {"id": -1001, "account_id": 1, "ref": "mediaChatRef01001ABC", "title": "Chat A", "type": "channel"},
         ]
     )
-    # Echo any requested ref back as chat -1001, so both the anonymous tests
-    # (which use "-1001" as the URL segment) and the restricted-viewer tests
-    # (which grant a realistic ref) resolve to the same chat.
+    # Resolve ONLY the known opaque ref to chat -1001; any other segment —
+    # a numeric chat id included — resolves to nothing, exactly like the real
+    # resolver, so a route that wrongly accepted legacy ids would fail here.
     db.get_chat_by_ref = AsyncMock(
-        side_effect=lambda ref, **kwargs: {"id": -1001, "account_id": 1, "ref": ref, "type": "channel"}
+        side_effect=lambda ref, **kwargs: (
+            {"id": -1001, "account_id": 1, "ref": ref, "type": "channel"} if ref in KNOWN_CHAT_REFS else None
+        )
     )
     db.get_chat_count = AsyncMock(return_value=1)
     db.get_cached_statistics = AsyncMock(return_value={"total_chats": 1})
@@ -143,19 +149,19 @@ class TestMediaEndpointAuth:
 
     def test_requires_authentication(self, auth_env):
         client, _, _ = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 401
 
     def test_works_when_authenticated(self, auth_env):
         client, _, _ = _get_client()
         login_resp = client.post("/api/login", json={"username": "admin", "password": "testpass123"})
         cookie = login_resp.cookies.get("viewer_auth")
-        resp = client.get("/api/chats/-1001/media", cookies={"viewer_auth": cookie})
+        resp = client.get("/api/chats/opaque-media-a/media", cookies={"viewer_auth": cookie})
         assert resp.status_code == 200
 
     def test_works_anonymous_mode(self, anon_env):
         client, _, _ = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
 
 
@@ -164,7 +170,7 @@ class TestMediaPaginated:
 
     def test_returns_media_items(self, anon_env):
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         data = resp.json()
         assert "items" in data
@@ -175,7 +181,7 @@ class TestMediaPaginated:
 
     def test_passes_types_filter(self, anon_env):
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?types=photo,video")
+        resp = client.get("/api/chats/opaque-media-a/media?types=photo,video")
         assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
@@ -188,7 +194,7 @@ class TestMediaPaginated:
 
     def test_passes_limit(self, anon_env):
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?limit=20")
+        resp = client.get("/api/chats/opaque-media-a/media?limit=20")
         assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
@@ -202,7 +208,7 @@ class TestMediaPaginated:
     def test_passes_before_id(self, anon_env):
         """The chat-free cursor is reconstructed into the storage key server-side."""
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?before_id=90_photo")
+        resp = client.get("/api/chats/opaque-media-a/media?before_id=90_photo")
         assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
@@ -219,7 +225,7 @@ class TestMediaPaginated:
         old-format full-composite token reconstructs to a key that resolves to
         no row (an empty page, never someone else's page)."""
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?after_id=2428_voice")
+        resp = client.get("/api/chats/opaque-media-a/media?after_id=2428_voice")
         assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
@@ -234,7 +240,7 @@ class TestMediaPaginated:
         """A 7.x cursor ("-1001_2428_voice") gains a second chat prefix and can
         only ever miss — the #266 empty-page semantics."""
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?after_id=-1001_2428_voice")
+        resp = client.get("/api/chats/opaque-media-a/media?after_id=-1001_2428_voice")
         assert resp.status_code == 200
         called_after = mock_db.get_media_paginated.call_args.kwargs["after_id"]
         assert called_after == "-1001_-1001_2428_voice"
@@ -242,14 +248,14 @@ class TestMediaPaginated:
     def test_before_id_and_after_id_are_mutually_exclusive(self, anon_env):
         """#266: asking for both directions at once is rejected, not silently halved."""
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media?before_id=a&after_id=b")
+        resp = client.get("/api/chats/opaque-media-a/media?before_id=a&after_id=b")
         assert resp.status_code == 400
         assert "mutually exclusive" in resp.json()["detail"]
         mock_db.get_media_paginated.assert_not_called()
 
     def test_empty_types_means_all(self, anon_env):
         client, _, mock_db = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         mock_db.get_media_paginated.assert_called_once_with(
             -1001,
@@ -262,10 +268,10 @@ class TestMediaPaginated:
 
     def test_items_include_thumb_url(self, anon_env):
         client, _, _ = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["items"][0]["thumb_url"] == "/media/thumb/200/-1001/100_photo"
+        assert data["items"][0]["thumb_url"] == "/media/thumb/200/opaque-media-a/100_photo"
 
     def test_no_download_strips_media_url(self, auth_env):
         import src.web.main as main_mod
@@ -306,7 +312,7 @@ class TestMediaCounts:
 
     def test_returns_counts(self, anon_env):
         client, _, _ = _get_client()
-        resp = client.get("/api/chats/-1001/media/counts")
+        resp = client.get("/api/chats/opaque-media-a/media/counts")
         assert resp.status_code == 200
         data = resp.json()
         assert data["photo"] == 10
@@ -372,7 +378,7 @@ class TestMediaPathValidation:
             }
         )
         client, _, _ = _get_client(mock_db)
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         data = resp.json()
         assert data["items"][0]["thumb_url"] is None
@@ -404,7 +410,7 @@ class TestMediaPathValidation:
             }
         )
         client, _, _ = _get_client(mock_db)
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         data = resp.json()
         assert data["items"][0]["thumb_url"] is None
@@ -412,10 +418,10 @@ class TestMediaPathValidation:
 
     def test_valid_path_includes_media_url(self, anon_env):
         client, _, _ = _get_client()
-        resp = client.get("/api/chats/-1001/media")
+        resp = client.get("/api/chats/opaque-media-a/media")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["items"][0]["media_url"] == "/media/-1001/100_photo"
+        assert data["items"][0]["media_url"] == "/media/opaque-media-a/100_photo"
 
 
 class TestMediaACL:
@@ -453,3 +459,15 @@ class TestMediaACL:
         mock_db.get_chat_by_ref = AsyncMock(return_value=None)
         missing = client.get("/api/chats/mediaChatRef01001ABC/media", cookies={"viewer_auth": cookie})
         assert (missing.status_code, missing.json()) == (404, forbidden_body)
+
+
+class TestLegacyIdSegmentsAreDead:
+    """A numeric chat id where a ref belongs resolves to nothing, hence 404."""
+
+    def test_numeric_segment_is_not_a_chat(self, auth_env) -> None:
+        client, _main, mock_db = _get_client()
+        _login(client)
+        resp = client.get("/api/chats/-1001/media")
+        assert resp.status_code == 404
+        mock_db.get_chat_by_ref.assert_awaited()
+        assert mock_db.get_chat_by_ref.await_args.args[0] == "-1001"

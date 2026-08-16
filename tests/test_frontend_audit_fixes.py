@@ -1321,3 +1321,18 @@ const clearMessageVersionsRecord = (store, key) => { const next = { ...store.val
     )
 
     _run_node(script)
+
+
+def test_every_chat_scoped_url_interpolation_is_encoded() -> None:
+    """The encoding invariant is enforced by scan, not sampled by one builder.
+
+    Any ``/api/chats/${...}`` interpolation whose first expression is not
+    ``encodeURIComponent(`` can smuggle a path separator; a new builder added
+    without the wrapper fails here by construction.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    violations = [
+        html[max(0, m.start() - 40) : m.start() + 60]
+        for m in re.finditer(r"/api/chats/\$\{(?!encodeURIComponent\()", html)
+    ]
+    assert violations == [], f"unencoded chat-scoped interpolations: {violations}"

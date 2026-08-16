@@ -1757,17 +1757,17 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row[0]: row[1] for row in result.all()}
 
-    async def get_media_by_id(self, media_id: str, *, account_id: int | None = None) -> dict[str, Any] | None:
+    async def get_media_by_id(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
         """Get one media row by its ``{chat_id}_{message_id}_{type}`` storage key.
 
         Phase 4: the ref-addressed media routes reconstruct this key from a
         resolved chat plus the URL's ``{message_id}_{type}`` suffix, then serve
         the row's ``file_path`` — the URL itself never carries the chat id.
+        The account is required: the storage key is only unique per account,
+        so an unscoped lookup could raise on — or leak — another account's row.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Media).where(Media.id == media_id)
-            if account_id is not None:
-                stmt = stmt.where(Media.account_id == account_id)
+            stmt = select(Media).where(and_(Media.account_id == account_id, Media.id == media_id))
             result = await session.execute(stmt)
             media = result.scalar_one_or_none()
             if not media:
