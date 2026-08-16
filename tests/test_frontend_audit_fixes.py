@@ -1135,6 +1135,27 @@ const console = { error: () => {} };
     fail(4);
     await flush();
     assert.equal(chatStats.value, null, 'a live network error no longer clears the header');
+
+    // A stale HTTP failure must not blank the header either.
+    loadChatStats(333);
+    await flush();
+    selectedChat.value = { id: 444 };
+    chatStats.value = null;
+    loadChatStats(444);
+    await flush();
+    respond(6, { message_count: 9 });
+    await flush();
+    respondError(5, 500);
+    await flush();
+    assert.deepEqual(chatStats.value, { message_count: 9 },
+        "chat 333's HTTP failure blanked chat 444's header");
+
+    // The CURRENT chat's HTTP failure still clears.
+    loadChatStats(444);
+    await flush();
+    respondError(7, 500);
+    await flush();
+    assert.equal(chatStats.value, null, 'a live HTTP failure no longer clears the header');
 })().catch(error => {
     process.stderr.write(`${error.stack}\\n`);
     process.exitCode = 1;
