@@ -37,6 +37,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
+from src.db.adapter import DatabaseAdapter
 from src.telegram_backup import (
     MESSAGE_GIVE_UP_RECORD_LIMIT,
     MESSAGE_MAX_PROCESS_ATTEMPTS,
@@ -68,6 +69,7 @@ class _FakeDb:
         self.committed: list[int] = []
         self.sync_writes: list[int] = []
         self.metadata_reads: list[str] = []
+        self.set_metadata_failures: list[Exception] = []
 
     async def upsert_chat(self, chat_data):
         return None
@@ -84,6 +86,8 @@ class _FakeDb:
         return self.metadata.get(key)
 
     async def set_metadata(self, key, value):
+        if self.set_metadata_failures:
+            raise self.set_metadata_failures.pop(0)
         self.metadata[key] = value
 
     def failure_record(self, chat_id=CHAT_ID):
@@ -511,3 +515,149 @@ class TestTheRecordSurvivesACrashMidDialog(CursorFreezeExitTestCase):
             self.db.cursor < 3 or 3 in skipped,
             f"cursor {self.db.cursor} moved past message 3 with skipped={skipped}",
         )
+
+
+class TestAGiveUpIsOnlyAsGoodAsItsRecord(CursorFreezeExitTestCase):
+    """The cursor must never pass a message whose give-up record is not on disk.
+
+    The record write is the whole difference between "given up, durably
+    recorded" and the silent skip this mechanism exists to prevent. So a failed
+    write means the give-up did not happen: the freeze holds for one more run,
+    and the next run whose write lands completes the give-up. That converges --
+    at the cost of one extra run, never of an unrecorded skip.
+    """
+
+    def test_a_failed_record_write_keeps_the_freeze_instead_of_skipping(self):
+        self.available = list(range(1, 11))
+        self.poison_ids = {5}
+
+        self._run_backup()  # run 1: freeze behind 5
+        record_after_freeze = self.db.failure_record()
+
+        self.db.set_metadata_failures = [RuntimeError("metadata write failed")]
+        self._run_backup()  # run 2: gives up on 5, but the record write fails
+
+        self.assertEqual(self.db.cursor, 4, "cursor passed a message with no record of the skip")
+        self.assertNotIn(5, self.db.committed)
+        self.assertEqual(self.db.failure_record(), record_after_freeze)
+
+        self._run_backup()  # run 3: the write works again, the give-up lands
+
+        self.assertEqual(self.db.cursor, 10)
+        record = self.db.failure_record()
+        self.assertEqual(record["given_up_ids"], [5])
+        self.assertEqual(record["given_up_total"], 1)
+        self.assertNotIn(5, self.db.committed)
+
+    def test_a_failed_record_write_is_not_reported_as_a_recorded_skip(self):
+        """The warning must describe what actually happened: a held freeze.
+
+        "their ids are kept in the backup metadata" would be false for a
+        message whose record write just failed, and "passed over" would be
+        false for a cursor that stayed put.
+        """
+        self.available = [1, 2, 3]
+        self.poison_ids = {3}
+
+        self._run_backup()  # freeze behind 3
+        self.db.set_metadata_failures = [RuntimeError("metadata write failed")]
+
+        backup = self._make_backup()
+        with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
+            _run(backup._backup_dialog(MagicMock()))
+
+        messages = [r.getMessage() for r in cm.records]
+        self.assertEqual([m for m in messages if "passed over" in m], [])
+        self.assertEqual(len([m for m in messages if "could not be processed" in m]), 1)
+
+
+class TestALockedDatabaseIsRetriedNotGivenUpOn(CursorFreezeExitTestCase):
+    """'database is locked' is transient contention, not a broken database.
+
+    The listener writes the same SQLite file concurrently, so the realistic
+    failure of the record write is a lock the other process is about to
+    release. The adapter's metadata methods retry it exactly as
+    ``update_sync_status`` does, and the give-up completes durably.
+    """
+
+    def test_the_record_write_retries_through_transient_lock_contention(self):
+        self.available = list(range(1, 11))
+        self.poison_ids = {5}
+
+        self._run_backup()  # run 1: freeze behind 5
+
+        # The REAL adapter's set_metadata, over a session whose first two
+        # writes find the database locked; later ones land in the shared
+        # fake store, so the whole give-up flow sees what actually persisted.
+        db_manager = MagicMock()
+        db_manager._is_sqlite = True
+        session = AsyncMock()
+        lock_errors = [Exception("database is locked"), Exception("database is locked")]
+
+        async def execute(stmt, *args, **kwargs):
+            if lock_errors:
+                raise lock_errors.pop(0)
+            params = stmt.compile().params
+            self.db.metadata[params["key"]] = params["value"]
+            return MagicMock()
+
+        session.execute = AsyncMock(side_effect=execute)
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        db_manager.async_session_factory.return_value = ctx
+        self.db.set_metadata = DatabaseAdapter(db_manager).set_metadata
+
+        self._run_backup()  # run 2: the give-up completes despite the lock
+
+        self.assertEqual(lock_errors, [], "both transient lock errors should have been absorbed")
+        self.assertEqual(self.db.cursor, 10)
+        record = self.db.failure_record()
+        self.assertEqual(record["given_up_ids"], [5])
+        self.assertEqual(record["given_up_total"], 1)
+
+
+class TestTheFrozenHalfDoesNotOutliveTheFreeze(CursorFreezeExitTestCase):
+    """frozen_id/runs describe the message the cursor is parked behind.
+
+    Once the cursor has moved past that id -- the message finally processed,
+    or no longer exists -- a record still naming it claims a freeze that is
+    over. The frozen half must be dropped; the give-up half is a permanent log
+    and stays.
+    """
+
+    def test_the_frozen_half_is_cleared_after_the_message_finally_succeeds(self):
+        self.available = list(range(1, 11))
+        self.poison_ids = {5}
+
+        self._run_backup()  # run 1: freeze behind 5
+        record = self.db.failure_record()
+        self.assertEqual((record["frozen_id"], record["runs"]), (5, 1))
+
+        self.poison_ids = set()  # whatever it was, it cleared
+        self._run_backup()  # run 2: 5 archives and the freeze is over
+
+        self.assertIn(5, self.db.committed)
+        self.assertEqual(self.db.cursor, 10)
+        record = self.db.failure_record()
+        self.assertEqual(record["frozen_id"], 0)
+        self.assertEqual(record["runs"], 0)
+        self.assertEqual(record["given_up_total"], 0)  # a recovery is not a give-up
+
+    def test_the_give_up_half_survives_the_clearing_of_the_frozen_half(self):
+        """The two halves are independent: dropping one must not touch the other."""
+        self.available = list(range(1, 11))
+        self.poison_ids = {3, 5}
+
+        self._run_backup()  # freeze behind 3
+        self._run_backup()  # give up on 3, freeze behind 5
+        self._run_backup()  # give up on 5 too
+        self.poison_ids = set()
+        self._grow_chat(2)  # ids 11, 12
+        self._run_backup()  # a clean run over new messages only
+
+        record = self.db.failure_record()
+        self.assertEqual(record["given_up_ids"], [3, 5])
+        self.assertEqual(record["given_up_total"], 2)
+        self.assertEqual(record["frozen_id"], 0)
+        self.assertEqual(record["runs"], 0)
