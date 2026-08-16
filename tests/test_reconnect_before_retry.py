@@ -548,12 +548,15 @@ class TestListenerRestartAfterAGiveUp:
 
     def _scheduler(self, connection):
         with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+            from src.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
             scheduler = BackupScheduler(config)
-        scheduler._connection = connection
+        account = MagicMock()
+        account.index = 1
+        account.label = "default"
+        scheduler._accounts = [_AccountRuntime(account=account, connection=connection, row_id=1)]
         return scheduler
 
     def _connection(self, client, *, ensure_raises=None):
@@ -627,9 +630,10 @@ class TestListenerRestartAfterAGiveUp:
 
         assert state["ensure"] == 1
         assert seen["connected_at_connect"] is True
-        assert scheduler._listener is not None
-        assert scheduler._listener_task is not None
-        scheduler._listener_task.cancel()
+        entry = scheduler._accounts[0]
+        assert entry.listener is not None
+        assert entry.listener_task is not None
+        entry.listener_task.cancel()
 
     async def test_start_listener_gives_up_cleanly_when_the_network_is_still_down(self, caplog):
         client = _dead_client()
@@ -640,6 +644,7 @@ class TestListenerRestartAfterAGiveUp:
             await scheduler._start_listener()
 
         assert state["ensure"] == 1
-        assert scheduler._listener is None
-        assert scheduler._listener_task is None
+        entry = scheduler._accounts[0]
+        assert entry.listener is None
+        assert entry.listener_task is None
         assert any("Cannot start listener" in r.getMessage() for r in caplog.records)

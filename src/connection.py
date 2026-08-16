@@ -1,11 +1,13 @@
 """
 Shared Telegram client connection manager.
 
-This module provides a single TelegramClient instance that can be shared between
-the backup and listener components, avoiding session file lock conflicts.
+This module provides one TelegramClient instance per account that is shared
+between the backup and listener components, avoiding session file lock
+conflicts (v8.0.0: the scheduler owns one TelegramConnection per configured
+account; a single-account deployment still has exactly one).
 
 Architecture:
-- TelegramConnection owns the single client
+- TelegramConnection owns the single client for its account's session file
 - Listener uses it for real-time events
 - Backup uses it for fetching message history
 - Both work on the same connection without conflicts
@@ -21,7 +23,7 @@ import sqlite3
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-from .config import Config
+from .config import AccountConfig, Config
 
 logger = logging.getLogger(__name__)
 
@@ -101,27 +103,33 @@ class TelegramConnection:
     This solves the session lock conflict between listener and backup by
     ensuring only one TelegramClient instance exists and is shared.
 
-    Usage:
-        connection = TelegramConnection(config)
+    Usage (one connection per configured account):
+        connection = TelegramConnection(config, account=config.accounts[0])
         await connection.connect()
 
-        # Pass to backup and listener (single-account stage: account_id=1)
-        backup = TelegramBackup(config, db, client=connection.client, account_id=1)
-        listener = TelegramListener(config, db, client=connection.client, account_id=1)
+        # Pass to backup and listener with that account's resolved row id
+        backup = TelegramBackup(config, db, client=connection.client, account_id=row_id)
+        listener = TelegramListener(config, db, client=connection.client, account_id=row_id)
 
         # Both use the same connection
         await backup.backup_all()  # Uses shared client
         await listener.run()       # Uses shared client
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, account: AccountConfig | None = None):
         """
         Initialize the connection manager.
 
         Args:
-            config: Configuration object with Telegram credentials
+            config: Configuration object
+            account: The account this connection belongs to (session file and
+                API credentials). Defaults to ``config.accounts[0]``, which in a
+                zero-config deployment is the account synthesized from the
+                legacy TELEGRAM_* variables — same values this class read from
+                ``config`` directly before v8.0.0.
         """
         self.config = config
+        self.account = account if account is not None else config.accounts[0]
         config.validate_credentials()
 
         self._client: TelegramClient | None = None
@@ -218,11 +226,11 @@ class TelegramConnection:
             return self._client
 
         logger.info("Connecting to Telegram...")
-        logger.info(f"Using Telethon session database: {self.config.session_path}.session")
+        logger.info(f"Using Telethon session database: {self.account.session_path}.session")
 
-        session_file = self.config.session_path + ".session"
-        snapshot_file = self.config.session_path + ".session.bak"
-        golden_file = self.config.session_path + ".session.authenticated"
+        session_file = self.account.session_path + ".session"
+        snapshot_file = self.account.session_path + ".session.bak"
+        golden_file = self.account.session_path + ".session.authenticated"
 
         # Tier 1: if the golden backup exists and the live session lost its auth,
         # restore BEFORE TelegramClient even touches the file.
@@ -251,9 +259,9 @@ class TelegramConnection:
         # and that only a fresh connect() call can revive.
         if self._client is None:
             self._client = TelegramClient(
-                self.config.session_path,
-                self.config.api_id,
-                self.config.api_hash,
+                self.account.session_path,
+                self.account.api_id,
+                self.account.api_hash,
                 **self.config.get_telegram_client_kwargs(),
             )
         else:

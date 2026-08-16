@@ -25,6 +25,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from ..message_utils import compute_directory_size, resolve_sender_display_name, utcnow_naive
 from .base import DatabaseManager
 from .models import (
+    DEFAULT_ACCOUNT_ID,
+    Account,
     AppSettings,
     Chat,
     ChatFolder,
@@ -656,6 +658,71 @@ class DatabaseAdapter:
                 if isinstance(new_id, int):
                     markers.append((chat_id, new_id))
         return markers
+
+    # ========== Account Operations (v8.0.0) ==========
+
+    @retry_on_locked()
+    async def ensure_account(self, *, telegram_user_id: int, env_index: int, label: str) -> int:
+        """Resolve the ``accounts`` row a logged-in account writes under.
+
+        Called once per configured account per process start, after its client
+        authenticates and ``get_me()`` yields the Telegram user id. Returns the
+        ``accounts.id`` every capture-side call then passes as ``account_id``.
+
+        Resolution order — the user id owns the row, the env index owns nothing:
+
+        1. A row already carrying ``telegram_user_id`` wins outright (re-runs and
+           re-ordered ``TG_ACCOUNT_<N>_*`` indexes always land here). The label is
+           rewritten when it differs: the env is the display-name source of truth
+           on every start.
+        2. Only the account at env index 1 may claim the migrated row — pre-8.0
+           rows carry no user id, and index 1 is defined as their continuation.
+           The ``telegram_user_id IS NULL`` guard inside the UPDATE's WHERE makes
+           the claim atomic and once-only; a row 1 already owned by a different
+           user makes the guard miss, so reshuffled indexes never steal data.
+        3. Anything else is a new identity: INSERT and return the generated id
+           (migration 022 re-synced PostgreSQL's sequence past the seeded row).
+
+        PII: the Telegram user id and the label never reach the log — the debug
+        line names the env index and the resolved row id only (#272).
+        """
+        async with self.db_manager.async_session_factory() as session:
+            # No unique constraint backs telegram_user_id, so read defensively:
+            # if a corrupted archive ever held duplicates, the oldest row wins
+            # deterministically instead of MultipleResultsFound killing every
+            # backup run forever.
+            row = (
+                (
+                    await session.execute(
+                        select(Account).where(Account.telegram_user_id == telegram_user_id).order_by(Account.id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is not None:
+                if row.label != label:
+                    row.label = label
+                    await session.commit()
+                logger.debug(f"account {env_index} -> row {row.id}")
+                return row.id
+
+            if env_index == 1:
+                result = await session.execute(
+                    update(Account)
+                    .where(and_(Account.id == DEFAULT_ACCOUNT_ID, Account.telegram_user_id.is_(None)))
+                    .values(telegram_user_id=telegram_user_id, label=label)
+                )
+                if result.rowcount == 1:
+                    await session.commit()
+                    logger.debug(f"account {env_index} -> row {DEFAULT_ACCOUNT_ID} (claimed migrated row)")
+                    return DEFAULT_ACCOUNT_ID
+
+            account = Account(label=label, telegram_user_id=telegram_user_id)
+            session.add(account)
+            await session.commit()
+            logger.debug(f"account {env_index} -> row {account.id} (new)")
+            return account.id
 
     # ========== Chat Operations ==========
 

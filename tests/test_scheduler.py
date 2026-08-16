@@ -9,6 +9,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _make_entry(connection=None, row_id=1, index=1, listener=None, listener_task=None):
+    """One _AccountRuntime as _connect() would build it, with a mock connection.
+
+    v8.0.0: the scheduler keeps per-account runtime state in ``_accounts``
+    instead of the old singular ``_connection``/``_listener`` attributes; tests
+    inject their mocks through entries like this one.
+    """
+    from src.scheduler import _AccountRuntime
+
+    account = MagicMock()
+    account.index = index
+    account.label = "default"
+    if connection is None:
+        connection = AsyncMock()
+        connection.is_connected = True
+        connection.client = MagicMock()
+    return _AccountRuntime(
+        account=account,
+        connection=connection,
+        row_id=row_id,
+        listener=listener,
+        listener_task=listener_task,
+    )
+
+
 class TestBackupSchedulerInit:
     """Tests for BackupScheduler.__init__."""
 
@@ -32,26 +57,25 @@ class TestBackupSchedulerInit:
 
             assert scheduler.running is False
 
-    def test_init_sets_connection_none(self):
-        """BackupScheduler starts with no connection."""
+    def test_init_starts_with_no_account_runtimes(self):
+        """BackupScheduler starts with no per-account connections."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
 
-            assert scheduler._connection is None
+            assert scheduler._accounts == []
 
-    def test_init_sets_listener_none(self):
-        """BackupScheduler starts with no listener."""
+    def test_init_sets_listener_disabled(self):
+        """BackupScheduler starts with listeners not yet enabled."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
 
-            assert scheduler._listener is None
-            assert scheduler._listener_task is None
+            assert scheduler._listener_enabled is False
 
     def test_init_creates_backup_lock(self):
         """BackupScheduler creates a lock to prevent overlapping backup runs."""
@@ -180,28 +204,72 @@ class TestBackupSchedulerRunBackupJob:
 
     @pytest.fixture
     def scheduler_with_connection(self):
-        """Create a scheduler with mocked connection."""
+        """Create a scheduler with one mocked account runtime."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             config.fill_gaps = False
             scheduler = BackupScheduler(config)
-            scheduler._connection = AsyncMock()
-            scheduler._connection.ensure_connected = AsyncMock(return_value=MagicMock())
-            scheduler._listener = None
+            scheduler._accounts = [_make_entry()]
             return scheduler
 
     async def test_run_backup_job_calls_run_backup(self, scheduler_with_connection):
-        """Backup job calls run_backup with config and shared client."""
+        """Backup job calls run_backup with config, shared client and row id."""
         scheduler = scheduler_with_connection
         mock_client = MagicMock()
-        scheduler._connection.ensure_connected = AsyncMock(return_value=mock_client)
+        entry = scheduler._accounts[0]
+        entry.connection.ensure_connected = AsyncMock(return_value=mock_client)
 
         with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
             await scheduler._run_backup_job()
 
-            mock_backup.assert_called_once_with(scheduler.config, client=mock_client)
+            mock_backup.assert_called_once_with(scheduler.config, client=mock_client, account_id=entry.row_id)
+
+    async def test_run_backup_job_sweeps_accounts_sequentially(self):
+        """Two accounts are swept in config order, each under its own row id."""
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            scheduler = BackupScheduler(config)
+            scheduler._accounts = [_make_entry(row_id=1, index=1), _make_entry(row_id=5, index=2)]
+
+            with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
+                await scheduler._run_backup_job()
+
+            assert [c.kwargs["account_id"] for c in mock_backup.await_args_list] == [1, 5]
+
+    async def test_run_backup_job_one_broken_account_does_not_consume_the_others(self, caplog):
+        """Account 1 failing to connect still leaves account 2 its full sweep.
+
+        The failure is logged by env index and exception TYPE only — the text
+        of a Telethon error can carry the phone number (#272).
+        """
+        import logging
+
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.fill_gaps = False
+            scheduler = BackupScheduler(config)
+            broken = _make_entry(row_id=1, index=1)
+            broken.connection.ensure_connected = AsyncMock(side_effect=ConnectionError("+34600000001 unreachable"))
+            healthy = _make_entry(row_id=2, index=2)
+            scheduler._accounts = [broken, healthy]
+
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup,
+                caplog.at_level(logging.ERROR, logger="src.scheduler"),
+            ):
+                await scheduler._run_backup_job()
+
+            assert [c.kwargs["account_id"] for c in mock_backup.await_args_list] == [2]
+            messages = [r.getMessage() for r in caplog.records]
+            assert "account 1 failed: ConnectionError" in messages
+            assert all("+34600000001" not in m for m in messages)
 
     async def test_run_backup_job_with_gap_fill_enabled(self, scheduler_with_connection):
         """Backup job runs gap-fill when fill_gaps is enabled."""
@@ -212,31 +280,28 @@ class TestBackupSchedulerRunBackupJob:
 
         with (
             patch("src.scheduler.run_backup", new_callable=AsyncMock),
-            patch.dict("sys.modules", {}),
             patch("src.telegram_backup.run_fill_gaps", mock_run_fill_gaps, create=True),
-            patch("src.scheduler.BackupScheduler._run_backup_job", wraps=scheduler._run_backup_job),
         ):
-            pass
-
-        # Simpler approach: just verify the backup runs without error
-        with patch("src.scheduler.run_backup", new_callable=AsyncMock):
             await scheduler._run_backup_job()
+
+        mock_run_fill_gaps.assert_awaited_once()
 
     async def test_run_backup_job_reloads_listener_tracked_chats(self, scheduler_with_connection):
-        """Backup job reloads listener tracked chats after completing."""
+        """Backup job reloads the account's listener tracked chats after completing."""
         scheduler = scheduler_with_connection
-        scheduler._listener = AsyncMock()
-        scheduler._listener._load_tracked_chats = AsyncMock()
+        entry = scheduler._accounts[0]
+        entry.listener = AsyncMock()
+        entry.listener._load_tracked_chats = AsyncMock()
 
         with patch("src.scheduler.run_backup", new_callable=AsyncMock):
             await scheduler._run_backup_job()
 
-            scheduler._listener._load_tracked_chats.assert_called_once()
+            entry.listener._load_tracked_chats.assert_called_once()
 
     async def test_run_backup_job_handles_exception_gracefully(self, scheduler_with_connection):
         """Backup job catches and logs exceptions without crashing."""
         scheduler = scheduler_with_connection
-        scheduler._connection.ensure_connected = AsyncMock(side_effect=Exception("connection lost"))
+        scheduler._accounts[0].connection.ensure_connected = AsyncMock(side_effect=Exception("connection lost"))
 
         # Should NOT raise
         await scheduler._run_backup_job()
@@ -260,9 +325,7 @@ class TestBackupSchedulerRunBackupJob:
             config = MagicMock()
             config.fill_gaps = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = AsyncMock()
-            scheduler._connection.ensure_connected = AsyncMock(return_value=MagicMock())
-            scheduler._listener = None
+            scheduler._accounts = [_make_entry()]
 
             mock_fill_gaps = AsyncMock(return_value={"errors": 2, "total_recovered": 3})
 
@@ -272,6 +335,8 @@ class TestBackupSchedulerRunBackupJob:
             ):
                 await scheduler._run_backup_job()
 
+            mock_fill_gaps.assert_awaited_once()
+
     async def test_run_backup_job_gap_fill_exception(self):
         """Backup job catches gap-fill exceptions without crashing."""
         with patch("src.scheduler.signal.signal"):
@@ -280,20 +345,22 @@ class TestBackupSchedulerRunBackupJob:
             config = MagicMock()
             config.fill_gaps = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = AsyncMock()
-            scheduler._connection.ensure_connected = AsyncMock(return_value=MagicMock())
-            scheduler._listener = None
+            scheduler._accounts = [_make_entry()]
 
-            with patch("src.scheduler.run_backup", new_callable=AsyncMock):
-                # gap-fill import will fail since we don't mock it, triggering the except branch
+            with (
+                patch("src.scheduler.run_backup", new_callable=AsyncMock),
+                patch(
+                    "src.telegram_backup.run_fill_gaps", new_callable=AsyncMock, side_effect=Exception("gap fill boom")
+                ),
+            ):
                 await scheduler._run_backup_job()
 
 
 class TestBackupSchedulerConnect:
     """Tests for BackupScheduler._connect and _disconnect."""
 
-    async def test_connect_creates_telegram_connection(self):
-        """_connect creates and connects a TelegramConnection."""
+    async def test_connect_creates_telegram_connection_per_account_and_resolves_rows(self):
+        """_connect builds one TelegramConnection per account and resolves row ids."""
         with (
             patch("src.scheduler.signal.signal"),
             patch("src.scheduler.TelegramConnection") as MockConn,
@@ -301,31 +368,45 @@ class TestBackupSchedulerConnect:
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
+            account = MagicMock()
+            account.index = 1
+            account.label = "default"
+            config.accounts = [account]
             scheduler = BackupScheduler(config)
 
             mock_conn_instance = AsyncMock()
+            mock_conn_instance.me = MagicMock(id=900001111)
             MockConn.return_value = mock_conn_instance
 
-            await scheduler._connect()
+            mock_db = AsyncMock()
+            mock_db.ensure_account = AsyncMock(return_value=1)
 
-            MockConn.assert_called_once_with(config)
+            with patch("src.db.create_adapter", new_callable=AsyncMock, return_value=mock_db):
+                await scheduler._connect()
+
+            MockConn.assert_called_once_with(config, account=account)
             mock_conn_instance.connect.assert_called_once()
-            assert scheduler._connection is mock_conn_instance
+            assert len(scheduler._accounts) == 1
+            assert scheduler._accounts[0].connection is mock_conn_instance
+            # The row id came from ensure_account, keyed on the login's user id.
+            mock_db.ensure_account.assert_awaited_once_with(telegram_user_id=900001111, env_index=1, label="default")
+            assert scheduler._accounts[0].row_id == 1
+            mock_db.close.assert_awaited_once()
 
     async def test_disconnect_closes_connection(self):
-        """_disconnect calls disconnect on the connection."""
+        """_disconnect calls disconnect on every account's connection."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
             mock_conn = AsyncMock()
-            scheduler._connection = mock_conn
+            scheduler._accounts = [_make_entry(connection=mock_conn)]
 
             await scheduler._disconnect()
 
             mock_conn.disconnect.assert_called_once()
-            assert scheduler._connection is None
+            assert scheduler._accounts == []
 
     async def test_disconnect_when_no_connection_is_noop(self):
         """_disconnect is safe when no connection exists."""
@@ -334,7 +415,7 @@ class TestBackupSchedulerConnect:
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
-            scheduler._connection = None
+            scheduler._accounts = []
 
             # Should not raise
             await scheduler._disconnect()
@@ -351,40 +432,43 @@ class TestBackupSchedulerListener:
             config = MagicMock()
             config.enable_listener = False
             scheduler = BackupScheduler(config)
+            entry = _make_entry()
+            scheduler._accounts = [entry]
 
             await scheduler._start_listener()
 
-            assert scheduler._listener is None
-            assert scheduler._listener_task is None
+            assert entry.listener is None
+            assert entry.listener_task is None
 
     async def test_start_listener_when_not_connected_logs_error(self):
-        """_start_listener fails gracefully when not connected."""
+        """_start_listener fails gracefully when no account ever connected."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = None
+            scheduler._accounts = []
 
+            # Should not raise; nothing to start.
             await scheduler._start_listener()
-
-            assert scheduler._listener is None
 
     async def test_start_listener_when_connection_not_connected_logs_error(self):
-        """_start_listener fails gracefully when connection exists but is not connected."""
+        """_start_listener fails gracefully when a connection is down."""
         with patch("src.scheduler.signal.signal"):
             from src.scheduler import BackupScheduler
 
             config = MagicMock()
             config.enable_listener = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = MagicMock()
-            scheduler._connection.is_connected = False
+            connection = AsyncMock()
+            connection.is_connected = False
+            entry = _make_entry(connection=connection)
+            scheduler._accounts = [entry]
 
             await scheduler._start_listener()
 
-            assert scheduler._listener is None
+            assert entry.listener is None
 
     async def test_start_listener_creates_and_starts_listener(self):
         """_start_listener creates a TelegramListener and starts it."""
@@ -394,9 +478,8 @@ class TestBackupSchedulerListener:
             config = MagicMock()
             config.enable_listener = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = MagicMock()
-            scheduler._connection.is_connected = True
-            scheduler._connection.client = MagicMock()
+            entry = _make_entry()
+            scheduler._accounts = [entry]
 
             mock_listener = AsyncMock()
             mock_listener.run = AsyncMock()
@@ -407,17 +490,21 @@ class TestBackupSchedulerListener:
                     mock_task.return_value = MagicMock()
                     await scheduler._start_listener()
 
-    async def test_start_listener_builds_real_listener_for_the_default_account(self):
+            assert entry.listener is mock_listener
+            MockListener.create.assert_awaited_once_with(
+                scheduler.config, client=entry.connection.client, account_id=entry.row_id
+            )
+
+    async def test_start_listener_builds_real_listener_for_the_resolved_account(self):
         """The scheduler path runs the REAL TelegramListener.create/__init__ chain.
 
         Only leaf dependencies are mocked (DB adapter, network methods): if the
-        create() call at the scheduler's composition seam ever drops the required
-        account_id kwarg, the TypeError is swallowed by _start_listener's except
-        and _listener stays None — which these assertions turn red. The patched
-        class in the test above cannot catch that.
+        create() call at the scheduler's composition seam ever drops the
+        account_id kwarg, the entry's listener would be built without a row id —
+        which these assertions turn red. The patched class in the test above
+        cannot catch that.
         """
         with patch("src.scheduler.signal.signal"):
-            from src.db.models import DEFAULT_ACCOUNT_ID
             from src.listener import TelegramListener
             from src.scheduler import BackupScheduler
 
@@ -429,10 +516,8 @@ class TestBackupSchedulerListener:
             config.mass_operation_window_seconds = 30
             config.mass_operation_buffer_delay = 2.0
             scheduler = BackupScheduler(config)
-            scheduler._connection = MagicMock()
-            scheduler._connection.ensure_connected = AsyncMock()
-            scheduler._connection.is_connected = True
-            scheduler._connection.client = MagicMock()
+            entry = _make_entry(row_id=7)
+            scheduler._accounts = [entry]
 
             with (
                 patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
@@ -441,10 +526,10 @@ class TestBackupSchedulerListener:
             ):
                 await scheduler._start_listener()
 
-                assert isinstance(scheduler._listener, TelegramListener)
-                assert scheduler._listener.account_id == DEFAULT_ACCOUNT_ID
-                assert scheduler._listener_task is not None
-                await scheduler._listener_task
+                assert isinstance(entry.listener, TelegramListener)
+                assert entry.listener.account_id == 7
+                assert entry.listener_task is not None
+                await entry.listener_task
 
     async def test_start_listener_handles_exception_gracefully(self):
         """_start_listener catches exceptions during listener creation."""
@@ -454,9 +539,8 @@ class TestBackupSchedulerListener:
             config = MagicMock()
             config.enable_listener = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = MagicMock()
-            scheduler._connection.is_connected = True
-            scheduler._connection.client = MagicMock()
+            entry = _make_entry()
+            scheduler._accounts = [entry]
 
             # Force the import/create to fail
             with patch.dict(
@@ -469,8 +553,8 @@ class TestBackupSchedulerListener:
             ):
                 await scheduler._start_listener()
 
-            assert scheduler._listener is None
-            assert scheduler._listener_task is None
+            assert entry.listener is None
+            assert entry.listener_task is None
 
     async def test_stop_listener_cancels_task_and_closes_listener(self):
         """_stop_listener cancels the task and closes the listener."""
@@ -488,14 +572,14 @@ class TestBackupSchedulerListener:
             mock_listener = AsyncMock()
             mock_listener.close = AsyncMock()
 
-            scheduler._listener_task = mock_task
-            scheduler._listener = mock_listener
+            entry = _make_entry(listener=mock_listener, listener_task=mock_task)
+            scheduler._accounts = [entry]
 
             await scheduler._stop_listener()
 
             mock_listener.close.assert_called_once()
-            assert scheduler._listener is None
-            assert scheduler._listener_task is None
+            assert entry.listener is None
+            assert entry.listener_task is None
 
     async def test_stop_listener_swallows_dead_task_exception(self):
         """_stop_listener does not re-raise a dead task's stored exception.
@@ -521,15 +605,48 @@ class TestBackupSchedulerListener:
             mock_listener = AsyncMock()
             mock_listener.close = AsyncMock()
 
-            scheduler._listener_task = dead_task
-            scheduler._listener = mock_listener
+            entry = _make_entry(listener=mock_listener, listener_task=dead_task)
+            scheduler._accounts = [entry]
 
             # Must not raise — teardown should proceed cleanly.
             await scheduler._stop_listener()
 
             mock_listener.close.assert_called_once()
-            assert scheduler._listener is None
-            assert scheduler._listener_task is None
+            assert entry.listener is None
+            assert entry.listener_task is None
+
+    async def test_stop_listener_only_dead_leaves_live_listeners_running(self):
+        """The watchdog's only_dead stop never touches a healthy account.
+
+        Restarting a healthy listener would detach and re-register its handlers
+        for no reason; the watchdog restarts exactly what died.
+        """
+        with patch("src.scheduler.signal.signal"):
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            scheduler = BackupScheduler(config)
+
+            loop = asyncio.get_event_loop()
+            dead_task = loop.create_future()
+            dead_task.cancel()
+            dead_listener = AsyncMock()
+
+            live_task = MagicMock()
+            live_task.done = MagicMock(return_value=False)
+            live_listener = AsyncMock()
+
+            dead = _make_entry(index=1, listener=dead_listener, listener_task=dead_task)
+            live = _make_entry(index=2, listener=live_listener, listener_task=live_task)
+            scheduler._accounts = [dead, live]
+
+            await scheduler._stop_listener(only_dead=True)
+
+            dead_listener.close.assert_called_once()
+            assert dead.listener is None and dead.listener_task is None
+            live_listener.close.assert_not_called()
+            live_task.cancel.assert_not_called()
+            assert live.listener is live_listener
 
     async def test_stop_listener_when_no_listener_is_noop(self):
         """_stop_listener is safe when no listener is running."""
@@ -538,8 +655,7 @@ class TestBackupSchedulerListener:
 
             config = MagicMock()
             scheduler = BackupScheduler(config)
-            scheduler._listener = None
-            scheduler._listener_task = None
+            scheduler._accounts = [_make_entry()]
 
             # Should not raise
             await scheduler._stop_listener()
@@ -558,11 +674,9 @@ class TestBackupSchedulerRunForever:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -585,7 +699,7 @@ class TestBackupSchedulerRunForever:
 
             scheduler._connect.assert_called_once()
             scheduler.start.assert_called_once()
-            mock_backup.assert_called_once()
+            mock_backup.assert_called_once_with(config, client=entry.connection.client, account_id=entry.row_id)
 
     async def test_run_forever_handles_initial_backup_failure(self):
         """run_forever catches exceptions from initial backup."""
@@ -597,11 +711,9 @@ class TestBackupSchedulerRunForever:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -633,11 +745,9 @@ class TestBackupSchedulerRunForever:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -728,9 +838,7 @@ class TestRunBackupJobGapFillException:
             config = MagicMock()
             config.fill_gaps = True
             scheduler = BackupScheduler(config)
-            scheduler._connection = AsyncMock()
-            scheduler._connection.ensure_connected = AsyncMock(return_value=MagicMock())
-            scheduler._listener = None
+            scheduler._accounts = [_make_entry()]
 
             with (
                 patch("src.scheduler.run_backup", new_callable=AsyncMock),
@@ -760,11 +868,9 @@ class TestRunForeverInitialGapFill:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -801,11 +907,9 @@ class TestRunForeverInitialGapFill:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -840,11 +944,9 @@ class TestRunForeverInitialGapFill:
             config.enable_listener = False
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -886,19 +988,16 @@ class TestRunForeverListenerReload:
             config.enable_listener = True
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
-
             mock_listener = AsyncMock()
             mock_listener._load_tracked_chats = AsyncMock()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            entry = _make_entry(listener=mock_listener)
+
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
             scheduler._disconnect = AsyncMock()
-            scheduler._listener = mock_listener
 
             call_count = 0
 
@@ -935,11 +1034,9 @@ class TestRunForeverListenerRestart:
             config.enable_listener = True
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -949,8 +1046,8 @@ class TestRunForeverListenerRestart:
             loop = asyncio.get_event_loop()
             done_task = loop.create_future()
             done_task.set_exception(Exception("listener crashed"))
-            scheduler._listener_task = done_task
-            scheduler._listener = AsyncMock()
+            entry.listener_task = done_task
+            entry.listener = AsyncMock()
 
             call_count = 0
 
@@ -987,11 +1084,9 @@ class TestRunForeverListenerRestart:
             config.enable_listener = True
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             # scheduler.start() is mocked out, so it never sets self.running -- set it
             # directly to actually enter the `while self.running:` watchdog loop below.
             scheduler.start = MagicMock(side_effect=lambda: setattr(scheduler, "running", True))
@@ -1003,12 +1098,13 @@ class TestRunForeverListenerRestart:
             async def flaky_start_listener():
                 attempt[0] += 1
                 if attempt[0] < 3:
-                    # Mirrors the real _start_listener failure path: task/listener stay None.
-                    scheduler._listener_task = None
-                    scheduler._listener = None
+                    # Mirrors the real _start_account_listener failure path:
+                    # the entry's task/listener stay None.
+                    entry.listener_task = None
+                    entry.listener = None
                 else:
-                    scheduler._listener_task = MagicMock(done=MagicMock(return_value=False))
-                    scheduler._listener = AsyncMock()
+                    entry.listener_task = MagicMock(done=MagicMock(return_value=False))
+                    entry.listener = AsyncMock()
 
             scheduler._start_listener = AsyncMock(side_effect=flaky_start_listener)
 
@@ -1029,7 +1125,7 @@ class TestRunForeverListenerRestart:
             # Initial start (attempt 1) plus at least one watchdog-triggered retry
             # while the task stayed None -- proves the watchdog didn't give up after one try.
             assert attempt[0] >= 2
-            assert scheduler._listener_task is not None
+            assert entry.listener_task is not None
 
     async def test_listener_task_cancelled_restart(self):
         """Cancelled listener task is restarted during the main loop."""
@@ -1041,11 +1137,9 @@ class TestRunForeverListenerRestart:
             config.enable_listener = True
             scheduler = BackupScheduler(config)
 
-            mock_connection = AsyncMock()
-            mock_connection.client = MagicMock()
+            entry = _make_entry()
 
-            scheduler._connect = AsyncMock()
-            scheduler._connection = mock_connection
+            scheduler._connect = AsyncMock(side_effect=lambda: scheduler._accounts.append(entry))
             scheduler.start = MagicMock()
             scheduler._start_listener = AsyncMock()
             scheduler._stop_listener = AsyncMock()
@@ -1055,8 +1149,8 @@ class TestRunForeverListenerRestart:
             loop = asyncio.get_event_loop()
             done_task = loop.create_future()
             done_task.cancel()
-            scheduler._listener_task = done_task
-            scheduler._listener = AsyncMock()
+            entry.listener_task = done_task
+            entry.listener = AsyncMock()
 
             call_count = 0
 

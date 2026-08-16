@@ -61,6 +61,11 @@ async def test_setup_fails_closed_when_the_session_belongs_to_another_account():
     config.api_hash = "hash"
     config.phone = "+34687016994"
     config.get_telegram_client_kwargs.return_value = {}
+    config._indexed_accounts = False
+    config.accounts = [
+        MagicMock(index=1, session_path=config.session_path, api_id=config.api_id, api_hash=config.api_hash)
+    ]
+    config.accounts[0].phone = config.phone
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True
@@ -88,6 +93,11 @@ async def test_setup_succeeds_when_the_session_matches_the_configured_number():
     config.api_hash = "hash"
     config.phone = "+34687016994"
     config.get_telegram_client_kwargs.return_value = {}
+    config._indexed_accounts = False
+    config.accounts = [
+        MagicMock(index=1, session_path=config.session_path, api_id=config.api_id, api_hash=config.api_hash)
+    ]
+    config.accounts[0].phone = config.phone
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True

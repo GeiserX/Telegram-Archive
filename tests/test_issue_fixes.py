@@ -28,6 +28,11 @@ class TestSessionPathLogging:
         backup.config.api_id = 12345
         backup.config.api_hash = "testhash"
         backup.config.get_telegram_client_kwargs = MagicMock(return_value={"flood_sleep_threshold": 0})
+        # v8.0.0: the own-client path reads the account's credential fields,
+        # which for a zero-config deployment mirror the legacy config ones —
+        # reuse the config mock so the assignments above cover both.
+        backup.account = backup.config
+        backup._account_resolver = None
         backup.db = AsyncMock()
         backup.client = None
         backup._owns_client = True
@@ -113,6 +118,16 @@ class TestListenerSessionPathLogging:
         config.mass_operation_window_seconds = 30
         config.mass_operation_buffer_delay = 2.0
         config.get_telegram_client_kwargs = MagicMock(return_value={"flood_sleep_threshold": 0})
+        # v8.0.0: client construction reads accounts[0]; mirror the legacy
+        # attributes above so the real __init__ resolves the same values.
+        account = MagicMock()
+        account.index = 1
+        account.label = "default"
+        account.session_path = config.session_path
+        account.api_id = config.api_id
+        account.api_hash = config.api_hash
+        account.phone = config.phone
+        config.accounts = [account]
 
         db = AsyncMock()
         db.get_all_chats = AsyncMock(return_value=[])

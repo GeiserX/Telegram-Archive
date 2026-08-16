@@ -32,11 +32,34 @@ def _fake_db(monkeypatch):
 
     yield
 
+    # Restore the REAL src.db before reloading: this teardown runs before
+    # monkeypatch's own undo, so without this the reload re-imports the modules
+    # against the fake again and leaves later test files a stale create_adapter.
+    monkeypatch.undo()
     # Reload again to restore real module state for other test files
     if "src.db" in sys.modules:
         importlib.reload(src.connection)
         importlib.reload(src.listener)
         importlib.reload(src.telegram_backup)
+
+
+def _wire_default_account(config):
+    """Mirror Config on a MagicMock: ``accounts[0]`` carries the credentials.
+
+    v8.0.0: client construction reads the session path and API credentials
+    from the AccountConfig (defaulting to ``config.accounts[0]``), never from
+    the legacy config attributes — a real Config always provides that list.
+    """
+    account = MagicMock()
+    account.index = 1
+    account.label = "default"
+    account.session_path = config.session_path
+    account.api_id = config.api_id
+    account.api_hash = config.api_hash
+    account.phone = config.phone
+    config.accounts = [account]
+    config._indexed_accounts = False
+    return config
 
 
 def _get_telegram_classes():
@@ -58,6 +81,7 @@ async def test_connection_passes_proxy_kwargs():
     config.get_telegram_client_kwargs.return_value = {
         "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
     }
+    _wire_default_account(config)
 
     client = AsyncMock()
     client.session = SimpleNamespace(_conn=None)
@@ -90,6 +114,7 @@ async def test_connection_omits_proxy_when_not_configured():
     config.api_id = 12345
     config.api_hash = "hash"
     config.get_telegram_client_kwargs.return_value = {}
+    _wire_default_account(config)
 
     client = AsyncMock()
     client.session = SimpleNamespace(_conn=None)
@@ -121,6 +146,7 @@ async def test_backup_connect_passes_proxy_kwargs():
         "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
     }
 
+    _wire_default_account(config)
     _, _, TelegramBackup = _get_telegram_classes()
 
     db = AsyncMock()
@@ -168,6 +194,7 @@ async def test_listener_connect_passes_proxy_kwargs():
         "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
     }
 
+    _wire_default_account(config)
     _, TelegramListener, _ = _get_telegram_classes()
 
     db = AsyncMock()
@@ -206,6 +233,8 @@ async def test_setup_authentication_passes_proxy_kwargs():
     config.get_telegram_client_kwargs.return_value = {
         "proxy": {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080}
     }
+
+    _wire_default_account(config)
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True

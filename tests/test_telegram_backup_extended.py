@@ -66,6 +66,11 @@ def _make_backup(**overrides):
     backup.client = overrides.get("client", AsyncMock())
     backup._owns_client = overrides.get("_owns_client", True)
     backup._cleaned_media_chats = set()
+    # v8.0.0: the own-client path reads the account's credential fields, which
+    # for a zero-config deployment mirror the legacy config ones — reuse the
+    # config mock so per-test `backup.config.session_path = ...` covers both.
+    backup.account = backup.config
+    backup._account_resolver = None
     return backup
 
 
@@ -2525,6 +2530,7 @@ class TestRunBackup(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         _run(run_backup(config))
 
         mock_backup.connect.assert_awaited_once()
@@ -2539,6 +2545,7 @@ class TestRunBackup(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         config.media_path = "/tmp/media-path"
 
         order = []
@@ -2558,6 +2565,7 @@ class TestRunBackup(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         with self.assertRaises(RuntimeError):
             _run(run_backup(config))
 
@@ -2575,6 +2583,7 @@ class TestRunFillGaps(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         summary = _run(run_fill_gaps(config, chat_id=100))
 
         self.assertEqual(summary["total_recovered"], 10)
@@ -2588,6 +2597,7 @@ class TestRunFillGaps(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         summary = _run(run_fill_gaps(config))
 
         self.assertEqual(summary["total_recovered"], 0)
@@ -2602,6 +2612,7 @@ class TestRunFillGaps(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         summary = _run(run_fill_gaps(config))
 
         self.assertEqual(summary["total_recovered"], 5)
@@ -2614,6 +2625,7 @@ class TestRunFillGaps(unittest.TestCase):
         mock_create.return_value = mock_backup
 
         config = MagicMock()
+        config.accounts = [MagicMock()]
         with self.assertRaises(RuntimeError):
             _run(run_fill_gaps(config))
 

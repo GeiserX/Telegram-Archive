@@ -52,6 +52,11 @@ def fake_db(monkeypatch):
     """Opt-in fixture for tests that import src.telegram_backup."""
     _patch_db_module(monkeypatch)
     yield
+    # Restore the REAL src.db before reloading: fixture teardown runs before
+    # monkeypatch's own undo, so without this the reload re-imports the modules
+    # against the fake again and leaves every later test file a stale
+    # create_adapter — an order-dependent poisoning, not a cleanup.
+    monkeypatch.undo()
     if "src.db" in sys.modules:
         import src.connection
         import src.telegram_backup

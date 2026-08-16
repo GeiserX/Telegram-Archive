@@ -63,8 +63,119 @@ def _same_phone_number(left: str | None, right: str | None) -> bool:
     return _normalised_phone_digits(left) == _normalised_phone_digits(right)
 
 
+async def _authorize_account(config, account, phone_var: str) -> bool:
+    """Interactively authorize one configured account; True once verified.
+
+    The flow self-skips the interactive part when the account's session file is
+    already authorized, so re-running the setup only prompts for accounts that
+    still need a login. ``phone_var`` is the NAME of the variable the expected
+    number came from (``TELEGRAM_PHONE`` or ``TG_ACCOUNT_<N>_PHONE_NUMBER``) —
+    messages name the variable, never its value.
+    """
+    # The phone number is deliberately not echoed. This flow looks
+    # interactive, but it emits through setup_logging -> basicConfig ->
+    # stderr, and where that stream ends up is the OPERATOR's choice, not
+    # ours: docker-compose.yml declares no logging driver, so under
+    # journald, syslog, gelf, fluentd or a Loki plugin every line is shipped
+    # off-box the moment it is written and outlives the --rm container that
+    # produced it. That is the argument; "docker logs captures it" is not,
+    # since `docker compose exec` output never reaches docker logs at all
+    # and --rm deletes the json-file log on exit.
+    logger.info(f"Session will be saved to: {account.session_path}")
+    logger.info("=" * 60)
+
+    # Create Telegram client
+    client = TelegramClient(
+        account.session_path,
+        account.api_id,
+        account.api_hash,
+        **config.get_telegram_client_kwargs(),
+    )
+
+    # Connect and authenticate
+    logger.info("Connecting to Telegram...")
+    await client.connect()
+
+    if not await client.is_user_authorized():
+        logger.info("Not authorized yet. Starting authentication process...")
+
+        # Send code request
+        await client.send_code_request(account.phone)
+        print("\n" + "=" * 60)
+        print("A verification code has been sent to your Telegram app.")
+        print("Please check your Telegram and enter the code below.")
+        print("=" * 60)
+
+        # Get code from user
+        code = input("Enter verification code: ").strip()
+
+        try:
+            # Sign in with code
+            await client.sign_in(account.phone, code)
+            logger.info("Authentication successful!")
+
+        except Exception as e:
+            # If code is wrong or 2FA is enabled
+            if "Two-steps verification" in str(e) or "password" in str(e).lower():
+                print("\n" + "=" * 60)
+                print("Two-factor authentication is enabled on your account.")
+                print("=" * 60)
+                password = input("Enter your 2FA password: ").strip()
+                await client.sign_in(password=password)
+                logger.info("Authentication successful with 2FA!")
+            else:
+                raise
+    else:
+        logger.info("Already authorized!")
+
+    # Confirm WHICH account answered, without naming it. The session path
+    # below cannot do this: SESSION_NAME defaults to "telegram_backup" in
+    # config.py, docker-compose.yml and .env.example alike, so it is the
+    # same string for every user — and even when it is customised it names
+    # the destination slot the operator chose, not the identity Telegram
+    # returned. Comparing the two is what actually answers "did I
+    # authenticate the account I meant to?", and it answers it for the
+    # `Already authorized!` branch above, where a stale session file from a
+    # different account would otherwise pass in silence. The result is a
+    # boolean, so nothing identifying reaches the log.
+    me = await client.get_me()
+    # get_me() returns None on an unauthorized session rather than raising,
+    # so read through it defensively: a session that died between the check
+    # above and here must not crash with an AttributeError.
+    account_matches_configured_phone = _same_phone_number(getattr(me, "phone", None), account.phone)
+    logger.info("=" * 60)
+    logger.info("Authentication verified!")
+    logger.info(f"Authenticated account matches {phone_var}: {account_matches_configured_phone}")
+    if not account_matches_configured_phone:
+        # Fail closed. Reporting the mismatch and returning success anyway
+        # would let main() announce a completed setup while the session
+        # belongs to another account — the daemons check authorization but
+        # never identity, so nothing downstream would catch it either.
+        logger.error(
+            f"The authorized session does not belong to {phone_var}. "
+            "Delete the session file and re-run this setup, or correct "
+            f"{phone_var} if the number is written in a different form."
+        )
+        await client.disconnect()
+        return False
+    logger.info("=" * 60)
+    logger.info(f"Session saved to: {account.session_path}")
+    logger.info("You can now use this session with Docker or the scheduler.")
+    logger.info("=" * 60)
+
+    await client.disconnect()
+
+    return True
+
+
 async def setup_authentication():
-    """Interactive authentication setup."""
+    """Interactive authentication setup, walking every configured account.
+
+    A single (zero-config) account keeps the exact pre-8.0 flow. With indexed
+    accounts each is authorized in turn — already-authorized sessions need no
+    interaction — and a failure stops the walk so the operator can fix that
+    account and re-run (finished accounts then skip straight through).
+    """
     try:
         # Load configuration
         from .config import Config, setup_logging
@@ -76,98 +187,22 @@ async def setup_authentication():
         logger.info("=" * 60)
         logger.info("Telegram Authentication Setup")
         logger.info("=" * 60)
-        # The phone number is deliberately not echoed. This flow looks
-        # interactive, but it emits through setup_logging -> basicConfig ->
-        # stderr, and where that stream ends up is the OPERATOR's choice, not
-        # ours: docker-compose.yml declares no logging driver, so under
-        # journald, syslog, gelf, fluentd or a Loki plugin every line is shipped
-        # off-box the moment it is written and outlives the --rm container that
-        # produced it. That is the argument; "docker logs captures it" is not,
-        # since `docker compose exec` output never reaches docker logs at all
-        # and --rm deletes the json-file log on exit.
-        logger.info(f"Session will be saved to: {config.session_path}")
-        logger.info("=" * 60)
 
-        # Create Telegram client
-        client = TelegramClient(
-            config.session_path,
-            config.api_id,
-            config.api_hash,
-            **config.get_telegram_client_kwargs(),
-        )
-
-        # Connect and authenticate
-        logger.info("Connecting to Telegram...")
-        await client.connect()
-
-        if not await client.is_user_authorized():
-            logger.info("Not authorized yet. Starting authentication process...")
-
-            # Send code request
-            await client.send_code_request(config.phone)
-            print("\n" + "=" * 60)
-            print("A verification code has been sent to your Telegram app.")
-            print("Please check your Telegram and enter the code below.")
-            print("=" * 60)
-
-            # Get code from user
-            code = input("Enter verification code: ").strip()
-
-            try:
-                # Sign in with code
-                await client.sign_in(config.phone, code)
-                logger.info("Authentication successful!")
-
-            except Exception as e:
-                # If code is wrong or 2FA is enabled
-                if "Two-steps verification" in str(e) or "password" in str(e).lower():
-                    print("\n" + "=" * 60)
-                    print("Two-factor authentication is enabled on your account.")
-                    print("=" * 60)
-                    password = input("Enter your 2FA password: ").strip()
-                    await client.sign_in(password=password)
-                    logger.info("Authentication successful with 2FA!")
-                else:
-                    raise
-        else:
-            logger.info("Already authorized!")
-
-        # Confirm WHICH account answered, without naming it. The session path
-        # below cannot do this: SESSION_NAME defaults to "telegram_backup" in
-        # config.py, docker-compose.yml and .env.example alike, so it is the
-        # same string for every user — and even when it is customised it names
-        # the destination slot the operator chose, not the identity Telegram
-        # returned. Comparing the two is what actually answers "did I
-        # authenticate the account I meant to?", and it answers it for the
-        # `Already authorized!` branch above, where a stale session file from a
-        # different account would otherwise pass in silence. The result is a
-        # boolean, so nothing identifying reaches the log.
-        me = await client.get_me()
-        # get_me() returns None on an unauthorized session rather than raising,
-        # so read through it defensively: a session that died between the check
-        # above and here must not crash with an AttributeError.
-        account_matches_configured_phone = _same_phone_number(getattr(me, "phone", None), config.phone)
-        logger.info("=" * 60)
-        logger.info("Authentication verified!")
-        logger.info(f"Authenticated account matches TELEGRAM_PHONE: {account_matches_configured_phone}")
-        if not account_matches_configured_phone:
-            # Fail closed. Reporting the mismatch and returning success anyway
-            # would let main() announce a completed setup while the session
-            # belongs to another account — the daemons check authorization but
-            # never identity, so nothing downstream would catch it either.
-            logger.error(
-                "The authorized session does not belong to TELEGRAM_PHONE. "
-                "Delete the session file and re-run this setup, or correct "
-                "TELEGRAM_PHONE if the number is written in a different form."
-            )
-            await client.disconnect()
-            return False
-        logger.info("=" * 60)
-        logger.info(f"Session saved to: {config.session_path}")
-        logger.info("You can now use this session with Docker or the scheduler.")
-        logger.info("=" * 60)
-
-        await client.disconnect()
+        multi = len(config.accounts) > 1
+        for account in config.accounts:
+            if multi:
+                # Index only: the label and phone stay out of the log (#272).
+                logger.info(f"--- Account {account.index} ---")
+            # Name the variable the expected phone number came from.
+            # ``_indexed_accounts`` is Config's own flag for "TG_ACCOUNT_* is
+            # in effect"; it is read here only to pick the right NAME — the
+            # credentials themselves always come from the account entry.
+            if config._indexed_accounts:
+                phone_var = f"TG_ACCOUNT_{account.index}_PHONE_NUMBER"
+            else:
+                phone_var = "TELEGRAM_PHONE"
+            if not await _authorize_account(config, account, phone_var):
+                return False
 
         return True
 

@@ -14,6 +14,24 @@ from src import connection
 from src.connection import TelegramConnection
 
 
+def _wire_default_account(config):
+    """Mirror Config on a MagicMock: ``accounts[0]`` carries the credentials.
+
+    v8.0.0: TelegramConnection reads the session path and API credentials from
+    its AccountConfig (defaulting to ``config.accounts[0]``), never from the
+    legacy config attributes — a real Config always provides that list.
+    """
+    account = MagicMock()
+    account.index = 1
+    account.label = "default"
+    account.session_path = config.session_path
+    account.api_id = config.api_id
+    account.api_hash = config.api_hash
+    account.phone = config.phone
+    config.accounts = [account]
+    return config
+
+
 def test_get_int_env_falls_back_for_invalid_value():
     """Malformed flood-wait env values fall back instead of crashing imports."""
     with patch.dict(os.environ, {"MAX_FLOOD_RETRIES": "not-an-int"}):
@@ -263,6 +281,7 @@ async def test_connect_creates_client_and_authenticates():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_client = AsyncMock()
@@ -312,6 +331,7 @@ async def test_connect_restores_golden_backup_when_session_has_no_auth():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_client = AsyncMock()
@@ -355,6 +375,7 @@ async def test_connect_creates_snapshot_before_connecting():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_client = AsyncMock()
@@ -383,6 +404,7 @@ async def test_connect_raises_when_not_authorized():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_client = AsyncMock()
@@ -426,6 +448,7 @@ async def test_connect_restores_from_backup_on_auth_failure():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_client = AsyncMock()
@@ -463,6 +486,7 @@ async def test_connect_flushes_wal_on_success():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_session_conn = MagicMock()
@@ -496,6 +520,7 @@ async def test_connect_wal_flush_exception_is_suppressed():
         config.api_id = 12345
         config.api_hash = "abcdef"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
 
         mock_session_conn = MagicMock()
