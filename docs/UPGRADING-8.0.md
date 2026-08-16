@@ -178,6 +178,14 @@ change at all: with no indexed account declared, account 1 is built from the
 and it adopts the session you already logged in with. Your archive and your login
 both carry over — there is no re-authentication.
 
+One case deserves its own page before you declare anything: if the second
+account already has its own archive — two single-account installs becoming one
+— do not add it as a fresh account. [Merging two archives into
+one](MERGING-ARCHIVES.md) carries its deleted-message history, edit versions,
+downloaded media and sync cursors across, so its first sweep here is
+incremental instead of a years-long re-capture that can never recover what
+Telegram has since deleted.
+
 To add a second account, declare them by index instead:
 
 ```yaml
