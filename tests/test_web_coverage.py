@@ -1932,6 +1932,11 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub.allowed_chat_ids = None  # Master user, no restriction
         mock_sub.allowed_accounts = None
         mock_sub.allowed_chat_refs = None
+        # No owner recorded: these tests pin the ENTITLEMENT filter, and a row
+        # from before ownership existed is left to the grant columns. The
+        # owner-liveness backstop has its own coverage against a real database
+        # in tests/test_revocation_closes_channels.py.
+        mock_sub.username = None
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -1960,6 +1965,7 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub1.allowed_chat_ids = "[]"  # rollback tombstone, never read as a grant
         mock_sub1.allowed_accounts = None
         mock_sub1.allowed_chat_refs = json.dumps(["pushRefAllowed000042A", "pushRefAllowed000043A"])
+        mock_sub1.username = None  # entitlement filter only; see the note above
 
         mock_sub2 = MagicMock()
         mock_sub2.endpoint = "https://push.example.com/denied"
@@ -1968,6 +1974,7 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub2.allowed_chat_ids = "[]"
         mock_sub2.allowed_accounts = None
         mock_sub2.allowed_chat_refs = json.dumps(["pushRefOther000000100"])
+        mock_sub2.username = None  # entitlement filter only; see the note above
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -1996,6 +2003,7 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub.allowed_chat_ids = None
         mock_sub.allowed_accounts = None
         mock_sub.allowed_chat_refs = None
+        mock_sub.username = None  # entitlement filter only; see the note above
 
         mock_session = AsyncMock()
         mock_result = MagicMock()

@@ -1336,3 +1336,67 @@ def test_every_chat_scoped_url_interpolation_is_encoded() -> None:
         for m in re.finditer(r"/api/chats/\$\{(?!encodeURIComponent\()", html)
     ]
     assert violations == [], f"unencoded chat-scoped interpolations: {violations}"
+
+
+# --------------------------------------------------------------------------------------
+# Logging out left this browser's push channel armed and re-arming
+# --------------------------------------------------------------------------------------
+
+
+def test_logout_drops_this_browsers_push_channel_before_the_session_dies() -> None:
+    """Logout must revoke the browser's half of the push channel, in that order.
+
+    ``unsubscribeFromPush`` POSTs to ``/api/push/unsubscribe``, which is
+    session-authenticated -- so it has to run BEFORE the logout request kills
+    the cookie, or it silently 401s. Clearing ``push_enabled`` is the other
+    half: the service-worker bootstrap re-subscribes on the next load whenever
+    that key is still ``'true'`` and permission is granted, so leaving it
+    behind re-arms the channel for whoever logs in next on this browser.
+
+    The server purge in ``/api/logout`` is the guarantee; this is hygiene.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const isAuthenticated = ref(true);
+const userRole = ref('viewer');
+const currentUsername = ref('someone');
+const showAdminPanel = ref(true);
+const calls = [];
+const store = { push_enabled: 'true' };
+const localStorage = {
+    getItem: key => (key in store ? store[key] : null),
+    setItem: (key, value) => { store[key] = String(value); },
+    removeItem: key => { delete store[key]; },
+};
+const unsubscribeFromPush = async () => { calls.push('unsubscribeFromPush'); };
+const fetch = async (url) => { calls.push(`fetch:${url}`); return { ok: true }; };
+""",
+            _extract_const_arrow_function(html, "performLogout", asynchronous=True),
+            """
+(async () => {
+    await performLogout();
+
+    const unsubscribedAt = calls.indexOf('unsubscribeFromPush');
+    const loggedOutAt = calls.indexOf('fetch:/api/logout');
+    assert.ok(unsubscribedAt >= 0, 'logout never unsubscribed this browser from push');
+    assert.ok(loggedOutAt >= 0, 'logout no longer posts /api/logout');
+    assert.ok(unsubscribedAt < loggedOutAt,
+        'the push unsubscribe ran after the cookie was gone, so it could only 401');
+    assert.equal(store.push_enabled, undefined,
+        'push_enabled survived logout, so the next load re-subscribes this browser');
+    assert.equal(isAuthenticated.value, false, 'logout no longer clears the session state');
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
