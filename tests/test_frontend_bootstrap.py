@@ -1413,7 +1413,7 @@ def test_audio_queue_pages_the_media_endpoint_with_a_capped_cursor_walk():
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     fetch_body = _setup_slice(html, "const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') =>")
-    assert "`/api/chats/${chatRef}/media?${params}`" in fetch_body
+    assert "`/api/chats/${encodeURIComponent(chatRef)}/media?${params}`" in fetch_body
     assert "types: audioQueueTypes(kind)," in fetch_body
     assert "limit: String(AUDIO_QUEUE_PAGE_SIZE)," in fetch_body
     # One cursor shape, two directions: before_id walks older, after_id newer.

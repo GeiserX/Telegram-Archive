@@ -2841,7 +2841,7 @@
                     topics.value = []
                     topicsError.value = ''
                     try {
-                        const res = await fetch(`/api/chats/${chatRef}/topics`, { credentials: 'include' })
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/topics`, { credentials: 'include' })
                         if (requestSeq !== topicsRequestSeq) return
                         if (res.ok) {
                             const data = await res.json()
@@ -3885,7 +3885,7 @@
                         })
                         if (lastItem) params.set('before_id', lastItem.id)
 
-                        const res = await fetch(`/api/chats/${requestChatRef}/media?${params}`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(requestChatRef)}/media?${params}`, {
                             credentials: 'include'
                         })
                         if (!stillCurrent()) return
@@ -3917,7 +3917,7 @@
                     // previous chat's numbers.
                     const requestChatRef = selectedChat.value.ref
                     try {
-                        const res = await fetch(`/api/chats/${requestChatRef}/media/counts`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(requestChatRef)}/media/counts`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
@@ -4026,7 +4026,7 @@
                         const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
                         // before_id is an exclusive bound, so +1 keeps the target itself as the
                         // newest row of the history half of the window.
-                        const res = await fetch(`/api/chats/${selectedChat.value.ref}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
                             credentials: 'include'
                         })
                         if (!isCurrentIntent()) return
@@ -4043,7 +4043,7 @@
                         let afterRows = []
                         let afterFetchComplete = false
                         try {
-                            const afterRes = await fetch(`/api/chats/${selectedChat.value.ref}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
+                            const afterRes = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
                                 credentials: 'include'
                             })
                             if (!isCurrentIntent()) return
@@ -4301,7 +4301,7 @@
                 // Load all pinned messages for a chat
                 const loadPinnedMessages = async (chatRef) => {
                     try {
-                        const res = await fetch(`/api/chats/${chatRef}/pinned`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/pinned`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
@@ -4355,7 +4355,7 @@
 
                 const loadChatStats = async (chatRef) => {
                     try {
-                        const res = await fetch(`/api/chats/${chatRef}/stats`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/stats`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
@@ -5371,7 +5371,7 @@
                     clearMessageVersionsRecord(messageVersionsErrors, key)
 
                     try {
-                        const res = await fetch(`/api/chats/${chatRef}/messages/${msg.id}/versions?limit=100`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/messages/${encodeURIComponent(msg.id)}/versions?limit=100`, {
                             credentials: 'include'
                         })
                         if (!res.ok) {
@@ -5990,7 +5990,7 @@
                     audioQueueAbort?.abort()
                     const controller = new AbortController()
                     audioQueueAbort = controller
-                    const res = await fetch(`/api/chats/${chatRef}/media?${params}`, {
+                    const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/media?${params}`, {
                         credentials: 'include',
                         signal: controller.signal
                     })
@@ -6948,7 +6948,7 @@
                     try {
                         let res
                         if (adminEditingId.value) {
-                            res = await fetch(`/api/admin/viewers/${adminEditingId.value}`, {
+                            res = await fetch(`/api/admin/viewers/${encodeURIComponent(adminEditingId.value)}`, {
                                 method: 'PUT', credentials: 'include',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(body)
@@ -6985,7 +6985,7 @@
                 const deleteViewer = async (viewer) => {
                     if (!confirm(`Delete viewer "${viewer.username}"?`)) return
                     try {
-                        await fetch(`/api/admin/viewers/${viewer.id}`, {
+                        await fetch(`/api/admin/viewers/${encodeURIComponent(viewer.id)}`, {
                             method: 'DELETE', credentials: 'include'
                         })
                         await loadAdminViewers()
@@ -7046,7 +7046,7 @@
                 const revokeToken = async (token) => {
                     if (!confirm(`Revoke token "${token.label || token.id}"?`)) return
                     try {
-                        await fetch(`/api/admin/tokens/${token.id}`, {
+                        await fetch(`/api/admin/tokens/${encodeURIComponent(token.id)}`, {
                             method: 'PUT', credentials: 'include',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ is_revoked: true })
@@ -7058,7 +7058,7 @@
                 const deleteToken = async (token) => {
                     if (!confirm(`Permanently delete token "${token.label || token.id}"?`)) return
                     try {
-                        await fetch(`/api/admin/tokens/${token.id}`, {
+                        await fetch(`/api/admin/tokens/${encodeURIComponent(token.id)}`, {
                             method: 'DELETE', credentials: 'include'
                         })
                         await loadAdminTokens()

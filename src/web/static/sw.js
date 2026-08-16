@@ -103,9 +103,9 @@ self.addEventListener('notificationclick', (event) => {
     if (data.url) {
         url = data.url;
     } else if (data.chat_ref) {
-        url = `/?chat=${data.chat_ref}`;
+        url = `/?chat=${encodeURIComponent(data.chat_ref)}`;
         if (data.message_id) {
-            url += `&msg=${data.message_id}`;
+            url += `&msg=${encodeURIComponent(data.message_id)}`;
         }
     }
     

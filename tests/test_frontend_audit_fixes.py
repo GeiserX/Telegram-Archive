@@ -1274,3 +1274,50 @@ const console = { error: () => {} };
     )
 
     _run_node(script)
+
+
+def test_interpolated_fetch_paths_encode_their_segments() -> None:
+    """A ref-shaped value can never smuggle a path separator into a fetch URL.
+
+    Every chat-scoped URL builder wraps its interpolated segments in
+    encodeURIComponent, so even a hostile deep-link value like ``../admin``
+    reaches the server as one opaque path segment (``..%2Fadmin``) instead of
+    stepping the request onto another route (CodeQL js/request-forgery).
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const selectedChat = ref({ id: 111, ref: '../admin' });
+const messageVersionsByMessage = ref({});
+const messageVersionsErrors = ref({});
+const messageVersionsRequestSeq = ref({});
+const messageVersionsLoading = ref({});
+const isAuthenticated = ref(true);
+const console = { error: () => {} };
+const urls = [];
+const fetch = async (url) => { urls.push(url); return { ok: false, status: 500, json: async () => ({}) }; };
+const messageVersionsKey = msg => String(msg.id);
+const setMessageVersionsRecord = (store, key, value) => { store.value = { ...store.value, [key]: value }; };
+const clearMessageVersionsRecord = (store, key) => { const next = { ...store.value }; delete next[key]; store.value = next; };
+""",
+            _extract_const_arrow_function(html, "loadMessageVersions", asynchronous=True),
+            """
+(async () => {
+    await loadMessageVersions({ id: 7 });
+    assert.equal(urls.length, 1, 'expected exactly one request');
+    assert.ok(urls[0].includes('..%2Fadmin'), `separator not encoded: ${urls[0]}`);
+    assert.ok(!/\\/\\.\\.\\//.test(urls[0]), `raw dot-dot segment survived: ${urls[0]}`);
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
