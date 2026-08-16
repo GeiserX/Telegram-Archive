@@ -104,7 +104,7 @@ const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
 const hasMoreNewer = ref(true);
-const selectedChat = ref({ id: 77 });
+const selectedChat = ref({ id: 77, ref: '77' });
 const isAuthenticated = ref(true);
 const viewingPinnedWindow = ref(true);
 const loadNewerSentinel = ref({});
@@ -187,7 +187,7 @@ const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
 const hasMoreNewer = ref(true);
-const selectedChat = ref({ id: 88 });
+const selectedChat = ref({ id: 88, ref: '88' });
 const isAuthenticated = ref(true);
 const viewingPinnedWindow = ref(true);
 const loadNewerSentinel = ref({});
@@ -257,7 +257,7 @@ def test_jump_to_date_cancellation_and_latest_intent_win() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 99 });
+const selectedChat = ref({ id: 99, ref: '99' });
 const selectedDate = ref('2026-01-10');
 const calendarAvailableDates = ref(new Set(['2026-01-10', '2026-01-11', '2026-01-12']));
 const viewerTimezone = ref('Europe/Madrid');

@@ -49,11 +49,21 @@ def _skip_unless_push(cls_or_fn):
 
 
 def _mock_db():
-    """Create a mock database adapter with common methods."""
+    """Create a mock database adapter with common methods.
+
+    get_chat_by_ref echoes the requested ref back as an existing chat (id=1,
+    account 1) so ref-addressed routes resolve by default; tests that need an
+    unknown ref or a specific chat identity override it.
+    """
     db = AsyncMock()
     db.get_all_chats = AsyncMock(return_value=[])
     db.get_chat_count = AsyncMock(return_value=0)
     db.get_chat_by_id = AsyncMock(return_value=None)
+    db.get_chat_by_ref = AsyncMock(
+        side_effect=lambda ref, **kwargs: {"id": 1, "account_id": 1, "ref": ref, "type": "group"}
+    )
+    db.get_media_by_id = AsyncMock(return_value=None)
+    db.get_message_sender_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_pinned_messages = AsyncMock(return_value=[])
     db.get_all_folders = AsyncMock(return_value=[])
@@ -137,6 +147,8 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
         web_main._chat_stats_cache.clear()
+        web_main._broadcast_chat_cache.clear()
+        web_main._sender_lookup_cache.clear()
 
     def tearDown(self):
         if not _WEB_AVAILABLE:
@@ -153,6 +165,8 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache_time = self._saved_avatar_cache_time
         web_main._chat_stats_cache.clear()
         web_main._chat_stats_cache.update(self._saved_chat_stats_cache)
+        web_main._broadcast_chat_cache.clear()
+        web_main._sender_lookup_cache.clear()
         web_main._media_root = self._saved_media_root
         web_main.realtime_listener = self._saved_realtime
 
@@ -305,30 +319,38 @@ class TestServiceWorkerEndpoint(_WebTestBase):
 
 @_skip_unless_web
 class TestServeMedia(_WebTestBase):
-    """Test /media/{path} endpoint."""
+    """Test /media/{chat_ref}/{media_key} endpoint (row-mediated since v8.0)."""
 
     async def test_media_404_when_no_media_root(self):
         """serve_media returns 404 when media directory not configured."""
         web_main._media_root = None
         async with self._client() as client:
-            resp = await client.get("/media/test.jpg")
+            resp = await client.get("/media/someChatRef000000042A/5_photo")
         self.assertEqual(resp.status_code, 404)
 
-    async def test_media_rejects_absolute_path(self):
-        """serve_media returns 403 for absolute path prefix in route."""
+    async def test_media_rejects_poisoned_row_path(self):
+        """A media row whose file_path traverses out of the media root serves nothing.
+
+        The URL can no longer carry a path, so the traversal surface left is the
+        DB row itself; a row that cannot be proven inside the root answers the
+        same 404 as a missing file (tested directly against the handler).
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            # The path traversal check tests ".." in split("/") or startswith("/")
-            # We test the function directly since httpx normalizes URLs
+            self.mock_db.get_media_by_id = AsyncMock(
+                return_value={"id": "1_5_photo", "file_path": "../etc/passwd", "file_name": "passwd"}
+            )
             from fastapi import HTTPException
 
+            chat = web_main.ChatContext(account_id=1, chat_id=1, ref="poisonedRowRef0000001A", type="group")
             with self.assertRaises(HTTPException) as ctx:
                 await web_main.serve_media(
-                    path="../etc/passwd",
+                    media_key="5_photo",
                     download=0,
+                    chat=chat,
                     user=web_main.UserContext(username="anon", role="master"),
                 )
-            self.assertEqual(ctx.exception.status_code, 403)
+            self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_media_rejects_no_download_with_download_flag(self):
         """serve_media returns 403 when user has no_download and download=1."""
@@ -338,91 +360,92 @@ class TestServeMedia(_WebTestBase):
             token = "nd-token"
             web_main._sessions[token] = web_main.SessionData(username="viewer1", role="viewer", no_download=True)
             async with self._client() as client:
-                resp = await client.get("/media/test.jpg?download=1", cookies={"viewer_auth": token})
+                resp = await client.get(
+                    "/media/someChatRef000000042A/5_photo?download=1", cookies={"viewer_auth": token}
+                )
             self.assertEqual(resp.status_code, 403)
 
     async def test_media_serves_existing_file(self):
-        """serve_media returns FileResponse for existing file."""
+        """serve_media resolves the media row's file_path and serves the bytes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             media_root = web_main.Path(tmpdir).resolve()
             web_main._media_root = media_root
-            # Create file inside a subfolder to ensure path has segments
-            sub_dir = os.path.join(tmpdir, "files")
-            os.makedirs(sub_dir)
-            test_file = os.path.join(sub_dir, "test.txt")
-            with open(test_file, "w") as f:
-                f.write("content")
-            async with self._client() as client:
-                resp = await client.get("/media/files/test.txt")
-            self.assertEqual(resp.status_code, 200)
-
-    async def test_media_404_for_nonexistent_file(self):
-        """serve_media returns 404 for files that don't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            web_main._media_root = web_main.Path(tmpdir)
-            async with self._client() as client:
-                resp = await client.get("/media/nonexistent.jpg")
-            # Path doesn't resolve, so 404
-            self.assertIn(resp.status_code, (403, 404))
-
-    async def test_media_restricts_by_chat_id(self):
-        """serve_media enforces chat-level access for restricted users."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            web_main._media_root = web_main.Path(tmpdir)
-            # Create media file under chat folder
             chat_dir = os.path.join(tmpdir, "123")
             os.makedirs(chat_dir)
-            with open(os.path.join(chat_dir, "photo.jpg"), "w") as f:
-                f.write("img")
+            test_file = os.path.join(chat_dir, "test.txt")
+            with open(test_file, "w") as f:
+                f.write("content")
+            self.mock_db.get_chat_by_ref = AsyncMock(
+                return_value={"id": 123, "account_id": 1, "ref": "servesFileRef000123AB", "type": "group"}
+            )
+            self.mock_db.get_media_by_id = AsyncMock(
+                return_value={"id": "123_5_document", "file_path": "123/test.txt", "file_name": "test.txt"}
+            )
+            async with self._client() as client:
+                resp = await client.get("/media/servesFileRef000123AB/5_document")
+            self.assertEqual(resp.status_code, 200)
+            # The storage key is reconstructed from the resolved chat, not the URL
+            self.mock_db.get_media_by_id.assert_awaited_once_with("123_5_document", account_id=1)
 
+    async def test_media_404_for_nonexistent_file(self):
+        """serve_media returns 404 when the row's file is gone from disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            self.mock_db.get_media_by_id = AsyncMock(
+                return_value={"id": "1_5_photo", "file_path": "1/gone.jpg", "file_name": "gone.jpg"}
+            )
+            async with self._client() as client:
+                resp = await client.get("/media/someChatRef000000042A/5_photo")
+            self.assertEqual(resp.status_code, 404)
+
+    async def test_media_restricts_by_chat_ref(self):
+        """serve_media denies a chat outside the session's ref grant — with the
+        SAME 404 an unknown ref gets (no forbidden-vs-nonexistent oracle)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
             web_main.AUTH_ENABLED = True
             token = "restricted-media"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={999})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000999"}
+            )
             async with self._client() as client:
-                resp = await client.get("/media/123/photo.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
-
-    async def test_media_acl_enforced_on_resolved_path_not_url(self):
-        """ACL bypass prevention: user requests positive folder, file resolves to
-        a negative folder the user does NOT have access to — must deny."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            media_root = web_main.Path(tmpdir).resolve()
-            web_main._media_root = media_root
-            # File lives under negative folder -999 (the actual chat folder on disk)
-            denied_dir = os.path.join(tmpdir, "-999")
-            os.makedirs(denied_dir)
-            with open(os.path.join(denied_dir, "secret.jpg"), "w") as f:
-                f.write("secret")
-
-            web_main.AUTH_ENABLED = True
-            token = "acl-bypass-test"
-            # User only has access to chat 555, NOT -999
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={555})
-            # Request via positive folder "999" — legacy fallback resolves to "-999"
-            async with self._client() as client:
-                resp = await client.get("/media/999/secret.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+                resp = await client.get("/media/forbiddenRef000000123/5_photo", cookies={"viewer_auth": token})
+                unknown = await client.get("/media/unknownRef00000000xyz/5_photo", cookies={"viewer_auth": token})
+                self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
+                missing = await client.get("/media/unknownRef00000000xyz/5_photo", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual((resp.status_code, resp.text), (missing.status_code, missing.text))
+            self.assertEqual((unknown.status_code, unknown.text), (missing.status_code, missing.text))
 
     async def test_media_acl_allows_resolved_path_when_authorized(self):
-        """User with access to the resolved negative chat can access via positive folder."""
+        """The pre-v4.0.5 legacy folder fallback still resolves THROUGH the row:
+        a row recorded with the positive folder serves from the negative one."""
         with tempfile.TemporaryDirectory() as tmpdir:
             media_root = web_main.Path(tmpdir).resolve()
             web_main._media_root = media_root
-            denied_dir = os.path.join(tmpdir, "-999")
-            os.makedirs(denied_dir)
-            with open(os.path.join(denied_dir, "photo.jpg"), "w") as f:
+            on_disk_dir = os.path.join(tmpdir, "-999")
+            os.makedirs(on_disk_dir)
+            with open(os.path.join(on_disk_dir, "photo.jpg"), "w") as f:
                 f.write("img")
 
             web_main.AUTH_ENABLED = True
             token = "acl-allow-test"
-            # User has access to -999 (the resolved folder)
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={-999})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"legacyFolderRef0099AB"}
+            )
+            self.mock_db.get_chat_by_ref = AsyncMock(
+                return_value={"id": -999, "account_id": 1, "ref": "legacyFolderRef0099AB", "type": "group"}
+            )
+            self.mock_db.get_media_by_id = AsyncMock(
+                return_value={"id": "-999_5_photo", "file_path": "999/photo.jpg", "file_name": "photo.jpg"}
+            )
             async with self._client() as client:
-                resp = await client.get("/media/999/photo.jpg", cookies={"viewer_auth": token})
+                resp = await client.get("/media/legacyFolderRef0099AB/5_photo", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 200)
 
     async def test_media_rejects_shared_folder_for_restricted_user(self):
-        """Restricted users cannot fetch deduplicated _shared files directly."""
+        """Direct addressing of _shared dedup files is gone: the first segment is
+        a chat ref now, and '_shared' resolves to no chat."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
             shared_dir = os.path.join(tmpdir, "_shared")
@@ -432,10 +455,13 @@ class TestServeMedia(_WebTestBase):
 
             web_main.AUTH_ENABLED = True
             token = "restricted-shared"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={123})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000123"}
+            )
+            self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
             async with self._client() as client:
                 resp = await client.get("/media/_shared/secret.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
 
     async def test_media_rejects_original_file_for_no_download_user(self):
         """no_download users cannot fetch original media bytes by omitting download=1."""
@@ -449,43 +475,34 @@ class TestServeMedia(_WebTestBase):
             web_main.AUTH_ENABLED = True
             token = "no-download-original"
             web_main._sessions[token] = web_main.SessionData(
-                username="v1", role="viewer", allowed_chat_ids={123}, no_download=True
+                username="v1", role="viewer", allowed_chat_refs={"noDownloadRef00000123"}, no_download=True
             )
             async with self._client() as client:
-                resp = await client.get("/media/123/photo.jpg", cookies={"viewer_auth": token})
+                resp = await client.get("/media/noDownloadRef00000123/5_photo", cookies={"viewer_auth": token})
             self.assertEqual(resp.status_code, 403)
 
     async def test_media_avatar_access_check(self):
-        """serve_media enforces chat-level access for avatar paths."""
+        """/media/avatar/{chat_ref} denies a chat outside the grant with the uniform 404."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            avatar_dir = os.path.join(tmpdir, "avatars", "chats")
-            os.makedirs(avatar_dir)
-            with open(os.path.join(avatar_dir, "456_789.jpg"), "w") as f:
-                f.write("avatar")
-
             web_main.AUTH_ENABLED = True
             token = "av-restricted"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000100"}
+            )
             async with self._client() as client:
-                resp = await client.get("/media/avatars/chats/456_789.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+                resp = await client.get("/media/avatar/forbiddenRef000000456", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 404)
 
-    async def test_media_avatar_invalid_chat_id_format(self):
-        """serve_media returns 403 for avatar with non-numeric filename."""
+    async def test_sender_avatar_404_when_message_has_no_sender(self):
+        """/media/avatar/{chat_ref}/{message_id} answers 404 when the message
+        resolves to no sender (service message, unknown id)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            avatar_dir = os.path.join(tmpdir, "avatars", "users")
-            os.makedirs(avatar_dir)
-            with open(os.path.join(avatar_dir, "badname.jpg"), "w") as f:
-                f.write("avatar")
-
-            web_main.AUTH_ENABLED = True
-            token = "av-bad"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+            self.mock_db.get_message_sender_id = AsyncMock(return_value=None)
             async with self._client() as client:
-                resp = await client.get("/media/avatars/users/badname.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+                resp = await client.get("/media/avatar/someChatRef000000100A/77")
+            self.assertEqual(resp.status_code, 404)
 
 
 # ============================================================================
@@ -495,36 +512,46 @@ class TestServeMedia(_WebTestBase):
 
 @_skip_unless_web
 class TestServeThumbnail(_WebTestBase):
-    """Test /media/thumb/{size}/{folder}/{filename} endpoint."""
+    """Test /media/thumb/{size}/{chat_ref}/{media_key} endpoint."""
+
+    def _media_row(self):
+        return {"id": "1_5_photo", "file_path": "123/photo.jpg", "file_name": "photo.jpg"}
 
     async def test_thumbnail_404_when_no_media_root(self):
         """serve_thumbnail returns 404 when media directory not configured."""
         web_main._media_root = None
         async with self._client() as client:
-            resp = await client.get("/media/thumb/200/123/photo.jpg")
+            resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
         self.assertEqual(resp.status_code, 404)
 
-    async def test_thumbnail_restricts_by_chat_id(self):
-        """serve_thumbnail enforces chat-level access for restricted users."""
+    async def test_thumbnail_restricts_by_chat_ref(self):
+        """serve_thumbnail denies a chat outside the ref grant with the uniform 404."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
             web_main.AUTH_ENABLED = True
             token = "th-restrict"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={999})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000999"}
+            )
             async with self._client() as client:
-                resp = await client.get("/media/thumb/200/123/photo.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+                resp = await client.get(
+                    "/media/thumb/200/forbiddenRef000000123/5_photo", cookies={"viewer_auth": token}
+                )
+            self.assertEqual(resp.status_code, 404)
 
     async def test_thumbnail_rejects_shared_folder_for_restricted_user(self):
-        """Restricted users cannot request thumbnails for non-chat media folders."""
+        """'_shared' is not a chat ref: direct thumbnail addressing of dedup files is gone."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
             web_main.AUTH_ENABLED = True
             token = "th-shared"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={123})
+            web_main._sessions[token] = web_main.SessionData(
+                username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000123"}
+            )
+            self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
             async with self._client() as client:
                 resp = await client.get("/media/thumb/200/_shared/secret.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
 
     async def test_thumbnail_rejects_no_download_for_media_bytes(self):
         """no_download users cannot fetch derived thumbnail bytes for media."""
@@ -533,47 +560,41 @@ class TestServeThumbnail(_WebTestBase):
             web_main.AUTH_ENABLED = True
             token = "th-no-download"
             web_main._sessions[token] = web_main.SessionData(
-                username="v1", role="viewer", allowed_chat_ids={123}, no_download=True
+                username="v1", role="viewer", allowed_chat_refs={"noDownloadRef00000123"}, no_download=True
             )
             async with self._client() as client:
-                resp = await client.get("/media/thumb/200/123/photo.jpg", cookies={"viewer_auth": token})
-            self.assertEqual(resp.status_code, 403)
-
-    async def test_thumbnail_avatar_access_check(self):
-        """serve_thumbnail enforces access for avatar thumbnails."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            web_main._media_root = web_main.Path(tmpdir)
-            web_main.AUTH_ENABLED = True
-            token = "th-av"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
-            async with self._client() as client:
                 resp = await client.get(
-                    "/media/thumb/100/avatars/chats/456_789.jpg",
-                    cookies={"viewer_auth": token},
+                    "/media/thumb/200/noDownloadRef00000123/5_photo", cookies={"viewer_auth": token}
                 )
             self.assertEqual(resp.status_code, 403)
 
-    async def test_thumbnail_avatar_invalid_format(self):
-        """serve_thumbnail returns 403 for avatar with invalid chat ID format."""
+    async def test_thumbnail_legacy_avatar_url_404s_at_routing(self):
+        """The old path-addressed avatar thumbnail shape no longer matches any route."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            web_main.AUTH_ENABLED = True
-            token = "th-bad"
-            web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
             async with self._client() as client:
-                resp = await client.get(
-                    "/media/thumb/100/avatars/users/badname.jpg",
-                    cookies={"viewer_auth": token},
-                )
-            self.assertEqual(resp.status_code, 403)
+                resp = await client.get("/media/thumb/100/avatars/chats/456_789.jpg")
+            self.assertEqual(resp.status_code, 404)
+
+    async def test_thumbnail_404_when_row_path_has_no_folder(self):
+        """A media row whose file_path has no folder segment cannot be thumbnailed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            web_main._media_root = web_main.Path(tmpdir)
+            self.mock_db.get_media_by_id = AsyncMock(
+                return_value={"id": "1_5_photo", "file_path": "bare.jpg", "file_name": "bare.jpg"}
+            )
+            async with self._client() as client:
+                resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
+            self.assertEqual(resp.status_code, 404)
 
     async def test_thumbnail_returns_404_when_not_generated(self):
         """serve_thumbnail returns 404 when thumbnail generation returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
+            self.mock_db.get_media_by_id = AsyncMock(return_value=self._media_row())
             with patch("src.web.thumbnails.ensure_thumbnail", new_callable=AsyncMock, return_value=None):
                 async with self._client() as client:
-                    resp = await client.get("/media/thumb/200/123/photo.jpg")
+                    resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
             self.assertEqual(resp.status_code, 404)
 
     async def test_thumbnail_serves_generated_file(self):
@@ -583,15 +604,20 @@ class TestServeThumbnail(_WebTestBase):
             thumb_file = os.path.join(tmpdir, "thumb.webp")
             with open(thumb_file, "wb") as f:
                 f.write(b"\x00" * 10)
+            self.mock_db.get_media_by_id = AsyncMock(return_value=self._media_row())
             with patch(
                 "src.web.thumbnails.ensure_thumbnail",
                 new_callable=AsyncMock,
                 return_value=(web_main.Path(thumb_file), "123"),
-            ):
+            ) as mock_ensure:
                 async with self._client() as client:
-                    resp = await client.get("/media/thumb/200/123/photo.jpg")
+                    resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("image/webp", resp.headers.get("content-type", ""))
+            # The folder/filename handed to ensure_thumbnail come from the media
+            # row's file_path, never from the URL.
+            call_args = mock_ensure.call_args[0]
+            self.assertEqual((call_args[2], call_args[3]), ("123", "photo.jpg"))
 
 
 # ============================================================================
@@ -865,7 +891,7 @@ class TestTokenAuthEdgeCases(_WebTestBase):
 
 @_skip_unless_web
 class TestExportEndpoint(_WebTestBase):
-    """Test /api/chats/{chat_id}/export endpoint."""
+    """Test /api/chats/{chat_ref}/export endpoint."""
 
     async def test_export_returns_403_for_no_download_user(self):
         """export_chat returns 403 when user has no_download restriction."""
@@ -873,30 +899,36 @@ class TestExportEndpoint(_WebTestBase):
         token = "nd-export"
         web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", no_download=True)
         async with self._client() as client:
-            resp = await client.get("/api/chats/1/export", cookies={"viewer_auth": token})
+            resp = await client.get("/api/chats/someChatRef000000001A/export", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 403)
 
-    async def test_export_returns_403_for_restricted_chat(self):
-        """export_chat returns 403 when user cannot access the chat."""
+    async def test_export_returns_404_for_restricted_chat(self):
+        """export_chat answers a forbidden ref with the SAME 404 as an unknown one."""
         web_main.AUTH_ENABLED = True
         token = "restricted-export"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000100"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/export", cookies={"viewer_auth": token})
-        self.assertEqual(resp.status_code, 403)
+            resp = await client.get("/api/chats/forbiddenRef000000999/export", cookies={"viewer_auth": token})
+        self.assertEqual(resp.status_code, 404)
 
     async def test_export_returns_404_when_chat_not_found(self):
-        """export_chat returns 404 when chat doesn't exist."""
-        self.mock_db.get_chat_by_id = AsyncMock(return_value=None)
+        """export_chat returns 404 when the ref resolves to no chat."""
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/export")
+            resp = await client.get("/api/chats/unknownRef00000000999/export")
         self.assertEqual(resp.status_code, 404)
 
     async def test_export_streams_json_successfully(self):
-        """export_chat streams JSON for a valid chat."""
+        """export_chat streams JSON for a valid chat; the chat object gains the ref."""
+        self.mock_db.get_chat_by_ref = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "exportChatRef00042AB", "type": "private"}
+        )
         self.mock_db.get_chat_by_id = AsyncMock(
             return_value={
                 "id": 42,
+                "ref": "exportChatRef00042AB",
                 "type": "private",
                 "title": "Test Chat",
                 "username": "testchat",
@@ -905,24 +937,24 @@ class TestExportEndpoint(_WebTestBase):
             }
         )
 
-        async def fake_versions(chat_id):
+        async def fake_versions(chat_id, account_id=None):
             yield {"message_id": 2, "chat_id": 42, "text": "old", "date": "2025-01-01"}
 
         self.mock_db.iter_message_versions_for_export = fake_versions
 
-        async def fake_export(chat_id):
+        async def fake_export(chat_id, account_id=None):
             yield {"id": 1, "text": "hello", "date": "2025-01-01"}
             yield {"id": 2, "text": "world", "date": "2025-01-02"}
 
         self.mock_db.get_messages_for_export = fake_export
 
         async with self._client() as client:
-            resp = await client.get("/api/chats/42/export")
+            resp = await client.get("/api/chats/exportChatRef00042AB/export")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.text)
         self.assertEqual(
             data["chat"],
-            {"id": 42, "type": "private", "title": "Test Chat", "username": "testchat"},
+            {"id": 42, "ref": "exportChatRef00042AB", "type": "private", "title": "Test Chat", "username": "testchat"},
         )
         self.assertNotIn("phone", data["chat"])
         self.assertNotIn("description", data["chat"])
@@ -932,10 +964,10 @@ class TestExportEndpoint(_WebTestBase):
         self.assertEqual(data["message_versions"][0]["text"], "old")
 
     async def test_export_handles_db_error(self):
-        """export_chat returns 500 on db error."""
+        """export_chat returns 500 on db error inside the handler."""
         self.mock_db.get_chat_by_id = AsyncMock(side_effect=RuntimeError("db error"))
         async with self._client() as client:
-            resp = await client.get("/api/chats/1/export")
+            resp = await client.get("/api/chats/someChatRef000000001A/export")
         self.assertEqual(resp.status_code, 500)
 
 
@@ -968,13 +1000,13 @@ class TestAdminViewerUpdateEdgeCases(_MasterTestBase):
             resp = await client.put("/api/admin/viewers/1", json={"password": "short"})
         self.assertEqual(resp.status_code, 400)
 
-    async def test_update_viewer_allowed_chat_ids_null(self):
-        """update_viewer sets allowed_chat_ids to None."""
+    async def test_update_viewer_allowed_chat_refs_null(self):
+        """update_viewer accepts allowed_chat_refs: null (unrestricted)."""
         self.mock_db.get_viewer_account = AsyncMock(return_value={"id": 1, "username": "v1"})
         async with self._client() as client:
             resp = await client.put(
                 "/api/admin/viewers/1",
-                json={"allowed_chat_ids": None},
+                json={"allowed_chat_refs": None},
             )
         self.assertEqual(resp.status_code, 200)
 
@@ -1039,7 +1071,7 @@ class TestAdminTokenEdgeCases(_MasterTestBase):
             resp = await client.post(
                 "/api/admin/tokens",
                 json={
-                    "allowed_chat_ids": [1, 2],
+                    "allowed_chat_refs": ["tokenRefA0000000001AB", "tokenRefB0000000002AB"],
                     "expires_at": "2030-01-01T00:00:00Z",
                 },
             )
@@ -1052,7 +1084,7 @@ class TestAdminTokenEdgeCases(_MasterTestBase):
         async with self._client() as client:
             resp = await client.post(
                 "/api/admin/tokens",
-                json={"allowed_chat_ids": [1], "expires_at": "not-a-date"},
+                json={"allowed_chat_refs": ["tokenRefA0000000001AB"], "expires_at": "not-a-date"},
             )
         self.assertEqual(resp.status_code, 400)
 
@@ -1125,7 +1157,7 @@ class TestAdminTokenEdgeCases(_MasterTestBase):
         async with self._client() as client:
             resp = await client.post(
                 "/api/admin/tokens",
-                json={"allowed_chat_ids": [1], "no_download": True, "label": "nd"},
+                json={"allowed_chat_refs": ["tokenRefA0000000001AB"], "no_download": True, "label": "nd"},
             )
         self.assertEqual(resp.status_code, 200)
 
@@ -1205,11 +1237,32 @@ class TestPushEndpointEdgeCases(_WebTestBase):
                 )
         self.assertEqual(resp.status_code, 500)
 
-    async def test_subscribe_with_chat_id_restricted(self):
-        """push_subscribe returns 403 when user can't access the chat."""
+    async def test_subscribe_with_chat_ref_restricted(self):
+        """push_subscribe answers a forbidden chat_ref with the uniform 404."""
         web_main.AUTH_ENABLED = True
         token = "push-restrict"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000100"}
+        )
+        mock_pm = MagicMock()
+        mock_pm.is_enabled = True
+        web_main.push_manager = mock_pm
+        with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            async with self._client() as client:
+                resp = await client.post(
+                    "/api/push/subscribe",
+                    json={
+                        "endpoint": "https://push.example.com/sub",
+                        "keys": {"p256dh": "k", "auth": "a"},
+                        "chat_ref": "forbiddenRef000000999",
+                    },
+                    cookies={"viewer_auth": token},
+                )
+        self.assertEqual(resp.status_code, 404)
+
+    async def test_subscribe_rejects_legacy_chat_id_field(self):
+        """A 7.x chat_id in the body is refused: silently dropping the scoping
+        request would store a GLOBAL subscription (a widening)."""
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         web_main.push_manager = mock_pm
@@ -1222,9 +1275,9 @@ class TestPushEndpointEdgeCases(_WebTestBase):
                         "keys": {"p256dh": "k", "auth": "a"},
                         "chat_id": 999,
                     },
-                    cookies={"viewer_auth": token},
                 )
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("chat_ref", resp.json()["detail"])
 
     async def test_subscribe_db_connection_error(self):
         """push_subscribe returns 503 on DB connection error."""
@@ -1407,9 +1460,17 @@ class TestCreateSessionWithDb(_WebTestBase):
 
     async def test_creates_session_with_db_persistence(self):
         """_create_session persists session to DB when db is available."""
-        token = await web_main._create_session("admin", "master", allowed_chat_ids={1, 2})
+        token = await web_main._create_session(
+            "admin", "master", allowed_chat_refs={"sessionRefA000000001A", "sessionRefB000000002A"}
+        )
         self.assertIn(token, web_main._sessions)
         self.mock_db.save_session.assert_awaited_once()
+        save_kwargs = self.mock_db.save_session.call_args.kwargs
+        self.assertEqual(
+            json.loads(save_kwargs["allowed_chat_refs"]), ["sessionRefA000000001A", "sessionRefB000000002A"]
+        )
+        # Rollback tombstone: a restricted 8.0 session denies under a 7.x binary too.
+        self.assertEqual(save_kwargs["allowed_chat_ids"], "[]")
 
     async def test_handles_db_save_failure(self):
         """_create_session succeeds even when DB save fails."""
@@ -1642,7 +1703,9 @@ class TestRealtimeNotificationPushNoSender(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=1)
         web_main.push_manager = mock_pm
-        self.mock_db.get_chat_by_id = AsyncMock(return_value=None)
+        self.mock_db.get_chat_by_id = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "pushChatRef0000042AB", "title": None}
+        )
         self.mock_db.get_user_by_id = AsyncMock(return_value=None)
 
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
@@ -1657,6 +1720,7 @@ class TestRealtimeNotificationPushNoSender(_WebTestBase):
         mock_pm.notify_new_message.assert_awaited_once()
         call_kwargs = mock_pm.notify_new_message.call_args.kwargs
         self.assertEqual(call_kwargs["sender_name"], "")
+        self.assertEqual(call_kwargs["chat_ref"], "pushChatRef0000042AB")
 
     async def test_push_with_no_sender_id(self):
         """Push notification works when message has no sender_id."""
@@ -1664,7 +1728,9 @@ class TestRealtimeNotificationPushNoSender(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=1)
         web_main.push_manager = mock_pm
-        self.mock_db.get_chat_by_id = AsyncMock(return_value={"title": "Chat"})
+        self.mock_db.get_chat_by_id = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "pushChatRef0000042AB", "title": "Chat"}
+        )
 
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
             await web_main.handle_realtime_notification(
@@ -1679,15 +1745,16 @@ class TestRealtimeNotificationPushNoSender(_WebTestBase):
         call_kwargs = mock_pm.notify_new_message.call_args.kwargs
         self.assertEqual(call_kwargs["sender_name"], "")
 
-    async def test_push_with_no_db(self):
-        """Push notification handles missing db gracefully."""
+    async def test_push_with_no_db_drops_the_event(self):
+        """Without a db the chat id cannot be resolved to its ref, so v8.0 drops
+        the event entirely rather than emit an id-addressed frame or push."""
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=0)
         web_main.push_manager = mock_pm
         web_main.db = None
 
-        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
             await web_main.handle_realtime_notification(
                 {
                     "type": "new_message",
@@ -1696,7 +1763,8 @@ class TestRealtimeNotificationPushNoSender(_WebTestBase):
                 }
             )
 
-        mock_pm.notify_new_message.assert_awaited_once()
+        mock_bc.assert_not_awaited()
+        mock_pm.notify_new_message.assert_not_awaited()
 
 
 # ============================================================================
@@ -1741,12 +1809,16 @@ class TestPushSubscribe(unittest.IsolatedAsyncioTestCase):
             chat_id=42,
             user_agent="TestBrowser",
             username="testuser",
-            allowed_chat_ids=[1, 2, 3],
+            allowed_chat_refs=["subRefA0000000000001A", "subRefB0000000000002A"],
         )
 
         self.assertTrue(result)
         mock_session.add.assert_called_once()
         mock_session.commit.assert_awaited_once()
+        stored = mock_session.add.call_args[0][0]
+        self.assertEqual(json.loads(stored.allowed_chat_refs), ["subRefA0000000000001A", "subRefB0000000000002A"])
+        # Restricted subscriber → legacy column holds the deny-all tombstone.
+        self.assertEqual(stored.allowed_chat_ids, "[]")
 
     async def test_subscribe_updates_existing_subscription(self):
         """subscribe updates existing subscription when endpoint found."""
@@ -1858,6 +1930,8 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub.p256dh = "key1"
         mock_sub.auth = "auth1"
         mock_sub.allowed_chat_ids = None  # Master user, no restriction
+        mock_sub.allowed_accounts = None
+        mock_sub.allowed_chat_refs = None
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -1876,20 +1950,24 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["endpoint"], "https://push.example.com/sub1")
 
     async def test_get_subscriptions_filters_by_allowed_chats(self):
-        """get_subscriptions filters out subs where user can't see the chat."""
+        """get_subscriptions filters out subs whose ref grant excludes the chat."""
         mgr = _make_push_manager()
 
         mock_sub1 = MagicMock()
         mock_sub1.endpoint = "https://push.example.com/allowed"
         mock_sub1.p256dh = "k1"
         mock_sub1.auth = "a1"
-        mock_sub1.allowed_chat_ids = json.dumps([42, 43])
+        mock_sub1.allowed_chat_ids = "[]"  # rollback tombstone, never read as a grant
+        mock_sub1.allowed_accounts = None
+        mock_sub1.allowed_chat_refs = json.dumps(["pushRefAllowed000042A", "pushRefAllowed000043A"])
 
         mock_sub2 = MagicMock()
         mock_sub2.endpoint = "https://push.example.com/denied"
         mock_sub2.p256dh = "k2"
         mock_sub2.auth = "a2"
-        mock_sub2.allowed_chat_ids = json.dumps([100, 200])
+        mock_sub2.allowed_chat_ids = "[]"
+        mock_sub2.allowed_accounts = None
+        mock_sub2.allowed_chat_refs = json.dumps(["pushRefOther000000100"])
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -1903,12 +1981,12 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
         mgr.db.db_manager.async_session_factory.return_value = mock_ctx
 
-        result = await mgr.get_subscriptions(chat_id=42)
+        result = await mgr.get_subscriptions(chat_id=42, account_id=1, chat_ref="pushRefAllowed000042A")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["endpoint"], "https://push.example.com/allowed")
 
     async def test_get_subscriptions_without_chat_id(self):
-        """get_subscriptions returns all subscriptions when no chat_id."""
+        """get_subscriptions returns unrestricted subscriptions when no chat context."""
         mgr = _make_push_manager()
 
         mock_sub = MagicMock()
@@ -1916,6 +1994,8 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         mock_sub.p256dh = "k"
         mock_sub.auth = "a"
         mock_sub.allowed_chat_ids = None
+        mock_sub.allowed_accounts = None
+        mock_sub.allowed_chat_refs = None
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -1945,14 +2025,17 @@ class TestPushGetSubscriptions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
 
     async def test_get_subscriptions_handles_corrupted_json(self):
-        """get_subscriptions skips subs with corrupted allowed_chat_ids."""
+        """get_subscriptions skips subs with a corrupted allowed_chat_refs grant
+        (unparseable → the empty grant → receives nothing, fail-closed)."""
         mgr = _make_push_manager()
 
         mock_sub = MagicMock()
         mock_sub.endpoint = "https://push.example.com/bad"
         mock_sub.p256dh = "k"
         mock_sub.auth = "a"
-        mock_sub.allowed_chat_ids = "not valid json {"
+        mock_sub.allowed_chat_ids = None
+        mock_sub.allowed_accounts = None
+        mock_sub.allowed_chat_refs = "not valid json {"
 
         mock_session = AsyncMock()
         mock_result = MagicMock()

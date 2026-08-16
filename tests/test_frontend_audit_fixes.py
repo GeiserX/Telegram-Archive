@@ -190,7 +190,7 @@ def test_media_gallery_tab_switch_supersedes_the_in_flight_page() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 7 });
+const selectedChat = ref({ id: 7, ref: 'ref-chat-7' });
 const mediaGalleryTab = ref('photos');
 const mediaGalleryItems = ref([]);
 const mediaGalleryLoading = ref(false);
@@ -259,7 +259,8 @@ def test_media_gallery_response_that_outlived_its_chat_is_discarded() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 111 });
+// Chats are URL-addressed by their opaque ref; the id is payload data only.
+const selectedChat = ref({ id: 111, ref: 'ref-chat-111' });
 const mediaGalleryTab = ref('photos');
 const mediaGalleryItems = ref([]);
 const mediaGalleryLoading = ref(false);
@@ -282,9 +283,9 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
     loadMediaGallery();
     await flush();
-    assert.ok(requests[0].url.startsWith('/api/chats/111/media?'), requests[0].url);
+    assert.ok(requests[0].url.startsWith('/api/chats/ref-chat-111/media?'), requests[0].url);
 
-    selectedChat.value = { id: 222 };
+    selectedChat.value = { id: 222, ref: 'ref-chat-222' };
     requests[0].settle({ ok: true, json: async () => ({ items: [{ id: 'from-111' }], has_more: true }) });
     await flush();
     assert.deepEqual(mediaGalleryItems.value, [], "chat 111's media landed in chat 222");
@@ -320,8 +321,9 @@ def test_notification_deep_link_resolves_a_chat_outside_the_loaded_page() -> Non
             """
 const ref = value => ({ value });
 // The sidebar page: 50 non-archived chats, none of them the notification's target.
-const chats = ref(Array.from({ length: 50 }, (_, index) => ({ id: 1000 + index, title: 'chat' })));
-const archived = { id: -1009999, title: 'archived chat', is_archived: true };
+// Notifications address chats by their opaque ref (chat ids stay out of URLs).
+const chats = ref(Array.from({ length: 50 }, (_, index) => ({ id: 1000 + index, ref: `ref${1000 + index}`, title: 'chat' })));
+const archived = { id: -1009999, ref: 'archivedTargetRef', title: 'archived chat', is_archived: true };
 const opened = [];
 const scrolled = [];
 const toasts = [];
@@ -340,7 +342,7 @@ const fetch = async url => {
             _extract_const_arrow_function(html, "openNotificationTarget", asynchronous=True),
             """
 (async () => {
-    const wasOpened = await openNotificationTarget(-1009999, 4242);
+    const wasOpened = await openNotificationTarget('archivedTargetRef', 4242);
     assert.equal(wasOpened, true, 'the deep link silently failed');
     assert.deepEqual(opened, [-1009999]);
     assert.deepEqual(scrolled, [4242]);
@@ -352,12 +354,12 @@ const fetch = async url => {
 
     // A chat in the loaded page needs no request at all.
     requested.length = 0;
-    assert.equal(await openNotificationTarget(1003, null), true);
+    assert.equal(await openNotificationTarget('ref1003', null), true);
     assert.deepEqual(requested, []);
     assert.deepEqual(scrolled, [4242]);
 
     // Genuinely unresolvable: say so instead of doing nothing.
-    const missing = await openNotificationTarget(-1, 7);
+    const missing = await openNotificationTarget('noSuchRefAnywhere', 7);
     assert.equal(missing, false);
     assert.equal(toasts.length, 1, 'a failed deep link stayed silent');
     assert.deepEqual(opened, [-1009999, 1003]);
@@ -376,10 +378,10 @@ def test_failed_deep_link_keeps_the_url_so_a_refresh_retries() -> None:
     """The URL is scrubbed only once the chat actually opened."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    start = html.index("const chatIdParam = urlParams.get('chat')")
+    start = html.index("const chatRefParam = urlParams.get('chat')")
     block = html[start : html.index("window.history.replaceState({}, '', '/')", start) + 80]
 
-    assert "const opened = await openNotificationTarget(chatId, msgId)" in block
+    assert "const opened = await openNotificationTarget(chatRefParam, msgId)" in block
     assert "if (opened) {" in block
     assert block.index("if (opened) {") < block.index("window.history.replaceState({}, '', '/')")
 
@@ -398,7 +400,7 @@ def test_notification_click_listener_is_not_gated_on_an_active_controller() -> N
     listener_body = _without_comments(html[listener_start : html.index("finishInitialization()", listener_start)])
     assert "if ('serviceWorker' in navigator) {" in listener_body
     assert "navigator.serviceWorker.controller" not in listener_body
-    assert "await openNotificationTarget(chat_id, message_id)" in listener_body
+    assert "await openNotificationTarget(chat_ref, message_id)" in listener_body
 
 
 # --------------------------------------------------------------------------------------
@@ -708,7 +710,7 @@ def test_notification_click_during_startup_is_parked_and_replayed_once() -> None
 let pendingNotificationClick = null;
 let notificationClickReady = false;
 const opened = [];
-const openNotificationTarget = async (chatId, messageId) => { opened.push([chatId, messageId]); return true; };
+const openNotificationTarget = async (chatRef, messageId) => { opened.push([chatRef, messageId]); return true; };
 const console = { log: () => {} };
 """,
             _extract_const_arrow_function(html, "flushPendingNotificationClick", asynchronous=True),
@@ -716,7 +718,8 @@ const console = { log: () => {} };
             """
 (async () => {
     // Before initialization is done: the click is parked, not acted on and not lost.
-    await onServiceWorkerMessage({ data: { type: 'NOTIFICATION_CLICK', data: { chat_id: -100123, message_id: 55 } } });
+    // Push payloads carry the chat's opaque ref — never a chat id.
+    await onServiceWorkerMessage({ data: { type: 'NOTIFICATION_CLICK', data: { chat_ref: 'parkedRef', message_id: 55 } } });
     assert.deepEqual(opened, [], 'acted on a click before the app could open a chat');
 
     // Non-clicks and payloads without a chat must not park anything.
@@ -726,13 +729,13 @@ const console = { log: () => {} };
 
     // Initialization finishes: the parked click replays exactly once.
     await flushPendingNotificationClick();
-    assert.deepEqual(opened, [[-100123, 55]], 'the parked click was dropped');
+    assert.deepEqual(opened, [['parkedRef', 55]], 'the parked click was dropped');
     await flushPendingNotificationClick();
-    assert.deepEqual(opened, [[-100123, 55]], 'the parked click replayed twice');
+    assert.deepEqual(opened, [['parkedRef', 55]], 'the parked click replayed twice');
 
     // From now on clicks are handled directly.
-    await onServiceWorkerMessage({ data: { type: 'NOTIFICATION_CLICK', data: { chat_id: 7 } } });
-    assert.deepEqual(opened, [[-100123, 55], [7, undefined]]);
+    await onServiceWorkerMessage({ data: { type: 'NOTIFICATION_CLICK', data: { chat_ref: 'directRef' } } });
+    assert.deepEqual(opened, [['parkedRef', 55], ['directRef', undefined]]);
 })().catch(error => {
     process.stderr.write(`${error.stack}\\n`);
     process.exitCode = 1;
@@ -1086,7 +1089,8 @@ def test_chat_stats_response_that_outlived_its_chat_is_discarded() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 111 });
+// Loaders address and guard by the chat's opaque ref, not its id.
+const selectedChat = ref({ ref: 'ref-111' });
 const chatStats = ref(null);
 const console = { error: () => {} };
 """,
@@ -1094,15 +1098,15 @@ const console = { error: () => {} };
             _extract_const_arrow_function(html, "loadChatStats", asynchronous=True),
             """
 (async () => {
-    loadChatStats(111);
+    loadChatStats('ref-111');
     await flush();
-    assert.ok(requests[0].url.startsWith('/api/chats/111/stats'), requests[0].url);
+    assert.ok(requests[0].url.startsWith('/api/chats/ref-111/stats'), requests[0].url);
 
     // The user switches chats while chat 111's stats are still in flight
     // (selectChat resets the panel and issues the new chat's request).
-    selectedChat.value = { id: 222 };
+    selectedChat.value = { ref: 'ref-222' };
     chatStats.value = null;
-    loadChatStats(222);
+    loadChatStats('ref-222');
     await flush();
 
     respond(1, { message_count: 5 });
@@ -1116,11 +1120,11 @@ const console = { error: () => {} };
         "chat 111's stats landed in chat 222's header");
 
     // A stale network error must not blank the header either.
-    loadChatStats(222);
+    loadChatStats('ref-222');
     await flush();
-    selectedChat.value = { id: 333 };
+    selectedChat.value = { ref: 'ref-333' };
     chatStats.value = null;
-    loadChatStats(333);
+    loadChatStats('ref-333');
     await flush();
     respond(3, { message_count: 7 });
     await flush();
@@ -1130,18 +1134,18 @@ const console = { error: () => {} };
         "chat 222's network error blanked chat 333's header");
 
     // The CURRENT chat's failure still clears: the guard must not pin stale numbers.
-    loadChatStats(333);
+    loadChatStats('ref-333');
     await flush();
     fail(4);
     await flush();
     assert.equal(chatStats.value, null, 'a live network error no longer clears the header');
 
     // A stale HTTP failure must not blank the header either.
-    loadChatStats(333);
+    loadChatStats('ref-333');
     await flush();
-    selectedChat.value = { id: 444 };
+    selectedChat.value = { ref: 'ref-444' };
     chatStats.value = null;
-    loadChatStats(444);
+    loadChatStats('ref-444');
     await flush();
     respond(6, { message_count: 9 });
     await flush();
@@ -1153,7 +1157,7 @@ const console = { error: () => {} };
     // A CURRENT chat's non-ok response leaves the header as it was: unlike the
     // pinned banner, loadChatStats has no else-branch write — only a network
     // error clears the header.
-    loadChatStats(444);
+    loadChatStats('ref-444');
     await flush();
     respondError(7, 500);
     await flush();
@@ -1186,7 +1190,8 @@ def test_pinned_messages_response_that_outlived_its_chat_is_discarded() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 111 });
+// Loaders address and guard by the chat's opaque ref, not its id.
+const selectedChat = ref({ ref: 'ref-111' });
 const pinnedMessages = ref([]);
 const currentPinnedIndex = ref(0);
 const console = { error: () => {} };
@@ -1195,15 +1200,15 @@ const console = { error: () => {} };
             _extract_const_arrow_function(html, "loadPinnedMessages", asynchronous=True),
             """
 (async () => {
-    loadPinnedMessages(111);
+    loadPinnedMessages('ref-111');
     await flush();
-    assert.ok(requests[0].url.startsWith('/api/chats/111/pinned'), requests[0].url);
+    assert.ok(requests[0].url.startsWith('/api/chats/ref-111/pinned'), requests[0].url);
 
     // Chat switch while 111's request is in flight (selectChat's resets).
-    selectedChat.value = { id: 222 };
+    selectedChat.value = { ref: 'ref-222' };
     pinnedMessages.value = [];
     currentPinnedIndex.value = 0;
-    loadPinnedMessages(222);
+    loadPinnedMessages('ref-222');
     await flush();
 
     respond(1, [{ id: 'pin-222-newest' }, { id: 'pin-222-older' }]);
@@ -1219,12 +1224,12 @@ const console = { error: () => {} };
     assert.equal(currentPinnedIndex.value, 1, 'a stale response reset the banner cycle');
 
     // A stale HTTP failure must not wipe the current chat's banner.
-    loadPinnedMessages(222);
+    loadPinnedMessages('ref-222');
     await flush();
-    selectedChat.value = { id: 333 };
+    selectedChat.value = { ref: 'ref-333' };
     pinnedMessages.value = [];
     currentPinnedIndex.value = 0;
-    loadPinnedMessages(333);
+    loadPinnedMessages('ref-333');
     await flush();
     respond(3, [{ id: 'pin-333' }]);
     await flush();
@@ -1234,11 +1239,11 @@ const console = { error: () => {} };
         "chat 222's failed request wiped chat 333's banner");
 
     // A stale network error must not wipe it either.
-    loadPinnedMessages(333);
+    loadPinnedMessages('ref-333');
     await flush();
-    selectedChat.value = { id: 444 };
+    selectedChat.value = { ref: 'ref-444' };
     pinnedMessages.value = [];
-    loadPinnedMessages(444);
+    loadPinnedMessages('ref-444');
     await flush();
     respond(5, [{ id: 'pin-444' }]);
     await flush();
@@ -1248,14 +1253,14 @@ const console = { error: () => {} };
         "chat 333's network error wiped chat 444's banner");
 
     // The CURRENT chat's failures still clear: the guard must not pin a stale banner.
-    loadPinnedMessages(444);
+    loadPinnedMessages('ref-444');
     await flush();
     respondError(6, 500);
     await flush();
     assert.deepEqual(pinnedMessages.value, [], 'a live failed reload no longer clears the banner');
 
     pinnedMessages.value = [{ id: 'left-behind' }];
-    loadPinnedMessages(444);
+    loadPinnedMessages('ref-444');
     await flush();
     fail(7);
     await flush();

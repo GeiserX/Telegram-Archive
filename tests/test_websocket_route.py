@@ -36,6 +36,7 @@ pytestmark = pytest.mark.skipif(not _WS_AVAILABLE, reason="fastapi/starlette Tes
 def _make_mock_db():
     db = AsyncMock()
     db.get_all_chats = AsyncMock(return_value=[])
+    db.get_chat_by_ref = AsyncMock(return_value=None)
     db.get_session = AsyncMock(return_value=None)
     db.delete_session = AsyncMock()
     return db
@@ -119,23 +120,29 @@ class TestWebSocketSubscribeFlow:
         token = "ws-subscribe-session"
         mod._sessions[token] = mod.SessionData(username="admin", role="master", created_at=time.time())
         client.cookies.set("viewer_auth", token)
+        ref = "wsRoundTripRef00000042"
+        mod.db.get_chat_by_ref = AsyncMock(return_value={"id": 42, "account_id": 1, "ref": ref, "type": "group"})
 
         with client.websocket_connect("/ws/updates") as ws:
-            ws.send_json({"action": "subscribe", "chat_id": 42})
-            assert ws.receive_json() == {"type": "subscribed", "chat_id": 42}
+            ws.send_json({"action": "subscribe", "chat_ref": ref})
+            assert ws.receive_json() == {"type": "subscribed", "chat_ref": ref}
 
-            ws.send_json({"action": "unsubscribe", "chat_id": 42})
-            assert ws.receive_json() == {"type": "unsubscribed", "chat_id": 42}
+            ws.send_json({"action": "unsubscribe", "chat_ref": ref})
+            assert ws.receive_json() == {"type": "unsubscribed", "chat_ref": ref}
 
-    def test_subscribe_denied_for_chat_outside_allowed_ids(self, auth_env):
-        """A viewer session restricted to specific chats gets subscribe_denied for others."""
+    def test_subscribe_denied_for_chat_outside_allowed_refs(self, auth_env):
+        """A viewer session restricted to specific chat refs gets subscribe_denied for others."""
         client, mod = _get_client()
         token = "ws-restricted-viewer"
         mod._sessions[token] = mod.SessionData(
-            username="v1", role="viewer", allowed_chat_ids={1, 2}, created_at=time.time()
+            username="v1", role="viewer", allowed_chat_refs={"grantedRefAAAABBBB0001"}, created_at=time.time()
         )
         client.cookies.set("viewer_auth", token)
+        forbidden_ref = "forbiddenRefAAAABB0999"
+        mod.db.get_chat_by_ref = AsyncMock(
+            return_value={"id": 999, "account_id": 1, "ref": forbidden_ref, "type": "group"}
+        )
 
         with client.websocket_connect("/ws/updates") as ws:
-            ws.send_json({"action": "subscribe", "chat_id": 999})
-            assert ws.receive_json() == {"type": "subscribe_denied", "chat_id": 999}
+            ws.send_json({"action": "subscribe", "chat_ref": forbidden_ref})
+            assert ws.receive_json() == {"type": "subscribe_denied", "chat_ref": forbidden_ref}

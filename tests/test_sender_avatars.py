@@ -178,7 +178,9 @@ class TestAvatarFillContrast(unittest.TestCase):
 
 
 class TestSenderAvatarUrl(unittest.TestCase):
-    """US-211: per-message sender_avatar_url resolved from on-disk files."""
+    """US-211 as reshaped by v8.0: per-message sender_avatar_url points at
+    /media/avatar/{chat_ref}/{message_id} — present only when the sender's
+    avatar file is already on disk, and carrying no user id in the URL."""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -186,6 +188,7 @@ class TestSenderAvatarUrl(unittest.TestCase):
         web_main.config.media_path = self.temp_dir.name
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
+        self.chat = web_main.ChatContext(account_id=1, chat_id=-1001, ref="senderAvatarRef001AB", type="group")
 
     def tearDown(self):
         web_main.config.media_path = self.original_media_path
@@ -198,124 +201,84 @@ class TestSenderAvatarUrl(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as avatar_file:
             avatar_file.write("x")
 
+    def _attached(self, message: dict) -> dict:
+        web_main._attach_message_payload_urls([message], self.chat)
+        return message
+
     def test_present_when_file_globs(self):
         user_id = 555000111
         avatars_dir = os.path.join(self.temp_dir.name, "avatars", "users")
         self._touch_avatar(os.path.join(avatars_dir, f"{user_id}_42.jpg"))
 
-        self.assertEqual(
-            web_main._sender_avatar_url(user_id),
-            f"/media/avatars/users/{user_id}_42.jpg",
-        )
+        message = self._attached({"id": 7, "sender_id": user_id})
+        self.assertEqual(message["sender_avatar_url"], "/media/avatar/senderAvatarRef001AB/7")
+        # The proof of the phase: neither the user id nor a filename in the URL.
+        self.assertNotIn(str(user_id), message["sender_avatar_url"])
 
     def test_null_when_absent(self):
-        self.assertIsNone(web_main._sender_avatar_url(999888777))
+        message = self._attached({"id": 7, "sender_id": 999888777})
+        self.assertIsNone(message["sender_avatar_url"])
 
     def test_null_for_missing_or_non_user_sender(self):
-        self.assertIsNone(web_main._sender_avatar_url(None))
+        self.assertIsNone(self._attached({"id": 7, "sender_id": None})["sender_avatar_url"])
         # Negative ids are channels/groups, never a users/ avatar.
-        self.assertIsNone(web_main._sender_avatar_url(-1001234))
+        self.assertIsNone(self._attached({"id": 7, "sender_id": -1001234})["sender_avatar_url"])
 
 
-class TestMemberAvatarAcl(unittest.TestCase):
-    """US-211: ACL fix — member avatars for visible members are served."""
+class TestSenderResolution(unittest.TestCase):
+    """US-211's successor: the membership probe is gone. Entitlement to the chat
+    is the membership proof, and the sender is resolved from the MESSAGE row
+    (_message_sender_id), so no arbitrary user id can be probed at all."""
 
     def setUp(self):
-        web_main._avatar_member_cache.clear()
-        web_main._avatar_member_cache_time = None
+        web_main._sender_lookup_cache.clear()
+        self.chat = web_main.ChatContext(account_id=1, chat_id=-1001, ref="senderLookupRef001AB", type="group")
 
     def tearDown(self):
-        web_main._avatar_member_cache.clear()
-        web_main._avatar_member_cache_time = None
+        web_main._sender_lookup_cache.clear()
 
-    def _viewer(self):
-        return web_main.UserContext(username="viewer", role="viewer", allowed_chat_ids={-1001})
-
-    def test_user_avatar_allowed_when_member_ok(self):
-        """A user who spoke in a visible chat: served (no raise)."""
-        user = self._viewer()
-        web_main._enforce_media_acl("avatars/users/555_9.jpg", user, member_ok=True)
-
-    def test_user_avatar_blocked_when_not_member(self):
-        """A user not in any visible chat: 403."""
-        user = self._viewer()
-        with self.assertRaises(web_main.HTTPException) as ctx:
-            web_main._enforce_media_acl("avatars/users/555_9.jpg", user, member_ok=False)
-        self.assertEqual(ctx.exception.status_code, 403)
-
-    def test_chat_avatar_behavior_unchanged(self):
-        """avatars/chats/ still gates purely on the allowed chat id."""
-        user = self._viewer()
-        # Allowed chat id in the filename -> served.
-        web_main._enforce_media_acl("avatars/chats/-1001_7.jpg", user)
-        # Different chat id -> blocked, regardless of member_ok.
-        with self.assertRaises(web_main.HTTPException) as ctx:
-            web_main._enforce_media_acl("avatars/chats/-1009_7.jpg", user, member_ok=True)
-        self.assertEqual(ctx.exception.status_code, 403)
-
-    def test_one_to_one_contact_avatar_allowed_without_probe(self):
-        """A user whose id is itself a visible (private) chat is served directly."""
-        user = web_main.UserContext(username="v", role="viewer", allowed_chat_ids={555})
-        web_main._enforce_media_acl("avatars/users/555_9.jpg", user, member_ok=False)
-
-    def test_membership_probe_only_hits_db_for_user_avatars(self):
-        """_avatar_user_visible_member queries membership only for avatars/users/."""
-        user = self._viewer()
-        probe = AsyncMock(return_value=True)
+    def _with_db(self, lookup):
         original_db = web_main.db
-        web_main.db = type("D", (), {"sender_has_message_in_chats": staticmethod(probe)})()
+        web_main.db = type("D", (), {"get_message_sender_id": staticmethod(lookup)})()
+        return original_db
+
+    def test_sender_resolved_from_the_message_row(self):
+        """The db lookup receives the resolved chat's identity, never URL input."""
+        lookup = AsyncMock(return_value=555)
+        original_db = self._with_db(lookup)
         try:
-            # User avatar for a non-1:1 user -> DB probe decides.
-            allowed = asyncio.run(web_main._avatar_user_visible_member("avatars/users/555_9.jpg", user))
-            self.assertTrue(allowed)
-            probe.assert_awaited_once()
-
-            # Chat avatar -> never probes the DB.
-            probe.reset_mock()
-            self.assertFalse(asyncio.run(web_main._avatar_user_visible_member("avatars/chats/-1001_9.jpg", user)))
-            probe.assert_not_awaited()
-
-            # Regular media -> never probes the DB.
-            self.assertFalse(asyncio.run(web_main._avatar_user_visible_member("-1001/photo.jpg", user)))
-            probe.assert_not_awaited()
+            self.assertEqual(asyncio.run(web_main._message_sender_id(self.chat, 9)), 555)
+            lookup.assert_awaited_once_with(-1001, 9, account_id=1)
         finally:
             web_main.db = original_db
 
-    def test_membership_probe_skips_db_for_one_to_one_contact(self):
-        """A user id already in the viewer's chat set needs no DB probe."""
-        user = web_main.UserContext(username="v", role="viewer", allowed_chat_ids={555})
-        probe = AsyncMock(return_value=False)
-        original_db = web_main.db
-        web_main.db = type("D", (), {"sender_has_message_in_chats": staticmethod(probe)})()
-        try:
-            self.assertTrue(asyncio.run(web_main._avatar_user_visible_member("avatars/users/555_9.jpg", user)))
-            probe.assert_not_awaited()
-        finally:
-            web_main.db = original_db
-
-    def test_membership_probe_is_cached_across_requests(self):
-        """The DB probe runs once per (user, chat-set); repeats hit the cache."""
-        user = self._viewer()
-        probe = AsyncMock(return_value=True)
-        original_db = web_main.db
-        web_main.db = type("D", (), {"sender_has_message_in_chats": staticmethod(probe)})()
+    def test_sender_lookup_is_cached_across_requests(self):
+        """The row lookup runs once per (account, chat, message); repeats hit the cache."""
+        lookup = AsyncMock(return_value=555)
+        original_db = self._with_db(lookup)
         try:
             for _ in range(3):
-                self.assertTrue(asyncio.run(web_main._avatar_user_visible_member("avatars/users/555_9.jpg", user)))
-            probe.assert_awaited_once()
+                self.assertEqual(asyncio.run(web_main._message_sender_id(self.chat, 9)), 555)
+            lookup.assert_awaited_once()
         finally:
             web_main.db = original_db
 
-    def test_membership_probe_fails_closed_on_db_error(self):
-        """A DB error in the probe denies the avatar (False) and is NOT cached."""
-        user = self._viewer()
-        probe = AsyncMock(side_effect=RuntimeError("db down"))
-        original_db = web_main.db
-        web_main.db = type("D", (), {"sender_has_message_in_chats": staticmethod(probe)})()
+    def test_missing_sender_is_cached_as_none(self):
+        """A message without a sender resolves (and caches) None — the route 404s."""
+        lookup = AsyncMock(return_value=None)
+        original_db = self._with_db(lookup)
         try:
-            self.assertFalse(asyncio.run(web_main._avatar_user_visible_member("avatars/users/555_9.jpg", user)))
-            # Not cached: a transient failure must be retried, not stuck for the TTL.
-            self.assertEqual(web_main._avatar_member_cache, {})
+            self.assertIsNone(asyncio.run(web_main._message_sender_id(self.chat, 9)))
+        finally:
+            web_main.db = original_db
+
+    def test_cache_is_scoped_by_message(self):
+        """Different messages never share a cached sender."""
+        lookup = AsyncMock(side_effect=[555, 777])
+        original_db = self._with_db(lookup)
+        try:
+            self.assertEqual(asyncio.run(web_main._message_sender_id(self.chat, 1)), 555)
+            self.assertEqual(asyncio.run(web_main._message_sender_id(self.chat, 2)), 777)
         finally:
             web_main.db = original_db
 
@@ -441,73 +404,110 @@ class TestSenderHasMessageInChats:
 
 @unittest.skipUnless(_HTTPX_AVAILABLE, "httpx not available")
 class TestMemberAvatarAclEndpoint(unittest.IsolatedAsyncioTestCase):
-    """FIX 4b: ACL allow/block through the REAL /media endpoint."""
+    """FIX 4b reshaped: avatar allow/deny through the REAL v8.0 avatar routes.
+
+    /media/avatar/{chat_ref}[/{message_id}] — entitlement to the chat is the
+    membership proof; the sender comes from the message row; user-id-addressed
+    avatar URLs no longer exist, so no arbitrary user can even be probed.
+    """
+
+    VISIBLE_REF = "visibleChatRef0500AB"
+    OTHER_REF = "otherChatRef00999ABC"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
         (root / "avatars" / "users").mkdir(parents=True)
         (root / "avatars" / "chats").mkdir(parents=True)
-        (root / "avatars" / "users" / "42_1.jpg").write_bytes(b"x")  # member
-        (root / "avatars" / "users" / "77_1.jpg").write_bytes(b"x")  # non-member
+        (root / "avatars" / "users" / "42_1.jpg").write_bytes(b"x")  # sender of msg 1
         (root / "avatars" / "chats" / "-500_1.jpg").write_bytes(b"x")  # visible chat
         (root / "avatars" / "chats" / "-999_1.jpg").write_bytes(b"x")  # other chat
 
         self._saved_root = web_main._media_root
+        self._saved_media_path = web_main.config.media_path
         self._saved_db = web_main.db
         self._saved_display = web_main.config.display_chat_ids
         web_main._media_root = root.resolve()
+        web_main.config.media_path = self.temp_dir.name  # avatar lookup root
         web_main.config.display_chat_ids = set()
-        web_main._avatar_member_cache.clear()
-        web_main._avatar_member_cache_time = None
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+        web_main._sender_lookup_cache.clear()
 
-        # Restricted viewer authorized only for chat -500.
-        viewer = web_main.UserContext(username="v", role="viewer", allowed_chat_ids={-500})
+        # Restricted viewer authorized only for the visible chat's ref.
+        viewer = web_main.UserContext(username="v", role="viewer", allowed_chat_refs={self.VISIBLE_REF})
         web_main.app.dependency_overrides[web_main.require_auth] = lambda: viewer
 
-        # Membership probe: user 42 spoke in -500, user 77 did not.
-        async def _probe(user_id, chat_ids):
-            return user_id == 42 and -500 in set(chat_ids)
+        chats = {
+            self.VISIBLE_REF: {"id": -500, "account_id": 1, "ref": self.VISIBLE_REF, "type": "group"},
+            self.OTHER_REF: {"id": -999, "account_id": 1, "ref": self.OTHER_REF, "type": "group"},
+        }
+
+        async def _by_ref(ref, **kwargs):
+            return chats.get(ref)
+
+        # Message 1 in the visible chat was sent by user 42; message 2 has no sender.
+        async def _sender(chat_id, message_id, account_id=None):
+            if chat_id == -500 and message_id == 1:
+                return 42
+            return None
 
         self.mock_db = AsyncMock()
-        self.mock_db.sender_has_message_in_chats = AsyncMock(side_effect=_probe)
+        self.mock_db.get_chat_by_ref = AsyncMock(side_effect=_by_ref)
+        self.mock_db.get_message_sender_id = AsyncMock(side_effect=_sender)
         web_main.db = self.mock_db
 
     def tearDown(self):
         web_main.app.dependency_overrides.pop(web_main.require_auth, None)
         web_main._media_root = self._saved_root
+        web_main.config.media_path = self._saved_media_path
         web_main.db = self._saved_db
         web_main.config.display_chat_ids = self._saved_display
-        web_main._avatar_member_cache.clear()
-        web_main._avatar_member_cache_time = None
+        web_main._avatar_cache.clear()
+        web_main._avatar_cache_time = None
+        web_main._sender_lookup_cache.clear()
         self.temp_dir.cleanup()
 
     def _client(self):
         return AsyncClient(transport=ASGITransport(app=web_main.app), base_url="http://test")
 
     async def test_member_avatar_allowed(self):
+        """The avatar of a message's sender in an entitled chat is served."""
         async with self._client() as client:
-            resp = await client.get("/media/avatars/users/42_1.jpg")
+            resp = await client.get(f"/media/avatar/{self.VISIBLE_REF}/1")
         self.assertEqual(resp.status_code, 200)
+        self.assertIn("private", resp.headers.get("cache-control", ""))
 
-    async def test_non_member_avatar_blocked(self):
+    async def test_unknown_message_or_forbidden_chat_blocked(self):
+        """No sender resolvable → 404; a chat outside the grant → the SAME 404."""
         async with self._client() as client:
-            resp = await client.get("/media/avatars/users/77_1.jpg")
-        self.assertEqual(resp.status_code, 403)
+            no_sender = await client.get(f"/media/avatar/{self.VISIBLE_REF}/2")
+            forbidden = await client.get(f"/media/avatar/{self.OTHER_REF}/1")
+        self.assertEqual(no_sender.status_code, 404)
+        self.assertEqual(forbidden.status_code, 404)
 
     async def test_chat_avatar_visible_allowed_and_other_blocked(self):
         async with self._client() as client:
-            ok = await client.get("/media/avatars/chats/-500_1.jpg")
-            blocked = await client.get("/media/avatars/chats/-999_1.jpg")
+            ok = await client.get(f"/media/avatar/{self.VISIBLE_REF}")
+            blocked = await client.get(f"/media/avatar/{self.OTHER_REF}")
         self.assertEqual(ok.status_code, 200)
-        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.status_code, 404)
 
-    async def test_db_error_fails_closed_403_not_500(self):
-        """A DB error in the membership probe denies the avatar (403), never 500."""
-        self.mock_db.sender_has_message_in_chats = AsyncMock(side_effect=RuntimeError("db down"))
+    async def test_legacy_user_addressed_avatar_url_is_gone(self):
+        """The old /media/avatars/users/{id}_... shape 404s at routing — user ids
+        are simply unaddressable now."""
         async with self._client() as client:
             resp = await client.get("/media/avatars/users/42_1.jpg")
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 404)
+
+    async def test_db_error_fails_closed_no_bytes(self):
+        """A DB error in the sender lookup serves no bytes: a connection-shaped
+        error answers 503 (the redacting handler's split), never the avatar."""
+        self.mock_db.get_message_sender_id = AsyncMock(side_effect=OSError("db down"))
+        async with self._client() as client:
+            resp = await client.get(f"/media/avatar/{self.VISIBLE_REF}/1")
+        self.assertEqual(resp.status_code, 503)
+        self.assertNotEqual(resp.content, b"x")
 
 
 @unittest.skipUnless(_HTTPX_AVAILABLE, "httpx not available")
@@ -533,6 +533,9 @@ class TestMessagesEndpointAvatarWiring(unittest.IsolatedAsyncioTestCase):
         web_main.app.dependency_overrides[web_main.require_auth] = lambda: viewer
 
         self.mock_db = AsyncMock()
+        self.mock_db.get_chat_by_ref = AsyncMock(
+            return_value={"id": -500, "account_id": 1, "ref": "wiringChatRef0500ABC", "type": "group"}
+        )
         self.mock_db.get_messages_paginated = AsyncMock(
             return_value=[
                 {"id": 1, "sender_id": 42, "chat_id": -500},
@@ -555,10 +558,11 @@ class TestMessagesEndpointAvatarWiring(unittest.IsolatedAsyncioTestCase):
 
     async def test_sender_avatar_url_present_when_file_globs_and_null_when_absent(self):
         async with self._client() as client:
-            resp = await client.get("/api/chats/-500/messages")
+            resp = await client.get("/api/chats/wiringChatRef0500ABC/messages")
         self.assertEqual(resp.status_code, 200)
         by_id = {m["id"]: m for m in resp.json()}
-        self.assertEqual(by_id[1]["sender_avatar_url"], "/media/avatars/users/42_1.jpg")
+        # Ref+message addressed: no user id, no filename in the URL.
+        self.assertEqual(by_id[1]["sender_avatar_url"], "/media/avatar/wiringChatRef0500ABC/1")
         self.assertIsNone(by_id[2]["sender_avatar_url"])
 
 

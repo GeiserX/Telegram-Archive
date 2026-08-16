@@ -86,6 +86,34 @@ def _has_raw_payload(value: Any) -> bool:
     return bool(value) and value != "{}"
 
 
+def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
+    """Read one v8.0.0 entitlement column (allowed_accounts / allowed_chat_refs) fail-closed.
+
+    The reader half of migration 022's converter, shared by the viewer and the
+    push filter so the two can never diverge. NULL means "no restriction" and
+    returns None. A well-formed JSON list whose every element is exactly
+    ``element_type`` returns that set — including the empty set, which denies
+    everything. ANY other payload (unparseable JSON, a non-list, a list with a
+    foreign element) also returns the empty set: a grant that cannot be read
+    must deny, never widen. bool is excluded from int on purpose — True would
+    otherwise read as account 1.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except TypeError, ValueError:
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    values = set()
+    for element in parsed:
+        if not isinstance(element, element_type) or isinstance(element, bool):
+            return set()
+        values.add(element)
+    return values
+
+
 # Message columns an upsert may refresh ONLY when the writer actually supplied
 # the key. ``_message_values`` materialises every column with a ``.get()``
 # default, so an absent key is indistinguishable from an explicit NULL by the
@@ -791,6 +819,8 @@ class DatabaseAdapter:
             for row in result:
                 chat_dict = {
                     "id": row.Chat.id,
+                    "account_id": row.Chat.account_id,
+                    "ref": row.Chat.ref,
                     "type": row.Chat.type,
                     "title": row.Chat.title,
                     "username": row.Chat.username,
@@ -1112,6 +1142,24 @@ class DatabaseAdapter:
             if len(chat_ids) > 1:
                 logger.warning(f"Message {message_id} found in {len(chat_ids)} chats, skipping ambiguous deletion")
             return None
+
+    async def get_message_sender_id(
+        self, chat_id: int, message_id: int, *, account_id: int | None = None
+    ) -> int | None:
+        """Sender of one message, or None when the message is absent or senderless.
+
+        Phase 4: the ref-addressed sender-avatar route
+        (``/media/avatar/{chat_ref}/{message_id}``) resolves the sender through
+        the message so no user id has to appear in the URL — for a private chat
+        the peer's user id IS the chat id, which must stay out of access logs.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Message.sender_id).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
 
     @retry_on_locked()
     async def update_message_text(
@@ -1708,6 +1756,34 @@ class DatabaseAdapter:
                 stmt = stmt.where(Media.account_id == account_id)
             result = await session.execute(stmt)
             return {row[0]: row[1] for row in result.all()}
+
+    async def get_media_by_id(self, media_id: str, *, account_id: int | None = None) -> dict[str, Any] | None:
+        """Get one media row by its ``{chat_id}_{message_id}_{type}`` storage key.
+
+        Phase 4: the ref-addressed media routes reconstruct this key from a
+        resolved chat plus the URL's ``{message_id}_{type}`` suffix, then serve
+        the row's ``file_path`` — the URL itself never carries the chat id.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Media).where(Media.id == media_id)
+            if account_id is not None:
+                stmt = stmt.where(Media.account_id == account_id)
+            result = await session.execute(stmt)
+            media = result.scalar_one_or_none()
+            if not media:
+                return None
+            return {
+                "id": media.id,
+                "account_id": media.account_id,
+                "message_id": media.message_id,
+                "chat_id": media.chat_id,
+                "type": media.type,
+                "file_path": media.file_path,
+                "file_name": media.file_name,
+                "file_size": media.file_size,
+                "mime_type": media.mime_type,
+                "downloaded": media.downloaded,
+            }
 
     async def delete_media_for_chat(self, chat_id: int, *, account_id: int) -> int:
         """
@@ -2848,6 +2924,24 @@ class DatabaseAdapter:
 
             return msg
 
+    @staticmethod
+    def _chat_row_to_dict(chat: Chat) -> dict[str, Any]:
+        return {
+            "id": chat.id,
+            "account_id": chat.account_id,
+            "ref": chat.ref,
+            "type": chat.type,
+            "title": chat.title,
+            "username": chat.username,
+            "first_name": chat.first_name,
+            "last_name": chat.last_name,
+            "phone": chat.phone,
+            "description": chat.description,
+            "participants_count": chat.participants_count,
+            "is_forum": chat.is_forum,
+            "is_archived": chat.is_archived,
+        }
+
     async def get_chat_by_id(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
         """Get a single chat by ID (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
@@ -2858,19 +2952,27 @@ class DatabaseAdapter:
             chat = result.scalar_one_or_none()
             if not chat:
                 return None
-            return {
-                "id": chat.id,
-                "type": chat.type,
-                "title": chat.title,
-                "username": chat.username,
-                "first_name": chat.first_name,
-                "last_name": chat.last_name,
-                "phone": chat.phone,
-                "description": chat.description,
-                "participants_count": chat.participants_count,
-                "is_forum": chat.is_forum,
-                "is_archived": chat.is_archived,
-            }
+            return self._chat_row_to_dict(chat)
+
+    async def get_chat_by_ref(self, ref: str, *, account_id: int | None = None) -> dict[str, Any] | None:
+        """Resolve an opaque chat ref to its chat row, or None when no chat carries it.
+
+        The viewer's phase-4 resolver: ``chats.ref`` is globally UNIQUE
+        (uq_chats_ref spans accounts), so a bare ref names exactly one
+        (account_id, chat_id) pair. The parameterised equality on a VARCHAR(22)
+        makes any malformed or oversized candidate a plain index miss — one code
+        path for well-formed-unknown and garbage alike, so response timing does
+        not classify the input.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat).where(Chat.ref == ref)
+            if account_id is not None:
+                stmt = stmt.where(Chat.account_id == account_id)
+            result = await session.execute(stmt)
+            chat = result.scalar_one_or_none()
+            if not chat:
+                return None
+            return self._chat_row_to_dict(chat)
 
     async def get_pinned_messages(self, chat_id: int, *, account_id: int | None = None) -> list[dict[str, Any]]:
         """Get all pinned messages for a chat, ordered by date descending (newest first).
@@ -3415,14 +3517,24 @@ class DatabaseAdapter:
         created_by: str | None = None,
         is_active: int = 1,
         no_download: int = 0,
+        allowed_accounts: str | None = None,
+        allowed_chat_refs: str | None = None,
     ) -> dict[str, Any]:
-        """Create a new viewer account. Returns the created account dict."""
+        """Create a new viewer account. Returns the created account dict.
+
+        ``allowed_accounts``/``allowed_chat_refs`` are the v8.0.0 grant columns
+        (JSON lists, NULL = unrestricted). ``allowed_chat_ids`` survives as
+        rollback data only: 8.0 code never reads it, and restricted callers
+        write ``"[]"`` there so a 7.x rollback denies instead of failing open.
+        """
         async with self.db_manager.async_session_factory() as session:
             account = ViewerAccount(
                 username=username,
                 password_hash=password_hash,
                 salt=salt,
                 allowed_chat_ids=allowed_chat_ids,
+                allowed_accounts=allowed_accounts,
+                allowed_chat_refs=allowed_chat_refs,
                 created_by=created_by,
                 is_active=is_active,
                 no_download=no_download,
@@ -3480,6 +3592,8 @@ class DatabaseAdapter:
             "password_hash": account.password_hash,
             "salt": account.salt,
             "allowed_chat_ids": account.allowed_chat_ids,
+            "allowed_accounts": account.allowed_accounts,
+            "allowed_chat_refs": account.allowed_chat_refs,
             "is_active": account.is_active,
             "no_download": account.no_download,
             "created_by": account.created_by,
@@ -3564,14 +3678,23 @@ class DatabaseAdapter:
         last_accessed: float,
         no_download: int = 0,
         source_token_id: int | None = None,
+        allowed_accounts: str | None = None,
+        allowed_chat_refs: str | None = None,
     ) -> None:
-        """Save or update a session in the database."""
+        """Save or update a session in the database.
+
+        ``allowed_accounts``/``allowed_chat_refs`` carry the v8.0.0 grant;
+        ``allowed_chat_ids`` is the 7.x rollback tombstone ("[]" for restricted
+        sessions, NULL for unrestricted) and is never read back by 8.0 code.
+        """
         async with self.db_manager.async_session_factory() as session:
             values = {
                 "token": token,
                 "username": username,
                 "role": role,
                 "allowed_chat_ids": allowed_chat_ids,
+                "allowed_accounts": allowed_accounts,
+                "allowed_chat_refs": allowed_chat_refs,
                 "no_download": no_download,
                 "source_token_id": source_token_id,
                 "created_at": created_at,
@@ -3647,6 +3770,8 @@ class DatabaseAdapter:
             "username": row.username,
             "role": row.role,
             "allowed_chat_ids": row.allowed_chat_ids,
+            "allowed_accounts": row.allowed_accounts,
+            "allowed_chat_refs": row.allowed_chat_refs,
             "no_download": row.no_download,
             "source_token_id": row.source_token_id,
             "created_at": row.created_at,
@@ -3667,8 +3792,15 @@ class DatabaseAdapter:
         allowed_chat_ids: str,
         no_download: int = 0,
         expires_at: datetime | None = None,
+        allowed_accounts: str | None = None,
+        allowed_chat_refs: str | None = None,
     ) -> dict[str, Any]:
-        """Create a new share token. Returns the created token dict."""
+        """Create a new share token. Returns the created token dict.
+
+        ``allowed_chat_refs`` is the v8.0.0 grant; ``allowed_chat_ids`` (a NOT
+        NULL column) takes the "[]" rollback tombstone so a 7.x binary reading
+        this row denies rather than fails open. 8.0 code never reads it.
+        """
         async with self.db_manager.async_session_factory() as session:
             token = ViewerToken(
                 label=label,
@@ -3676,6 +3808,8 @@ class DatabaseAdapter:
                 token_salt=token_salt,
                 created_by=created_by,
                 allowed_chat_ids=allowed_chat_ids,
+                allowed_accounts=allowed_accounts,
+                allowed_chat_refs=allowed_chat_refs,
                 no_download=no_download,
                 expires_at=expires_at,
             )
@@ -3715,7 +3849,14 @@ class DatabaseAdapter:
             token = result.scalar_one_or_none()
             if not token:
                 return None
-            allowed_fields = {"label", "allowed_chat_ids", "is_revoked", "no_download"}
+            allowed_fields = {
+                "label",
+                "allowed_chat_ids",
+                "allowed_accounts",
+                "allowed_chat_refs",
+                "is_revoked",
+                "no_download",
+            }
             for key, value in kwargs.items():
                 if key in allowed_fields:
                     setattr(token, key, value)
@@ -3739,6 +3880,8 @@ class DatabaseAdapter:
             "token_salt": token.token_salt,
             "created_by": token.created_by,
             "allowed_chat_ids": token.allowed_chat_ids,
+            "allowed_accounts": token.allowed_accounts,
+            "allowed_chat_refs": token.allowed_chat_refs,
             "is_revoked": token.is_revoked,
             "no_download": token.no_download,
             "expires_at": token.expires_at.isoformat() if token.expires_at else None,

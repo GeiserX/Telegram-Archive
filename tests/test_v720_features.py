@@ -160,7 +160,8 @@ class TestTokenCRUD:
             "token_hash": "h",
             "token_salt": "s",
             "created_by": "admin",
-            "allowed_chat_ids": json.dumps([-1001]),
+            "allowed_chat_ids": "[]",  # rollback tombstone
+            "allowed_chat_refs": json.dumps(["v720ChatRef01001ABCD"]),
             "is_revoked": 0,
             "no_download": 0,
             "expires_at": None,
@@ -170,7 +171,7 @@ class TestTokenCRUD:
         }
         resp = client.post(
             "/api/admin/tokens",
-            json={"label": "my-token", "allowed_chat_ids": [-1001]},
+            json={"label": "my-token", "allowed_chat_refs": ["v720ChatRef01001ABCD"]},
             cookies={"viewer_auth": cookie},
         )
         assert resp.status_code == 200
@@ -317,16 +318,30 @@ class TestNoDownload:
         # Master should not have no_download
         assert data.get("no_download") is False or data.get("no_download") is None or not data.get("no_download")
 
+    def _restricted_token_row(self):
+        """A no_download token whose grant lives in the v8.0 refs column."""
+        return {
+            "id": 10,
+            "label": "restricted-tok",
+            "allowed_chat_ids": "[]",  # rollback tombstone
+            "allowed_chat_refs": json.dumps(["v720ChatRef01001ABCD"]),
+            "no_download": 1,
+        }
+
+    def _wire_media(self, db):
+        db.get_chat_by_ref = AsyncMock(
+            return_value={"id": -1001, "account_id": 1, "ref": "v720ChatRef01001ABCD", "type": "channel"}
+        )
+        db.get_media_by_id = AsyncMock(
+            return_value={"id": "-1001_5_photo", "file_path": "-1001/photo.jpg", "file_name": "photo.jpg"}
+        )
+
     def test_no_download_blocks_explicit_download(self, auth_env, tmp_path):
         """no_download users cannot explicitly download files (download=1)."""
         client, mod, db = _get_client()
         # Create a token session with no_download=True
-        db.verify_viewer_token.return_value = {
-            "id": 10,
-            "label": "restricted-tok",
-            "allowed_chat_ids": json.dumps([-1001]),
-            "no_download": 1,
-        }
+        db.verify_viewer_token.return_value = self._restricted_token_row()
+        self._wire_media(db)
         resp = client.post("/auth/token", json={"token": "validtoken"})
         assert resp.status_code == 200
         cookie = resp.cookies.get("viewer_auth")
@@ -340,18 +355,14 @@ class TestNoDownload:
         mod._media_root = tmp_path / "media"
 
         # Explicit download should be blocked
-        resp = client.get("/media/-1001/photo.jpg?download=1", cookies={"viewer_auth": cookie})
+        resp = client.get("/media/v720ChatRef01001ABCD/5_photo?download=1", cookies={"viewer_auth": cookie})
         assert resp.status_code == 403
 
     def test_no_download_blocks_original_media_without_download_param(self, auth_env, tmp_path):
         """no_download users cannot fetch original bytes by omitting download=1."""
         client, mod, db = _get_client()
-        db.verify_viewer_token.return_value = {
-            "id": 10,
-            "label": "restricted-tok",
-            "allowed_chat_ids": json.dumps([-1001]),
-            "no_download": 1,
-        }
+        db.verify_viewer_token.return_value = self._restricted_token_row()
+        self._wire_media(db)
         resp = client.post("/auth/token", json={"token": "validtoken"})
         cookie = resp.cookies.get("viewer_auth")
 
@@ -361,22 +372,18 @@ class TestNoDownload:
         mod._media_root = tmp_path / "media"
 
         # Inline request (no download param) is still a direct byte fetch.
-        resp = client.get("/media/-1001/photo.jpg", cookies={"viewer_auth": cookie})
+        resp = client.get("/media/v720ChatRef01001ABCD/5_photo", cookies={"viewer_auth": cookie})
         assert resp.status_code == 403
 
     def test_no_download_blocks_export(self, auth_env):
         """no_download users cannot export chat history."""
         client, mod, db = _get_client()
-        db.verify_viewer_token.return_value = {
-            "id": 10,
-            "label": "restricted-tok",
-            "allowed_chat_ids": json.dumps([-1001]),
-            "no_download": 1,
-        }
+        db.verify_viewer_token.return_value = self._restricted_token_row()
+        self._wire_media(db)
         resp = client.post("/auth/token", json={"token": "validtoken"})
         cookie = resp.cookies.get("viewer_auth")
 
-        resp = client.get("/api/chats/-1001/export", cookies={"viewer_auth": cookie})
+        resp = client.get("/api/chats/v720ChatRef01001ABCD/export", cookies={"viewer_auth": cookie})
         assert resp.status_code == 403
 
 
@@ -444,12 +451,13 @@ class TestTokenRevocation:
         db.delete_sessions_by_source_token_id.assert_called_with(7)
 
     def test_update_token_scope_invalidates_sessions(self, auth_env):
-        """Changing a token's allowed_chat_ids should invalidate sessions."""
+        """Changing a token's allowed_chat_refs should invalidate sessions."""
         client, mod, db = _get_client()
         db.verify_viewer_token.return_value = {
             "id": 8,
             "label": "scoped",
-            "allowed_chat_ids": json.dumps([-1001]),
+            "allowed_chat_ids": "[]",
+            "allowed_chat_refs": json.dumps(["v720ChatRef01001ABCD"]),
             "no_download": 0,
         }
         resp = client.post("/auth/token", json={"token": "validtoken"})
@@ -460,14 +468,15 @@ class TestTokenRevocation:
         db.update_viewer_token.return_value = {
             "id": 8,
             "label": "scoped",
-            "allowed_chat_ids": json.dumps([-1002]),
+            "allowed_chat_ids": "[]",
+            "allowed_chat_refs": json.dumps(["someOtherRef01002ABC"]),
             "is_revoked": 0,
             "no_download": 0,
             "expires_at": None,
         }
         resp = client.put(
             "/api/admin/tokens/8",
-            json={"allowed_chat_ids": [-1002]},
+            json={"allowed_chat_refs": ["someOtherRef01002ABC"]},
             cookies={"viewer_auth": cookie},
         )
         assert resp.status_code == 200

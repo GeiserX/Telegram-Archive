@@ -1,14 +1,13 @@
-"""The viewer runs UNTOUCHED on the 8.0 multi-account schema.
+"""The ref-addressed viewer works end to end on the 8.0 multi-account schema.
 
-The 8.0 contract says every adapter method the web viewer calls is
-OPTIONAL-UNSCOPED (``account_id: int | None = None``), so ``src/web/`` needs no
-edits when the primary keys gain ``account_id``. That claim is only worth
-something if it is pinned against the real schema: this suite builds its
-database with ``alembic upgrade head`` from this tree — never
-``Base.metadata.create_all`` — seeds it through the ORM models with
-``account_id=1`` (the row migration 022 itself seeds), and drives the real
-FastAPI app over ASGI with a real ``DatabaseAdapter``. Any viewer route that
-starts requiring ``account_id`` surfaces here as a TypeError-backed 500.
+Phase 4 moved every chat-scoped route onto ``chats.ref``, so this suite drives
+the real routes by ref against the real schema: the database is built with
+``alembic upgrade head`` from this tree — never ``Base.metadata.create_all`` —
+seeded through the ORM models with ``account_id=1`` (the row migration 022
+itself seeds, which also mints each chat's ref), and served by the real FastAPI
+app over ASGI with a real ``DatabaseAdapter``. Any route that breaks on the 8.0
+keys, or any read that starts requiring ``account_id``, surfaces here as a
+TypeError-backed 500.
 
 The deployed MCP server (telegram-archive-mcp, a separate repo) fronts these
 same HTTP endpoints, so this file is also the MCP-surface baseline: no MCP
@@ -194,6 +193,17 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
         _upgrade_to_head(sync_url)
         _seed(sync_url)
 
+        # The refs the ORM minted on INSERT: the only chat identity URLs carry.
+        engine = sa.create_engine(sync_url)
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(sa.text("SELECT id, ref FROM chats")).fetchall()
+        finally:
+            engine.dispose()
+        refs = dict(rows)
+        cls.ref_a = refs[CHAT_A]
+        cls.ref_b = refs[CHAT_B]
+
     async def asyncSetUp(self):
         self.manager = DatabaseManager(f"sqlite+aiosqlite:///{self.db_path}")
         await self.manager.init()
@@ -295,18 +305,23 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(by_id), {CHAT_A, CHAT_B})
             self.assertEqual(by_id[CHAT_A]["title"], "Synthetic Alpha")
             self.assertEqual(by_id[CHAT_B]["username"], "synth_beta")
+            # Phase 4 payload additions: the ref the frontend must address
+            # chats by, and the account id carried for phase 5.
+            self.assertEqual(by_id[CHAT_A]["ref"], self.ref_a)
+            self.assertEqual(by_id[CHAT_B]["ref"], self.ref_b)
+            self.assertEqual(by_id[CHAT_A]["account_id"], 1)
             self.assertFalse(data["has_more"])
 
     async def test_message_pagination_offset_and_cursor_agree(self):
         async with self._client() as client:
             await self._login(client)
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/messages", params={"limit": 10})
+            resp = await client.get(f"/api/chats/{self.ref_a}/messages", params={"limit": 10})
             self.assertEqual(resp.status_code, 200, resp.text)
             page1 = resp.json()
             self.assertEqual([m["id"] for m in page1], list(range(30, 20, -1)))
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/messages", params={"limit": 10, "offset": 10})
+            resp = await client.get(f"/api/chats/{self.ref_a}/messages", params={"limit": 10, "offset": 10})
             self.assertEqual(resp.status_code, 200, resp.text)
             page2 = resp.json()
             self.assertEqual([m["id"] for m in page2], list(range(20, 10, -1)))
@@ -314,7 +329,7 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             # Cursor mode (the infinite-scroll path) must land on the same rows.
             oldest = page1[-1]
             resp = await client.get(
-                f"/api/chats/{CHAT_A}/messages",
+                f"/api/chats/{self.ref_a}/messages",
                 params={"limit": 10, "before_date": oldest["date"], "before_id": oldest["id"]},
             )
             self.assertEqual(resp.status_code, 200, resp.text)
@@ -323,7 +338,7 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
     async def test_message_search_returns_only_the_matching_row(self):
         async with self._client() as client:
             await self._login(client)
-            resp = await client.get(f"/api/chats/{CHAT_A}/messages", params={"search": "needle"})
+            resp = await client.get(f"/api/chats/{self.ref_a}/messages", params={"search": "needle"})
             self.assertEqual(resp.status_code, 200, resp.text)
             hits = resp.json()
             self.assertEqual([m["id"] for m in hits], [7])
@@ -340,14 +355,17 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
         async with self._client() as client:
             await self._login(client)
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/media")
+            resp = await client.get(f"/api/chats/{self.ref_a}/media")
             self.assertEqual(resp.status_code, 200, resp.text)
             items = resp.json()["items"]
             # Exactly one: the seeded downloaded=0 document must stay filtered out.
             self.assertEqual(len(items), 1)
             item = items[0]
-            self.assertEqual(item["id"], f"{CHAT_A}_30_photo")
-            self.assertEqual(item["media_url"], f"/media/{CHAT_A}/30_photo.jpg")
+            # The gallery id is the CHAT-FREE key (it round-trips as the
+            # cursor), and every URL is ref-addressed — no chat id in either.
+            self.assertEqual(item["id"], "30_photo")
+            self.assertEqual(item["media_url"], f"/media/{self.ref_a}/30_photo")
+            self.assertEqual(item["thumb_url"], f"/media/thumb/200/{self.ref_a}/30_photo")
 
             resp = await client.get(item["media_url"])
             self.assertEqual(resp.status_code, 200, resp.text)
@@ -355,11 +373,12 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
 
             # The message payload nests the same media row and its reaction —
             # the joins that now carry Media.account_id == Message.account_id.
-            resp = await client.get(f"/api/chats/{CHAT_A}/messages", params={"limit": 1})
+            resp = await client.get(f"/api/chats/{self.ref_a}/messages", params={"limit": 1})
             self.assertEqual(resp.status_code, 200, resp.text)
             top = resp.json()[0]
             self.assertEqual(top["id"], 30)
-            self.assertEqual(top["media"]["id"], f"{CHAT_A}_30_photo")
+            self.assertEqual(top["media"]["id"], "30_photo")
+            self.assertEqual(top["media"]["url"], f"/media/{self.ref_a}/30_photo")
             self.assertEqual(top["reactions"], [{"emoji": "\U0001f44d", "count": 2, "user_ids": []}])
 
     def test_every_viewer_read_keeps_account_id_optional(self):
@@ -393,11 +412,11 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["folders"], [])
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/topics")
+            resp = await client.get(f"/api/chats/{self.ref_a}/topics")
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["topics"], [])
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/pinned")
+            resp = await client.get(f"/api/chats/{self.ref_a}/pinned")
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json(), [])
 
@@ -405,15 +424,15 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["count"], 0)
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/media/counts")
+            resp = await client.get(f"/api/chats/{self.ref_a}/media/counts")
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json(), {"photo": 1})
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/messages/30/versions")
+            resp = await client.get(f"/api/chats/{self.ref_a}/messages/30/versions")
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json(), [])
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/stats")
+            resp = await client.get(f"/api/chats/{self.ref_a}/stats")
             self.assertEqual(resp.status_code, 200, resp.text)
             stats = resp.json()
             self.assertEqual(stats["messages"], 30)
@@ -426,22 +445,25 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             await self._login(client)
 
             resp = await client.get(
-                f"/api/chats/{CHAT_A}/messages/by-date",
+                f"/api/chats/{self.ref_a}/messages/by-date",
                 params={"date": "2026-03-01", "timezone": "UTC"},
             )
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["id"], 1)
 
             resp = await client.get(
-                f"/api/chats/{CHAT_A}/messages/dates",
+                f"/api/chats/{self.ref_a}/messages/dates",
                 params={"month": "2026-03", "timezone": "UTC"},
             )
             self.assertEqual(resp.status_code, 200, resp.text)
             self.assertEqual(resp.json()["dates"], ["2026-03-01"])
 
-            resp = await client.get(f"/api/chats/{CHAT_A}/export")
+            resp = await client.get(f"/api/chats/{self.ref_a}/export")
             self.assertEqual(resp.status_code, 200, resp.text)
             export = json.loads(resp.text)
+            # The export FILE keeps the chat id (the user's own data leaving
+            # the system, not a URL) and gains the ref for correlation.
             self.assertEqual(export["chat"]["id"], CHAT_A)
+            self.assertEqual(export["chat"]["ref"], self.ref_a)
             self.assertEqual(len(export["messages"]), 30)
             self.assertEqual(export["message_versions"], [])
