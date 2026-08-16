@@ -172,6 +172,9 @@ class TestReconcileMigrationsWarn(unittest.TestCase):
         new_id = get_peer_id(PeerChannel(555))
         with self.assertLogs(_LOGGER, level="WARNING") as cm:
             _run(backup._reconcile_migrations([_migrated_dialog(555)], set()))
+        # Pin the account scope: AsyncMock would also accept an unscoped call,
+        # and the real adapter signature requires the keyword.
+        backup.db.get_migration_markers.assert_awaited_once_with(account_id=1)
         joined = "\n".join(cm.output)
         self.assertIn("migrated to a supergroup not in scope", joined)
         self.assertIn("1 tracked group", joined)

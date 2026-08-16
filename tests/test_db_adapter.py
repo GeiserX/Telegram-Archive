@@ -1168,15 +1168,17 @@ class TestDeleteChatOperations:
     """Test delete_chat_and_related_data and related cleanup operations."""
 
     @pytest.mark.asyncio
-    async def test_delete_chat_issues_six_deletes(self):
-        """delete_chat_and_related_data deletes versions, media, reactions, messages, sync, and chat."""
+    async def test_delete_chat_issues_eight_deletes(self):
+        """delete_chat_and_related_data deletes versions, media, reactions, messages, sync, topics, folder members, and chat."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
         await adapter.delete_chat_and_related_data(100, account_id=1)
 
-        # 6 deletes: versions, media, reactions, messages, sync_status, chat
-        assert mock_session.execute.await_count == 6
+        # 8 deletes: versions, media, reactions, messages, sync_status,
+        # forum_topics, chat_folder_members (explicit - SQLite runs with
+        # foreign_keys off, so their CASCADEs never fire), chat
+        assert mock_session.execute.await_count == 8
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio

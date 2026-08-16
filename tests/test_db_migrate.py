@@ -2,6 +2,7 @@
 
 import os
 import sys
+import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,7 +52,7 @@ def _make_mock_engine_begin(conn_mock=None):
 # ============================================================
 
 
-class TestMigrationModelsRegistry:
+class TestMigrationModelsRegistry(unittest.TestCase):
     """The accounts registry is data like any other table.
 
     8.0 fills accounts.label / telegram_user_id on first login; the target's
@@ -59,7 +60,7 @@ class TestMigrationModelsRegistry:
     MIGRATION_MODELS would silently reset the registry on the moved archive.
     """
 
-    def test_accounts_is_copied_and_leads(self):
+    def test_accounts_is_copied_and_leads(self) -> None:
         from src.db.models import Account
 
         assert MIGRATION_MODELS[0] is Account

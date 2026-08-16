@@ -26,6 +26,7 @@ from src.db.models import (
     Chat,
     ChatFolder,
     ChatFolderMember,
+    ForumTopic,
     Media,
     Message,
     MessageVersion,
@@ -310,8 +311,11 @@ class TestChatsAreAccountIsolated:
         """CLEANUP_CHATS on account 2 must not be able to empty account 1's archive.
 
         Every satellite the method deletes — versions, media, reactions,
-        messages, sync status, the chat row — is seeded for both accounts, then
-        account 2's copy is deleted. Account 1 keeps all six.
+        messages, sync status, forum topics, folder memberships, the chat row —
+        is seeded for both accounts, then account 2's copy is deleted. Account 1
+        keeps all eight. Topics and memberships must be deleted explicitly: their
+        FKs cascade on paper, but SQLite runs with foreign_keys off, so relying
+        on the cascade orphans them.
         """
         await _seed_accounts(real_adapter)
         await _seed_chat(real_adapter, -100713)
@@ -326,10 +330,15 @@ class TestChatsAreAccountIsolated:
             )
             await real_adapter.reconcile_reactions(513, -100713, [{"emoji": "x", "count": 2}], account_id=account_id)
             await real_adapter.update_sync_status(-100713, 513, 1, account_id=account_id)
+            await real_adapter.upsert_forum_topic(
+                {"id": 7, "chat_id": -100713, "title": "topic"}, account_id=account_id
+            )
+            await real_adapter.upsert_chat_folder({"id": 9, "title": "folder"}, account_id=account_id)
+            await real_adapter.sync_folder_members(9, [-100713], account_id=account_id)
 
         await real_adapter.delete_chat_and_related_data(-100713, None, account_id=OTHER_ACCOUNT)
 
-        for model in (Chat, Message, MessageVersion, Media, Reaction, SyncStatus):
+        for model in (Chat, Message, MessageVersion, Media, Reaction, SyncStatus, ForumTopic, ChatFolderMember):
             survivors = await _rows(real_adapter, select(model.account_id))
             assert [a for (a,) in survivors] == [DEFAULT_ACCOUNT_ID], model.__name__
 

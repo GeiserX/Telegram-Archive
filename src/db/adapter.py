@@ -2349,6 +2349,17 @@ class DatabaseAdapter:
             await session.execute(
                 delete(SyncStatus).where(and_(SyncStatus.account_id == account_id, SyncStatus.chat_id == chat_id))
             )
+            # Delete forum topics and folder memberships explicitly: their FKs
+            # declare ondelete CASCADE, but SQLite ships with foreign_keys off,
+            # so the cascade never fires there - same reason as every delete above.
+            await session.execute(
+                delete(ForumTopic).where(and_(ForumTopic.account_id == account_id, ForumTopic.chat_id == chat_id))
+            )
+            await session.execute(
+                delete(ChatFolderMember).where(
+                    and_(ChatFolderMember.account_id == account_id, ChatFolderMember.chat_id == chat_id)
+                )
+            )
             # Delete chat
             await session.execute(delete(Chat).where(and_(Chat.account_id == account_id, Chat.id == chat_id)))
 

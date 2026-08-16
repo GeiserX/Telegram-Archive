@@ -37,7 +37,8 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 
-os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_v8_viewer_"))
+if not os.environ.get("BACKUP_PATH"):
+    os.environ["BACKUP_PATH"] = tempfile.mkdtemp(prefix="ta_test_v8_viewer_")
 
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager

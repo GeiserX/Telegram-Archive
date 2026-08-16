@@ -424,6 +424,7 @@ class TestBackupSchedulerListener:
             config = MagicMock()
             config.enable_listener = True
             config.skip_topic_ids = {}
+            config.should_skip_topic = MagicMock(return_value=False)
             config.mass_operation_threshold = 10
             config.mass_operation_window_seconds = 30
             config.mass_operation_buffer_delay = 2.0

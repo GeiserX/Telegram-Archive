@@ -75,7 +75,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
     def test_blob_is_not_discoverable_before_it_is_final(self):
         observed = {}
 
-        async def _observe(content_hash, *, account_id):
+        async def _observe(content_hash: str, *, account_id: int) -> None:
             # Runs at the dedup await — exactly where a competing ingest gets to
             # look at the shared store while this download is still in flight.
             observed["resolved"] = resolve_shared_file_path(self.shared_dir, self.FILE_NAME, None)
@@ -98,7 +98,7 @@ class TestSharedStorePublishIsAtomic(unittest.TestCase):
         first_at_dedup = asyncio.Event()
         second_done = asyncio.Event()
 
-        async def _park(content_hash, *, account_id):
+        async def _park(content_hash: str, *, account_id: int) -> None:
             first_at_dedup.set()
             await second_done.wait()
             return None
