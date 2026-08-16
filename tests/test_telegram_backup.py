@@ -90,6 +90,7 @@ class TestCleanupExistingMedia(unittest.TestCase):
 
         self.db = AsyncMock()
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup._cleaned_media_chats = set()
@@ -130,7 +131,7 @@ class TestCleanupExistingMedia(unittest.TestCase):
         self._run(self.backup._cleanup_existing_media(chat_id))
 
         self.assertFalse(os.path.exists(file_path))
-        self.db.delete_media_for_chat.assert_awaited_once_with(chat_id)
+        self.db.delete_media_for_chat.assert_awaited_once_with(chat_id, account_id=1)
 
     def test_cleanup_removes_symlinks_without_counting_freed_bytes(self):
         """Symlink removal should not count toward freed bytes."""
@@ -254,7 +255,7 @@ class TestCleanupExistingMedia(unittest.TestCase):
 
         self._run(self.backup._cleanup_existing_media(chat_id))
 
-        self.db.delete_media_for_chat.assert_awaited_once_with(chat_id)
+        self.db.delete_media_for_chat.assert_awaited_once_with(chat_id, account_id=1)
 
     def test_cleanup_session_cache_prevents_rerun(self):
         """Second call for same chat should be skipped via session cache."""
@@ -342,6 +343,7 @@ class TestBackupCheckpointing(unittest.TestCase):
         self.db.get_last_message_id.return_value = 0
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup.client = MagicMock()
@@ -478,6 +480,7 @@ class TestBackupCheckpointing(unittest.TestCase):
         (extraction failure) is skipped so it can't tombstone valid reactions.
         """
         backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
         backup.db = AsyncMock()
 
         batch = [
@@ -491,12 +494,14 @@ class TestBackupCheckpointing(unittest.TestCase):
         finally:
             loop.close()
 
-        backup.db.insert_messages_batch.assert_awaited_once_with(batch)
-        backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"})
+        backup.db.insert_messages_batch.assert_awaited_once_with(batch, account_id=1)
+        backup.db.insert_media.assert_awaited_once_with({"file_path": "/a.jpg"}, account_id=1)
         # Reconciled once per message: empty snapshot for msg 1, the aggregate for msg 2.
         self.assertEqual(backup.db.reconcile_reactions.await_count, 2)
-        backup.db.reconcile_reactions.assert_any_await(1, 100, [], mark_removed=True)
-        backup.db.reconcile_reactions.assert_any_await(2, 100, [{"emoji": "👍", "count": 3}], mark_removed=True)
+        backup.db.reconcile_reactions.assert_any_await(1, 100, [], mark_removed=True, account_id=1)
+        backup.db.reconcile_reactions.assert_any_await(
+            2, 100, [{"emoji": "👍", "count": 3}], mark_removed=True, account_id=1
+        )
 
 
 class TestTopicFilteringInBackupDialog(unittest.TestCase):
@@ -518,6 +523,7 @@ class TestTopicFilteringInBackupDialog(unittest.TestCase):
         self.db.get_last_message_id.return_value = 0
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup.client = MagicMock()
@@ -654,6 +660,7 @@ class TestWhitelistModeBackup(unittest.TestCase):
         os.makedirs(self.config.media_path, exist_ok=True)
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.client = AsyncMock()
         self.backup.db = AsyncMock()
@@ -1152,6 +1159,7 @@ class TestExtractForwardFromId(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_returns_none_when_no_fwd_from(self):
         """Returns None when message has no forward info."""
@@ -1207,6 +1215,7 @@ class TestTextWithEntitiesToString(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_returns_empty_string_for_none(self):
         """Returns empty string when input is None."""
@@ -1235,6 +1244,7 @@ class TestGetMediaType(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_photo_returns_photo(self):
         """MessageMediaPhoto is detected as photo type."""
@@ -1338,6 +1348,7 @@ class TestGetMediaExtension(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_photo_returns_jpg(self):
         """Photo type maps to jpg extension."""
@@ -1369,6 +1380,7 @@ class TestExtractChatData(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup._get_marked_id = MagicMock(return_value=100)
 
     def test_user_entity_extracts_private_chat(self):
@@ -1454,6 +1466,7 @@ class TestExtractUserData(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_extracts_user_fields(self):
         """Returns dict with all user fields for a User entity."""
@@ -1488,6 +1501,7 @@ class TestGetChatName(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
 
     def test_user_with_full_name_and_username(self):
         """User with first, last name and username returns formatted string."""
@@ -1542,6 +1556,7 @@ class TestProcessMessage(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.db = AsyncMock()
         self.backup.config = MagicMock()
         self.backup.config.should_download_media_for_chat = MagicMock(return_value=False)
@@ -1933,6 +1948,7 @@ class TestCommitBatchReactions(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.db = AsyncMock()
 
     def _run(self, coro):
@@ -1951,7 +1967,9 @@ class TestCommitBatchReactions(unittest.TestCase):
 
         self._run(self.backup._commit_batch(batch, 100))
 
-        self.backup.db.reconcile_reactions.assert_any_await(1, 100, [{"emoji": "heart", "count": 5}], mark_removed=True)
+        self.backup.db.reconcile_reactions.assert_any_await(
+            1, 100, [{"emoji": "heart", "count": 5}], mark_removed=True, account_id=1
+        )
 
     def test_empty_reactions_still_reconciled(self):
         """#219 (F2): reconcile runs for an empty snapshot ([]) so removals-to-zero
@@ -1960,7 +1978,7 @@ class TestCommitBatchReactions(unittest.TestCase):
 
         self._run(self.backup._commit_batch(batch, 100))
 
-        self.backup.db.reconcile_reactions.assert_awaited_once_with(3, 100, [], mark_removed=True)
+        self.backup.db.reconcile_reactions.assert_awaited_once_with(3, 100, [], mark_removed=True, account_id=1)
 
     def test_extraction_failure_skips_reconcile(self):
         """#219: a None snapshot means extraction FAILED (shape drift) — skip
@@ -1987,6 +2005,7 @@ class TestBackupForumTopics(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.db = AsyncMock()
         self.backup.client = AsyncMock()
         self.backup.config = MagicMock()
@@ -2105,6 +2124,7 @@ class TestBackupDialogCursorAdvancesOnSkippedMessages(unittest.TestCase):
         self.db.get_last_message_id.return_value = 0
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup.client = MagicMock()

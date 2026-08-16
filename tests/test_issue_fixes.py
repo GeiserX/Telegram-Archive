@@ -22,6 +22,7 @@ class TestSessionPathLogging:
         from src.telegram_backup import TelegramBackup
 
         backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
         backup.config = MagicMock()
         backup.config.session_path = "/data/sessions/my_session"
         backup.config.api_id = 12345
@@ -117,7 +118,7 @@ class TestListenerSessionPathLogging:
         db.get_all_chats = AsyncMock(return_value=[])
         db.close = AsyncMock()
 
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         return listener
 
     async def test_listener_connect_logs_session_path_at_info_level(self):

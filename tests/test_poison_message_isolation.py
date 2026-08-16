@@ -67,6 +67,7 @@ class TestDocumentEmptyIsNotFatal(unittest.TestCase):
 
     def setUp(self):
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.listener = TelegramListener.__new__(TelegramListener)
 
     def test_documentempty_is_truthy_but_has_no_attributes(self):
@@ -142,6 +143,7 @@ class TestOneBadMessageCannotWedgeAChat(unittest.TestCase):
         self.db.get_last_message_id.return_value = 0
 
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup.client = MagicMock()
@@ -272,6 +274,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
 
         self.db = AsyncMock()
         self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
         self.backup.config = self.config
         self.backup.db = self.db
         self.backup.client = MagicMock()
@@ -408,7 +411,7 @@ class TestListenerDetachesItsHandlers(unittest.TestCase):
     """
 
     def _make_listener(self, client):
-        return TelegramListener(_listener_config(), AsyncMock(), client=client)
+        return TelegramListener(_listener_config(), AsyncMock(), client=client, account_id=1)
 
     def test_stop_detaches_every_handler_it_registered(self):
         client = _FakeEventClient()
@@ -447,7 +450,7 @@ class TestListenerMediaDownloadDiscipline(unittest.TestCase):
 
     def _make_listener(self, **overrides):
         config = _listener_config(media_path=self.temp_dir, **overrides)
-        listener = TelegramListener(config, AsyncMock())
+        listener = TelegramListener(config, AsyncMock(), account_id=1)
         listener.db.find_media_by_content_hash = AsyncMock(return_value=None)
         listener.client = MagicMock()
         listener.client.flood_sleep_threshold = 0

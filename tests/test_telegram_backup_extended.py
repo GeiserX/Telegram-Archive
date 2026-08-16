@@ -51,6 +51,7 @@ def _run(coro):
 def _make_backup(**overrides):
     """Create a TelegramBackup instance via __new__ with sensible mock defaults."""
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     backup.config = overrides.get("config", MagicMock())
     backup.config.should_skip_topic = MagicMock(return_value=False)
     backup.config.deletion_mode = "hard"
@@ -104,17 +105,18 @@ class TestInit(unittest.TestCase):
         """When no client is passed, _owns_client should be True."""
         config = MagicMock()
         db = AsyncMock()
-        backup = TelegramBackup(config, db)
+        backup = TelegramBackup(config, db, account_id=1)
         self.assertTrue(backup._owns_client)
         self.assertIsNone(backup.client)
         self.assertIsInstance(backup._cleaned_media_chats, set)
+        self.assertEqual(backup.account_id, 1)
 
     def test_init_with_client_sets_owns_client_false(self):
         """When a client is passed, _owns_client should be False."""
         config = MagicMock()
         db = AsyncMock()
         client = MagicMock()
-        backup = TelegramBackup(config, db, client=client)
+        backup = TelegramBackup(config, db, client=client, account_id=1)
         self.assertFalse(backup._owns_client)
         self.assertIs(backup.client, client)
 
@@ -122,7 +124,7 @@ class TestInit(unittest.TestCase):
         """__init__ must call config.validate_credentials()."""
         config = MagicMock()
         db = AsyncMock()
-        TelegramBackup(config, db)
+        TelegramBackup(config, db, account_id=1)
         config.validate_credentials.assert_called_once()
 
 
@@ -141,11 +143,12 @@ class TestCreateFactory(unittest.TestCase):
         mock_create_adapter.return_value = mock_db
         config = MagicMock()
 
-        result = _run(TelegramBackup.create(config))
+        result = _run(TelegramBackup.create(config, account_id=1))
 
         mock_create_adapter.assert_awaited_once()
         self.assertIsInstance(result, TelegramBackup)
         self.assertIs(result.db, mock_db)
+        self.assertEqual(result.account_id, 1)
 
     @patch("src.telegram_backup.create_adapter", new_callable=AsyncMock)
     def test_create_passes_client_through(self, mock_create_adapter):
@@ -154,7 +157,7 @@ class TestCreateFactory(unittest.TestCase):
         config = MagicMock()
         client = MagicMock()
 
-        result = _run(TelegramBackup.create(config, client=client))
+        result = _run(TelegramBackup.create(config, client=client, account_id=1))
 
         self.assertIs(result.client, client)
         self.assertFalse(result._owns_client)
@@ -886,7 +889,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
 
         _run(self.backup._sync_deletions_and_edits(100, entity))
 
-        self.backup.db.delete_message.assert_awaited_once_with(100, 1)
+        self.backup.db.delete_message.assert_awaited_once_with(100, 1, account_id=1)
 
     def test_deleted_message_soft_marked(self):
         """DELETION_MODE=soft marks deleted messages instead of hard deleting."""
@@ -973,7 +976,7 @@ class TestSyncPinnedMessages(unittest.TestCase):
 
         _run(self.backup._sync_pinned_messages(100, entity))
 
-        self.backup.db.sync_pinned_messages.assert_awaited_once_with(100, [10, 20])
+        self.backup.db.sync_pinned_messages.assert_awaited_once_with(100, [10, 20], account_id=1)
 
     def test_no_pinned_messages_clears_existing(self):
         """When no pinned messages, sync with empty list."""
@@ -982,7 +985,7 @@ class TestSyncPinnedMessages(unittest.TestCase):
 
         _run(self.backup._sync_pinned_messages(100, entity))
 
-        self.backup.db.sync_pinned_messages.assert_awaited_once_with(100, [])
+        self.backup.db.sync_pinned_messages.assert_awaited_once_with(100, [], account_id=1)
 
     def test_exception_does_not_crash(self):
         """Exception during pinned sync should not propagate."""
@@ -3626,19 +3629,19 @@ class TestRetryPendingMediaCap(unittest.TestCase):
     def test_passes_attempt_cap_to_query(self):
         self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})
         _run(self.backup._retry_pending_media_downloads())
-        self.backup.db.get_pending_media_downloads.assert_awaited_once_with(100 * 1024 * 1024, 5)
+        self.backup.db.get_pending_media_downloads.assert_awaited_once_with(100 * 1024 * 1024, 5, account_id=1)
 
     def test_increment_on_failed_download(self):
         """A download that raises bumps the attempt counter (the #212 name-too-long case)."""
         self.backup._process_media = AsyncMock(side_effect=OSError(36, "File name too long"))
         _run(self.backup._retry_pending_media_downloads())
-        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1")
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
 
     def test_increment_on_no_download_result(self):
         """A re-attempt that returns no download (e.g. still over a limit) also counts."""
         self.backup._process_media = AsyncMock(return_value=None)
         _run(self.backup._retry_pending_media_downloads())
-        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1")
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
 
     def test_no_increment_on_success(self):
         """A successful re-download does not bump the counter (row leaves the pending set)."""
@@ -3653,7 +3656,7 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         self.backup.db.count_capped_media_downloads = AsyncMock(return_value=3)
         with self.assertLogs("src.telegram_backup", level="WARNING") as cm:
             _run(self.backup._retry_pending_media_downloads())
-        self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5)
+        self.backup.db.count_capped_media_downloads.assert_awaited_once_with(5, account_id=1)
         assert any("permanently skipped" in line for line in cm.output)
 
 

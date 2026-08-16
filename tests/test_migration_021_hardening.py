@@ -143,6 +143,21 @@ def _verify_token(async_url: str, plaintext: str) -> dict[str, Any] | None:
     return asyncio.run(check())
 
 
+def _raw_live_token_count(sync_url: str) -> int:
+    """How many tokens the 7.x validator filter (``is_revoked = 0``) can see.
+
+    The premise checks run against a 020-shaped database, where the 8.0
+    validator stack cannot execute (its entitlement columns arrive in 022), so
+    the pre-upgrade semantics are asserted with the filter's own SQL instead.
+    """
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(sa.text("SELECT COUNT(*) FROM viewer_tokens WHERE is_revoked = 0")).scalar_one()
+    finally:
+        engine.dispose()
+
+
 def _raw_is_revoked(sync_url: str) -> list[int | None]:
     engine = sa.create_engine(sync_url)
     try:
@@ -211,7 +226,7 @@ def test_null_is_revoked_stays_dead_through_021_on_sqlite(tmp_path):
 
     _run_alembic(async_url, "upgrade", "020")  # migration-built: is_revoked still nullable
     tampered, control = _seed_tokens_at_020(sync_url)
-    assert _verify_token(async_url, tampered) is None  # premise: NULL never matched the filter
+    assert _raw_live_token_count(sync_url) == 1  # premise: NULL never matched the filter
 
     _run_alembic(async_url, "upgrade", "head")
 
@@ -225,7 +240,7 @@ def test_null_is_revoked_stays_dead_through_021_on_postgresql(require_postgres, 
 
     _run_alembic(async_url, "upgrade", "020")
     tampered, control = _seed_tokens_at_020(sync_url)
-    assert _verify_token(async_url, tampered) is None
+    assert _raw_live_token_count(sync_url) == 1  # premise: NULL never matched the filter
 
     _run_alembic(async_url, "upgrade", "head")
 
@@ -262,8 +277,10 @@ def test_stranded_batch_tmp_table_does_not_wedge_the_upgrade(tmp_path):
         ]
         needle = next(n for n in ('CONSTRAINT "fk_media_message" ', "CONSTRAINT fk_media_message ") if n in media_sql)
         conn.execute(
-            "INSERT INTO chats (id, title, type, is_archived, is_forum, last_synced_message_id)"
-            " VALUES (-1, 'synthetic', 'channel', 0, 0, 0)"
+            # ref is supplied raw: the column is NOT NULL with a Python-side
+            # default only, and this fixture writes past the ORM on purpose.
+            "INSERT INTO chats (id, title, type, is_archived, is_forum, last_synced_message_id, ref)"
+            " VALUES (-1, 'synthetic', 'channel', 0, 0, 0, 'strandtestref000000000')"
         )
         conn.execute(
             "INSERT INTO messages (id, chat_id, date, text, is_outgoing, is_pinned)"

@@ -52,7 +52,7 @@ class TestTelegramListener:
 
     def test_init(self, mock_config, mock_db):
         """Test listener initialization."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
 
         assert listener.config == mock_config
         assert listener.db == mock_db
@@ -62,7 +62,7 @@ class TestTelegramListener:
 
     def test_load_tracked_chats(self, mock_config, mock_db):
         """Test loading tracked chats from database."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
 
         # Run async method synchronously
         asyncio.run(listener._load_tracked_chats())
@@ -72,7 +72,7 @@ class TestTelegramListener:
 
     def test_should_process_chat_tracked(self, mock_config, mock_db):
         """Test _should_process_chat returns True for tracked chats."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = {-1001234567890, 123456789}
 
         assert listener._should_process_chat(-1001234567890) is True
@@ -82,7 +82,7 @@ class TestTelegramListener:
     def test_should_process_chat_include_list(self, mock_config, mock_db):
         """Test _should_process_chat returns True for included chats."""
         mock_config.global_include_ids = {-1009999999}
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = set()
 
         assert listener._should_process_chat(-1009999999) is True
@@ -90,7 +90,7 @@ class TestTelegramListener:
 
     def test_get_marked_id(self, mock_config, mock_db):
         """Test _get_marked_id handles various inputs."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
 
         # Test with raw integer
         assert listener._get_marked_id(123456789) == 123456789
@@ -104,7 +104,7 @@ class TestTelegramListener:
 
     def test_close(self, mock_config, mock_db):
         """Test clean shutdown."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener.client = AsyncMock()
         listener.client.is_connected = MagicMock(return_value=False)
 
@@ -115,7 +115,7 @@ class TestTelegramListener:
 
     def test_stats_initialization(self, mock_config, mock_db):
         """Test statistics are properly initialized."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
 
         # Check stats keys match actual implementation
         assert listener.stats["edits_received"] == 0
@@ -166,20 +166,20 @@ class TestInitConfig:
 
     def test_init_calls_validate_credentials(self, base_config, mock_db):
         """Test that __init__ validates credentials."""
-        TelegramListener(base_config, mock_db)
+        TelegramListener(base_config, mock_db, account_id=1)
         base_config.validate_credentials.assert_called_once()
 
     def test_init_with_existing_client(self, base_config, mock_db):
         """Test initialization with an externally provided client."""
         external_client = MagicMock()
-        listener = TelegramListener(base_config, mock_db, client=external_client)
+        listener = TelegramListener(base_config, mock_db, client=external_client, account_id=1)
 
         assert listener.client is external_client
         assert listener._owns_client is False
 
     def test_init_without_client_owns_client(self, base_config, mock_db):
         """Test initialization without client sets _owns_client to True."""
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
 
         assert listener.client is None
         assert listener._owns_client is True
@@ -189,14 +189,14 @@ class TestInitConfig:
         base_config.mass_operation_threshold = 25
         base_config.mass_operation_window_seconds = 60
 
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
 
         assert listener._protector.threshold == 25
         assert listener._protector.window_seconds == 60
 
     def test_init_stats_include_new_messages_counters(self, base_config, mock_db):
         """Test that stats dict includes new_messages counters."""
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
 
         assert listener.stats["new_messages_received"] == 0
         assert listener.stats["new_messages_saved"] == 0
@@ -207,20 +207,20 @@ class TestInitConfig:
         base_config.listen_new_messages = True
         base_config.listen_new_messages_media = True
         # Should not raise
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
         assert listener.config.listen_new_messages is True
 
     def test_init_with_skip_topic_ids(self, base_config, mock_db):
         """Test init logs topic exclusion info when skip_topic_ids is set."""
         base_config.skip_topic_ids = {-1001234: {100, 200}, -1005678: {300}}
         # Should not raise
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
         assert listener.config.skip_topic_ids == {-1001234: {100, 200}, -1005678: {300}}
 
     def test_init_with_listen_deletions_enabled(self, base_config, mock_db):
         """Test init when deletions are enabled triggers warning log path."""
         base_config.listen_deletions = True
-        listener = TelegramListener(base_config, mock_db)
+        listener = TelegramListener(base_config, mock_db, account_id=1)
         assert listener.config.listen_deletions is True
 
 
@@ -279,7 +279,7 @@ class TestEventHandlers:
     @pytest.fixture
     def listener_with_handlers(self, full_config, mock_db):
         """Create a listener and register handlers, capturing them for direct invocation."""
-        listener = TelegramListener(full_config, mock_db)
+        listener = TelegramListener(full_config, mock_db, account_id=1)
         listener._tracked_chat_ids = {-1001234567890}
         listener._notifier = None  # Disable notifications for unit tests
 
@@ -529,6 +529,7 @@ class TestEventHandlers:
             message_id=42,
             new_text="Updated text",
             edit_date=msg.edit_date,
+            account_id=1,
         )
 
     def test_on_message_edited_handles_none_text(self, listener_with_handlers):
@@ -683,7 +684,7 @@ class TestEventHandlers:
 
         asyncio.run(handler(event))
 
-        mock_db.resolve_message_chat_id.assert_called_once_with(42)
+        mock_db.resolve_message_chat_id.assert_called_once_with(42, account_id=1)
         assert listener.stats["deletions_applied"] == 1
 
     def test_on_message_deleted_skips_unresolvable_message(self, listener_with_handlers, mock_db):
@@ -763,7 +764,7 @@ class TestStatsTracking:
 
     @pytest.fixture
     def listener_with_handlers(self, full_config, mock_db):
-        listener = TelegramListener(full_config, mock_db)
+        listener = TelegramListener(full_config, mock_db, account_id=1)
         listener._tracked_chat_ids = {-1001234567890}
         listener._notifier = None
 
@@ -884,23 +885,23 @@ class TestWhitelistMode:
 
     def test_whitelist_mode_allows_whitelisted_chat(self, mock_config, mock_db):
         """Test whitelist mode allows chat in CHAT_IDS."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         assert listener._should_process_chat(-1001111111) is True
 
     def test_whitelist_mode_blocks_non_whitelisted_chat(self, mock_config, mock_db):
         """Test whitelist mode blocks chat NOT in CHAT_IDS."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         assert listener._should_process_chat(-1002222222) is False
 
     def test_whitelist_mode_ignores_include_lists(self, mock_config, mock_db):
         """Test whitelist mode ignores global_include_ids even if chat matches."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         # -1009999999 is in global_include_ids but NOT in chat_ids
         assert listener._should_process_chat(-1009999999) is False
 
     def test_whitelist_mode_ignores_tracked_chats(self, mock_config, mock_db):
         """Test whitelist mode ignores tracked chats if not in CHAT_IDS."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = {-1003333333}
         assert listener._should_process_chat(-1003333333) is False
 
@@ -992,7 +993,7 @@ class TestListenerEventHandling:
 
     def test_listener_filters_untracked_chats(self, mock_config, mock_db):
         """Test that events from untracked chats are ignored."""
-        listener = TelegramListener(mock_config, mock_db)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = {-1001234567890}
 
         # Should process

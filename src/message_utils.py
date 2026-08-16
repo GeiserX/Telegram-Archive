@@ -284,11 +284,15 @@ async def deduplicate_shared_file(
     db: object,
     shared_file_path: str,
     shared_dir: str,
+    *,
+    account_id: int,
 ) -> tuple[str, str | None, bool]:
     """Check if newly downloaded content already exists in the shared store.
 
     Computes a SHA-256 hash, queries the DB for a match, and if found,
     removes the duplicate file and returns the path to the existing one.
+    Dedup only reuses blobs the same account references — cross-account
+    reuse would couple deletion lifecycles between accounts.
 
     Returns (resolved_path, content_hash, reused_existing). The third
     element is True when the path points to a pre-existing canonical blob
@@ -298,7 +302,7 @@ async def deduplicate_shared_file(
     if not content_hash:
         return shared_file_path, content_hash, False
 
-    existing = await db.find_media_by_content_hash(content_hash)
+    existing = await db.find_media_by_content_hash(content_hash, account_id=account_id)
     if not existing or not existing.get("file_name"):
         return shared_file_path, content_hash, False
 
@@ -377,6 +381,8 @@ async def download_and_shard_media(
     file_name: str,
     file_path: str,
     logger: logging.Logger,
+    *,
+    account_id: int,
 ) -> tuple[str | None, str | None]:
     """Download media to sharded shared store, create symlink in chat dir.
 
@@ -388,6 +394,7 @@ async def download_and_shard_media(
         file_name: Media filename
         file_path: Full path where chat-dir symlink should be created
         logger: Logger instance
+        account_id: accounts.id whose media rows content-hash dedup may reuse
 
     Returns:
         (shared_file_path, content_hash) or (None, None) on failure
@@ -453,7 +460,9 @@ async def download_and_shard_media(
     logger.debug("Downloaded media to shared")
 
     # Content-hash dedup: check if identical content already exists
-    tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(db, tmp_shared_file_path, shared_dir)
+    tmp_shared_file_path, content_hash, reused = await deduplicate_shared_file(
+        db, tmp_shared_file_path, shared_dir, account_id=account_id
+    )
 
     # Publish the blob if we own it (not reused): ONE rename from the private
     # .part name straight to its final path, under the clean ``file_name``. With

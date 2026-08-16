@@ -186,6 +186,7 @@ def test_backup_and_listener_fallback_filenames_match():
     from src.telegram_backup import TelegramBackup
 
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     listener = TelegramListener.__new__(TelegramListener)
 
     cases = [

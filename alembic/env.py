@@ -149,6 +149,10 @@ async def run_async_migrations() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # A failed statement inside a migration must never print its bound
+        # values: 022's backfill binds chat ids, which this project treats as
+        # PII. Same setting as the runtime engines in src/db/base.py.
+        hide_parameters=True,
     )
 
     async with connectable.connect() as connection:

@@ -212,12 +212,16 @@ class BackupScheduler:
             return
 
         try:
+            from .db.models import DEFAULT_ACCOUNT_ID
             from .listener import TelegramListener
 
             logger.info("Starting real-time listener...")
 
-            # Create listener with shared client
-            self._listener = await TelegramListener.create(self.config, client=self._connection.client)
+            # Create listener with shared client.
+            # Single-account stage: phase 5 resolves per-account ids here.
+            self._listener = await TelegramListener.create(
+                self.config, client=self._connection.client, account_id=DEFAULT_ACCOUNT_ID
+            )
             await self._listener.connect()
 
             # Run listener in background task

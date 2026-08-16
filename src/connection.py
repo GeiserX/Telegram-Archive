@@ -105,9 +105,9 @@ class TelegramConnection:
         connection = TelegramConnection(config)
         await connection.connect()
 
-        # Pass to backup and listener
-        backup = TelegramBackup(config, db, client=connection.client)
-        listener = TelegramListener(config, db, client=connection.client)
+        # Pass to backup and listener (single-account stage: account_id=1)
+        backup = TelegramBackup(config, db, client=connection.client, account_id=1)
+        listener = TelegramListener(config, db, client=connection.client, account_id=1)
 
         # Both use the same connection
         await backup.backup_all()  # Uses shared client

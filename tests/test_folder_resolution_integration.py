@@ -54,7 +54,7 @@ class TestGetChatsForFolderResolutionSQL:
             session.add(User(id=600, is_bot=0))
             await session.commit()
 
-        rows = await adapter.get_chats_for_folder_resolution()
+        rows = await adapter.get_chats_for_folder_resolution(account_id=1)
         by_id = {r["id"]: r for r in rows}
 
         assert by_id[500]["is_bot"] is True
@@ -77,7 +77,7 @@ class TestSyncFolderMembersChunking:
 
         # Real ids + a duplicate + an id with no chat row.
         member_ids = list(range(1, n + 1)) + [1, 1, 99999999]
-        await adapter.sync_folder_members(1, member_ids)
+        await adapter.sync_folder_members(1, member_ids, account_id=1)
 
         async with adapter.db_manager.async_session_factory() as session:
             from sqlalchemy import func, select
@@ -107,7 +107,7 @@ class TestSyncFolderMembersChunking:
             session.add(ChatFolderMember(folder_id=2, chat_id=10))
             await session.commit()
 
-        await adapter.sync_folder_members(2, [])
+        await adapter.sync_folder_members(2, [], account_id=1)
 
         async with adapter.db_manager.async_session_factory() as session:
             from sqlalchemy import func, select

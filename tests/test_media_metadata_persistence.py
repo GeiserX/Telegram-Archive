@@ -87,6 +87,7 @@ def _message(msg_id, media):
 def _make_backup(media_root):
     """TelegramBackup wired for a real, dedup-free download into ``media_root``."""
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     backup.config = MagicMock()
     backup.config.media_path = media_root
     backup.config.deduplicate_media = False
@@ -289,14 +290,14 @@ class TestSweepPreservesLiveCapturedMetadata:
         message = _message(7, media)
         media_id = f"{CHAT_ID}_7_video"
 
-        await adapter.insert_media(self._listener_row(media_id, media))
+        await adapter.insert_media(self._listener_row(media_id, media), account_id=1)
         before = await _media_row(adapter, media_id)
         assert (before.mime_type, before.width, before.height, before.duration) == ("video/mp4", 640, 480, 12)
 
         backup = _make_backup(self.media_root)
         sweep_row = await backup._process_media(message, CHAT_ID)
         assert sweep_row is not None
-        await adapter.insert_media(sweep_row)
+        await adapter.insert_media(sweep_row, account_id=1)
 
         after = await _media_row(adapter, media_id)
         assert (after.mime_type, after.width, after.height, after.duration) == ("video/mp4", 640, 480, 12)
@@ -321,7 +322,7 @@ class TestSweepPreservesLiveCapturedMetadata:
         backup = _make_backup(self.media_root)
         sweep_row = await backup._process_media(_message(7, media), CHAT_ID)
 
-        await adapter.insert_media(sweep_row)
+        await adapter.insert_media(sweep_row, account_id=1)
 
         stored = await _media_row(adapter, f"{CHAT_ID}_7_video")
         assert stored.duration == 12
@@ -336,7 +337,7 @@ class TestSweepPreservesLiveCapturedMetadata:
         """
         media_id = f"{CHAT_ID}_7_video"
         listener_row = self._listener_row(media_id, _video_media())
-        await adapter.insert_media(listener_row)
+        await adapter.insert_media(listener_row, account_id=1)
 
         await adapter.insert_media(
             {
@@ -345,7 +346,8 @@ class TestSweepPreservesLiveCapturedMetadata:
                 "chat_id": CHAT_ID,
                 "type": "video",
                 "downloaded": False,
-            }
+            },
+            account_id=1,
         )
 
         stored = await _media_row(adapter, media_id)
@@ -366,7 +368,7 @@ class TestSweepPreservesLiveCapturedMetadata:
         false). Pinning the flag at 1 stranded the row pointing at a missing file.
         """
         media_id = f"{CHAT_ID}_7_video"
-        await adapter.insert_media(self._listener_row(media_id, _video_media()))
+        await adapter.insert_media(self._listener_row(media_id, _video_media()), account_id=1)
 
         await adapter.insert_media(
             {
@@ -375,12 +377,13 @@ class TestSweepPreservesLiveCapturedMetadata:
                 "chat_id": CHAT_ID,
                 "type": "video",
                 "downloaded": False,
-            }
+            },
+            account_id=1,
         )
 
         stored = await _media_row(adapter, media_id)
         assert stored.downloaded == 0
-        pending = await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5)
+        pending = await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5, account_id=1)
         assert [row["id"] for row in pending] == [media_id]
 
     async def test_oversize_skip_row_does_not_strand_an_already_downloaded_file(self, adapter):
@@ -393,13 +396,13 @@ class TestSweepPreservesLiveCapturedMetadata:
         """
         media_id = f"{CHAT_ID}_7_video"
         listener_row = self._listener_row(media_id, _video_media())
-        await adapter.insert_media(listener_row)
+        await adapter.insert_media(listener_row, account_id=1)
 
         backup = _make_backup(self.media_root)
         backup.config.get_max_media_size_bytes = MagicMock(return_value=1)
         skip_row = await backup._process_media(_message(7, _video_media()), CHAT_ID)
         assert "downloaded" not in skip_row
-        await adapter.insert_media(skip_row)
+        await adapter.insert_media(skip_row, account_id=1)
 
         stored = await _media_row(adapter, media_id)
         assert stored.downloaded == 1
@@ -412,21 +415,21 @@ class TestSweepPreservesLiveCapturedMetadata:
         backup = _make_backup(self.media_root)
         backup.config.get_max_media_size_bytes = MagicMock(return_value=1)
         skip_row = await backup._process_media(_message(7, _video_media(size=90000)), CHAT_ID)
-        await adapter.insert_media(skip_row)
+        await adapter.insert_media(skip_row, account_id=1)
 
         stored = await _media_row(adapter, skip_row["id"])
         assert stored.downloaded == 0
         assert stored.file_size == 90000
-        assert await adapter.get_pending_media_downloads(1, 5) == []
+        assert await adapter.get_pending_media_downloads(1, 5, account_id=1) == []
         # Positive control: raise the limit and the very same row IS retryable.
-        assert [row["id"] for row in await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5)] == [
+        assert [row["id"] for row in await adapter.get_pending_media_downloads(100 * 1024 * 1024, 5, account_id=1)] == [
             skip_row["id"]
         ]
 
     async def test_redownload_to_a_new_path_still_updates_the_row(self, adapter):
         """Positive control: COALESCE only falls back on NULL, it never pins a value."""
         media_id = f"{CHAT_ID}_7_video"
-        await adapter.insert_media(self._listener_row(media_id, _video_media()))
+        await adapter.insert_media(self._listener_row(media_id, _video_media()), account_id=1)
 
         new_path = os.path.join(self.media_root, "_shared", "ab", "moved.mp4")
         await adapter.insert_media(
@@ -442,7 +445,8 @@ class TestSweepPreservesLiveCapturedMetadata:
                 "content_hash": "hash456",
                 "downloaded": True,
                 "download_date": utcnow_naive(),
-            }
+            },
+            account_id=1,
         )
 
         stored = await _media_row(adapter, media_id)
@@ -454,9 +458,9 @@ class TestSweepPreservesLiveCapturedMetadata:
     async def test_deliberate_clear_path_still_clears(self, adapter):
         """mark_media_for_redownload is the ONE writer allowed to null the file record."""
         media_id = f"{CHAT_ID}_7_video"
-        await adapter.insert_media(self._listener_row(media_id, _video_media()))
+        await adapter.insert_media(self._listener_row(media_id, _video_media()), account_id=1)
 
-        await adapter.mark_media_for_redownload(media_id)
+        await adapter.mark_media_for_redownload(media_id, account_id=1)
 
         stored = await _media_row(adapter, media_id)
         assert stored.downloaded == 0
@@ -477,7 +481,7 @@ class TestSweepPreservesLiveCapturedMetadata:
             async_ctx.__aexit__ = AsyncMock(return_value=False)
             db_manager.async_session_factory.return_value = async_ctx
 
-            await DatabaseAdapter(db_manager).insert_media(media_data)
+            await DatabaseAdapter(db_manager).insert_media(media_data, account_id=1)
             return str(session.execute.await_args[0][0].compile(dialect=dialect))
 
         for dialect in (sqlite.dialect(), postgresql.psycopg2.dialect()):
@@ -492,7 +496,7 @@ class TestSweepPreservesLiveCapturedMetadata:
 
     async def test_upsert_still_overwrites_a_real_value_with_a_real_value(self, adapter):
         media_id = f"{CHAT_ID}_7_video"
-        await adapter.insert_media(self._listener_row(media_id, _video_media()))
+        await adapter.insert_media(self._listener_row(media_id, _video_media()), account_id=1)
 
         await adapter.insert_media(
             {
@@ -505,7 +509,8 @@ class TestSweepPreservesLiveCapturedMetadata:
                 "height": 1080,
                 "duration": 99,
                 "downloaded": True,
-            }
+            },
+            account_id=1,
         )
 
         stored = await _media_row(adapter, media_id)

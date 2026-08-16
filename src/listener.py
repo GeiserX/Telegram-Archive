@@ -37,6 +37,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .db.models import DEFAULT_ACCOUNT_ID
 from .message_utils import (
     build_media_filename,
     compute_file_hash,
@@ -242,7 +243,7 @@ class TelegramListener:
     - For zero deletions from backup, set LISTEN_DELETIONS=false
     """
 
-    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None):
+    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None, *, account_id: int):
         """
         Initialize the listener.
 
@@ -251,10 +252,12 @@ class TelegramListener:
             db: Database adapter (must be initialized)
             client: Optional existing TelegramClient to use (for shared connection).
                    If not provided, will create a new client in connect().
+            account_id: accounts.id every row written by this listener belongs to.
         """
         self.config = config
         self.config.validate_credentials()
         self.db = db
+        self.account_id = account_id
         self.client: TelegramClient | None = client
         self._owns_client = client is None  # Track if we created the client
         self._running = False
@@ -341,19 +344,20 @@ class TelegramListener:
         logger.info("=" * 70)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramListener:
+    async def create(cls, config: Config, client: TelegramClient | None = None, *, account_id: int) -> TelegramListener:
         """
         Factory method to create TelegramListener with initialized database.
 
         Args:
             config: Configuration object
             client: Optional existing TelegramClient to use (for shared connection)
+            account_id: accounts.id every row written by this listener belongs to
 
         Returns:
             Initialized TelegramListener instance
         """
         db = await create_adapter()
-        return cls(config, db, client=client)
+        return cls(config, db, client=client, account_id=account_id)
 
     async def connect(self) -> None:
         """
@@ -417,7 +421,7 @@ class TelegramListener:
     async def _load_tracked_chats(self) -> None:
         """Load list of chat IDs we're backing up (to filter events)."""
         try:
-            chats = await self.db.get_all_chats()
+            chats = await self.db.get_all_chats(account_id=self.account_id)
             self._tracked_chat_ids = {chat["id"] for chat in chats}
             # Supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228): keep them in
             # a dedicated set AND fold into the type-based tracked set, so the new
@@ -543,7 +547,9 @@ class TelegramListener:
         self._reaction_pending = {}
         for (chat_id, message_id), observed in pending.items():
             try:
-                outcome = await self.db.reconcile_reactions(message_id, chat_id, observed, mark_removed=True)
+                outcome = await self.db.reconcile_reactions(
+                    message_id, chat_id, observed, account_id=self.account_id, mark_removed=True
+                )
                 if outcome == "reconciled":
                     self.stats["reactions_applied"] += 1
                     await self._notify_update(
@@ -574,7 +580,7 @@ class TelegramListener:
 
         if deletion_mode == "soft":
             deleted_at = utcnow_naive()
-            await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at)
+            await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at, account_id=self.account_id)
             logger.debug("🗑️ Deletion marked")
             await self._notify_update(
                 "delete",
@@ -587,7 +593,7 @@ class TelegramListener:
             )
             return
 
-        await self.db.delete_message(chat_id, message_id)
+        await self.db.delete_message(chat_id, message_id, account_id=self.account_id)
         logger.debug("🗑️ Deletion applied")
         await self._notify_update(
             "delete",
@@ -826,6 +832,7 @@ class TelegramListener:
                     file_name=file_name,
                     file_path=file_path,
                     logger=logger,
+                    account_id=self.account_id,
                 )
                 if not shared_file_path and not os.path.lexists(file_path):
                     return None
@@ -934,6 +941,7 @@ class TelegramListener:
                     message_id=message.id,
                     new_text=new_text,
                     edit_date=edit_date,
+                    account_id=self.account_id,
                 )
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
@@ -991,7 +999,7 @@ class TelegramListener:
                     effective_chat_id = chat_id
                     if effective_chat_id is None:
                         try:
-                            resolved = await self.db.resolve_message_chat_id(msg_id)
+                            resolved = await self.db.resolve_message_chat_id(msg_id, account_id=self.account_id)
                             if resolved is None:
                                 logger.debug("⚠️ Deletion skipped (not found or ambiguous)")
                                 continue
@@ -1080,7 +1088,7 @@ class TelegramListener:
                         "first_name": getattr(chat_entity, "first_name", None),
                         "last_name": getattr(chat_entity, "last_name", None),
                     }
-                    await self.db.upsert_chat(chat_data)
+                    await self.db.upsert_chat(chat_data, account_id=self.account_id)
 
                 sender = message.sender
                 if sender is None:
@@ -1134,7 +1142,7 @@ class TelegramListener:
                     media_type = self._get_media_type(message.media)
 
                 # Insert the message FIRST (required for FK constraint on media table)
-                await self.db.insert_message(message_data)
+                await self.db.insert_message(message_data, account_id=self.account_id)
                 self.stats["new_messages_saved"] += 1
 
                 # New messages can arrive already carrying reactions (fast reactors,
@@ -1178,7 +1186,7 @@ class TelegramListener:
                                     "download_date": utcnow_naive(),
                                     **media_attributes,
                                 }
-                                await self.db.insert_media(media_row)
+                                await self.db.insert_media(media_row, account_id=self.account_id)
                                 logger.debug("📎 Downloaded media")
                                 # Mirror the DB row so the WS row matches what the next poll returns.
                                 ws_media = {
@@ -1346,7 +1354,7 @@ class TelegramListener:
                 if event.new_title is not None:
                     message_data["raw_data"]["new_title"] = event.new_title
 
-                await self.db.insert_message(message_data)
+                await self.db.insert_message(message_data, account_id=self.account_id)
                 logger.info("📌 Service message saved")
 
                 # Refresh cached chat metadata on a photo or title change. A photo
@@ -1362,7 +1370,7 @@ class TelegramListener:
                                 "title": getattr(entity, "title", None),
                                 "username": getattr(entity, "username", None),
                             }
-                            await self.db.upsert_chat(chat_data)
+                            await self.db.upsert_chat(chat_data, account_id=self.account_id)
                             logger.info("✅ Chat metadata updated")
 
                             if photo_changed:
@@ -1419,7 +1427,7 @@ class TelegramListener:
 
                 # Update each message's pinned status
                 for msg_id in pinned_messages:
-                    await self.db.update_message_pinned(chat_id, msg_id, is_pinning)
+                    await self.db.update_message_pinned(chat_id, msg_id, is_pinning, account_id=self.account_id)
 
                 action = "📌 Pinned" if is_pinning else "📌 Unpinned"
                 logger.info(f"{action}: {len(pinned_messages)} message(s)")
@@ -1643,7 +1651,9 @@ async def run_listener(config: Config) -> None:
     Args:
         config: Configuration object
     """
-    listener = await TelegramListener.create(config)
+    # Single-account stage: every row belongs to the migration-seeded account.
+    # Phase 5 replaces the constant with real per-account resolution here.
+    listener = await TelegramListener.create(config, account_id=DEFAULT_ACCOUNT_ID)
 
     try:
         await listener.connect()

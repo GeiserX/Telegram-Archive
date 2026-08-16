@@ -541,7 +541,7 @@ class TestTelegramImporterClose(unittest.TestCase):
         """TelegramImporter.close delegates to close_database."""
         mock_close_db.return_value = None
         db = AsyncMock()
-        importer = TelegramImporter(db, "/tmp/media")
+        importer = TelegramImporter(db, "/tmp/media", account_id=1)
 
         self._run(importer.close())
 
@@ -574,7 +574,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         """run raises ValueError when export has no chats (line 558)."""
         self._write_export({"chats": {"list": []}})
         db = AsyncMock()
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         with self.assertRaises(ValueError) as ctx:
             self._run(importer.run(self.export_dir))
@@ -599,7 +599,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir))
 
@@ -634,7 +634,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 0}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir, chat_id_override=-1009999))
 
@@ -656,7 +656,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 0}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir))
 
@@ -677,7 +677,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 0}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir))
 
@@ -704,7 +704,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 0}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir))
 
@@ -738,7 +738,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
 
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 0}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir))
 
@@ -761,7 +761,7 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
         db = AsyncMock()
         db.get_chat_stats.return_value = {"messages": 500}
-        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"))
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir, merge=True))
 

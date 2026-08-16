@@ -314,7 +314,7 @@ class TestPinnedListParity:
     "Reply to / Message" in the pinned view."""
 
     async def _pinned_by_id(self, adapter, ids):
-        await adapter.sync_pinned_messages(CHAT_ID, ids)
+        await adapter.sync_pinned_messages(CHAT_ID, ids, account_id=1)
         return {m["id"]: m for m in await adapter.get_pinned_messages(CHAT_ID)}
 
     async def test_pinned_rows_carry_the_same_reply_fields_as_the_list(self, env):

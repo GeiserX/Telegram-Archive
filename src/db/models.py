@@ -3,8 +3,24 @@ SQLAlchemy ORM models for Telegram Backup.
 
 v6.0.0 - Normalized schema with proper foreign key constraints.
 Media data is now stored only in the media table, not duplicated in messages.
+
+v8.0.0 - Multi-account. ``account_id`` leads the primary key of every table
+holding Telegram data, because a Telegram chat id, message id, topic id and
+dialog-filter id are only unique *within one account*. Without it a second
+account silently overwrites the first: measured on scratch schemas, a decorative
+``account_id`` column left ``message_versions``' UNIQUE(change_hash) discarding
+the second account's entire edit history, ``chat_folders``' PK(id) destroying the
+first account's folder title and every membership row, and ``messages``' PK
+(id, chat_id) dropping the second account's copy so it read the first account's
+``is_outgoing``.
+
+``users`` stays global on purpose: a Telegram user id is the same person for
+both accounts, and per-account users turns
+``get_chats_for_folder_resolution``'s ``outerjoin(User, User.id == Chat.id)``
+into duplicate rows. The cost is last-writer-wins on a contact's display name.
 """
 
+import secrets
 from datetime import datetime
 
 from sqlalchemy import (
@@ -15,6 +31,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -24,6 +41,27 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from ..message_utils import utcnow_naive
 
+# The account every row written before v8.0.0 belongs to. Migration 022 seeds it
+# and backfills every existing row to it, and it is the server-side default of
+# every account_id column so a writer that does not name an account still lands
+# somewhere real instead of failing the NOT NULL.
+DEFAULT_ACCOUNT_ID = 1
+
+# secrets.token_urlsafe(16) is always exactly 22 characters of URL-safe base64
+# over 128 bits. Chat refs are minted once, on INSERT, and never re-rolled.
+CHAT_REF_BYTES = 16
+CHAT_REF_LENGTH = 22
+
+
+def new_chat_ref() -> str:
+    """Mint the opaque handle a chat is addressed by outside the database.
+
+    Applied as a Python-side column default, which is exactly the semantics
+    needed: an upsert's INSERT branch mints one, and its ON CONFLICT DO UPDATE
+    branch never touches the column, so a ref is stable for the life of the row.
+    """
+    return secrets.token_urlsafe(CHAT_REF_BYTES)
+
 
 class Base(DeclarativeBase):
     """Base class for all models."""
@@ -31,12 +69,33 @@ class Base(DeclarativeBase):
     pass
 
 
+class Account(Base):
+    """One archived Telegram identity.
+
+    ``id`` is a surrogate, never the Telegram user id. The row has to exist
+    before authorization completes (SESSION_NAME, PHONE_NUMBER and the chat
+    filters all describe an account that has not logged in yet), and copying a
+    real Telegram user id into every row of every table and every index would
+    spread an identifier this project treats as PII across the whole archive.
+    ``telegram_user_id`` is filled in on first login.
+    """
+
+    __tablename__ = "accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str | None] = mapped_column(String(255))
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
 class Chat(Base):
     """Chats table - users, groups, channels."""
 
     __tablename__ = "chats"
 
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    # Opaque, URL-safe, globally unique. Minted on INSERT and never rewritten.
+    ref: Mapped[str] = mapped_column(String(CHAT_REF_LENGTH), nullable=False, default=new_chat_ref)
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255))
     username: Mapped[str | None] = mapped_column(String(255))
@@ -58,7 +117,10 @@ class Chat(Base):
     sync_status: Mapped[SyncStatus | None] = relationship("SyncStatus", back_populates="chat", uselist=False)
     forum_topics: Mapped[list[ForumTopic]] = relationship("ForumTopic", back_populates="chat", lazy="dynamic")
 
-    __table_args__ = (Index("idx_chats_username", "username"),)
+    __table_args__ = (
+        UniqueConstraint("ref", name="uq_chats_ref"),
+        Index("idx_chats_username", "username"),
+    )
 
 
 class Message(Base):
@@ -69,9 +131,11 @@ class Message(Base):
 
     __tablename__ = "messages"
 
-    # Composite primary key (id, chat_id) - message IDs are only unique within a chat
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
-    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id"), primary_key=True)
+    # Composite primary key (account_id, chat_id, id) - message IDs are only
+    # unique within a chat, and a chat id is only unique within an account.
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, server_default=str(DEFAULT_ACCOUNT_ID))
+    id: Mapped[int] = mapped_column(BigInteger, nullable=False, autoincrement=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # NOTE: sender_id has no FK constraint because it can be channel/group IDs (not in users table)
     sender_id: Mapped[int | None] = mapped_column(BigInteger)
     sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -110,14 +174,23 @@ class Message(Base):
     versions: Mapped[list[MessageVersion]] = relationship("MessageVersion", back_populates="message", lazy="dynamic")
 
     __table_args__ = (
+        PrimaryKeyConstraint("account_id", "chat_id", "id"),
+        ForeignKeyConstraint(["account_id", "chat_id"], ["chats.account_id", "chats.id"], name="fk_messages_chat"),
         Index("idx_messages_chat_id", "chat_id"),
         Index("idx_messages_date", "date"),
         Index("idx_messages_sender_id", "sender_id"),
         # Composite index for fast pagination: WHERE chat_id = ? ORDER BY date DESC
         Index("idx_messages_chat_date_desc", "chat_id", date.desc()),
         # v7.22.0: id-bounded jump-window cursors (lone before_id / after_id, #213)
-        # seek on (chat_id, id); the composite PK leads with id so it can't serve them.
+        # seek on (chat_id, id).
         Index("idx_messages_chat_id_id", "chat_id", "id"),
+        # v8.0.0: repairs a regression this release's key change introduces.
+        # resolve_message_chat_id / get_chat_id_for_message look a message up by
+        # id alone (the listener's path when Telegram reports a deletion without
+        # naming a chat). Until v8.0.0 the PK led with id and served that seek;
+        # it now leads with account_id, so the account-qualified lookup needs its
+        # own index or it degrades to a full scan of every message archived.
+        Index("idx_messages_account_msgid", "account_id", "id"),
         # Index for finding pinned messages in a chat
         Index("idx_messages_chat_pinned", "chat_id", "is_pinned"),
         # Index for reply lookups
@@ -133,6 +206,7 @@ class MessageVersion(Base):
     __tablename__ = "message_versions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, server_default=str(DEFAULT_ACCOUNT_ID))
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     text: Mapped[str | None] = mapped_column(Text)
@@ -143,8 +217,12 @@ class MessageVersion(Base):
     message: Mapped[Message] = relationship(
         "Message",
         back_populates="versions",
-        primaryjoin="and_(MessageVersion.message_id==Message.id, MessageVersion.chat_id==Message.chat_id)",
-        foreign_keys="[MessageVersion.message_id, MessageVersion.chat_id]",
+        primaryjoin=(
+            "and_(MessageVersion.account_id==Message.account_id,"
+            " MessageVersion.message_id==Message.id,"
+            " MessageVersion.chat_id==Message.chat_id)"
+        ),
+        foreign_keys="[MessageVersion.account_id, MessageVersion.message_id, MessageVersion.chat_id]",
     )
 
     __table_args__ = (
@@ -153,12 +231,18 @@ class MessageVersion(Base):
         # delete_chat_and_related_data are the load-bearing cleanup. Keep them
         # in sync with any future message-deletion path.
         ForeignKeyConstraint(
-            ["message_id", "chat_id"],
-            ["messages.id", "messages.chat_id"],
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
             name="fk_message_versions_message",
             ondelete="CASCADE",
         ),
-        UniqueConstraint("change_hash", name="uq_message_versions_change_hash"),
+        # v8.0.0: account-qualified. The change_hash payload built by
+        # _message_version_hash is a frozen contract and is NOT extended with the
+        # account — re-encoding it would re-admit a duplicate of every version
+        # already stored. The CONSTRAINT carries the account instead, so two
+        # accounts archiving the same edit each keep their own history row
+        # rather than the second one being silently discarded.
+        UniqueConstraint("account_id", "change_hash", name="uq_message_versions_change_hash"),
         Index("idx_message_versions_message_date", "chat_id", "message_id", "date"),
         Index("idx_message_versions_message_captured", "chat_id", "message_id", "captured_at"),
     )
@@ -202,7 +286,11 @@ class Media(Base):
 
     __tablename__ = "media"
 
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)  # Telegram file_id
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
+    # NOT a Telegram file_id: the value is built as f"{chat_id}_{message.id}_{type}"
+    # (src/telegram_backup.py, src/listener.py), so two accounts archiving the
+    # same message produce the identical string. account_id leads the key.
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
     message_id: Mapped[int | None] = mapped_column(BigInteger)
     chat_id: Mapped[int | None] = mapped_column(BigInteger)
     type: Mapped[str | None] = mapped_column(String(50))
@@ -225,13 +313,18 @@ class Media(Base):
     message: Mapped[Message | None] = relationship(
         "Message",
         back_populates="media_items",
-        primaryjoin="and_(Media.message_id==Message.id, Media.chat_id==Message.chat_id)",
-        foreign_keys="[Media.message_id, Media.chat_id]",
+        primaryjoin=(
+            "and_(Media.account_id==Message.account_id, Media.message_id==Message.id, Media.chat_id==Message.chat_id)"
+        ),
+        foreign_keys="[Media.account_id, Media.message_id, Media.chat_id]",
     )
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["message_id", "chat_id"], ["messages.id", "messages.chat_id"], name="fk_media_message", ondelete="CASCADE"
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
+            name="fk_media_message",
+            ondelete="CASCADE",
         ),
         Index("idx_media_message", "message_id", "chat_id"),
         Index("idx_media_downloaded", "chat_id", "downloaded"),
@@ -247,6 +340,7 @@ class Reaction(Base):
     __tablename__ = "reactions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, server_default=str(DEFAULT_ACCOUNT_ID))
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     emoji: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -268,15 +362,21 @@ class Reaction(Base):
     message: Mapped[Message] = relationship(
         "Message",
         back_populates="reactions",
-        primaryjoin="and_(Reaction.message_id==Message.id, Reaction.chat_id==Message.chat_id)",
-        foreign_keys="[Reaction.message_id, Reaction.chat_id]",
+        primaryjoin=(
+            "and_(Reaction.account_id==Message.account_id,"
+            " Reaction.message_id==Message.id,"
+            " Reaction.chat_id==Message.chat_id)"
+        ),
+        foreign_keys="[Reaction.account_id, Reaction.message_id, Reaction.chat_id]",
     )
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["message_id", "chat_id"], ["messages.id", "messages.chat_id"], name="fk_reaction_message"
+            ["account_id", "message_id", "chat_id"],
+            ["messages.account_id", "messages.id", "messages.chat_id"],
+            name="fk_reaction_message",
         ),
-        UniqueConstraint("message_id", "chat_id", "emoji", "user_id", name="uq_reaction"),
+        UniqueConstraint("account_id", "message_id", "chat_id", "emoji", "user_id", name="uq_reaction"),
         Index("idx_reactions_message", "message_id", "chat_id"),
         # v7.23.0 (#219): chat-first composite matches the schema's convention
         # (every other per-entity index leads with chat_id) and serves the
@@ -291,13 +391,22 @@ class SyncStatus(Base):
 
     __tablename__ = "sync_status"
 
-    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id"), primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     last_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     last_sync_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     message_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationship
     chat: Mapped[Chat] = relationship("Chat", back_populates="sync_status")
+
+    __table_args__ = (
+        # message_count is accumulated by update_sync_status' ON CONFLICT clause
+        # (`message_count + excluded.message_count`), so two accounts collapsing
+        # into one row would not overwrite it, they would SUM it and report a
+        # message count that never existed.
+        ForeignKeyConstraint(["account_id", "chat_id"], ["chats.account_id", "chats.id"], name="fk_sync_status_chat"),
+    )
 
 
 class Metadata(Base):
@@ -323,6 +432,12 @@ class PushSubscription(Base):
     allowed_chat_ids: Mapped[str | None] = mapped_column(
         Text
     )  # JSON snapshot of user's allowed chats at subscribe time
+    # v8.0.0 entitlement. NEW columns, never a reinterpreted allowed_chat_ids:
+    # reading an old [123, 456] payload as (account 123, chat 456) would GRANT
+    # rather than deny, so an unconverted 7.x row must never be readable as an
+    # account-qualified one. See ViewerAccount for the full reasoning.
+    allowed_accounts: Mapped[str | None] = mapped_column(Text)
+    allowed_chat_refs: Mapped[str | None] = mapped_column(Text)
     user_agent: Mapped[str | None] = mapped_column(String(500))  # Browser info for debugging
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)  # Track activity
@@ -338,8 +453,9 @@ class ForumTopic(Base):
 
     __tablename__ = "forum_topics"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
-    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id", ondelete="CASCADE"), primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, server_default=str(DEFAULT_ACCOUNT_ID))
+    id: Mapped[int] = mapped_column(BigInteger, nullable=False, autoincrement=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     icon_color: Mapped[int | None] = mapped_column(Integer)
     icon_emoji_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -354,7 +470,16 @@ class ForumTopic(Base):
     # Relationships
     chat: Mapped[Chat] = relationship("Chat", back_populates="forum_topics")
 
-    __table_args__ = (Index("idx_forum_topics_chat", "chat_id"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("account_id", "chat_id", "id"),
+        ForeignKeyConstraint(
+            ["account_id", "chat_id"],
+            ["chats.account_id", "chats.id"],
+            name="fk_forum_topics_chat",
+            ondelete="CASCADE",
+        ),
+        Index("idx_forum_topics_chat", "chat_id"),
+    )
 
 
 class ChatFolder(Base):
@@ -365,6 +490,10 @@ class ChatFolder(Base):
 
     __tablename__ = "chat_folders"
 
+    # Telegram dialog-filter ids are per account and start at 2 for everyone, so
+    # without account_id in the key a second account's folder overwrites the
+    # first account's title and takes over its membership rows.
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     emoticon: Mapped[str | None] = mapped_column(String(50))
@@ -386,14 +515,31 @@ class ChatFolderMember(Base):
 
     __tablename__ = "chat_folder_members"
 
-    folder_id: Mapped[int] = mapped_column(Integer, ForeignKey("chat_folders.id", ondelete="CASCADE"), primary_key=True)
-    chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id", ondelete="CASCADE"), primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
+    folder_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
     # Relationships
     folder: Mapped[ChatFolder] = relationship("ChatFolder", back_populates="members")
-    chat: Mapped[Chat] = relationship("Chat")
+    # viewonly: account_id belongs to BOTH composite foreign keys, so without
+    # this SQLAlchemy warns that persisting through `chat` and through `folder`
+    # would both write it. Nothing does: membership rows are built with explicit
+    # folder_id/chat_id values, and this attribute exists only to read the chat.
+    chat: Mapped[Chat] = relationship("Chat", viewonly=True)
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_id", "folder_id"],
+            ["chat_folders.account_id", "chat_folders.id"],
+            name="fk_folder_members_folder",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "chat_id"],
+            ["chats.account_id", "chats.id"],
+            name="fk_folder_members_chat",
+            ondelete="CASCADE",
+        ),
         Index("idx_folder_members_chat", "chat_id"),
         Index("idx_folder_members_folder", "folder_id"),
     )
@@ -413,6 +559,15 @@ class ViewerAccount(Base):
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     salt: Mapped[str] = mapped_column(String(64), nullable=False)
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array of chat IDs, NULL = all
+    # v8.0.0 entitlement, as two NEW nullable columns rather than a
+    # reinterpretation of allowed_chat_ids. Reinterpreting fails OPEN: an
+    # unconverted [123, 456] read as (account 123, chat 456) grants access
+    # instead of denying it. With new columns a 7.x row is unmistakably
+    # unconverted. allowed_accounts: JSON array of account ids. allowed_chat_refs:
+    # JSON array of chats.ref values. Migration 022 converts every restricted row
+    # rather than leaving it NULL, because NULL means "no restriction".
+    allowed_accounts: Mapped[str | None] = mapped_column(Text)
+    allowed_chat_refs: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
     created_by: Mapped[str | None] = mapped_column(String(255))
@@ -465,6 +620,9 @@ class ViewerSession(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # "master", "viewer", or "token"
     allowed_chat_ids: Mapped[str | None] = mapped_column(Text)  # JSON array or NULL = all chats
+    # v8.0.0 entitlement — see ViewerAccount for why these are new columns.
+    allowed_accounts: Mapped[str | None] = mapped_column(Text)
+    allowed_chat_refs: Mapped[str | None] = mapped_column(Text)
     no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v7.2.0
     source_token_id: Mapped[int | None] = mapped_column(Integer)  # v7.2.0: FK to viewer_tokens.id for revocation
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
@@ -492,6 +650,9 @@ class ViewerToken(Base):
     token_salt: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     allowed_chat_ids: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array of chat IDs
+    # v8.0.0 entitlement — see ViewerAccount for why these are new columns.
+    allowed_accounts: Mapped[str | None] = mapped_column(Text)
+    allowed_chat_refs: Mapped[str | None] = mapped_column(Text)
     is_revoked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     no_download: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = no expiry

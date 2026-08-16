@@ -124,7 +124,7 @@ async def test_backup_connect_passes_proxy_kwargs():
     _, _, TelegramBackup = _get_telegram_classes()
 
     db = AsyncMock()
-    backup = TelegramBackup(config, db)
+    backup = TelegramBackup(config, db, account_id=1)
 
     client = AsyncMock()
     client.session = SimpleNamespace(_conn=None)
@@ -172,7 +172,7 @@ async def test_listener_connect_passes_proxy_kwargs():
 
     db = AsyncMock()
     db.get_all_chats.return_value = []
-    listener = TelegramListener(config, db)
+    listener = TelegramListener(config, db, account_id=1)
 
     client = AsyncMock()
     client.is_user_authorized.return_value = True

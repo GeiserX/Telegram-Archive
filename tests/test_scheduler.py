@@ -407,6 +407,45 @@ class TestBackupSchedulerListener:
                     mock_task.return_value = MagicMock()
                     await scheduler._start_listener()
 
+    async def test_start_listener_builds_real_listener_for_the_default_account(self):
+        """The scheduler path runs the REAL TelegramListener.create/__init__ chain.
+
+        Only leaf dependencies are mocked (DB adapter, network methods): if the
+        create() call at the scheduler's composition seam ever drops the required
+        account_id kwarg, the TypeError is swallowed by _start_listener's except
+        and _listener stays None — which these assertions turn red. The patched
+        class in the test above cannot catch that.
+        """
+        with patch("src.scheduler.signal.signal"):
+            from src.db.models import DEFAULT_ACCOUNT_ID
+            from src.listener import TelegramListener
+            from src.scheduler import BackupScheduler
+
+            config = MagicMock()
+            config.enable_listener = True
+            config.skip_topic_ids = {}
+            config.should_skip_topic = MagicMock(return_value=False)
+            config.mass_operation_threshold = 10
+            config.mass_operation_window_seconds = 30
+            config.mass_operation_buffer_delay = 2.0
+            scheduler = BackupScheduler(config)
+            scheduler._connection = MagicMock()
+            scheduler._connection.ensure_connected = AsyncMock()
+            scheduler._connection.is_connected = True
+            scheduler._connection.client = MagicMock()
+
+            with (
+                patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
+                patch.object(TelegramListener, "connect", new_callable=AsyncMock),
+                patch.object(TelegramListener, "run", new_callable=AsyncMock),
+            ):
+                await scheduler._start_listener()
+
+                assert isinstance(scheduler._listener, TelegramListener)
+                assert scheduler._listener.account_id == DEFAULT_ACCOUNT_ID
+                assert scheduler._listener_task is not None
+                await scheduler._listener_task
+
     async def test_start_listener_handles_exception_gracefully(self):
         """_start_listener catches exceptions during listener creation."""
         with patch("src.scheduler.signal.signal"):

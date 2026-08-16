@@ -51,6 +51,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import Config
 from .db import DatabaseAdapter, create_adapter
+from .db.models import DEFAULT_ACCOUNT_ID
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
@@ -594,7 +595,7 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
 class TelegramBackup:
     """Main class for managing Telegram backups."""
 
-    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None):
+    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None, *, account_id: int):
         """
         Initialize Telegram backup manager.
 
@@ -603,10 +604,12 @@ class TelegramBackup:
             db: Async database adapter (must be initialized before passing)
             client: Optional existing TelegramClient to use (for shared connection).
                    If not provided, will create a new client in connect().
+            account_id: accounts.id every row written by this backup belongs to.
         """
         self.config = config
         self.config.validate_credentials()
         self.db = db
+        self.account_id = account_id
         self.client: TelegramClient | None = client
         self._owns_client = client is None  # Track if we created the client
         self._cleaned_media_chats: set[int] = set()  # Track chats already cleaned this session
@@ -751,7 +754,7 @@ class TelegramBackup:
 
             # SECONDARY: stored markers (migrations that happened while offline).
             try:
-                for old_id, new_id in await self.db.get_migration_markers():
+                for old_id, new_id in await self.db.get_migration_markers(account_id=self.account_id):
                     migrations.setdefault(old_id, new_id)
             except Exception as e:
                 logger.warning("Migration marker lookup failed: %s", type(e).__name__)
@@ -840,19 +843,20 @@ class TelegramBackup:
         return True
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None) -> TelegramBackup:
+    async def create(cls, config: Config, client: TelegramClient | None = None, *, account_id: int) -> TelegramBackup:
         """
         Factory method to create TelegramBackup with initialized database.
 
         Args:
             config: Configuration object
             client: Optional existing TelegramClient to use (for shared connection)
+            account_id: accounts.id every row written by this backup belongs to
 
         Returns:
             Initialized TelegramBackup instance
         """
         db = await create_adapter()
-        return cls(config, db, client=client)
+        return cls(config, db, client=client, account_id=account_id)
 
     async def connect(self):
         """
@@ -948,7 +952,7 @@ class TelegramBackup:
 
             # Store owner ID and backfill is_outgoing for existing messages
             await self.db.set_metadata("owner_id", str(me.id))
-            await self.db.backfill_is_outgoing(me.id)
+            await self.db.backfill_is_outgoing(me.id, account_id=self.account_id)
 
             start_time = datetime.now()
 
@@ -1257,7 +1261,9 @@ class TelegramBackup:
                     )
                     for chat_id in explicitly_excluded_chat_ids:
                         try:
-                            await self.db.delete_chat_and_related_data(chat_id, self.config.media_path)
+                            await self.db.delete_chat_and_related_data(
+                                chat_id, self.config.media_path, account_id=self.account_id
+                            )
                         except Exception as e:
                             logger.error(f"Error deleting chat: {e}", exc_info=True)
 
@@ -1293,7 +1299,10 @@ class TelegramBackup:
             # (i.e. some chats have a non-zero last_message_id recorded)
             has_synced_before = False
             for dialog in filtered_dialogs:
-                if await self.db.get_last_message_id(self._get_marked_id(dialog.entity)) > 0:
+                if (
+                    await self.db.get_last_message_id(self._get_marked_id(dialog.entity), account_id=self.account_id)
+                    > 0
+                ):
                     has_synced_before = True
                     break
 
@@ -1493,7 +1502,7 @@ class TelegramBackup:
         logger.info("=" * 60)
         logger.info("Starting media verification...")
 
-        media_records = await self.db.get_media_for_verification()
+        media_records = await self.db.get_media_for_verification(account_id=self.account_id)
         logger.info(f"Found {len(media_records)} media records to verify")
 
         missing_files = []
@@ -1611,7 +1620,7 @@ class TelegramBackup:
                         result = await self._process_media(msg, chat_id)
                         if result and result.get("downloaded"):
                             # Insert media record (message already exists for re-downloads)
-                            await self.db.insert_media(result)
+                            await self.db.insert_media(result, account_id=self.account_id)
                             redownloaded += 1
                             logger.debug("Re-downloaded media for message")
                         else:
@@ -1640,11 +1649,13 @@ class TelegramBackup:
         are skipped silently.
         """
         pending = await self.db.get_pending_media_downloads(
-            self.config.get_max_media_size_bytes(), self.config.max_media_download_attempts
+            self.config.get_max_media_size_bytes(), self.config.max_media_download_attempts, account_id=self.account_id
         )
         # Surface (don't silently swallow) files given up after hitting the retry cap —
         # the silent-loss failure mode #212 was about. Count only (no chat/file names, PII).
-        capped = await self.db.count_capped_media_downloads(self.config.max_media_download_attempts)
+        capped = await self.db.count_capped_media_downloads(
+            self.config.max_media_download_attempts, account_id=self.account_id
+        )
         if capped:
             logger.warning(
                 f"{capped} media file(s) permanently skipped after "
@@ -1709,14 +1720,14 @@ class TelegramBackup:
                     try:
                         result = await self._process_media(msg, chat_id)
                         if result and result.get("downloaded"):
-                            await self.db.insert_media(result)
+                            await self.db.insert_media(result, account_id=self.account_id)
                             downloaded += 1
                         else:
-                            await self.db.increment_media_download_attempts(record["id"])
+                            await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                             skipped += 1
                     except Exception as e:
                         logger.debug(f"Retry failed for pending media: {e}")
-                        await self.db.increment_media_download_attempts(record["id"])
+                        await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                         failed += 1
 
             except Exception as e:
@@ -1824,7 +1835,7 @@ class TelegramBackup:
 
         # Save chat information
         chat_data = self._extract_chat_data(entity, is_archived=is_archived)
-        await self.db.upsert_chat(chat_data)
+        await self.db.upsert_chat(chat_data, account_id=self.account_id)
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
         # shows the topic list immediately, before the slow media backfill (issue #200).
@@ -1855,7 +1866,7 @@ class TelegramBackup:
             logger.error(f"Error downloading profile photo: {e}", exc_info=True)
 
         # Get last synced message ID for incremental backup
-        last_message_id = await self.db.get_last_message_id(chat_id)
+        last_message_id = await self.db.get_last_message_id(chat_id, account_id=self.account_id)
 
         # Fetch and process messages in batches with periodic checkpointing.
         # sync_status is updated every checkpoint_interval batches so that
@@ -1964,7 +1975,9 @@ class TelegramBackup:
                 logger.info(f"  → Processed {grand_total} messages...")
 
                 if batches_since_checkpoint >= checkpoint_interval:
-                    await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
+                    await self.db.update_sync_status(
+                        chat_id, running_max_id, uncheckpointed_count, account_id=self.account_id
+                    )
                     uncheckpointed_count = 0
                     batches_since_checkpoint = 0
 
@@ -2001,7 +2014,7 @@ class TelegramBackup:
         # the next run starts it over), OR when the cursor advanced purely from skipped
         # (topic-filtered) messages that were never counted in uncheckpointed_count.
         if uncheckpointed_count > 0 or cursor_passed_failure or (grand_total == 0 and running_max_id > last_message_id):
-            await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count)
+            await self.db.update_sync_status(chat_id, running_max_id, uncheckpointed_count, account_id=self.account_id)
 
         # A frozen_id the cursor has moved past — the message finally processed,
         # or it no longer exists — describes a freeze that is over and must not
@@ -2031,11 +2044,11 @@ class TelegramBackup:
 
     async def _commit_batch(self, batch_data: list[dict], chat_id: int) -> None:
         """Persist a batch of processed messages, their media and reactions to the DB."""
-        await self.db.insert_messages_batch(batch_data)
+        await self.db.insert_messages_batch(batch_data, account_id=self.account_id)
 
         for msg in batch_data:
             if msg.get("_media_data"):
-                await self.db.insert_media(msg["_media_data"])
+                await self.db.insert_media(msg["_media_data"], account_id=self.account_id)
 
         for msg in batch_data:
             # Reconcile reactions for every processed message, including those whose
@@ -2046,7 +2059,9 @@ class TelegramBackup:
             # skip rather than tombstone valid rows.
             observed = msg.get("reactions")
             if observed is not None:
-                await self.db.reconcile_reactions(msg["id"], chat_id, observed, mark_removed=True)
+                await self.db.reconcile_reactions(
+                    msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
+                )
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
         """
@@ -2127,10 +2142,10 @@ class TelegramBackup:
         else:
             # Only scan chats that current config would back up (respects
             # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists)
-            all_chat_ids = await self.db.get_chats_with_messages()
+            all_chat_ids = await self.db.get_chats_with_messages(account_id=self.account_id)
             chat_ids = []
             for cid in all_chat_ids:
-                chat_info = await self.db.get_chat_by_id(cid)
+                chat_info = await self.db.get_chat_by_id(cid, account_id=self.account_id)
                 if not chat_info:
                     continue
                 ctype = chat_info.get("type", "")
@@ -2159,7 +2174,7 @@ class TelegramBackup:
             chat_name = self._get_chat_name(entity)
 
             try:
-                gaps = await self.db.detect_message_gaps(cid, threshold)
+                gaps = await self.db.detect_message_gaps(cid, threshold, account_id=self.account_id)
             except Exception as e:
                 logger.error(f"Gap-fill: failed to detect gaps for chat: {e}")
                 summary["errors"] += 1
@@ -2214,7 +2229,7 @@ class TelegramBackup:
         logger.info("  → Syncing deletions and edits for chat...")
 
         # Get all local message IDs and their edit dates
-        local_messages = await self.db.get_messages_sync_data(chat_id)
+        local_messages = await self.db.get_messages_sync_data(chat_id, account_id=self.account_id)
         if not local_messages:
             return
 
@@ -2238,9 +2253,9 @@ class TelegramBackup:
                         if getattr(self.config, "deletion_mode", "hard") == "soft":
                             # mark_message_deleted defaults deleted_at to now(UTC); this path
                             # doesn't broadcast, so no need to pass an explicit timestamp.
-                            await self.db.mark_message_deleted(chat_id, msg_id)
+                            await self.db.mark_message_deleted(chat_id, msg_id, account_id=self.account_id)
                         else:
-                            await self.db.delete_message(chat_id, msg_id)
+                            await self.db.delete_message(chat_id, msg_id, account_id=self.account_id)
                         total_deleted += 1
                         continue
 
@@ -2258,7 +2273,7 @@ class TelegramBackup:
                         # Update text and edit_date; count only edits the archive
                         # actually accepted (the adapter re-checks under lock).
                         outcome = await self.db.update_message_text(
-                            chat_id, msg_id, remote_msg.message, remote_msg.edit_date
+                            chat_id, msg_id, remote_msg.message, remote_msg.edit_date, account_id=self.account_id
                         )
                         if outcome == "applied":
                             total_updated += 1
@@ -2271,7 +2286,9 @@ class TelegramBackup:
                     if not getattr(reactions_obj, "min", False):
                         observed = extract_reactions(reactions_obj)
                         if observed is not None:
-                            await self.db.reconcile_reactions(msg_id, chat_id, observed, mark_removed=True)
+                            await self.db.reconcile_reactions(
+                                msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                            )
 
             except Exception as e:
                 logger.error(f"Error syncing batch for chat: {describe_exception(e)}")
@@ -2471,7 +2488,9 @@ class TelegramBackup:
             logger.info("Reaction resweep cooldown elapsed; resuming within this run")
 
         cutoff = utcnow_naive() - timedelta(days=self.config.reaction_resweep_days)
-        ids = await self.db.get_message_ids_since(chat_id, cutoff, self.config.reaction_resweep_max_per_chat)
+        ids = await self.db.get_message_ids_since(
+            chat_id, cutoff, self.config.reaction_resweep_max_per_chat, account_id=self.account_id
+        )
         # Resume mid-chat after an earlier deferred run: the first ``skip_n``
         # (newest) ids were already covered this cycle. The window shifts between
         # runs so the offset is approximate — reconcile is idempotent, so a few
@@ -2531,7 +2550,9 @@ class TelegramBackup:
                     if observed is None:
                         continue
                     if (
-                        await self.db.reconcile_reactions(u.msg_id, chat_id, observed, mark_removed=True)
+                        await self.db.reconcile_reactions(
+                            u.msg_id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                        )
                         == "reconciled"
                     ):
                         reconciled += 1
@@ -2563,7 +2584,12 @@ class TelegramBackup:
                 observed = extract_reactions(reactions_obj)
                 if observed is None:
                     continue
-                if await self.db.reconcile_reactions(msg.id, chat_id, observed, mark_removed=True) == "reconciled":
+                if (
+                    await self.db.reconcile_reactions(
+                        msg.id, chat_id, observed, mark_removed=True, account_id=self.account_id
+                    )
+                    == "reconciled"
+                ):
                     reconciled += 1
 
         # Every chunk completed: mark this chat covered for the current cycle so a
@@ -2597,11 +2623,11 @@ class TelegramBackup:
 
             if pinned_messages:
                 pinned_ids = [msg.id for msg in pinned_messages]
-                await self.db.sync_pinned_messages(chat_id, pinned_ids)
+                await self.db.sync_pinned_messages(chat_id, pinned_ids, account_id=self.account_id)
                 logger.debug(f"  → Synced {len(pinned_ids)} pinned messages")
             else:
                 # No pinned messages - clear any existing
-                await self.db.sync_pinned_messages(chat_id, [])
+                await self.db.sync_pinned_messages(chat_id, [], account_id=self.account_id)
 
         except Exception as e:
             # Don't fail the backup if pinned sync fails
@@ -2940,7 +2966,7 @@ class TelegramBackup:
             chat_id: Chat identifier
         """
         try:
-            media_records = await self.db.get_media_for_chat(chat_id)
+            media_records = await self.db.get_media_for_chat(chat_id, account_id=self.account_id)
             if not media_records:
                 logger.debug("No existing media found for chat")
                 return
@@ -2967,7 +2993,7 @@ class TelegramBackup:
                         logger.warning(f"Failed to delete media file: {type(e).__name__}")
 
             # Delete all media records from database for this chat
-            deleted_records = await self.db.delete_media_for_chat(chat_id)
+            deleted_records = await self.db.delete_media_for_chat(chat_id, account_id=self.account_id)
 
             # Clean up empty chat media directory
             chat_media_dir = os.path.join(self.config.media_path, str(chat_id))
@@ -3242,6 +3268,7 @@ class TelegramBackup:
                     file_name=file_name,
                     file_path=file_path,
                     logger=logger,
+                    account_id=self.account_id,
                 )
                 if not shared_file_path and not os.path.lexists(file_path):
                     return None
@@ -3634,7 +3661,7 @@ class TelegramBackup:
                         if self.config.should_skip_topic(chat_id, topic.id):
                             logger.debug("  → Skipping excluded topic")
                             continue
-                        await self.db.upsert_forum_topic(topic_data)
+                        await self.db.upsert_forum_topic(topic_data, account_id=self.account_id)
                         topics_count += 1
 
                     # Advance offsets from the LAST topic of this page. offset_topic is
@@ -3687,9 +3714,12 @@ class TelegramBackup:
             from .db.models import Message as MessageModel
 
             async with self.db.db_manager.async_session_factory() as session:
-                # Get unique reply_to_top_id values for this chat
+                # Get unique reply_to_top_id values for this chat. Scoped to the
+                # account: chat ids repeat across accounts, so without the filter
+                # another account's topic ids would seed this account's inference.
                 stmt = (
                     select(distinct(MessageModel.reply_to_top_id))
+                    .where(MessageModel.account_id == self.account_id)
                     .where(MessageModel.chat_id == chat_id)
                     .where(MessageModel.reply_to_top_id.isnot(None))
                 )
@@ -3712,7 +3742,7 @@ class TelegramBackup:
                             "title": msg.text[:100] if msg.text else f"Topic {topic_id}",
                             "date": msg.date,
                         }
-                        await self.db.upsert_forum_topic(topic_data)
+                        await self.db.upsert_forum_topic(topic_data, account_id=self.account_id)
                         topics_count += 1
                 except Exception as e:
                     logger.debug(f"Could not fetch topic metadata: {e}")
@@ -3843,12 +3873,12 @@ class TelegramBackup:
                     "emoticon": getattr(f, "emoticon", None),
                     "sort_order": idx,
                 }
-                await self.db.upsert_chat_folder(folder_data)
+                await self.db.upsert_chat_folder(folder_data, account_id=self.account_id)
 
                 if resolution_chats is None:
                     resolution_chats = [
                         FolderChat(id=r["id"], type=r["type"], is_bot=r["is_bot"], is_archived=r["is_archived"])
-                        for r in await self.db.get_chats_for_folder_resolution()
+                        for r in await self.db.get_chats_for_folder_resolution(account_id=self.account_id)
                     ]
 
                 rules = self._folder_rules_from_filter(f, own_id)
@@ -3861,13 +3891,13 @@ class TelegramBackup:
                 member_ids = resolve_folder_member_ids(rules, resolution_chats, contact_ids or set())
                 # Always sync (even to an empty set) so a folder that lost all its
                 # archived chats is emptied rather than keeping stale members.
-                await self.db.sync_folder_members(folder_id, list(member_ids))
+                await self.db.sync_folder_members(folder_id, list(member_ids), account_id=self.account_id)
 
                 folder_count += 1
                 logger.debug(f"  → Folder: {len(member_ids)} chats")
 
             # Remove folders that no longer exist
-            await self.db.cleanup_stale_folders(active_folder_ids)
+            await self.db.cleanup_stale_folders(active_folder_ids, account_id=self.account_id)
 
             if folder_count > 0:
                 logger.info(f"Backed up {folder_count} chat folders")
@@ -3888,7 +3918,8 @@ async def run_backup(config: Config, client: TelegramClient | None = None):
                If provided, the backup will use this client instead of creating
                its own, avoiding session file lock conflicts.
     """
-    backup = await TelegramBackup.create(config, client=client)
+    # Single-account stage: phase 5 resolves per-account ids from indexed env vars.
+    backup = await TelegramBackup.create(config, client=client, account_id=DEFAULT_ACCOUNT_ID)
     try:
         await backup.connect()
         # One-time repair of media files corrupted by the pre-7.11.3 finalize bug (#175).
@@ -3915,7 +3946,8 @@ async def run_fill_gaps(config: Config, client: TelegramClient | None = None, ch
     Returns:
         Summary dict with gap-fill statistics.
     """
-    backup = await TelegramBackup.create(config, client=client)
+    # Single-account stage: phase 5 resolves per-account ids from indexed env vars.
+    backup = await TelegramBackup.create(config, client=client, account_id=DEFAULT_ACCOUNT_ID)
     try:
         await backup.connect()
         summary = await backup._fill_gaps(chat_id=chat_id)

@@ -68,30 +68,32 @@ def and_cond(mid, cid):
 
 class TestReconcileReactions:
     async def test_add_creates_aggregate_row(self, adapter):
-        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}])
+        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}], account_id=1)
         assert out == "reconciled"
         active = await adapter.get_reactions(MSG_ID, CHAT_ID)
         assert active == [{"emoji": "👍", "user_id": None, "count": 3}]
 
     async def test_idempotent_noop(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}])
-        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}], account_id=1)
+        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}], account_id=1)
         assert out == "noop"
 
     async def test_count_change_updates_in_place_preserving_created_at(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 3}], account_id=1)
         rows = await _rows(adapter)
         created = rows[0].created_at
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 5}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 5}], account_id=1)
         rows = await _rows(adapter)
         assert len(rows) == 1
         assert rows[0].count == 5
         assert rows[0].created_at == created  # first-seen preserved (F6)
 
     async def test_removal_tombstones_and_excludes_from_live_count(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}, {"emoji": "🔥", "count": 2}])
+        await adapter.reconcile_reactions(
+            MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}, {"emoji": "🔥", "count": 2}], account_id=1
+        )
         # 🔥 removed
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}], account_id=1)
         active = await adapter.get_reactions(MSG_ID, CHAT_ID)
         assert active == [{"emoji": "👍", "user_id": None, "count": 1}]
         all_rows = await _rows(adapter)
@@ -99,17 +101,17 @@ class TestReconcileReactions:
         assert fire.removed_at is not None  # retained, not deleted
 
     async def test_zero_clear_tombstones_all(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}])
-        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}], account_id=1)
+        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [], account_id=1)
         assert out == "reconciled"
         assert await adapter.get_reactions(MSG_ID, CHAT_ID) == []
         assert all(r.removed_at is not None for r in await _rows(adapter))
 
     async def test_readd_revives_tombstone_keeping_created_at(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}], account_id=1)
         created = (await _rows(adapter))[0].created_at
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [])  # removed
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 2}])  # re-added
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [], account_id=1)  # removed
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 2}], account_id=1)  # re-added
         active = await adapter.get_reactions(MSG_ID, CHAT_ID)
         assert active == [{"emoji": "👍", "user_id": None, "count": 2}]
         rows = await _rows(adapter)
@@ -117,8 +119,8 @@ class TestReconcileReactions:
         assert rows[0].created_at == created
 
     async def test_hard_delete_when_mark_removed_false(self, adapter):
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}])
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [], mark_removed=False)
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 1}], account_id=1)
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [], mark_removed=False, account_id=1)
         assert await _rows(adapter) == []
 
     async def test_collapses_legacy_multi_row_per_emoji(self, adapter):
@@ -131,26 +133,26 @@ class TestReconcileReactions:
                 ]
             )
             await session.commit()
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 4}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 4}], account_id=1)
         rows = await _rows(adapter)
         assert len(rows) == 1
         assert rows[0].user_id is None
         assert rows[0].count == 4
 
     async def test_skips_when_message_not_archived(self, adapter):
-        out = await adapter.reconcile_reactions(999999, CHAT_ID, [{"emoji": "👍", "count": 1}])
+        out = await adapter.reconcile_reactions(999999, CHAT_ID, [{"emoji": "👍", "count": 1}], account_id=1)
         assert out == "no_message"
         assert await _rows(adapter) == []
 
     async def test_unknown_reaction_variant_ignored(self, adapter):
         # Extractor yields nothing for an unrecognized variant, so reconcile is a noop.
-        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [])
+        out = await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [], account_id=1)
         assert out == "noop"
 
     async def test_zero_or_negative_count_treated_as_absent(self, adapter):
         # A snapshot entry with count<=0 must not revive/retain a reaction.
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 2}])
-        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 0}])
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 2}], account_id=1)
+        await adapter.reconcile_reactions(MSG_ID, CHAT_ID, [{"emoji": "👍", "count": 0}], account_id=1)
         assert await adapter.get_reactions(MSG_ID, CHAT_ID) == []
         assert all(r.removed_at is not None for r in await _rows(adapter))
 
@@ -210,7 +212,7 @@ async def test_reaction_only_edit_does_not_create_phantom(adapter):
     """#219 e2e: a reaction-only edit (unchanged text, newer edit_date) must not
     bump edit_date, so the viewer never shows a phantom 'edited' marker."""
     reaction_edit = datetime(2026, 7, 18, 12, 30)
-    outcome = await adapter.update_message_text(CHAT_ID, MSG_ID, "hi", reaction_edit)
+    outcome = await adapter.update_message_text(CHAT_ID, MSG_ID, "hi", reaction_edit, account_id=1)
     assert outcome == "noop"
     async with adapter.db_manager.async_session_factory() as session:
         msg = (

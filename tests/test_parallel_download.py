@@ -176,6 +176,7 @@ class ForeignDCClient(FakeClient):
 
 def _make_backup(*, enabled: bool, min_mb: int = 20, conns: int = 4, part_kb: int = 512) -> TelegramBackup:
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     cfg = MagicMock()
     cfg.should_skip_topic = MagicMock(return_value=False)
     cfg.parallel_download_enabled = enabled

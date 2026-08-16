@@ -21,7 +21,8 @@ class _FakeDB:
     """Minimal async stand-in for the DatabaseAdapter media surface."""
 
     def __init__(self, records, fail_update_ids=None, batch_size=500):
-        self._records = records
+        # The real adapter stamps every yielded row with its account_id.
+        self._records = [{"account_id": 1, **r} for r in records]
         self.updates = {}
         self._fail_update_ids = set(fail_update_ids or ())
         self._batch_size = batch_size
@@ -31,7 +32,7 @@ class _FakeDB:
         for start in range(0, len(self._records), size):
             yield [dict(r) for r in self._records[start : start + size]]
 
-    async def update_media_file_path(self, media_id, file_path):
+    async def update_media_file_path(self, media_id, file_path, *, account_id):
         if media_id in self._fail_update_ids:
             raise RuntimeError("simulated DB write failure")
         self.updates[media_id] = file_path
@@ -481,12 +482,12 @@ def test_repair_records_sync_returns_pending_update_for_direct_file(tmp_path):
     corrupt = chat / "abc.mp4.7.140234567890"
     corrupt.write_bytes(b"video")
 
-    records = [{"id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}]
+    records = [{"account_id": 1, "id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}]
     repaired, deferred, pending = _repair_records_sync(records, str(media / "_shared"))
 
     assert repaired == 1
     assert deferred == 0
-    assert pending == [("m1", str(chat / "abc.mp4"))]
+    assert pending == [("m1", str(chat / "abc.mp4"), 1)]
     assert (chat / "abc.mp4").read_bytes() == b"video"
 
 
@@ -497,7 +498,7 @@ def test_repair_records_sync_counts_oserror_as_deferred(tmp_path):
     corrupt = chat / "abc.mp4.7.140234567890"
     corrupt.write_bytes(b"video")
 
-    records = [{"id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}]
+    records = [{"account_id": 1, "id": "m1", "file_name": "abc.mp4", "file_path": str(corrupt)}]
     with mock.patch("src.repair_media_extensions.os.replace", side_effect=OSError("EIO")):
         repaired, deferred, pending = _repair_records_sync(records, str(media / "_shared"))
 
@@ -817,7 +818,7 @@ class _ReadFailDB:
         raise RuntimeError("simulated DB read failure")
         yield  # pragma: no cover - makes this an async generator
 
-    async def update_media_file_path(self, media_id, file_path):  # pragma: no cover
+    async def update_media_file_path(self, media_id, file_path, *, account_id):  # pragma: no cover
         self.updates[media_id] = file_path
 
 

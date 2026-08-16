@@ -94,7 +94,7 @@ def _make_listener_with_handlers(**config_overrides):
     """Create a TelegramListener with handlers captured for direct invocation."""
     config = _make_config(**config_overrides)
     db = _make_db()
-    listener = TelegramListener(config, db)
+    listener = TelegramListener(config, db, account_id=1)
     listener._tracked_chat_ids = {-1001234567890}
     listener._notifier = None
 
@@ -243,7 +243,7 @@ class TestShouldProcessChatIncludeLists:
         """Chat in private_include_ids is processed even if not tracked."""
         config = _make_config(private_include_ids={555})
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._tracked_chat_ids = set()
         assert listener._should_process_chat(555) is True
 
@@ -251,7 +251,7 @@ class TestShouldProcessChatIncludeLists:
         """Chat in groups_include_ids is processed even if not tracked."""
         config = _make_config(groups_include_ids={-666})
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._tracked_chat_ids = set()
         assert listener._should_process_chat(-666) is True
 
@@ -259,7 +259,7 @@ class TestShouldProcessChatIncludeLists:
         """Chat in channels_include_ids is processed even if not tracked."""
         config = _make_config(channels_include_ids={-1007777})
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._tracked_chat_ids = set()
         assert listener._should_process_chat(-1007777) is True
 
@@ -267,7 +267,7 @@ class TestShouldProcessChatIncludeLists:
         """Chat not in any list or tracking set returns False."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._tracked_chat_ids = set()
         assert listener._should_process_chat(99999) is False
 
@@ -286,7 +286,7 @@ class TestGetChatType:
 
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         entity = MagicMock(spec=User)
         assert listener._get_chat_type(entity) == "private"
 
@@ -296,7 +296,7 @@ class TestGetChatType:
 
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         entity = MagicMock(spec=TelethonChat)
         assert listener._get_chat_type(entity) == "group"
 
@@ -306,7 +306,7 @@ class TestGetChatType:
 
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         entity = MagicMock(spec=Channel)
         entity.megagroup = False
         assert listener._get_chat_type(entity) == "channel"
@@ -317,7 +317,7 @@ class TestGetChatType:
 
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         entity = MagicMock(spec=Channel)
         entity.megagroup = True
         assert listener._get_chat_type(entity) == "group"
@@ -326,7 +326,7 @@ class TestGetChatType:
         """Unknown entity type maps to 'unknown'."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         entity = MagicMock()  # Not spec'd to any known type
         assert listener._get_chat_type(entity) == "unknown"
 
@@ -340,7 +340,7 @@ class TestGetMediaType:
     """Tests for _get_media_type classification."""
 
     def _listener(self):
-        return TelegramListener(_make_config(), _make_db())
+        return TelegramListener(_make_config(), _make_db(), account_id=1)
 
     def test_photo_media(self):
         """MessageMediaPhoto returns 'photo'."""
@@ -485,7 +485,7 @@ class TestGetMediaFilename:
     """Tests for _get_media_filename generation."""
 
     def _listener(self):
-        return TelegramListener(_make_config(), _make_db())
+        return TelegramListener(_make_config(), _make_db(), account_id=1)
 
     def test_uses_original_filename_with_file_id(self):
         """When document has file_name attribute and telegram_file_id is provided, combines both."""
@@ -568,7 +568,7 @@ class TestDownloadMedia:
     def _make_listener(self, **config_overrides):
         config = _make_config(**config_overrides)
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener.client = AsyncMock()
         return listener
 
@@ -868,7 +868,7 @@ class TestDownloadAvatar:
     @patch("src.listener.get_avatar_paths", return_value=(None, "/legacy/path"))
     async def test_returns_early_when_no_avatar_set(self, mock_paths):
         """If avatar_path is None, returns without downloading."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         entity = MagicMock()
 
@@ -881,7 +881,7 @@ class TestDownloadAvatar:
     @patch("os.path.getsize", return_value=1024)
     async def test_skips_download_when_file_exists(self, mock_size, mock_islink, mock_lexists, mock_paths):
         """If avatar file already exists with content, skip download."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         entity = MagicMock()
 
@@ -892,7 +892,7 @@ class TestDownloadAvatar:
     @patch("os.path.lexists", return_value=False)
     async def test_downloads_avatar_when_file_missing(self, mock_lexists, mock_paths):
         """Downloads avatar when file does not exist."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         listener.client.download_profile_photo = AsyncMock(return_value="/path/avatar.jpg")
         entity = MagicMock()
@@ -906,7 +906,7 @@ class TestDownloadAvatar:
     @patch("os.path.getsize", return_value=0)
     async def test_downloads_avatar_when_file_empty(self, mock_size, mock_islink, mock_lexists, mock_paths):
         """Downloads avatar when file exists but is empty (0 bytes)."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         listener.client.download_profile_photo = AsyncMock(return_value="/path/avatar.jpg")
         entity = MagicMock()
@@ -917,7 +917,7 @@ class TestDownloadAvatar:
     @patch("src.listener.get_avatar_paths", side_effect=Exception("filesystem error"))
     async def test_handles_exception_gracefully(self, mock_paths):
         """Exceptions during avatar download are caught and logged."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         entity = MagicMock()
 
@@ -928,7 +928,7 @@ class TestDownloadAvatar:
     @patch("os.path.lexists", return_value=False)
     async def test_handles_none_download_result(self, mock_lexists, mock_paths):
         """When download_profile_photo returns None, logs debug instead of info."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.client = AsyncMock()
         listener.client.download_profile_photo = AsyncMock(return_value=None)
         entity = MagicMock()
@@ -947,7 +947,7 @@ class TestNotifyUpdate:
 
     async def test_returns_early_when_no_notifier(self):
         """If _notifier is None, returns without error."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener._notifier = None
         # Should not raise
         await listener._notify_update("edit", {"chat_id": 123, "message_id": 1})
@@ -956,7 +956,7 @@ class TestNotifyUpdate:
         """Sends edit notification with correct type mapping."""
         from src.realtime import NotificationType
 
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -967,7 +967,7 @@ class TestNotifyUpdate:
         """Sends delete notification with correct type mapping."""
         from src.realtime import NotificationType
 
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -978,7 +978,7 @@ class TestNotifyUpdate:
         """Sends new_message notification with correct type mapping."""
         from src.realtime import NotificationType
 
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -989,7 +989,7 @@ class TestNotifyUpdate:
         """Sends pin notification with correct type mapping."""
         from src.realtime import NotificationType
 
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -998,7 +998,7 @@ class TestNotifyUpdate:
 
     async def test_unknown_type_returns_without_sending(self):
         """Unknown notification type logs warning and returns without sending."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -1007,7 +1007,7 @@ class TestNotifyUpdate:
 
     async def test_handles_exception_from_notifier(self):
         """Exception from notifier is caught and does not propagate."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         notifier.notify = AsyncMock(side_effect=Exception("notify failed"))
         listener._notifier = notifier
@@ -1019,7 +1019,7 @@ class TestNotifyUpdate:
         """Uses 0 as default chat_id when not provided in data."""
         from src.realtime import NotificationType
 
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         notifier = AsyncMock()
         listener._notifier = notifier
 
@@ -1072,7 +1072,7 @@ class TestOnPinnedMessagesHandler:
 
         assert db.update_message_pinned.call_count == 3
         for msg_id in [10, 20, 30]:
-            db.update_message_pinned.assert_any_call(expected_chat_id, msg_id, True)
+            db.update_message_pinned.assert_any_call(expected_chat_id, msg_id, True, account_id=1)
 
     async def test_channel_unpin_updates_messages(self):
         """Channel unpin event sets pinned=False in DB."""
@@ -1090,7 +1090,7 @@ class TestOnPinnedMessagesHandler:
 
         await pin_handler(event)
 
-        db.update_message_pinned.assert_called_once_with(expected_chat_id, 10, False)
+        db.update_message_pinned.assert_called_once_with(expected_chat_id, 10, False, account_id=1)
 
     async def test_group_pin_with_user_peer(self):
         """Group pin event with user peer extracts correct chat_id."""
@@ -1112,7 +1112,7 @@ class TestOnPinnedMessagesHandler:
 
         await pin_handler(event)
 
-        db.update_message_pinned.assert_called_once_with(12345, 5, True)
+        db.update_message_pinned.assert_called_once_with(12345, 5, True, account_id=1)
 
     async def test_group_pin_with_chat_peer(self):
         """Group pin event with chat peer extracts negative chat_id."""
@@ -1135,7 +1135,7 @@ class TestOnPinnedMessagesHandler:
 
         await pin_handler(event)
 
-        db.update_message_pinned.assert_called_once_with(expected_chat_id, 7, True)
+        db.update_message_pinned.assert_called_once_with(expected_chat_id, 7, True, account_id=1)
 
     async def test_group_pin_with_channel_peer(self):
         """Group pin event with channel peer uses -1000000000000 prefix."""
@@ -1157,7 +1157,7 @@ class TestOnPinnedMessagesHandler:
 
         await pin_handler(event)
 
-        db.update_message_pinned.assert_called_once_with(expected_chat_id, 8, True)
+        db.update_message_pinned.assert_called_once_with(expected_chat_id, 8, True, account_id=1)
 
     async def test_skips_untracked_chat(self):
         """Pin event for untracked chat is ignored."""
@@ -1763,7 +1763,7 @@ class TestRunAndStopLifecycle:
         """run() sets start_time, starts protector, writes metadata, then runs client."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
 
         mock_client = AsyncMock()
         mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
@@ -1779,7 +1779,7 @@ class TestRunAndStopLifecycle:
         """stop() disconnects the client when listener owns it."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._owns_client = True
         listener.stats["start_time"] = datetime.now()
 
@@ -1797,7 +1797,7 @@ class TestRunAndStopLifecycle:
         config = _make_config()
         db = _make_db()
         external_client = AsyncMock()
-        listener = TelegramListener(config, db, client=external_client)
+        listener = TelegramListener(config, db, client=external_client, account_id=1)
         listener.stats["start_time"] = datetime.now()
 
         assert listener._owns_client is False
@@ -1810,7 +1810,7 @@ class TestRunAndStopLifecycle:
         """stop() catches exceptions during disconnect."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener._owns_client = True
         listener.stats["start_time"] = datetime.now()
 
@@ -1826,7 +1826,7 @@ class TestRunAndStopLifecycle:
         """close() calls stop() then db.close()."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener.client = AsyncMock()
         listener.client.is_connected = MagicMock(return_value=False)
 
@@ -1838,7 +1838,7 @@ class TestRunAndStopLifecycle:
         """run() cancels _processor_task in finally block if it exists."""
         config = _make_config()
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
 
         mock_client = AsyncMock()
         mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
@@ -1869,13 +1869,13 @@ class TestLogStats:
 
     async def test_log_stats_with_no_start_time(self):
         """_log_stats does nothing when start_time is None."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         # Should not raise
         await listener._log_stats()
 
     async def test_log_stats_with_start_time_and_errors(self):
         """_log_stats logs error count when errors > 0."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.stats["start_time"] = datetime.now() - timedelta(hours=1)
         listener.stats["errors"] = 5
         listener.stats["deletions_skipped"] = 10
@@ -1884,7 +1884,7 @@ class TestLogStats:
 
     async def test_log_stats_with_blocked_chats(self):
         """_log_stats logs blocked chat details when chats are rate-limited."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.stats["start_time"] = datetime.now() - timedelta(minutes=30)
 
         # Add a blocked chat to protector
@@ -1896,7 +1896,7 @@ class TestLogStats:
 
     async def test_log_stats_shows_zero_errors_without_warning(self):
         """_log_stats with zero errors does not log the error warning."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         listener.stats["start_time"] = datetime.now() - timedelta(minutes=5)
         listener.stats["errors"] = 0
         listener.stats["deletions_skipped"] = 0
@@ -1916,7 +1916,7 @@ class TestLoadTrackedChatsError:
         """When get_all_chats raises, tracked_chat_ids is set to empty set."""
         db = _make_db()
         db.get_all_chats = AsyncMock(side_effect=Exception("db error"))
-        listener = TelegramListener(_make_config(), db)
+        listener = TelegramListener(_make_config(), db, account_id=1)
 
         await listener._load_tracked_chats()
 
@@ -1933,14 +1933,14 @@ class TestGetMarkedIdFallback:
 
     def test_fallback_to_raw_integer(self):
         """When get_peer_id fails and input is raw int, returns the int."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         # Raw int -- get_peer_id will fail, no .id attr, returns raw
         result = listener._get_marked_id(42)
         assert result == 42
 
     def test_fallback_to_entity_id(self):
         """When get_peer_id fails, falls back to entity.id."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         entity = MagicMock()
         entity.id = 99999
         result = listener._get_marked_id(entity)
@@ -1961,7 +1961,7 @@ class TestListenerCreateFactory:
         mock_db = _make_db()
 
         with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
-            listener = await TelegramListener.create(config)
+            listener = await TelegramListener.create(config, account_id=1)
 
         assert isinstance(listener, TelegramListener)
         assert listener.db is mock_db
@@ -1973,7 +1973,7 @@ class TestListenerCreateFactory:
         mock_client = MagicMock()
 
         with patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=mock_db):
-            listener = await TelegramListener.create(config, client=mock_client)
+            listener = await TelegramListener.create(config, client=mock_client, account_id=1)
 
         assert listener.client is mock_client
         assert listener._owns_client is False
@@ -1993,7 +1993,7 @@ class TestListenerConnectSharedClient:
         db = _make_db()
         mock_client = MagicMock()
         mock_client.is_connected = MagicMock(return_value=False)
-        listener = TelegramListener(config, db, client=mock_client)
+        listener = TelegramListener(config, db, client=mock_client, account_id=1)
 
         import pytest
 
@@ -2015,7 +2015,7 @@ class TestListenerConnectSharedClient:
         mock_client = AsyncMock()
         mock_client.is_connected = MagicMock(return_value=True)
         mock_client.is_user_authorized = AsyncMock(return_value=False)
-        listener = TelegramListener(config, db, client=mock_client)
+        listener = TelegramListener(config, db, client=mock_client, account_id=1)
 
         import pytest
 
@@ -2030,7 +2030,7 @@ class TestListenerConnectSharedClient:
         mock_client.is_connected = MagicMock(return_value=True)
         mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
         mock_client.on = lambda event_type: lambda fn: fn
-        listener = TelegramListener(config, db, client=mock_client)
+        listener = TelegramListener(config, db, client=mock_client, account_id=1)
 
         mock_db_manager = MagicMock()
         mock_db_manager._is_sqlite = True
@@ -2052,7 +2052,7 @@ class TestListenerConnectNotAuthorized:
         config = _make_config()
         config.get_telegram_client_kwargs = MagicMock(return_value={})
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
 
         mock_client = AsyncMock()
         mock_client.connect = AsyncMock()
@@ -2075,7 +2075,7 @@ class TestGetMarkedIdRawFallback:
 
     def test_raw_integer_returns_itself(self):
         """When input is a raw integer and has no .id, returns the integer."""
-        listener = TelegramListener(_make_config(), _make_db())
+        listener = TelegramListener(_make_config(), _make_db(), account_id=1)
         result = listener._get_marked_id(12345)
         assert result == 12345
 
@@ -2102,7 +2102,7 @@ class TestDownloadMediaSymlinkFallback:
 
         config = _make_config(deduplicate_media=True)
         db = _make_db()
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
         listener.client = AsyncMock()
         msg = MagicMock()
         media = MagicMock(spec=MessageMediaPhoto)
@@ -2203,7 +2203,7 @@ class TestRunMetadataWriteException:
         config = _make_config()
         db = _make_db()
         db.set_metadata = AsyncMock(side_effect=Exception("DB write failed"))
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
 
         mock_client = AsyncMock()
         mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
@@ -2236,7 +2236,7 @@ class TestRunFinallyMetadataClear:
             raise Exception("clear failed")  # Second call (clearing) fails
 
         db.set_metadata = AsyncMock(side_effect=track_set_metadata)
-        listener = TelegramListener(config, db)
+        listener = TelegramListener(config, db, account_id=1)
 
         mock_client = AsyncMock()
         mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
@@ -2266,9 +2266,13 @@ class TestRunListenerStandalone:
 
         config = _make_config()
 
-        with patch("src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener):
+        with patch(
+            "src.listener.TelegramListener.create", new_callable=AsyncMock, return_value=mock_listener
+        ) as mock_create:
             await run_listener(config)
 
+        # The standalone entry point is a phase-5 seam: it must name the account.
+        mock_create.assert_awaited_once_with(config, account_id=1)
         mock_listener.connect.assert_awaited_once()
         mock_listener.run.assert_awaited_once()
         mock_listener.close.assert_awaited_once()
@@ -2288,6 +2292,30 @@ class TestRunListenerStandalone:
             await run_listener(config)
 
         mock_listener.close.assert_awaited_once()
+
+    async def test_run_listener_builds_real_listener_for_the_default_account(self):
+        """The standalone entry runs the REAL TelegramListener.create/__init__ chain.
+
+        The tests above patch create() away, so they cannot catch the entry
+        dropping the required account_id kwarg. Here only leaf dependencies are
+        mocked; a missing kwarg raises TypeError out of run_listener itself.
+        """
+        from src.db.models import DEFAULT_ACCOUNT_ID
+        from src.listener import run_listener
+
+        config = _make_config()
+
+        with (
+            patch("src.listener.create_adapter", new_callable=AsyncMock, return_value=AsyncMock()),
+            patch.object(TelegramListener, "connect", autospec=True) as mock_connect,
+            patch.object(TelegramListener, "run", autospec=True),
+            patch.object(TelegramListener, "close", autospec=True),
+        ):
+            await run_listener(config)
+
+        listener = mock_connect.await_args.args[0]
+        assert isinstance(listener, TelegramListener)
+        assert listener.account_id == DEFAULT_ACCOUNT_ID
 
 
 # ===========================================================================

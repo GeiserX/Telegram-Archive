@@ -55,7 +55,7 @@ class _MediaRepairDB(Protocol):
 
     def iter_media_paths_for_repair(self, batch_size: int = ...) -> AsyncIterator[list[dict]]: ...
 
-    async def update_media_file_path(self, media_id: object, file_path: str) -> None: ...
+    async def update_media_file_path(self, media_id: object, file_path: str, *, account_id: int) -> None: ...
 
 
 def _is_corrupt_basename(basename: str, clean_name: str) -> bool:
@@ -150,10 +150,11 @@ def _repair_records_sync(records: list[dict], shared_dir: str) -> tuple[int, int
     """Do the blocking filesystem repair work off the event loop.
 
     Returns ``(repaired, deferred, pending_db_updates)`` where
-    ``pending_db_updates`` is a list of ``(media_id, clean_path)`` rows whose
-    ``media.file_path`` must be repointed by the async caller. ``deferred``
-    counts rows that hit a transient filesystem error and should be retried on
-    a later run (these block the idempotency marker).
+    ``pending_db_updates`` is a list of ``(media_id, clean_path, account_id)``
+    rows whose ``media.file_path`` must be repointed by the async caller —
+    media ids repeat across accounts, so the row's own account_id is needed to
+    address it. ``deferred`` counts rows that hit a transient filesystem error
+    and should be retried on a later run (these block the idempotency marker).
     """
     repaired = 0
     deferred = 0
@@ -179,7 +180,7 @@ def _repair_records_sync(records: list[dict], shared_dir: str) -> tuple[int, int
             if _is_corrupt_basename(os.path.basename(file_path), clean_name):
                 clean_path = os.path.join(os.path.dirname(file_path), clean_name)
                 if _repair_direct_file(file_path, clean_path):
-                    pending_db_updates.append((media_id, clean_path))
+                    pending_db_updates.append((media_id, clean_path, record["account_id"]))
                     repaired += 1
         except OSError:
             deferred += 1
@@ -298,9 +299,9 @@ async def repair_media_extensions(media_path: str, db: _MediaRepairDB) -> int:
             # Repoint media.file_path for the no-dedup rows we renamed. A failure
             # here leaves the file renamed but the row stale; defer so the marker
             # is withheld and the next run's adoption branch repoints it.
-            for media_id, clean_path in pending_db_updates:
+            for media_id, clean_path, row_account_id in pending_db_updates:
                 try:
-                    await db.update_media_file_path(media_id, clean_path)
+                    await db.update_media_file_path(media_id, clean_path, account_id=row_account_id)
                 except Exception as e:
                     logger.warning("Media repair: DB repoint failed for one record (%s)", type(e).__name__)
                     deferred += 1
