@@ -207,24 +207,24 @@ class Message(Base):
         # size (measured ~95x faster on a ~100k-row instance: 41.8ms ->
         # 0.4ms). ``postgresql_using``/``postgresql_ops`` are dialect-
         # scoped kwargs - SQLAlchemy drops them for every dialect other
-        # than PostgreSQL, so create_all() on SQLite still gets a same-
-        # name/same-column index, just a plain (unused but harmless)
-        # B-tree instead. Requires the pg_trgm extension, created by the
-        # DDL hook below (create_all() path) and by migration 022 (Alembic
-        # path, which is authoritative for PostgreSQL - see 021's
-        # docstring).
+        # than PostgreSQL. ddl_if scopes creation itself to PostgreSQL: a
+        # same-name B-tree on SQLite would copy the entire text column into
+        # an index no SQLite query plan can use - on a multi-gigabyte
+        # archive that is real, permanent file growth for nothing. The
+        # pg_trgm extension is created by the DDL hook below (create_all()
+        # path) and by migration 023 (Alembic path).
         Index(
             "idx_messages_text_trgm",
             "text",
             postgresql_using="gin",
             postgresql_ops={"text": "gin_trgm_ops"},
-        ),
+        ).ddl_if(dialect="postgresql"),
     )
 
 
 # idx_messages_text_trgm's gin_trgm_ops needs the pg_trgm extension to exist
 # before create_all() reaches that index - fired here rather than relying on
-# migration 022 alone, since create_all() (the SQLite-and-test-fixture path,
+# migration 023 alone, since create_all() (the SQLite-and-test-fixture path,
 # not the app's own PostgreSQL runtime path - see 021's docstring) never
 # runs Alembic. execute_if scopes this to PostgreSQL only; SQLite's
 # create_all() run never touches it.

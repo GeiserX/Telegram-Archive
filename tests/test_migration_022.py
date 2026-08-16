@@ -392,6 +392,15 @@ def run_shipped_stamping_ladder(path: Path) -> str | None:
     return namespace.get("stamp_version")
 
 
+def chain_head() -> str:
+    """The migration chain's live head, so reached-head assertions survive new revisions."""
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
 def alembic_version(path: Path) -> str | None:
     conn = sqlite3.connect(str(path))
     try:
@@ -492,7 +501,11 @@ class TestCrashMatrix:
 
         sa.event.listen(sa.engine.Engine, "before_cursor_execute", listener)
         try:
-            upgrade_to(f"sqlite+aiosqlite:///{path}")
+            # Target 022 alone: the matrix's invariants (version never advances,
+            # rows untouched, replay converges) bracket THIS migration's single
+            # transaction; later chained revisions commit their own transactions
+            # and carry their own suites.
+            upgrade_to(f"sqlite+aiosqlite:///{path}", "022")
         finally:
             sa.event.remove(sa.engine.Engine, "before_cursor_execute", listener)
         return seen["n"]
@@ -628,7 +641,7 @@ class TestPrechecks:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         conn.close()
         upgrade_to(f"sqlite+aiosqlite:///{archive}")
-        assert alembic_version(archive) == "022"
+        assert alembic_version(archive) == chain_head()
 
     def test_it_does_not_refuse_a_first_ever_start(self, tmp_path):
         """A brand-new install has nothing to protect, and the viewer container
@@ -640,7 +653,7 @@ class TestPrechecks:
             upgrade_to(f"sqlite+aiosqlite:///{path}")
         finally:
             holder.close()
-        assert alembic_version(path) == "022"
+        assert alembic_version(path) == chain_head()
 
     def test_it_turns_sqlite_foreign_key_enforcement_off_before_dropping_anything(self, tmp_path):
         """With enforcement on, DROP TABLE chats deletes its children first.

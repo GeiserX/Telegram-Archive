@@ -197,3 +197,22 @@ class TestPaginationRealEngine:
         index_method, opclasses = row
         assert index_method == "gin", f"expected a GIN index, got {index_method!r}"
         assert "gin_trgm_ops" in opclasses, f"expected gin_trgm_ops, got {opclasses!r}"
+
+    async def test_trgm_index_absent_on_sqlite(self, real_adapter):
+        """SQLite must not carry the trigram index at all.
+
+        A same-name B-tree would duplicate the entire text column into an
+        index SQLite's ILIKE plan can never use — permanent file growth for
+        nothing — so both provisioning paths skip it there (models.py's
+        ddl_if(dialect="postgresql") and migration 023's dialect guard).
+        """
+        if real_adapter.db_manager.engine.dialect.name == "postgresql":
+            import pytest
+
+            pytest.skip("absence pin is the SQLite half; the GIN pin covers PostgreSQL")
+
+        import sqlalchemy as sa
+
+        async with real_adapter.db_manager.engine.connect() as conn:
+            names = await conn.run_sync(lambda c: {ix["name"] for ix in sa.inspect(c).get_indexes("messages")})
+        assert "idx_messages_text_trgm" not in names

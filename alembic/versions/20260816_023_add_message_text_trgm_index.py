@@ -34,9 +34,9 @@ lock for the duration of the index build - acceptable for the same reason
 prior structural changes to this table were: migrations run once, and this
 one is asymptotically the same cost class as REINDEXing an existing index.
 
-Revision ID: 022
-Revises: 021
-Create Date: 2026-08-15
+Revision ID: 023
+Revises: 022
+Create Date: 2026-08-16
 """
 
 from collections.abc import Sequence
@@ -45,8 +45,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "022"
-down_revision: str | None = "021"
+revision: str = "023"
+down_revision: str | None = "022"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -77,8 +77,17 @@ def upgrade() -> None:
         # postgresql_using/postgresql_ops are dialect-scoped kwargs that
         # SQLAlchemy silently drops on every other dialect, producing a
         # harmless, unused plain B-tree there instead.
-        kwargs = {"postgresql_using": "gin", "postgresql_ops": {"text": "gin_trgm_ops"}} if is_postgresql else {}
-        op.create_index(INDEX_NAME, TABLE_NAME, ["text"], **kwargs)
+        # PostgreSQL only: a same-name B-tree on SQLite would duplicate the
+        # entire text column into an index no query can use (models.py scopes
+        # its Index() with ddl_if(dialect="postgresql") for the same reason).
+        if is_postgresql:
+            op.create_index(
+                INDEX_NAME,
+                TABLE_NAME,
+                ["text"],
+                postgresql_using="gin",
+                postgresql_ops={"text": "gin_trgm_ops"},
+            )
 
 
 def downgrade() -> None:
