@@ -756,13 +756,13 @@
                                 <template v-if="statsData && statsData.backup_in_progress">A backup is currently running — topics appear once it finishes.</template>
                                 <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
                             </span>
-                            <button @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, { id: 'all', title: 'All messages' })"
+                            <button @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, { id: 'all', title: 'All messages' })"
                                 class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-blue-600 text-white transition">
                                 View all messages
                             </button>
                         </div>
                         <div v-else v-for="topic in topics" :key="topic.id"
-                            @click="selectTopic(topicsNavEntry.chat || { id: topicsNavEntry.chatId, is_forum: true }, topic)"
+                            @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, topic)"
                             class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
                             :class="{'bg-tg-active': selectedPaneTopic?.id === topic.id}">
                             <!-- Topic icon -->
@@ -840,9 +840,9 @@
                             </div>
 
                             <!-- Chat items -->
-                            <div v-for="chat in filteredChats" :key="chat.id" @click="selectChat(chat)"
+                            <div v-for="chat in filteredChats" :key="chat.ref" @click="selectChat(chat)"
                                 class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
-                                :class="{'bg-tg-active': selectedChat?.id === chat.id}">
+                                :class="{'bg-tg-active': selectedChat?.ref === chat.ref}">
                                 <!-- Avatar -->
                                 <div
                                     class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
@@ -1908,7 +1908,7 @@
                                 <label class="text-xs text-gray-400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
                                 <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
                                     <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
-                                        <input type="checkbox" :value="chat.id" v-model="adminViewerForm.allowed_chat_ids" class="rounded" />
+                                        <input type="checkbox" :value="chat.ref" v-model="adminViewerForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
                                     </label>
                                 </div>
@@ -1934,10 +1934,13 @@
                                 <div class="flex-1">
                                     <div class="text-sm text-white font-medium">{{ viewer.username }}</div>
                                     <div class="text-xs text-gray-400">
-                                        <template v-if="viewer.allowed_chat_ids && viewer.allowed_chat_ids.length">
-                                            {{ viewer.allowed_chat_ids.map(id => { const c = adminChats.find(ch => ch.id === id); return c ? c.title : id }).join(', ') }}
+                                        <template v-if="viewer.allowed_chat_refs && viewer.allowed_chat_refs.length">
+                                            {{ viewer.allowed_chat_refs.map(r => { const c = adminChats.find(ch => ch.ref === r); return c ? c.title : r }).join(', ') }}
                                         </template>
+                                        <!-- [] is an ENFORCED empty grant (deny everything), not "all chats" -->
+                                        <template v-else-if="viewer.allowed_chat_refs">No chats (empty grant)</template>
                                         <template v-else>All chats</template>
+                                        <template v-if="viewer.allowed_accounts"> · Accounts: {{ viewer.allowed_accounts.length ? viewer.allowed_accounts.join(', ') : 'none' }}</template>
                                         · {{ viewer.is_active ? 'Active' : 'Inactive' }}
                                         <template v-if="viewer.no_download"> · <span class="text-amber-400">No DL</span></template>
                                     </div>
@@ -1963,7 +1966,7 @@
                                 <label class="text-xs text-gray-400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
                                 <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
                                     <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
-                                        <input type="checkbox" :value="chat.id" v-model="adminTokenForm.allowed_chat_ids" class="rounded" />
+                                        <input type="checkbox" :value="chat.ref" v-model="adminTokenForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
                                     </label>
                                 </div>
@@ -2002,9 +2005,12 @@
                                     <div class="flex-1">
                                         <div class="text-sm text-white font-medium">{{ token.label || `Token #${token.id}` }}</div>
                                         <div class="text-xs text-gray-400">
-                                            <template v-if="token.allowed_chat_ids && token.allowed_chat_ids.length">
-                                                {{ token.allowed_chat_ids.map(id => { const c = adminChats.find(ch => ch.id === id); return c ? c.title : id }).join(', ') }}
+                                            <template v-if="token.allowed_chat_refs && token.allowed_chat_refs.length">
+                                                {{ token.allowed_chat_refs.map(r => { const c = adminChats.find(ch => ch.ref === r); return c ? c.title : r }).join(', ') }}
                                             </template>
+                                            <!-- an unreadable stored grant renders as [] and denies everything -->
+                                            <template v-else>No chats (empty grant)</template>
+                                            <template v-if="token.allowed_accounts"> · Accounts: {{ token.allowed_accounts.length ? token.allowed_accounts.join(', ') : 'none' }}</template>
                                             · Used {{ token.use_count || 0 }}x
                                             <template v-if="token.last_used_at"> · Last: {{ new Date(token.last_used_at).toLocaleDateString() }}</template>
                                             <template v-if="token.expires_at"> · Exp: {{ new Date(token.expires_at).toLocaleDateString() }}</template>
@@ -2826,7 +2832,7 @@
                     }
                 }
 
-                const loadTopics = async (chatId) => {
+                const loadTopics = async (chatRef) => {
                     const requestSeq = ++topicsRequestSeq
                     loadingTopics.value = true
                     // Drop the previous chat's rows up front: a failure or a lost race
@@ -2835,7 +2841,7 @@
                     topics.value = []
                     topicsError.value = ''
                     try {
-                        const res = await fetch(`/api/chats/${chatId}/topics`, { credentials: 'include' })
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/topics`, { credentials: 'include' })
                         if (requestSeq !== topicsRequestSeq) return
                         if (res.ok) {
                             const data = await res.json()
@@ -2856,7 +2862,7 @@
 
                 const retryLoadTopics = () => {
                     const nav = topicsNavEntry.value
-                    if (nav) loadTopics(nav.chatId)
+                    if (nav) loadTopics(nav.chatRef)
                 }
 
                 const selectFolder = (folderId) => {
@@ -2875,8 +2881,8 @@
 
                 const openForumTopics = async (chat) => {
                     // v6.2.12: Store full chat object so selectTopic can use it for display name
-                    navigateTo({ type: 'topics', chatId: chat.id, chatName: getChatName(chat), chat: chat })
-                    await loadTopics(chat.id)
+                    navigateTo({ type: 'topics', chatRef: chat.ref, chatName: getChatName(chat), chat: chat })
+                    await loadTopics(chat.ref)
                 }
 
                 const selectTopic = async (chat, topic) => {
@@ -2886,7 +2892,7 @@
                     loading.value = false
 
                     // Push topic chat view onto nav stack
-                    navStack.value.push({ type: 'chat', chatId: chat.id, topicId: topic.id, topicTitle: topic.title })
+                    navStack.value.push({ type: 'chat', chatRef: chat.ref, topicId: topic.id, topicTitle: topic.title })
                     selectedChat.value = chat
                     selectedPaneTopic.value = topic
                     messages.value = []
@@ -2900,7 +2906,7 @@
                     showMediaGallery.value = false
                     await loadMessages()
                     if (chatVersion !== myVersion) return
-                    await loadChatStats(chat.id)
+                    await loadChatStats(chat.ref)
                     await nextTick()
                     if (chatVersion !== myVersion) return
                     scrollToBottom()
@@ -3161,22 +3167,24 @@
                     loadingStats.value = false
                 }
 
-                // Resolve the chat a notification points at. The sidebar holds one page of
-                // 50 NON-archived chats, so looking the id up there alone silently fails
+                // Resolve the chat a notification points at (by its opaque ref — the only
+                // chat identity notifications carry now). The sidebar holds one page of
+                // 50 NON-archived chats, so looking the ref up there alone silently fails
                 // for every archived chat (a notification is fired for those too) and for
                 // anything past the first page. Fall back to one wider lookup — no
                 // archived filter, so archived chats are included — before giving up.
-                const resolveChatById = async (chatId) => {
-                    const known = chats.value.find(c => c.id === chatId)
+                const resolveChatById = async (chatRef) => {
+                    const known = chats.value.find(c => c.ref === chatRef)
                     if (known) return known
                     try {
                         const res = await fetch('/api/chats?limit=1000', { credentials: 'include' })
                         if (res.ok) {
                             const data = await res.json()
-                            return (data.chats || []).find(c => c.id === chatId) || null
+                            return (data.chats || []).find(c => c.ref === chatRef) || null
                         }
                     } catch (e) {
-                        // No identifiers in the message: the chat id is PII.
+                        // No identifiers in the message, out of habit: the ref is opaque,
+                        // but log-shape stability is worth keeping.
                         console.error('Failed to resolve the notification target chat')
                     }
                     return null
@@ -3185,8 +3193,8 @@
                 // Open what a notification points at, or say so instead of doing nothing.
                 // Returns whether the chat was opened, so the caller can decide to keep a
                 // deep link in the URL and let a refresh retry it.
-                const openNotificationTarget = async (chatId, messageId) => {
-                    const targetChat = await resolveChatById(chatId)
+                const openNotificationTarget = async (chatRef, messageId) => {
+                    const targetChat = await resolveChatById(chatRef)
                     if (!targetChat) {
                         showToast('Could not open that chat')
                         return false
@@ -3208,9 +3216,9 @@
                 const flushPendingNotificationClick = async () => {
                     notificationClickReady = true
                     if (!pendingNotificationClick) return
-                    const { chatId, messageId } = pendingNotificationClick
+                    const { chatRef, messageId } = pendingNotificationClick
                     pendingNotificationClick = null
-                    await openNotificationTarget(chatId, messageId)
+                    await openNotificationTarget(chatRef, messageId)
                 }
 
                 // Auth check on mount
@@ -3226,15 +3234,15 @@
                     // to handle.
                     const onServiceWorkerMessage = async (event) => {
                         if (event.data?.type !== 'NOTIFICATION_CLICK') return
-                        const { chat_id, message_id } = event.data.data || {}
-                        if (!chat_id) return
-                        // No identifiers in the log line: chat and message ids are PII.
+                        const { chat_ref, message_id } = event.data.data || {}
+                        if (!chat_ref) return
+                        // No identifiers in the log line: message ids are PII.
                         console.log('[Notification] Click received')
                         if (!notificationClickReady) {
-                            pendingNotificationClick = { chatId: chat_id, messageId: message_id }
+                            pendingNotificationClick = { chatRef: chat_ref, messageId: message_id }
                             return
                         }
-                        await openNotificationTarget(chat_id, message_id)
+                        await openNotificationTarget(chat_ref, message_id)
                     }
                     if ('serviceWorker' in navigator) {
                         navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage)
@@ -3296,17 +3304,17 @@
                                 await loadArchivedCount()
                                 setupInfiniteScroll()
 
-                                // Handle deep link from push notification
+                                // Handle deep link from push notification. /?chat= carries the
+                                // chat's opaque ref, so the chat id stays out of browser history.
                                 const urlParams = new URLSearchParams(window.location.search)
-                                const chatIdParam = urlParams.get('chat')
+                                const chatRefParam = urlParams.get('chat')
                                 const msgIdParam = urlParams.get('msg')
 
-                                if (chatIdParam) {
-                                    const chatId = parseInt(chatIdParam)
+                                if (chatRefParam) {
                                     const msgId = msgIdParam ? parseInt(msgIdParam) : null
-                                    // No identifiers in the log line: chat and message ids are PII.
+                                    // No identifiers in the log line: message ids are PII.
                                     console.log('[Notification] Deep linking to a chat')
-                                    const opened = await openNotificationTarget(chatId, msgId)
+                                    const opened = await openNotificationTarget(chatRefParam, msgId)
                                     // Clean URL without reload to prevent re-navigation on refresh —
                                     // but only once the link actually opened, so a failed one stays
                                     // retryable by refresh instead of being scrubbed away.
@@ -3367,7 +3375,7 @@
                             if (selectedChat.value) {
                                 socket.send(JSON.stringify({
                                     action: 'subscribe',
-                                    chat_id: selectedChat.value.id
+                                    chat_ref: selectedChat.value.ref
                                 }))
                             }
                         }
@@ -3399,7 +3407,7 @@
                     switch (data.type) {
                         case 'new_message':
                             // Add to messages if we're viewing that chat/topic (deduplicate by ID)
-                            if (selectedChat.value?.id === data.chat_id && data.message?.id != null && messageBelongsToCurrentTopic(data.message)) {
+                            if (selectedChat.value?.ref === data.chat_ref && data.message?.id != null && messageBelongsToCurrentTopic(data.message)) {
                                 if (viewingPinnedWindow.value || messageSearchQuery.value) {
                                     // Mirror the realtime-poll guard (#213): a detached jump window
                                     // must not grow live-tail rows (the near-bottom autoscroll below
@@ -3429,13 +3437,13 @@
                             break
 
                         case 'edit':
-                            if (data.chat_id != null && selectedChat.value?.id !== data.chat_id) {
+                            if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
                                 break
                             }
-                            // Update message text in current view
-                            const editMsg = messages.value.find(m =>
-                                m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
-                            )
+                            // Update message text in current view. Message rows carry no ref,
+                            // but every row in the pane belongs to selectedChat, and the guard
+                            // above already matched the frame's chat_ref against it.
+                            const editMsg = messages.value.find(m => m.id === data.message_id)
                             if (editMsg) {
                                 const previousText = editMsg.text
                                 editMsg.text = data.new_text
@@ -3454,34 +3462,28 @@
                             // Live reaction update (#219). The 3s poll already merges
                             // reactions via upsertMessages, so this is just the instant
                             // path; wholesale-replace to match the server's aggregate.
-                            if (data.chat_id != null && selectedChat.value?.id !== data.chat_id) {
+                            if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
                                 break
                             }
-                            const reactionMsg = messages.value.find(m =>
-                                m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
-                            )
+                            const reactionMsg = messages.value.find(m => m.id === data.message_id)
                             if (reactionMsg) {
                                 reactionMsg.reactions = data.reactions || []
                             }
                             break
 
                         case 'delete':
-                            if (data.chat_id != null && selectedChat.value?.id !== data.chat_id) {
+                            if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
                                 break
                             }
                             if (data.deletion_mode === 'soft') {
-                                const deleteMsg = messages.value.find(m =>
-                                    m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
-                                )
+                                const deleteMsg = messages.value.find(m => m.id === data.message_id)
                                 if (deleteMsg) {
                                     deleteMsg.is_deleted = 1
                                     deleteMsg.deleted_at = data.deleted_at
                                 }
                             } else {
                                 // Remove from current view
-                                const deleteIdx = messages.value.findIndex(m =>
-                                    m.id === data.message_id && (data.chat_id == null || m.chat_id === data.chat_id)
-                                )
+                                const deleteIdx = messages.value.findIndex(m => m.id === data.message_id)
                                 if (deleteIdx !== -1) {
                                     messages.value.splice(deleteIdx, 1)
                                 }
@@ -3490,8 +3492,8 @@
 
                         case 'pin':
                             // Reload pinned messages when pin/unpin happens in current chat
-                            if (selectedChat.value?.id === data.chat_id) {
-                                loadPinnedMessages(data.chat_id)
+                            if (selectedChat.value?.ref === data.chat_ref) {
+                                loadPinnedMessages(data.chat_ref)
                             }
                             break
 
@@ -3717,14 +3719,14 @@
                     // Skip if push is enabled (service worker handles it)
                     if (pushEnabled.value && pushSubscribed.value) return
 
-                    const chatName = chats.value.find(c => c.id === data.chat_id)?.title || 'New Message'
+                    const chatName = chats.value.find(c => c.ref === data.chat_ref)?.title || 'New Message'
                     const body = data.message?.text?.substring(0, 100) || 'New message received'
 
                     new Notification(chatName, {
                         body: body,
                         icon: '/static/favicon.ico',
-                        tag: `chat-${data.chat_id}`,
-                        data: { chat_id: data.chat_id }
+                        tag: `chat-${data.chat_ref}`,
+                        data: { chat_ref: data.chat_ref }
                     })
                 }
 
@@ -3768,14 +3770,14 @@
                         if (oldChat) {
                             ws.send(JSON.stringify({
                                 action: 'unsubscribe',
-                                chat_id: oldChat.id
+                                chat_ref: oldChat.ref
                             }))
                         }
                         // Subscribe to new chat
                         if (newChat) {
                             ws.send(JSON.stringify({
                                 action: 'subscribe',
-                                chat_id: newChat.id
+                                chat_ref: newChat.ref
                             }))
                         }
                     }
@@ -3858,13 +3860,13 @@
                     // the (already cleared) list, so the grid filled with the wrong type's
                     // items and stayed that way: both the skeleton and the empty state only
                     // render while the list is empty, and no request for the visible tab was
-                    // ever issued. The chat id and tab are pinned too, because a response can
+                    // ever issued. The chat ref and tab are pinned too, because a response can
                     // also outlive the view it was requested for.
                     const requestSeq = ++mediaGalleryRequestSeq
-                    const requestChatId = selectedChat.value.id
+                    const requestChatRef = selectedChat.value.ref
                     const requestTab = mediaGalleryTab.value
                     const stillCurrent = () => requestSeq === mediaGalleryRequestSeq &&
-                        selectedChat.value?.id === requestChatId &&
+                        selectedChat.value?.ref === requestChatRef &&
                         mediaGalleryTab.value === requestTab
                     mediaGalleryLoading.value = true
                     try {
@@ -3883,7 +3885,7 @@
                         })
                         if (lastItem) params.set('before_id', lastItem.id)
 
-                        const res = await fetch(`/api/chats/${requestChatId}/media?${params}`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(requestChatRef)}/media?${params}`, {
                             credentials: 'include'
                         })
                         if (!stillCurrent()) return
@@ -3913,14 +3915,14 @@
                     // Same staleness as the item list: these counts are the tab badges, so a
                     // response that outlived its chat would label this chat's tabs with the
                     // previous chat's numbers.
-                    const requestChatId = selectedChat.value.id
+                    const requestChatRef = selectedChat.value.ref
                     try {
-                        const res = await fetch(`/api/chats/${requestChatId}/media/counts`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(requestChatRef)}/media/counts`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
                             const data = await res.json()
-                            if (selectedChat.value?.id !== requestChatId) return
+                            if (selectedChat.value?.ref !== requestChatRef) return
                             mediaGalleryCounts.value = {
                                 photos: (data.photo || 0) + (data.video || 0) + (data.animation || 0),
                                 voice: (data.voice || 0) + (data.audio || 0),
@@ -3952,6 +3954,9 @@
                         const mapped = mediaList.map(m => ({
                             media: {
                                 type: m.type,
+                                // The server-built URL is the only way to the bytes now;
+                                // file_path stays as display data (getMediaDisplayName).
+                                url: m.media_url || null,
                                 file_path: m.file_path,
                                 file_name: m.file_name,
                                 width: m.width,
@@ -4021,7 +4026,7 @@
                         const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
                         // before_id is an exclusive bound, so +1 keeps the target itself as the
                         // newest row of the history half of the window.
-                        const res = await fetch(`/api/chats/${selectedChat.value.id}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?before_id=${messageId + 1}&limit=${windowLimit}${topicParam}`, {
                             credentials: 'include'
                         })
                         if (!isCurrentIntent()) return
@@ -4038,7 +4043,7 @@
                         let afterRows = []
                         let afterFetchComplete = false
                         try {
-                            const afterRes = await fetch(`/api/chats/${selectedChat.value.id}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
+                            const afterRes = await fetch(`/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?after_id=${messageId}&limit=${windowLimit}${topicParam}`, {
                                 credentials: 'include'
                             })
                             if (!isCurrentIntent()) return
@@ -4105,7 +4110,7 @@
                 watch(showMediaGallery, async (val) => {
                     if (val) {
                         galleryReturnState = {
-                            chatId: selectedChat.value?.id ?? null,
+                            chatRef: selectedChat.value?.ref ?? null,
                             scrollTop: messagesContainer.value ? messagesContainer.value.scrollTop : 0,
                             focusElement: document.activeElement instanceof HTMLElement ? document.activeElement : null
                         }
@@ -4127,7 +4132,7 @@
                             await nextTick()
                             setupMessagesScrollObserver()
                             // Restore reading position + focus for a plain close in the same chat.
-                            if (returnState && returnState.chatId === (selectedChat.value?.id ?? null)) {
+                            if (returnState && returnState.chatRef === (selectedChat.value?.ref ?? null)) {
                                 if (messagesContainer.value) {
                                     messagesContainer.value.scrollTop = returnState.scrollTop
                                 }
@@ -4294,9 +4299,9 @@
                 })
 
                 // Load all pinned messages for a chat
-                const loadPinnedMessages = async (chatId) => {
+                const loadPinnedMessages = async (chatRef) => {
                     try {
-                        const res = await fetch(`/api/chats/${chatId}/pinned`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/pinned`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
@@ -4305,16 +4310,16 @@
                             // outlived its chat would pin the previous chat's message
                             // over this one until the next switch — and a stale
                             // failure below would wipe this chat's banner instead.
-                            if (selectedChat.value?.id !== chatId) return
+                            if (selectedChat.value?.ref !== chatRef) return
                             pinnedMessages.value = Array.isArray(data) ? data : []
                             currentPinnedIndex.value = 0  // Start with newest
                         } else {
-                            if (selectedChat.value?.id !== chatId) return
+                            if (selectedChat.value?.ref !== chatRef) return
                             pinnedMessages.value = []
                         }
                     } catch (e) {
                         console.error('Failed to load pinned messages:', e)
-                        if (selectedChat.value?.id !== chatId) return
+                        if (selectedChat.value?.ref !== chatRef) return
                         pinnedMessages.value = []
                     }
                 }
@@ -4348,9 +4353,9 @@
                     showPinnedOnly.value = false
                 }
 
-                const loadChatStats = async (chatId) => {
+                const loadChatStats = async (chatRef) => {
                     try {
-                        const res = await fetch(`/api/chats/${chatId}/stats`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/stats`, {
                             credentials: 'include'
                         })
                         if (res.ok) {
@@ -4358,12 +4363,12 @@
                             // Stats never auto-refresh, so a response that outlived its
                             // chat would show the previous chat's counts in this chat's
                             // header until the next switch.
-                            if (selectedChat.value?.id !== chatId) return
+                            if (selectedChat.value?.ref !== chatRef) return
                             chatStats.value = data
                         }
                     } catch (e) {
                         console.error('Failed to load chat stats:', e)
-                        if (selectedChat.value?.id !== chatId) return
+                        if (selectedChat.value?.ref !== chatRef) return
                         chatStats.value = null
                     }
                 }
@@ -4393,8 +4398,8 @@
                     showMediaGallery.value = false  // Exit media gallery when changing chat
                     await loadMessages()
                     if (chatVersion !== myVersion) return  // Another chat was selected, abort
-                    await loadChatStats(chat.id)  // Load stats for this chat
-                    await loadPinnedMessages(chat.id)  // Load pinned messages for this chat
+                    await loadChatStats(chat.ref)  // Load stats for this chat
+                    await loadPinnedMessages(chat.ref)  // Load pinned messages for this chat
                     await nextTick()
                     if (chatVersion !== myVersion) return
                     scrollToBottom()
@@ -4430,7 +4435,7 @@
                     try {
                         // Get latest messages (just first page)
                         // v6.2.12: Include topic_id filter when viewing a forum topic
-                        let refreshUrl = `/api/chats/${selectedChat.value.id}/messages?limit=50&offset=0`
+                        let refreshUrl = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=50&offset=0`
                         const topicId = activeTopicId()
                         if (topicId != null) {
                             refreshUrl += `&topic_id=${topicId}`
@@ -4522,7 +4527,7 @@
                     loading.value = true
                     try {
                         const limit = 50
-                        let url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}`
+                        let url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=${limit}`
 
                         // v6.2.0: Add topic_id filter if the displayed pane is scoped to a topic.
                         const topicId = activeTopicId()
@@ -4547,7 +4552,7 @@
                         if (messageSearchQuery.value) {
                             // Search still uses offset for simplicity
                             const offset = page.value * limit
-                            url = `/api/chats/${selectedChat.value.id}/messages?limit=${limit}&offset=${offset}`
+                            url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/messages?limit=${limit}&offset=${offset}`
                             url += `&search=${encodeURIComponent(messageSearchQuery.value)}`
                             // Also pass topic_id for search within a topic
                             if (topicId != null) {
@@ -4637,18 +4642,18 @@
 
                     const requestSeq = ++newerLoadRequestSeq
                     const myVersion = chatVersion
-                    const chatId = selectedChat.value.id
+                    const chatRef = selectedChat.value.ref
                     const topicId = activeTopicId()
                     const topicParam = topicId == null ? '' : `&topic_id=${topicId}`
                     loadingNewer.value = true
                     try {
                         const limit = 50
                         const res = await fetch(
-                            `/api/chats/${chatId}/messages?after_id=${newestMessageId}&limit=${limit}${topicParam}`,
+                            `/api/chats/${encodeURIComponent(chatRef)}/messages?after_id=${newestMessageId}&limit=${limit}${topicParam}`,
                             { credentials: 'include' }
                         )
                         if (requestSeq !== newerLoadRequestSeq || chatVersion !== myVersion ||
-                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                            selectedChat.value?.ref !== chatRef || activeTopicId() !== topicId) return
                         if (!res.ok) {
                             if (res.status === 401) {
                                 isAuthenticated.value = false
@@ -4658,7 +4663,7 @@
 
                         const data = await res.json()
                         if (requestSeq !== newerLoadRequestSeq || chatVersion !== myVersion ||
-                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                            selectedChat.value?.ref !== chatRef || activeTopicId() !== topicId) return
                         const newMessages = data.messages || data
                         newerLoadError.value = ''
                         upsertMessages(newMessages)
@@ -4678,7 +4683,7 @@
                         }
                     } catch (e) {
                         if (requestSeq === newerLoadRequestSeq && chatVersion === myVersion &&
-                            selectedChat.value?.id === chatId && activeTopicId() === topicId) {
+                            selectedChat.value?.ref === chatRef && activeTopicId() === topicId) {
                             newerLoadError.value = 'Could not load newer messages.'
                         }
                         console.error('Failed to load newer messages', e)
@@ -4722,12 +4727,12 @@
                         clearTimeout(messageSearchDebounceTimer)
                     }
                     const queryAtInput = messageSearchQuery.value
-                    const chatIdAtInput = selectedChat.value?.id ?? null
+                    const chatRefAtInput = selectedChat.value?.ref ?? null
                     messageSearchDebounceTimer = setTimeout(() => {
                         messageSearchDebounceTimer = null
                         // A chat/topic switch clears the box and rebuilds the pane while the
                         // timer is pending; running the old query then would wipe the new view.
-                        if ((selectedChat.value?.id ?? null) !== chatIdAtInput) return
+                        if ((selectedChat.value?.ref ?? null) !== chatRefAtInput) return
                         if (messageSearchQuery.value !== queryAtInput) return
                         searchMessages()
                     }, 300) // 300ms debounce, same as the sidebar search
@@ -5113,7 +5118,7 @@
 
                 const exportChat = () => {
                     if (!selectedChat.value) return
-                    const url = `/api/chats/${selectedChat.value.id}/export`
+                    const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/export`
                     window.open(url, '_blank')
                 }
 
@@ -5354,8 +5359,10 @@
                 }
 
                 const loadMessageVersions = async (msg) => {
-                    const chatId = msg.chat_id ?? selectedChat.value?.id
-                    if (!chatId || msg.id == null) return
+                    // The URL wants the chat's ref; message rows carry only chat_id (data),
+                    // and every row this panel opens for belongs to the selected chat.
+                    const chatRef = selectedChat.value?.ref
+                    if (!chatRef || msg.id == null) return
 
                     const key = messageVersionsKey(msg)
                     const requestSeq = (messageVersionsRequestSeq.value[key] || 0) + 1
@@ -5364,7 +5371,7 @@
                     clearMessageVersionsRecord(messageVersionsErrors, key)
 
                     try {
-                        const res = await fetch(`/api/chats/${chatId}/messages/${msg.id}/versions?limit=100`, {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/messages/${encodeURIComponent(msg.id)}/versions?limit=100`, {
                             credentials: 'include'
                         })
                         if (!res.ok) {
@@ -5495,18 +5502,11 @@
                 }
 
                 const getMediaUrl = (msg) => {
-                    if (!msg.media?.file_path) return ''
-                    // Extract folder and filename from the stored path
-                    // media_path is like: /data/backups/media/35258041/filename.jpg
-                    // We need to extract: /media/35258041/filename.jpg
-                    const parts = msg.media?.file_path.split(/[/\\]/)
-                    const filename = parts.pop()
-                    const folder = parts.pop()  // Get the folder from the path, not from chat_id
-                    // #258: encode each SEGMENT on its own. A filename containing '#' or
-                    // '?' is otherwise cut by the browser (fragment / query) before the
-                    // request is even sent. Encoding the assembled path instead would
-                    // escape the '/' separators, so it must stay per-segment.
-                    return `/media/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`
+                    // Server-built, ref-addressed URL (/media/{chat_ref}/{media_key}) or
+                    // null. file_path is display data only — building a /media/ URL from
+                    // it would put the chat id back into requests and access logs, which
+                    // is exactly what the ref exists to prevent.
+                    return msg.media?.url || ''
                 }
 
                 const getMediaDisplayName = (media) => {
@@ -5546,10 +5546,9 @@
                 }
 
                 const handleImageError = (event, msg) => {
-                    // Log the event, never the URL: it is /media/<chat id>/<file id>_<the
-                    // sender's own filename>, i.e. exactly the identifiers the project
-                    // keeps out of logs, and the console buffer travels in screenshots,
-                    // screen shares and browser bug reports.
+                    // Log the event, never the URL: it is /media/<chat ref>/<message id>_
+                    // <type> — the message id is PII, and the console buffer travels in
+                    // screenshots, screen shares and browser bug reports.
                     console.error('Failed to load image')
                     // Show placeholder instead of broken image
                     const img = event.target
@@ -5566,8 +5565,8 @@
                 }
 
                 const handleMediaError = (event, msg) => {
-                    // Same rule as handleImageError: the media URL carries the chat id and
-                    // the sender's original filename, so log the event only.
+                    // Same rule as handleImageError: the media URL carries the message id,
+                    // so log the event only.
                     console.error('Failed to load media')
                     // Flag the row and let the template swap in the placeholder. Writing
                     // the placeholder in with innerHTML destroyed the <video>, its <source>
@@ -5753,37 +5752,39 @@
 
                 const audioMessageChatId = (msg) => msg.chat_id ?? selectedChat.value?.id ?? null
 
-                // #266: the media endpoint's cursor is a composite media id, and it is
-                // what lets the queue page in both directions from a track the endpoint
-                // has never returned — the window-seeded queue — instead of first
-                // walking backwards from the newest item to reach it.
+                // #266: the media endpoint's cursor is the chat-free `{message_id}_{type}`
+                // key it returns as each item's id, and it is what lets the queue page in
+                // both directions from a track the endpoint has never returned — the
+                // window-seeded queue — instead of first walking backwards from the
+                // newest item to reach it.
                 //
                 // #268: PREFER the id the payload already carries. Both message paths
-                // that feed this view select Media.id into `media.id`
-                // (get_messages_paginated / get_pinned_messages), and the no_download
-                // strip only blanks file_path, so the authoritative cursor is in hand
-                // and never has to be guessed.
+                // that feed this view deliver that key as `media.id`, and the
+                // no_download strip only blanks file_path/url, so the authoritative
+                // cursor is in hand and never has to be guessed.
                 //
                 // The rebuild below is only a FALLBACK, for a payload that predates
-                // that field or a writer that omits it. It reproduces the shape the
-                // capture path writes, `{chat}_{message}_{type}` — which is NOT the
-                // only shape in use (the importer writes `import_{chat}_{message}`), so
-                // guessing it is exactly how a legacy/imported archive ended up with a
-                // cursor the server cannot resolve. An unresolvable cursor answers with
-                // an empty page, which every caller here already reads as "nothing more
-                // that way", so the fallback degrades quietly rather than erroring.
+                // that field or a writer that omits it. The server reconstructs the
+                // storage key from it — which is NOT the only shape in use (the
+                // importer writes `import_{chat}_{message}`), so guessing is exactly
+                // how a legacy/imported archive ended up with a cursor the server
+                // cannot resolve. An unresolvable cursor answers with an empty page,
+                // which every caller here already reads as "nothing more that way",
+                // so the fallback degrades quietly rather than erroring.
                 const audioMessageMediaId = (msg) => {
                     const delivered = msg?.media?.id
                     if (delivered) return String(delivered)
-                    const chatId = audioMessageChatId(msg)
                     const type = msg?.media?.type
-                    if (chatId == null || msg?.id == null || !type) return null
-                    return `${chatId}_${msg.id}_${type}`
+                    if (msg?.id == null || !type) return null
+                    return `${msg.id}_${type}`
                 }
 
                 const audioTrackFromMessage = (msg) => ({
                     id: msg.id,
                     chatId: audioMessageChatId(msg),
+                    // The ref addresses every queue-page request; chatId stays as the
+                    // in-memory identity the queue compares tracks by.
+                    chatRef: selectedChat.value?.ref ?? null,
                     mediaId: audioMessageMediaId(msg),
                     chatName: selectedChat.value ? getChatName(selectedChat.value) : '',
                     url: getMediaUrl(msg),
@@ -5975,7 +5976,7 @@
                 // a response to land on a player the user has already closed.
                 let audioQueueAbort = null
 
-                const fetchAudioQueuePage = async (chatId, kind, cursor, direction = 'older') => {
+                const fetchAudioQueuePage = async (chatRef, kind, cursor, direction = 'older') => {
                     const params = new URLSearchParams({
                         types: audioQueueTypes(kind),
                         limit: String(AUDIO_QUEUE_PAGE_SIZE),
@@ -5989,7 +5990,7 @@
                     audioQueueAbort?.abort()
                     const controller = new AbortController()
                     audioQueueAbort = controller
-                    const res = await fetch(`/api/chats/${chatId}/media?${params}`, {
+                    const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/media?${params}`, {
                         credentials: 'include',
                         signal: controller.signal
                     })
@@ -6003,9 +6004,10 @@
                     return await res.json()
                 }
 
-                const audioTrackFromMediaItem = (item, kind, chatName) => ({
+                const audioTrackFromMediaItem = (item, kind, chatName, chatRef) => ({
                     id: item.message_id,
                     chatId: item.chat_id,
+                    chatRef,
                     // Authoritative cursor, straight from the endpoint — unlike the one
                     // audioMessageMediaId has to rebuild for a window-seeded track.
                     mediaId: item.id ?? null,
@@ -6021,7 +6023,7 @@
                     // no_download viewers get no media_url, and paths outside the media
                     // root are stripped server-side: an entry with no URL is unplayable.
                     .filter(item => item && item.media_url && item.message_id != null)
-                    .map(item => audioTrackFromMediaItem(item, track.kind, track.chatName))
+                    .map(item => audioTrackFromMediaItem(item, track.kind, track.chatName, track.chatRef))
 
                 const audioTrackTime = (track) => {
                     const ms = Date.parse(track.date || '')
@@ -6086,7 +6088,7 @@
                     let data
                     let forward = null
                     try {
-                        data = await fetchAudioQueuePage(track.chatId, track.kind, track.mediaId, 'older')
+                        data = await fetchAudioQueuePage(track.chatRef, track.kind, track.mediaId, 'older')
                         if (!(Array.isArray(data?.items) ? data.items : []).length && !data?.has_more) {
                             // #268: an empty backward page has two causes that LOOK
                             // identical — the track is the oldest audio of its kind, or
@@ -6097,7 +6099,7 @@
                             // resolves. That matters because handing the oldest track to
                             // the walk makes it traverse the WHOLE chat backwards to
                             // reach it, which is the cost #266 exists to remove.
-                            forward = await fetchAudioQueuePage(track.chatId, track.kind, track.mediaId, 'newer')
+                            forward = await fetchAudioQueuePage(track.chatRef, track.kind, track.mediaId, 'newer')
                         }
                     } catch (e) {
                         // A page that fails to load is not a bad anchor, and retrying it
@@ -6169,7 +6171,7 @@
                     // Playback advances forward in time while the endpoint pages
                     // backwards from the newest item, so paging back until the playing
                     // track shows up puts EVERY possible next track in hand.
-                    if (!track || track.chatId == null || noDownload.value) return
+                    if (!track || track.chatRef == null || noDownload.value) return
                     // #266: with a usable anchor none of that walking is needed — both
                     // directions extend on demand instead. Only a track whose media id
                     // cannot be rebuilt, or that this archive cannot resolve, falls
@@ -6184,7 +6186,7 @@
                     let foundPlaying = false
                     try {
                         for (let page = 0; page < AUDIO_QUEUE_MAX_PAGES; page++) {
-                            const data = await fetchAudioQueuePage(track.chatId, track.kind, cursor, 'older')
+                            const data = await fetchAudioQueuePage(track.chatRef, track.kind, cursor, 'older')
                             const items = Array.isArray(data?.items) ? data.items : []
                             if (!items.length) {
                                 // An empty page is NOT self-evidently "exhausted": it has
@@ -6297,7 +6299,7 @@
                         const seenCursors = new Set([audioQueueCursorNewer])
                         while (true) {
                             const data = await fetchAudioQueuePage(
-                                track.chatId, track.kind, audioQueueCursorNewer, 'newer')
+                                track.chatRef, track.kind, audioQueueCursorNewer, 'newer')
                             if (requestId !== audioQueueRequestId || !audioQueueBelongsToTrack(track)) return 'aborted'
                             const items = Array.isArray(data?.items) ? data.items : []
                             if (!items.length) {
@@ -6345,7 +6347,7 @@
                     audioQueueFetching = true
                     let data
                     try {
-                        data = await fetchAudioQueuePage(track.chatId, track.kind, audioQueueCursor, 'older')
+                        data = await fetchAudioQueuePage(track.chatRef, track.kind, audioQueueCursor, 'older')
                     } catch (e) {
                         // A transport failure is NOT the end of the queue. Collapsing the
                         // two makes "previous" restart the track on a 401/403/429 as if
@@ -6631,18 +6633,18 @@
                     document.body.classList.toggle('audio-player-open', !!track && !noDownload.value)
                 })
 
-                const calendarAvailabilityKey = (chatId, topicId, timezone, monthKey) => {
-                    return `${chatId}:${topicId ?? 'all'}:${timezone}:${monthKey}`
+                const calendarAvailabilityKey = (chatRef, topicId, timezone, monthKey) => {
+                    return `${chatRef}:${topicId ?? 'all'}:${timezone}:${monthKey}`
                 }
 
                 const loadCalendarAvailability = async (year, month) => {
                     if (!selectedChat.value) return
 
-                    const chatId = selectedChat.value.id
+                    const chatRef = selectedChat.value.ref
                     const topicId = activeTopicId()
                     const timezone = viewerTimezone.value
                     const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`
-                    const cacheKey = calendarAvailabilityKey(chatId, topicId, timezone, monthKey)
+                    const cacheKey = calendarAvailabilityKey(chatRef, topicId, timezone, monthKey)
                     calendarAvailabilityActiveKey = cacheKey
                     const cachedDates = calendarAvailabilityCache.get(cacheKey)
                     if (cachedDates) {
@@ -6665,13 +6667,13 @@
                     calendarAvailabilityLoading.value = true
                     calendarAvailabilityError.value = ''
                     try {
-                        let url = `/api/chats/${chatId}/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}`
+                        let url = `/api/chats/${encodeURIComponent(chatRef)}/messages/dates?month=${monthKey}&timezone=${encodeURIComponent(timezone)}`
                         if (topicId != null) {
                             url += `&topic_id=${topicId}`
                         }
                         const res = await fetch(url, { credentials: 'include' })
                         if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
-                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                            selectedChat.value?.ref !== chatRef || activeTopicId() !== topicId) return
                         if (!res.ok) {
                             if (res.status === 401) isAuthenticated.value = false
                             throw new Error(`Calendar availability fetch failed: ${res.status}`)
@@ -6679,7 +6681,7 @@
 
                         const data = await res.json()
                         if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
-                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId) return
+                            selectedChat.value?.ref !== chatRef || activeTopicId() !== topicId) return
                         const dates = new Set(
                             Array.isArray(data.dates)
                                 ? data.dates.filter(date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -6692,7 +6694,7 @@
                         if (flatpickrInstance) flatpickrInstance.redraw()
                     } catch (e) {
                         if (requestSeq !== calendarAvailabilityRequestSeq || chatVersion !== myVersion ||
-                            selectedChat.value?.id !== chatId || activeTopicId() !== topicId ||
+                            selectedChat.value?.ref !== chatRef || activeTopicId() !== topicId ||
                             calendarAvailabilityActiveKey !== cacheKey) return
                         // Availability is advisory: an endpoint failure must leave every day selectable.
                         calendarAvailableDates.value = null
@@ -6808,8 +6810,8 @@
                 const jumpToDate = async () => {
                     if (!selectedChat.value || !selectedDate.value) return
 
-                    // Capture chat ID to detect if user switches chats during async operations
-                    const chatIdAtStart = selectedChat.value.id
+                    // Capture the chat's ref to detect if user switches chats during async operations
+                    const chatRefAtStart = selectedChat.value.ref
                     const topicIdAtStart = activeTopicId()
                     const dateRequestVersion = chatVersion
                     const selectedDateAtStart = selectedDate.value
@@ -6820,13 +6822,13 @@
                         // Fetch message for the selected date
                         // Pass timezone so backend can convert the displayed date to correct UTC bounds
                         const tz = encodeURIComponent(viewerTimezone.value)
-                        let dateUrl = `/api/chats/${chatIdAtStart}/messages/by-date?date=${selectedDateAtStart}&timezone=${tz}`
+                        let dateUrl = `/api/chats/${encodeURIComponent(chatRefAtStart)}/messages/by-date?date=${selectedDateAtStart}&timezone=${tz}`
                         if (topicIdAtStart != null) {
                             dateUrl += `&topic_id=${topicIdAtStart}`
                         }
                         const res = await fetch(dateUrl, { credentials: 'include' })
                         if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
-                            selectedChat.value?.id !== chatIdAtStart ||
+                            selectedChat.value?.ref !== chatRefAtStart ||
                             activeTopicId() !== topicIdAtStart) return
 
                         if (!res.ok) {
@@ -6840,7 +6842,7 @@
 
                         const message = await res.json()
                         if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
-                            selectedChat.value?.id !== chatIdAtStart ||
+                            selectedChat.value?.ref !== chatRefAtStart ||
                             activeTopicId() !== topicIdAtStart) return
                         const messageLocalDate = moment.utc(message.date).tz(viewerTimezone.value).format('YYYY-MM-DD')
                         if (!selectedDateHadAvailability && messageLocalDate !== selectedDateAtStart) {
@@ -6849,7 +6851,7 @@
                         closeDatePicker(false)
 
                         // Abort if user switched chats while waiting for response
-                        if (!selectedChat.value || selectedChat.value.id !== chatIdAtStart) {
+                        if (!selectedChat.value || selectedChat.value.ref !== chatRefAtStart) {
                             return
                         }
 
@@ -6858,7 +6860,7 @@
                         if (existingIndex !== -1) {
                             await nextTick()
                             if (jumpRequestSeq !== dateJumpRequestSeq || chatVersion !== dateRequestVersion ||
-                                selectedChat.value?.id !== chatIdAtStart || activeTopicId() !== topicIdAtStart) return
+                                selectedChat.value?.ref !== chatRefAtStart || activeTopicId() !== topicIdAtStart) return
                             scrollToMessage(message.id)
                             return
                         }
@@ -6886,13 +6888,13 @@
                 const adminChats = ref([])
                 const adminAuditLogs = ref([])
                 const adminAuditAction = ref('')
-                const adminViewerForm = ref({ username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false })
+                const adminViewerForm = ref({ username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false })
                 const adminEditingId = ref(null)
                 const adminError = ref('')
                 const adminActiveTab = ref('viewers')
                 // v7.2.0: Share tokens
                 const adminTokens = ref([])
-                const adminTokenForm = ref({ label: '', allowed_chat_ids: [], no_download: false, expires_at: '' })
+                const adminTokenForm = ref({ label: '', allowed_chat_refs: [], no_download: false, expires_at: '' })
                 const adminTokenError = ref('')
                 const adminNewToken = ref('')
                 const adminNewTokenUrl = computed(() => {
@@ -6933,18 +6935,20 @@
 
                 const saveViewer = async () => {
                     adminError.value = ''
-                    const chatIds = adminViewerForm.value.allowed_chat_ids
+                    const chatRefs = adminViewerForm.value.allowed_chat_refs
                     const body = {
                         username: adminViewerForm.value.username,
                         password: adminViewerForm.value.password,
-                        allowed_chat_ids: (chatIds && chatIds.length > 0) ? chatIds : null,
+                        // null = unrestricted. allowed_accounts has no editor yet (phase
+                        // 5); the PUT is partial, so omitting it leaves it untouched.
+                        allowed_chat_refs: (chatRefs && chatRefs.length > 0) ? chatRefs : null,
                         is_active: adminViewerForm.value.is_active ? 1 : 0,
                         no_download: adminViewerForm.value.no_download ? 1 : 0
                     }
                     try {
                         let res
                         if (adminEditingId.value) {
-                            res = await fetch(`/api/admin/viewers/${adminEditingId.value}`, {
+                            res = await fetch(`/api/admin/viewers/${encodeURIComponent(adminEditingId.value)}`, {
                                 method: 'PUT', credentials: 'include',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(body)
@@ -6961,7 +6965,7 @@
                             adminError.value = err.detail || 'Failed to save'
                             return
                         }
-                        adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false }
+                        adminViewerForm.value = { username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false }
                         adminEditingId.value = null
                         await loadAdminViewers()
                     } catch (e) { adminError.value = 'Network error' }
@@ -6972,7 +6976,7 @@
                     adminViewerForm.value = {
                         username: viewer.username,
                         password: '',
-                        allowed_chat_ids: viewer.allowed_chat_ids ? [...viewer.allowed_chat_ids] : [],
+                        allowed_chat_refs: viewer.allowed_chat_refs ? [...viewer.allowed_chat_refs] : [],
                         is_active: !!viewer.is_active,
                         no_download: !!viewer.no_download
                     }
@@ -6981,7 +6985,7 @@
                 const deleteViewer = async (viewer) => {
                     if (!confirm(`Delete viewer "${viewer.username}"?`)) return
                     try {
-                        await fetch(`/api/admin/viewers/${viewer.id}`, {
+                        await fetch(`/api/admin/viewers/${encodeURIComponent(viewer.id)}`, {
                             method: 'DELETE', credentials: 'include'
                         })
                         await loadAdminViewers()
@@ -6990,7 +6994,7 @@
 
                 const cancelEdit = () => {
                     adminEditingId.value = null
-                    adminViewerForm.value = { username: '', password: '', allowed_chat_ids: [], is_active: true, no_download: false }
+                    adminViewerForm.value = { username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false }
                     adminError.value = ''
                 }
 
@@ -7005,8 +7009,8 @@
                 const createToken = async () => {
                     adminTokenError.value = ''
                     adminNewToken.value = ''
-                    const chatIds = adminTokenForm.value.allowed_chat_ids
-                    if (!chatIds || chatIds.length === 0) {
+                    const chatRefs = adminTokenForm.value.allowed_chat_refs
+                    if (!chatRefs || chatRefs.length === 0) {
                         adminTokenError.value = 'Select at least one chat'
                         return
                     }
@@ -7017,7 +7021,7 @@
                     }
                     const body = {
                         label: adminTokenForm.value.label || null,
-                        allowed_chat_ids: chatIds,
+                        allowed_chat_refs: chatRefs,
                         no_download: !!adminTokenForm.value.no_download,
                         expires_at: expiresUtc,
                     }
@@ -7034,7 +7038,7 @@
                         }
                         const data = await res.json()
                         adminNewToken.value = data.token
-                        adminTokenForm.value = { label: '', allowed_chat_ids: [], no_download: false, expires_at: '' }
+                        adminTokenForm.value = { label: '', allowed_chat_refs: [], no_download: false, expires_at: '' }
                         await loadAdminTokens()
                     } catch (e) { adminTokenError.value = 'Network error' }
                 }
@@ -7042,7 +7046,7 @@
                 const revokeToken = async (token) => {
                     if (!confirm(`Revoke token "${token.label || token.id}"?`)) return
                     try {
-                        await fetch(`/api/admin/tokens/${token.id}`, {
+                        await fetch(`/api/admin/tokens/${encodeURIComponent(token.id)}`, {
                             method: 'PUT', credentials: 'include',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ is_revoked: true })
@@ -7054,7 +7058,7 @@
                 const deleteToken = async (token) => {
                     if (!confirm(`Permanently delete token "${token.label || token.id}"?`)) return
                     try {
-                        await fetch(`/api/admin/tokens/${token.id}`, {
+                        await fetch(`/api/admin/tokens/${encodeURIComponent(token.id)}`, {
                             method: 'DELETE', credentials: 'include'
                         })
                         await loadAdminTokens()

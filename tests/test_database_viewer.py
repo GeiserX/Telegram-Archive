@@ -118,6 +118,10 @@ class TestAsyncDatabaseAdapter(unittest.TestCase):
             "insert_messages_batch",
             "get_reactions",
             "reconcile_reactions",
+            # Phase 4 (chat-ref viewer) surface
+            "get_chat_by_ref",
+            "get_media_by_id",
+            "get_message_sender_id",
         ]
 
         for method in required_methods:

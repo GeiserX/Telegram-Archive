@@ -35,11 +35,21 @@ def _skip_unless_web(cls_or_fn):
 
 
 def _mock_db():
-    """Create a mock database adapter with common methods."""
+    """Create a mock database adapter with common methods.
+
+    get_chat_by_ref echoes the requested ref back as an existing chat (id=1,
+    account 1) so ref-addressed routes resolve by default; tests that need an
+    unknown ref or a specific chat identity override it.
+    """
     db = AsyncMock()
     db.get_all_chats = AsyncMock(return_value=[])
     db.get_chat_count = AsyncMock(return_value=0)
     db.get_chat_by_id = AsyncMock(return_value=None)
+    db.get_chat_by_ref = AsyncMock(
+        side_effect=lambda ref, **kwargs: {"id": 1, "account_id": 1, "ref": ref, "type": "group"}
+    )
+    db.get_media_by_id = AsyncMock(return_value=None)
+    db.get_message_sender_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_message_versions = AsyncMock(return_value=[])
     db.get_message_versions_by_date_range = AsyncMock(return_value=[])
@@ -112,6 +122,8 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache.clear()
         web_main._avatar_cache_time = None
         web_main._chat_stats_cache.clear()
+        web_main._broadcast_chat_cache.clear()
+        web_main._sender_lookup_cache.clear()
 
     def tearDown(self):
         web_main.db = self._saved_db
@@ -126,6 +138,8 @@ class _WebTestBase(unittest.IsolatedAsyncioTestCase):
         web_main._avatar_cache_time = self._saved_avatar_cache_time
         web_main._chat_stats_cache.clear()
         web_main._chat_stats_cache.update(self._saved_chat_stats_cache)
+        web_main._broadcast_chat_cache.clear()
+        web_main._sender_lookup_cache.clear()
 
     def _client(self):
         transport = ASGITransport(app=web_main.app)
@@ -332,15 +346,17 @@ class TestChatsEndpoint(_WebTestBase):
         self.assertEqual(data["total"], 10)
         self.assertTrue(data["has_more"])
 
-    async def test_chats_filtered_by_user_allowed_ids(self):
-        """get_chats filters chats when user has allowed_chat_ids."""
+    async def test_chats_filtered_by_user_allowed_refs(self):
+        """get_chats filters chats when user has an allowed_chat_refs grant."""
         web_main.AUTH_ENABLED = True
         token = "viewer-token"
-        web_main._sessions[token] = web_main.SessionData(username="viewer1", role="viewer", allowed_chat_ids={1, 3})
+        web_main._sessions[token] = web_main.SessionData(
+            username="viewer1", role="viewer", allowed_chat_refs={"chatRefOne0000000001A", "chatRefThree00000003A"}
+        )
         all_chats = [
-            {"id": 1, "title": "Allowed", "type": "private"},
-            {"id": 2, "title": "Denied", "type": "group"},
-            {"id": 3, "title": "Also Allowed", "type": "private"},
+            {"id": 1, "account_id": 1, "ref": "chatRefOne0000000001A", "title": "Allowed", "type": "private"},
+            {"id": 2, "account_id": 1, "ref": "chatRefTwo0000000002A", "title": "Denied", "type": "group"},
+            {"id": 3, "account_id": 1, "ref": "chatRefThree00000003A", "title": "Also Allowed", "type": "private"},
         ]
         self.mock_db.get_all_chats = AsyncMock(return_value=all_chats)
         async with self._client() as client:
@@ -395,13 +411,16 @@ class TestMessagesEndpoint(_WebTestBase):
         self.assertEqual(resp.status_code, 200)
 
     async def test_denies_access_to_restricted_chat(self):
-        """get_messages returns 403 when user cannot access the chat."""
+        """get_messages answers a forbidden ref with the SAME 404 as an unknown one."""
         web_main.AUTH_ENABLED = True
         token = "restricted-viewer"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000100"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/messages", cookies={"viewer_auth": token})
-        self.assertEqual(resp.status_code, 403)
+            resp = await client.get("/api/chats/forbiddenRef000000999/messages", cookies={"viewer_auth": token})
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json(), {"detail": "Chat not found"})
 
     async def test_passes_cursor_pagination_params(self):
         """get_messages forwards before_date and before_id to db."""
@@ -460,23 +479,31 @@ class TestMessageVersionsEndpoint(_WebTestBase):
             ]
         )
 
+        self.mock_db.get_chat_by_ref = AsyncMock(
+            return_value={"id": 123, "account_id": 1, "ref": "versionsRef0000123AB", "type": "group"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/123/messages/42/versions?limit=25")
+            resp = await client.get("/api/chats/versionsRef0000123AB/messages/42/versions?limit=25")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()[0]["text"], "old")
-        self.mock_db.get_message_versions.assert_awaited_once_with(chat_id=123, message_id=42, limit=25)
+        self.mock_db.get_message_versions.assert_awaited_once_with(chat_id=123, message_id=42, limit=25, account_id=1)
 
     async def test_denies_access_to_restricted_chat(self):
-        """get_message_versions returns 403 when user cannot access the chat."""
+        """get_message_versions answers a forbidden ref with the uniform 404,
+        without touching the versions table."""
         web_main.AUTH_ENABLED = True
         token = "restricted-message-versions"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={100})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"grantedRef00000000100"}
+        )
 
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/messages/42/versions", cookies={"viewer_auth": token})
+            resp = await client.get(
+                "/api/chats/forbiddenRef000000999/messages/42/versions", cookies={"viewer_auth": token}
+            )
 
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 404)
         self.mock_db.get_message_versions.assert_not_awaited()
 
     async def test_requires_auth_when_auth_enabled(self):
@@ -527,13 +554,15 @@ class TestPinnedMessagesEndpoint(_WebTestBase):
         self.assertEqual(len(data), 1)
 
     async def test_pinned_denies_restricted_chat(self):
-        """get_pinned_messages returns 403 for restricted chat."""
+        """get_pinned_messages answers a forbidden ref with the uniform 404."""
         web_main.AUTH_ENABLED = True
         token = "rv"
-        web_main._sessions[token] = web_main.SessionData(username="v", role="viewer", allowed_chat_ids={10})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v", role="viewer", allowed_chat_refs={"grantedRef00000000010"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/pinned", cookies={"viewer_auth": token})
-        self.assertEqual(resp.status_code, 403)
+            resp = await client.get("/api/chats/forbiddenRef000000999/pinned", cookies={"viewer_auth": token})
+        self.assertEqual(resp.status_code, 404)
 
 
 # ============================================================================
@@ -592,11 +621,21 @@ class TestArchivedCountEndpoint(_WebTestBase):
         self.assertEqual(resp.json()["count"], 5)
 
     async def test_archived_count_filtered_by_user_chats(self):
-        """get_archived_count filters by user allowed chats."""
+        """get_archived_count filters by the user's ref grant."""
         web_main.AUTH_ENABLED = True
         token = "av"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={1, 2, 3})
-        self.mock_db.get_all_chats = AsyncMock(return_value=[{"id": 1}, {"id": 2}, {"id": 99}])
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1",
+            role="viewer",
+            allowed_chat_refs={"archRefA000000000001A", "archRefB000000000002A", "archRefC000000000003A"},
+        )
+        self.mock_db.get_all_chats = AsyncMock(
+            return_value=[
+                {"id": 1, "account_id": 1, "ref": "archRefA000000000001A"},
+                {"id": 2, "account_id": 1, "ref": "archRefB000000000002A"},
+                {"id": 99, "account_id": 1, "ref": "archRefZ000000000099A"},
+            ]
+        )
         async with self._client() as client:
             resp = await client.get("/api/archived/count", cookies={"viewer_auth": token})
         self.assertEqual(resp.status_code, 200)
@@ -625,10 +664,18 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertIn("push_enabled", data)
 
     async def test_stats_filters_per_chat_for_restricted_user(self):
-        """get_stats filters per_chat_message_counts by user allowed chats."""
+        """get_stats filters per_chat_message_counts by the user's ref grant."""
         web_main.AUTH_ENABLED = True
         token = "sv"
-        web_main._sessions[token] = web_main.SessionData(username="v1", role="viewer", allowed_chat_ids={1})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
+        )
+        self.mock_db.get_all_chats = AsyncMock(
+            return_value=[
+                {"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"},
+                {"id": 2, "account_id": 1, "ref": "statsRefTwo000000002A"},
+            ]
+        )
         self.mock_db.get_cached_statistics = AsyncMock(
             return_value={
                 "per_chat_message_counts": {"1": 100, "2": 200},
@@ -730,13 +777,15 @@ class TestChatStatsEndpoint(_WebTestBase):
         self.assertEqual(resp.status_code, 200)
 
     async def test_chat_stats_denies_restricted_chat(self):
-        """get_chat_stats returns 403 for restricted chat."""
+        """get_chat_stats answers a forbidden ref with the uniform 404."""
         web_main.AUTH_ENABLED = True
         token = "cs"
-        web_main._sessions[token] = web_main.SessionData(username="v", role="viewer", allowed_chat_ids={1})
+        web_main._sessions[token] = web_main.SessionData(
+            username="v", role="viewer", allowed_chat_refs={"grantedRef00000000001"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/999/stats", cookies={"viewer_auth": token})
-        self.assertEqual(resp.status_code, 403)
+            resp = await client.get("/api/chats/forbiddenRef000000999/stats", cookies={"viewer_auth": token})
+        self.assertEqual(resp.status_code, 404)
 
     async def test_chat_stats_cache_hit_avoids_second_db_call(self):
         """A second request within the TTL is served from cache without hitting the db."""
@@ -750,18 +799,23 @@ class TestChatStatsEndpoint(_WebTestBase):
         self.mock_db.get_chat_stats.assert_awaited_once()
 
     async def test_chat_stats_cache_hit_still_enforces_acl(self):
-        """A cached stats entry must not leak to a viewer without access to that chat."""
+        """A cached stats entry must not leak to a viewer without access to that chat;
+        the denial is the uniform 404 the resolver gives every forbidden ref."""
         self.mock_db.get_chat_stats = AsyncMock(return_value={"messages": 5, "media": 1})
         web_main.AUTH_ENABLED = True
         master_token = "cs-master"
         web_main._sessions[master_token] = web_main.SessionData(username="admin", role="master")
         restricted_token = "cs-restricted"
-        web_main._sessions[restricted_token] = web_main.SessionData(username="v", role="viewer", allowed_chat_ids={1})
+        web_main._sessions[restricted_token] = web_main.SessionData(
+            username="v", role="viewer", allowed_chat_refs={"grantedRef00000000001"}
+        )
         async with self._client() as client:
-            warm = await client.get("/api/chats/42/stats", cookies={"viewer_auth": master_token})
-            blocked = await client.get("/api/chats/42/stats", cookies={"viewer_auth": restricted_token})
+            warm = await client.get("/api/chats/cachedChatRef00042AB/stats", cookies={"viewer_auth": master_token})
+            blocked = await client.get(
+                "/api/chats/cachedChatRef00042AB/stats", cookies={"viewer_auth": restricted_token}
+            )
         self.assertEqual(warm.status_code, 200)
-        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.status_code, 404)
 
 
 # ============================================================================
@@ -811,6 +865,7 @@ class TestMessageByDateEndpoint(_WebTestBase):
             1,
             datetime(2025, 6, 14, 22),
             77,
+            account_id=1,
         )
 
     async def test_rejects_explicit_invalid_timezone(self):
@@ -840,8 +895,13 @@ class TestMessageDatesEndpoint(_WebTestBase):
 
     async def test_returns_contract_with_utc_spillover_and_topic(self):
         self.mock_db.get_message_dates = AsyncMock(return_value=["2026-03-01", "2026-03-31"])
+        self.mock_db.get_chat_by_ref = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "datesChatRef00042ABC", "type": "group"}
+        )
         async with self._client() as client:
-            resp = await client.get("/api/chats/42/messages/dates?month=2026-03&timezone=Asia/Tokyo&topic_id=17")
+            resp = await client.get(
+                "/api/chats/datesChatRef00042ABC/messages/dates?month=2026-03&timezone=Asia/Tokyo&topic_id=17"
+            )
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(
@@ -936,14 +996,14 @@ class TestMessageDatesEndpoint(_WebTestBase):
         web_main._sessions[token] = web_main.SessionData(
             username="viewer",
             role="viewer",
-            allowed_chat_ids={100},
+            allowed_chat_refs={"grantedRef00000000100"},
         )
         async with self._client() as client:
             resp = await client.get(
-                "/api/chats/999/messages/dates?month=0001-01&timezone=Invalid/Zone",
+                "/api/chats/forbiddenRef000000999/messages/dates?month=0001-01&timezone=Invalid/Zone",
                 cookies={"viewer_auth": token},
             )
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 404)
         self.mock_db.get_message_dates.assert_not_awaited()
 
     async def test_returns_empty_dates(self):
@@ -1247,13 +1307,16 @@ class TestAdminViewersEndpoint(_MasterTestBase):
         self.assertEqual(resp.json()["viewers"], [])
 
     async def test_list_viewers_returns_accounts(self):
-        """list_viewers returns viewer account data."""
+        """list_viewers returns viewer account data with the v8.0 grant columns;
+        the legacy allowed_chat_ids never reaches the response."""
         self.mock_db.get_all_viewer_accounts = AsyncMock(
             return_value=[
                 {
                     "id": 1,
                     "username": "v1",
-                    "allowed_chat_ids": json.dumps([1, 2]),
+                    "allowed_chat_ids": "[]",  # rollback tombstone, not a grant
+                    "allowed_accounts": None,
+                    "allowed_chat_refs": json.dumps(["viewerRefA00000001AB", "viewerRefB00000002AB"]),
                     "is_active": 1,
                     "no_download": 0,
                     "created_by": "admin",
@@ -1266,7 +1329,9 @@ class TestAdminViewersEndpoint(_MasterTestBase):
             resp = await client.get("/api/admin/viewers")
         data = resp.json()
         self.assertEqual(len(data["viewers"]), 1)
-        self.assertEqual(data["viewers"][0]["allowed_chat_ids"], [1, 2])
+        self.assertEqual(data["viewers"][0]["allowed_chat_refs"], ["viewerRefA00000001AB", "viewerRefB00000002AB"])
+        self.assertIsNone(data["viewers"][0]["allowed_accounts"])
+        self.assertNotIn("allowed_chat_ids", data["viewers"][0])
 
     async def test_create_viewer_validates_username(self):
         """create_viewer returns 400 for short username."""
@@ -1370,20 +1435,24 @@ class TestAdminTokensEndpoint(_MasterTestBase):
         data = resp.json()
         self.assertEqual(len(data["tokens"]), 1)
 
-    async def test_create_token_requires_allowed_chat_ids(self):
-        """create_token returns 400 when allowed_chat_ids missing."""
+    async def test_create_token_requires_allowed_chat_refs(self):
+        """create_token returns 400 when allowed_chat_refs missing (tokens are always scoped)."""
         async with self._client() as client:
             resp = await client.post("/api/admin/tokens", json={"label": "test"})
         self.assertEqual(resp.status_code, 400)
 
     async def test_create_token_success(self):
-        """create_token returns token with plaintext."""
+        """create_token returns token with plaintext and echoes the ref grant."""
         async with self._client() as client:
-            resp = await client.post("/api/admin/tokens", json={"allowed_chat_ids": [1, 2, 3], "label": "my-token"})
+            resp = await client.post(
+                "/api/admin/tokens",
+                json={"allowed_chat_refs": ["tokRefA000000000001A", "tokRefB000000000002A"], "label": "my-token"},
+            )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("token", data)
         self.assertIsNotNone(data["token"])
+        self.assertEqual(data["allowed_chat_refs"], ["tokRefA000000000001A", "tokRefB000000000002A"])
 
     async def test_update_token_not_found(self):
         """update_token returns 404 when token not found."""
@@ -1557,16 +1626,28 @@ class TestNotificationSettingsEndpoint(_WebTestBase):
 
 @_skip_unless_web
 class TestBroadcastHelpers(_WebTestBase):
-    """Test broadcast_new_message, broadcast_message_edit, broadcast_message_delete."""
+    """Test broadcast_new_message, broadcast_message_edit, broadcast_message_delete.
+
+    The writer side speaks chat ids; every outward frame is ref-addressed, so
+    the helpers resolve the id to its chat row first and drop unresolvable ids.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.mock_db.get_chat_by_id = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "broadcastRef000042AB", "title": "Chat"}
+        )
 
     async def test_broadcast_new_message(self):
-        """broadcast_new_message calls ws_manager.broadcast_to_chat."""
+        """broadcast_new_message resolves the chat and broadcasts a ref frame."""
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
             await web_main.broadcast_new_message(42, {"id": 1, "text": "hi"})
         mock_bc.assert_awaited_once()
         args = mock_bc.call_args[0]
-        self.assertEqual(args[0], 42)
+        self.assertEqual(args[0]["id"], 42)
         self.assertEqual(args[1]["type"], "new_message")
+        self.assertEqual(args[1]["chat_ref"], "broadcastRef000042AB")
+        self.assertNotIn("chat_id", args[1])
 
     async def test_broadcast_message_edit(self):
         """broadcast_message_edit calls ws_manager.broadcast_to_chat."""
@@ -1576,6 +1657,7 @@ class TestBroadcastHelpers(_WebTestBase):
         msg = mock_bc.call_args[0][1]
         self.assertEqual(msg["type"], "edit")
         self.assertEqual(msg["new_text"], "edited text")
+        self.assertEqual(msg["chat_ref"], "broadcastRef000042AB")
 
     async def test_broadcast_message_delete(self):
         """broadcast_message_delete calls ws_manager.broadcast_to_chat."""
@@ -1585,6 +1667,13 @@ class TestBroadcastHelpers(_WebTestBase):
         msg = mock_bc.call_args[0][1]
         self.assertEqual(msg["type"], "delete")
         self.assertEqual(msg["message_id"], 10)
+
+    async def test_broadcast_drops_unresolvable_chat_id(self):
+        """An id that resolves to no row emits nothing (never an id-addressed frame)."""
+        self.mock_db.get_chat_by_id = AsyncMock(return_value=None)
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.broadcast_new_message(42, {"id": 1, "text": "hi"})
+        mock_bc.assert_not_awaited()
 
 
 # ============================================================================
@@ -1730,13 +1819,16 @@ class TestResolveSession(_WebTestBase):
         self.assertIsNone(result)
 
     async def test_loads_valid_session_from_db(self):
-        """_resolve_session loads valid session from db and caches it."""
+        """_resolve_session loads valid session from db and caches it; the grant
+        comes from the v8.0 columns, the legacy tombstone is never read."""
         now = time.time()
         self.mock_db.get_session = AsyncMock(
             return_value={
                 "username": "dbuser",
                 "role": "viewer",
-                "allowed_chat_ids": json.dumps([1, 2]),
+                "allowed_chat_ids": "[]",  # rollback tombstone
+                "allowed_accounts": None,
+                "allowed_chat_refs": json.dumps(["sessRefA000000000001", "sessRefB000000000002"]),
                 "no_download": 1,
                 "source_token_id": 5,
                 "created_at": now,
@@ -1746,7 +1838,8 @@ class TestResolveSession(_WebTestBase):
         result = await web_main._resolve_session("db-tok")
         self.assertIsNotNone(result)
         self.assertEqual(result.username, "dbuser")
-        self.assertEqual(result.allowed_chat_ids, {1, 2})
+        self.assertEqual(result.allowed_chat_refs, {"sessRefA000000000001", "sessRefB000000000002"})
+        self.assertIsNone(result.allowed_accounts)
         self.assertTrue(result.no_download)
         # Should be cached now
         self.assertIn("db-tok", web_main._sessions)
@@ -1773,7 +1866,8 @@ class TestRequireAuth(_WebTestBase):
         result = await web_main.require_auth(request=self._mock_request(), auth_cookie=None)
         self.assertEqual(result.username, "anonymous")
         self.assertEqual(result.role, "viewer")
-        self.assertIsNone(result.allowed_chat_ids)
+        self.assertIsNone(result.allowed_accounts)
+        self.assertIsNone(result.allowed_chat_refs)
         self.assertFalse(result.no_download)
 
     async def test_auth_disabled_without_opt_in_fails_closed(self):
@@ -1854,7 +1948,9 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=1)
         web_main.push_manager = mock_pm
-        self.mock_db.get_chat_by_id = AsyncMock(return_value={"title": "Test Chat"})
+        self.mock_db.get_chat_by_id = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "pushChatRef0000042AB", "title": "Test Chat"}
+        )
         self.mock_db.get_user_by_id = AsyncMock(return_value={"first_name": "Alice", "username": "alice"})
 
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):
@@ -1869,6 +1965,7 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         mock_pm.notify_new_message.assert_awaited_once()
         call_kwargs = mock_pm.notify_new_message.call_args.kwargs
         self.assertEqual(call_kwargs["chat_id"], 42)
+        self.assertEqual(call_kwargs["chat_ref"], "pushChatRef0000042AB")
         self.assertEqual(call_kwargs["sender_name"], "Alice")
 
     async def test_push_prefers_archived_sender_snapshot(self) -> None:
@@ -1876,7 +1973,9 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
         mock_pm.is_enabled = True
         mock_pm.notify_new_message = AsyncMock(return_value=1)
         web_main.push_manager = mock_pm
-        self.mock_db.get_chat_by_id = AsyncMock(return_value={"title": "Test Chat"})
+        self.mock_db.get_chat_by_id = AsyncMock(
+            return_value={"id": 42, "account_id": 1, "ref": "pushChatRef0000042AB", "title": "Test Chat"}
+        )
         self.mock_db.get_user_by_id = AsyncMock(return_value={"first_name": "Current Name"})
 
         with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock):

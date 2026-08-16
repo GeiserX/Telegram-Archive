@@ -104,7 +104,7 @@ const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
 const hasMoreNewer = ref(true);
-const selectedChat = ref({ id: 77 });
+const selectedChat = ref({ id: 77, ref: 'opaque-cal-a' });
 const isAuthenticated = ref(true);
 const viewingPinnedWindow = ref(true);
 const loadNewerSentinel = ref({});
@@ -151,8 +151,8 @@ const console = { error: () => {} };
     await loadNewerMessages();
 
     assert.deepEqual(requestedUrls, [
-        '/api/chats/77/messages?after_id=100&limit=50&topic_id=9',
-        '/api/chats/77/messages?after_id=150&limit=50&topic_id=9',
+        '/api/chats/opaque-cal-a/messages?after_id=100&limit=50&topic_id=9',
+        '/api/chats/opaque-cal-a/messages?after_id=150&limit=50&topic_id=9',
     ]);
     assert.equal(newestMessageId, 152);
     assert.equal(hasMoreNewer.value, false);
@@ -187,7 +187,7 @@ const ref = value => ({ value });
 const loadingNewer = ref(false);
 const newerLoadError = ref('');
 const hasMoreNewer = ref(true);
-const selectedChat = ref({ id: 88 });
+const selectedChat = ref({ id: 88, ref: 'opaque-cal-b' });
 const isAuthenticated = ref(true);
 const viewingPinnedWindow = ref(true);
 const loadNewerSentinel = ref({});
@@ -257,7 +257,7 @@ def test_jump_to_date_cancellation_and_latest_intent_win() -> None:
             "const assert = require('node:assert/strict');",
             """
 const ref = value => ({ value });
-const selectedChat = ref({ id: 99 });
+const selectedChat = ref({ id: 99, ref: 'opaque-cal-c' });
 const selectedDate = ref('2026-01-10');
 const calendarAvailableDates = ref(new Set(['2026-01-10', '2026-01-11', '2026-01-12']));
 const viewerTimezone = ref('Europe/Madrid');
@@ -328,9 +328,9 @@ const response = (id, date) => ({
     assert.deepEqual(
         deferredFetches.map(request => request.url),
         [
-            '/api/chats/99/messages/by-date?date=2026-01-10&timezone=Europe%2FMadrid&topic_id=44',
-            '/api/chats/99/messages/by-date?date=2026-01-11&timezone=Europe%2FMadrid&topic_id=44',
-            '/api/chats/99/messages/by-date?date=2026-01-12&timezone=Europe%2FMadrid&topic_id=44',
+            '/api/chats/opaque-cal-c/messages/by-date?date=2026-01-10&timezone=Europe%2FMadrid&topic_id=44',
+            '/api/chats/opaque-cal-c/messages/by-date?date=2026-01-11&timezone=Europe%2FMadrid&topic_id=44',
+            '/api/chats/opaque-cal-c/messages/by-date?date=2026-01-12&timezone=Europe%2FMadrid&topic_id=44',
         ],
     );
     for (const request of deferredFetches) {
