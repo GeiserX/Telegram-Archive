@@ -35,9 +35,8 @@ from telethon.tl.types import (
 from telethon.utils import get_peer_id
 
 from .avatar_utils import get_avatar_paths
-from .config import Config
+from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
-from .db.models import DEFAULT_ACCOUNT_ID
 from .message_utils import (
     build_media_filename,
     compute_file_hash,
@@ -243,7 +242,16 @@ class TelegramListener:
     - For zero deletions from backup, set LISTEN_DELETIONS=false
     """
 
-    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None, *, account_id: int):
+    def __init__(
+        self,
+        config: Config,
+        db: DatabaseAdapter,
+        client: TelegramClient | None = None,
+        *,
+        account_id: int | None = None,
+        account: AccountConfig | None = None,
+        account_resolver=None,
+    ):
         """
         Initialize the listener.
 
@@ -253,11 +261,25 @@ class TelegramListener:
             client: Optional existing TelegramClient to use (for shared connection).
                    If not provided, will create a new client in connect().
             account_id: accounts.id every row written by this listener belongs to.
+                May be None only when ``account_resolver`` is given.
+            account: The configured account this listener captures for (session
+                file and API credentials for the own-client path). Defaults to
+                ``config.accounts[0]`` — the synthesized legacy account in a
+                zero-config deployment.
+            account_resolver: Optional ``async (client, db) -> int`` awaited by
+                connect() once the client is proven authorized — and before any
+                event handler is registered — yielding the accounts.id. Needed
+                by the own-client path, where no client exists before connect()
+                and the row is keyed on the Telegram user id.
         """
+        if account_id is None and account_resolver is None:
+            raise ValueError("account_id or account_resolver is required")
         self.config = config
         self.config.validate_credentials()
         self.db = db
         self.account_id = account_id
+        self.account = account if account is not None else config.accounts[0]
+        self._account_resolver = account_resolver
         self.client: TelegramClient | None = client
         self._owns_client = client is None  # Track if we created the client
         self._running = False
@@ -344,7 +366,15 @@ class TelegramListener:
         logger.info("=" * 70)
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None, *, account_id: int) -> TelegramListener:
+    async def create(
+        cls,
+        config: Config,
+        client: TelegramClient | None = None,
+        *,
+        account_id: int | None = None,
+        account: AccountConfig | None = None,
+        account_resolver=None,
+    ) -> TelegramListener:
         """
         Factory method to create TelegramListener with initialized database.
 
@@ -352,12 +382,15 @@ class TelegramListener:
             config: Configuration object
             client: Optional existing TelegramClient to use (for shared connection)
             account_id: accounts.id every row written by this listener belongs to
+                (omit only when ``account_resolver`` is given)
+            account: The configured account to listen for (see ``__init__``)
+            account_resolver: Deferred accounts.id resolution (see ``__init__``)
 
         Returns:
             Initialized TelegramListener instance
         """
         db = await create_adapter()
-        return cls(config, db, client=client, account_id=account_id)
+        return cls(config, db, client=client, account_id=account_id, account=account, account_resolver=account_resolver)
 
     async def connect(self) -> None:
         """
@@ -382,11 +415,11 @@ class TelegramListener:
             logger.info("Connected")
         else:
             # Create new client
-            logger.info(f"Using Telethon session database: {self.config.session_path}.session")
+            logger.info(f"Using Telethon session database: {self.account.session_path}.session")
             self.client = TelegramClient(
-                self.config.session_path,
-                self.config.api_id,
-                self.config.api_hash,
+                self.account.session_path,
+                self.account.api_id,
+                self.account.api_hash,
                 **self.config.get_telegram_client_kwargs(),
             )
             self._owns_client = True
@@ -401,6 +434,14 @@ class TelegramListener:
 
             # Authorization already proven by the check above; no get_me() needed.
             logger.info("Connected")
+
+        # Resolve which accounts row this login writes under, now that the
+        # client is proven authorized. This MUST happen before handlers are
+        # registered below: a handler firing with an unresolved account_id
+        # would file its rows under the wrong account. Logs nothing at INFO,
+        # so the single-account startup output is unchanged.
+        if self._account_resolver is not None and self.account_id is None:
+            self.account_id = await self._account_resolver(self.client, self.db)
 
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
@@ -1646,22 +1687,57 @@ class TelegramListener:
 
 async def run_listener(config: Config) -> None:
     """
-    Run the real-time listener as a standalone process.
+    Run the real-time listener as a standalone process — one listener per
+    configured account, each registered on its own client.
 
     Args:
         config: Configuration object
     """
-    # Single-account stage: every row belongs to the migration-seeded account.
-    # Phase 5 replaces the constant with real per-account resolution here.
-    listener = await TelegramListener.create(config, account_id=DEFAULT_ACCOUNT_ID)
 
+    def account_row_resolver(account: AccountConfig):
+        # Same contract as telegram_backup's resolver: the accounts row is
+        # keyed on the Telegram user id, so it can only be resolved once this
+        # account's own client is authorized; connect() awaits this before any
+        # event handler is registered.
+        async def resolve(client: TelegramClient, db: DatabaseAdapter) -> int:
+            me = await client.get_me()
+            return await db.ensure_account(telegram_user_id=me.id, env_index=account.index, label=account.label)
+
+        return resolve
+
+    listeners: list[TelegramListener] = []
+    connected: list[TelegramListener] = []
+    failed = 0
     try:
-        await listener.connect()
-        await listener.run()
+        for account in config.accounts:
+            try:
+                listener = await TelegramListener.create(
+                    config, account=account, account_resolver=account_row_resolver(account)
+                )
+                listeners.append(listener)
+                await listener.connect()
+                connected.append(listener)
+            except Exception as e:
+                # One broken account must not silence the other accounts'
+                # listeners — but with a single account there is nothing to
+                # shield, so keep the pre-8.0 behavior of letting the failure
+                # propagate to main().
+                if len(config.accounts) == 1:
+                    raise
+                # Type name only: exception text can carry the phone (#272).
+                failed += 1
+                logger.error(f"account {account.index} failed: {type(e).__name__}")
+        if failed and not connected:
+            raise RuntimeError(f"all {failed} configured accounts failed to start a listener")
+        if len(connected) == 1:
+            await connected[0].run()
+        elif connected:
+            await asyncio.gather(*(listener.run() for listener in connected))
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     finally:
-        await listener.close()
+        for listener in listeners:
+            await listener.close()
 
 
 async def main() -> None:

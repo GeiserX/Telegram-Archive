@@ -240,6 +240,11 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TELEGRAM_API_ID` | *required* | B | API ID from [my.telegram.org](https://my.telegram.org/apps) |
 | `TELEGRAM_API_HASH` | *required* | B | API Hash from [my.telegram.org](https://my.telegram.org/apps) |
 | `TELEGRAM_PHONE` | *required* | B | Phone number with country code (e.g., `+1234567890`) |
+| `TG_ACCOUNT_<N>_API_ID` | - | B | [Multiple accounts](#multiple-accounts): API ID of account `N`. `N` starts at 1 and must be contiguous. Declaring any `TG_ACCOUNT_*` variable switches to indexed mode and the three legacy variables above are ignored |
+| `TG_ACCOUNT_<N>_API_HASH` | - | B | API Hash of account `N` |
+| `TG_ACCOUNT_<N>_PHONE_NUMBER` | - | B | Phone number of account `N` with country code. Must be distinct across accounts |
+| `TG_ACCOUNT_<N>_LABEL` | `default` (N=1), `account<N>` (N≥2) | B | Optional display label for account `N` |
+| `TG_ACCOUNT_<N>_SESSION_NAME` | see description | B | Optional session file name for account `N`. Account 1 defaults to the legacy `SESSION_NAME` chain (so an upgraded deployment keeps its session file and never re-logins); accounts 2+ default to `telegram_backup_account<N>` |
 | `TELEGRAM_PROXY_TYPE` | - | B | Optional proxy type for all Telegram clients. Currently supports `socks5` |
 | `TELEGRAM_PROXY_ADDR` | - | B | SOCKS5 proxy host or IP address |
 | `TELEGRAM_PROXY_PORT` | - | B | SOCKS5 proxy port |
@@ -354,6 +359,34 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VAPID_CONTACT` | `mailto:admin@example.com` | V | Contact email included in Web Push requests |
 
 > ⚠️ **`AUTH_PROXY_HEADER` requires a trusted reverse proxy.** Your proxy MUST strip or overwrite this header on **every** inbound request before it reaches the viewer. If it merely passes the header through, any client can set it themselves and impersonate any user — including an admin — with a single request header. This is a full authentication bypass, not a hardening nicety. Only enable this if you've verified your proxy config strips client-supplied values for the header you choose.
+
+### Multiple Accounts
+
+Since v8.0.0 one deployment can archive several Telegram accounts into the same database and media store. Accounts are declared with indexed variables — `<N>` starts at 1 and must be contiguous:
+
+```bash
+TG_ACCOUNT_1_API_ID=11111
+TG_ACCOUNT_1_API_HASH=first_account_api_hash
+TG_ACCOUNT_1_PHONE_NUMBER=+1234567890
+TG_ACCOUNT_1_LABEL=personal
+
+TG_ACCOUNT_2_API_ID=22222
+TG_ACCOUNT_2_API_HASH=second_account_api_hash
+TG_ACCOUNT_2_PHONE_NUMBER=+0987654321
+TG_ACCOUNT_2_LABEL=work
+```
+
+How it behaves:
+
+- **No `TG_ACCOUNT_*` variables → nothing changes.** Exactly one account is used, taken from `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` with the same session file as before. Existing deployments upgrade with zero env changes and no re-login.
+- **Indexed wins.** When both styles are set, the `TG_ACCOUNT_*` declarations are used and the legacy triple is ignored; startup logs `Multi-account: using N configured account(s)`.
+- **Account 1 keeps your existing archive.** On its first login under v8.0.0, the account at index 1 adopts the account row all pre-8.0 data was migrated under. From then on accounts are recognized by their Telegram user id, so re-ordering the indexes later never moves or splits an account's data.
+- **Sequential sweeps.** Scheduled backups run account 1 to completion, then account 2, and so on — one Telethon client per account, each with its own session file and its own rate-limit budget.
+- **One interactive login per account.** Run the same auth flow as always (`./init_auth.sh`, i.e. `python -m src auth`); it walks every configured account that does not yet have an authorized session. Account 1 reuses the legacy session file; accounts 2+ default to `telegram_backup_account<N>.session`.
+- **Filters are global.** `CHAT_IDS`, `CHAT_TYPES`, the include/exclude lists, and all media/listener settings apply to every account alike. In whitelist mode each account backs up whichever whitelisted chats it can see.
+- **Loud config errors.** A gap in the numbering, an incomplete account (an ID without its hash), a duplicate phone number, or an unrecognized `TG_ACCOUNT_*` variable stops startup with an error naming the variable.
+
+When configuring through `docker-compose.yml`'s `environment:` block, remember Compose only forwards variables declared there — uncomment the `TG_ACCOUNT_*` lines in the backup service (or switch to `env_file:`) so your `.env` entries reach the container.
 
 ### Chat Filtering
 

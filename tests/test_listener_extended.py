@@ -67,6 +67,16 @@ def _make_config(**overrides):
     config.should_download_media_for_chat = MagicMock(return_value=True)
     config.get_max_media_size_bytes = MagicMock(return_value=50 * 1024 * 1024)
     config.deduplicate_media = True
+    # v8.0.0: the runtime reads credentials from config.accounts, never the
+    # legacy attributes; mirror a real (zero-config) Config's single account.
+    account = MagicMock()
+    account.index = 1
+    account.label = "default"
+    account.session_path = config.session_path
+    account.api_id = config.api_id
+    account.api_hash = config.api_hash
+    account.phone = config.phone
+    config.accounts = [account]
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
@@ -2253,10 +2263,10 @@ class TestRunFinallyMetadataClear:
 
 
 class TestRunListenerStandalone:
-    """Tests for run_listener standalone function (lines 1258-1266)."""
+    """Tests for run_listener standalone function (the phase-5 account seam)."""
 
     async def test_run_listener_connects_runs_and_closes(self):
-        """run_listener creates listener, connects, runs, and closes."""
+        """run_listener creates one listener per account, connects, runs, closes."""
         from src.listener import run_listener
 
         mock_listener = AsyncMock()
@@ -2271,8 +2281,19 @@ class TestRunListenerStandalone:
         ) as mock_create:
             await run_listener(config)
 
-        # The standalone entry point is a phase-5 seam: it must name the account.
-        mock_create.assert_awaited_once_with(config, account_id=1)
+        # The standalone entry is a phase-5 seam: each listener is built for ONE
+        # account, carrying the deferred resolver that maps that account's login
+        # to its accounts row (connect() awaits it before handlers register).
+        mock_create.assert_awaited_once()
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs["account"] is config.accounts[0]
+        resolver = kwargs["account_resolver"]
+        client = AsyncMock()
+        client.get_me = AsyncMock(return_value=MagicMock(id=900001111))
+        db = AsyncMock()
+        db.ensure_account = AsyncMock(return_value=1)
+        assert await resolver(client, db) == 1
+        db.ensure_account.assert_awaited_once_with(telegram_user_id=900001111, env_index=1, label="default")
         mock_listener.connect.assert_awaited_once()
         mock_listener.run.assert_awaited_once()
         mock_listener.close.assert_awaited_once()
@@ -2293,14 +2314,15 @@ class TestRunListenerStandalone:
 
         mock_listener.close.assert_awaited_once()
 
-    async def test_run_listener_builds_real_listener_for_the_default_account(self):
+    async def test_run_listener_builds_real_listener_for_the_resolved_account(self):
         """The standalone entry runs the REAL TelegramListener.create/__init__ chain.
 
         The tests above patch create() away, so they cannot catch the entry
-        dropping the required account_id kwarg. Here only leaf dependencies are
-        mocked; a missing kwarg raises TypeError out of run_listener itself.
+        dropping the account wiring. Here only leaf dependencies are mocked; the
+        real construction must carry the account and the deferred resolver —
+        and NO hardwired row id (resolution belongs to connect(), patched here,
+        so account_id must still be None at this seam).
         """
-        from src.db.models import DEFAULT_ACCOUNT_ID
         from src.listener import run_listener
 
         config = _make_config()
@@ -2315,7 +2337,49 @@ class TestRunListenerStandalone:
 
         listener = mock_connect.await_args.args[0]
         assert isinstance(listener, TelegramListener)
-        assert listener.account_id == DEFAULT_ACCOUNT_ID
+        assert listener.account is config.accounts[0]
+        assert listener.account_id is None, "the row id is resolved by connect(), never hardwired"
+        assert listener._account_resolver is not None
+
+    async def test_connect_resolves_the_account_row_before_any_handler_registers(self):
+        """The resolver runs after authorization and BEFORE handler registration.
+
+        The ordering is load-bearing, not cosmetic: a handler firing ahead of
+        resolution would file its rows under the wrong account. The tracked-chat
+        load must also already see the resolved id.
+        """
+        config = _make_config()
+        db = _make_db()
+        events = []
+
+        mock_client = AsyncMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+
+        def fake_on(event_type):
+            def register(handler):
+                events.append("handler")
+                return handler
+
+            return register
+
+        mock_client.on = fake_on
+
+        async def resolver(client, adapter):
+            events.append("resolve")
+            return 7
+
+        listener = TelegramListener(config, db, client=mock_client, account_resolver=resolver)
+
+        mock_db_manager = MagicMock()
+        mock_db_manager._is_sqlite = True
+        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=mock_db_manager):
+            await listener.connect()
+
+        assert listener.account_id == 7
+        assert "resolve" in events and "handler" in events
+        assert events.index("resolve") < events.index("handler")
+        db.get_all_chats.assert_awaited_once_with(account_id=7)
 
 
 # ===========================================================================

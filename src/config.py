@@ -5,6 +5,8 @@ Loads and validates settings from environment variables.
 
 import logging
 import os
+import re
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -107,6 +109,43 @@ def build_telegram_client_kwargs() -> dict:
     if proxy is not None:
         kwargs["proxy"] = dict(proxy)
     return kwargs
+
+
+# The full shape of one indexed account variable (v8.0.0 multi-account).
+# Parsing scans the environment for the TG_ACCOUNT_ prefix and then requires
+# this exact shape, so a typo'd suffix or index (TG_ACCOUNT_2_APIHASH,
+# TG_ACCOUNT_02_API_ID) is a loud startup error instead of a credential
+# silently not applying.
+_TG_ACCOUNT_ENV_RE = re.compile(r"^TG_ACCOUNT_([1-9]\d*)_(API_ID|API_HASH|PHONE_NUMBER|LABEL|SESSION_NAME)$")
+
+# The suffixes every account must declare; LABEL and SESSION_NAME are optional.
+_TG_ACCOUNT_REQUIRED_SUFFIXES = ("API_ID", "API_HASH", "PHONE_NUMBER")
+
+
+@dataclass(frozen=True)
+class AccountConfig:
+    """One Telegram account the archiver captures with (v8.0.0 multi-account).
+
+    ``index`` is the 1-based TG_ACCOUNT_<N>_* position — an env-file coordinate
+    only. The database row an account's data lives under is resolved from the
+    Telegram user id after login, never from this number, so re-ordering the
+    indexes never moves data between accounts.
+
+    ``api_id``/``api_hash``/``phone``/``label`` are kept out of the dataclass
+    repr: reprs travel into logs and exception text, the phone number is PII
+    and the hash is a credential — accounts appear in logs by index or database
+    row id only. The credential fields are Optional solely for the synthesized
+    zero-config account, which the viewer constructs without credentials;
+    indexed accounts always carry a complete, validated triple.
+    """
+
+    index: int
+    api_id: int | None = field(repr=False)
+    api_hash: str | None = field(repr=False)
+    phone: str | None = field(repr=False)
+    label: str = field(repr=False)
+    session_name: str
+    session_path: str
 
 
 class Config:
@@ -272,6 +311,14 @@ class Config:
         backup_parent = os.path.dirname(self.backup_path.rstrip("/\\"))
         self.session_dir = os.path.abspath(os.getenv("SESSION_DIR", os.path.join(backup_parent, "session")))
         self.session_path = os.path.join(self.session_dir, self.session_name)
+
+        # Multi-account declaration (v8.0.0). Parsed after the legacy session
+        # settings because account 1 inherits their resolution: with no
+        # TG_ACCOUNT_* variable set, exactly one account is synthesized from
+        # the legacy TELEGRAM_* variables with the same session file, so a 7.x
+        # deployment upgrades with zero env changes and zero re-login. When
+        # TG_ACCOUNT_* variables are present, they win over the legacy triple.
+        self.accounts, self._indexed_accounts = self._parse_accounts()
 
         # Database path configuration
         # Default: inside backup_path
@@ -458,6 +505,12 @@ class Config:
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")
 
+        # Indexed mode announces itself by count only; identifying values
+        # (labels, phone numbers) stay out of the log. Zero-config deployments
+        # deliberately log nothing new here — their output stays 7.x-identical.
+        if self._indexed_accounts:
+            logger.info(f"Multi-account: using {len(self.accounts)} configured account(s)")
+
         # Log filtering mode
         if self.whitelist_mode:
             logger.info(f"Filter mode: WHITELIST - backing up ONLY {len(self.chat_ids)} specific chats")
@@ -580,6 +633,113 @@ class Config:
                 ) from e
             result.setdefault(chat_id, set()).add(topic_id)
         return result
+
+    def _parse_accounts(self) -> tuple[list[AccountConfig], bool]:
+        """Parse TG_ACCOUNT_<N>_* into an ordered account list.
+
+        Returns ``(accounts, indexed)`` where ``indexed`` is True when any
+        TG_ACCOUNT_* variable declared an account and False when the single
+        account was synthesized from the legacy TELEGRAM_* variables.
+
+        Session-name resolution: TG_ACCOUNT_<N>_SESSION_NAME wins when set;
+        account 1 then falls back to the legacy chain (SESSION_NAME env →
+        'telegram_backup') so an existing deployment keeps its session file,
+        and accounts 2+ fall back to 'telegram_backup_account<N>'.
+
+        Error messages name the offending VARIABLE, never its value: the
+        values are credentials and phone numbers (PII).
+        """
+        declared: dict[int, dict[str, str]] = {}
+        for key, value in os.environ.items():
+            if not key.startswith("TG_ACCOUNT_"):
+                continue
+            match = _TG_ACCOUNT_ENV_RE.match(key)
+            if match is None:
+                raise ValueError(
+                    f"Unrecognized account variable '{key}'. Expected TG_ACCOUNT_<N>_API_ID / _API_HASH / "
+                    "_PHONE_NUMBER / _LABEL / _SESSION_NAME with N starting at 1 (no leading zeros)."
+                )
+            # docker-compose's ${VAR:-} idiom injects empty strings for unset
+            # host variables; treat them exactly like absent variables.
+            if not value.strip():
+                continue
+            declared.setdefault(int(match.group(1)), {})[match.group(2)] = value.strip()
+
+        if not declared:
+            # Zero-config upgrade: byte-identical single-account behavior,
+            # including the credentials-optional viewer case (the Nones).
+            # 'default' matches the label migration 022 seeds on row 1, so the
+            # runtime's claim of that row rewrites nothing.
+            return [
+                AccountConfig(
+                    index=1,
+                    api_id=self.api_id,
+                    api_hash=self.api_hash,
+                    phone=self.phone,
+                    label="default",
+                    session_name=self.session_name,
+                    session_path=self.session_path,
+                )
+            ], False
+
+        indexes = sorted(declared)
+        if indexes != list(range(1, len(indexes) + 1)):
+            missing = next(i for i in range(1, max(indexes) + 1) if i not in declared)
+            raise ValueError(
+                f"TG_ACCOUNT_* indexes must be contiguous starting at 1: "
+                f"account {max(indexes)} is declared but TG_ACCOUNT_{missing}_API_ID is missing"
+            )
+
+        accounts: list[AccountConfig] = []
+        phone_owner: dict[str, int] = {}
+        session_owner: dict[str, int] = {}
+        for index in indexes:
+            variables = declared[index]
+            missing_suffixes = [s for s in _TG_ACCOUNT_REQUIRED_SUFFIXES if s not in variables]
+            if missing_suffixes:
+                names = ", ".join(f"TG_ACCOUNT_{index}_{suffix}" for suffix in missing_suffixes)
+                raise ValueError(f"Account {index} is incomplete: {names} missing")
+            try:
+                api_id = int(variables["API_ID"])
+            except ValueError:
+                # ``from None`` on purpose: the chained int() error would echo
+                # the raw value, and these messages never carry values.
+                raise ValueError(f"TG_ACCOUNT_{index}_API_ID must be an integer") from None
+
+            phone = variables["PHONE_NUMBER"]
+            if phone in phone_owner:
+                raise ValueError(
+                    f"TG_ACCOUNT_{index}_PHONE_NUMBER duplicates TG_ACCOUNT_{phone_owner[phone]}_PHONE_NUMBER: "
+                    "each account must be a distinct Telegram identity"
+                )
+            phone_owner[phone] = index
+
+            if index == 1:
+                # Account 1 keeps the legacy resolution so no existing
+                # deployment ever re-logins after declaring indexed accounts.
+                session_name = variables.get("SESSION_NAME") or self.session_name
+            else:
+                session_name = variables.get("SESSION_NAME") or f"telegram_backup_account{index}"
+            if session_name in session_owner:
+                raise ValueError(
+                    f"Accounts {session_owner[session_name]} and {index} resolve to the same session file: "
+                    f"set a distinct TG_ACCOUNT_{index}_SESSION_NAME (two clients sharing one Telethon "
+                    "session corrupt it)"
+                )
+            session_owner[session_name] = index
+
+            accounts.append(
+                AccountConfig(
+                    index=index,
+                    api_id=api_id,
+                    api_hash=variables["API_HASH"],
+                    phone=phone,
+                    label=variables.get("LABEL") or ("default" if index == 1 else f"account{index}"),
+                    session_name=session_name,
+                    session_path=os.path.join(self.session_dir, session_name),
+                )
+            )
+        return accounts, True
 
     def should_skip_topic(self, chat_id: int, topic_id: int | None) -> bool:
         """Check if a specific topic in a chat should be skipped.
@@ -764,7 +924,12 @@ class Config:
         return True
 
     def validate_credentials(self):
-        """Ensure Telegram credentials are present."""
+        """Ensure Telegram credentials are present for every configured account."""
+        if self._indexed_accounts:
+            # Indexed TG_ACCOUNT_<N>_* accounts were validated for complete
+            # triples (and an integer API_ID) when they were parsed, so being
+            # here means every declared account is whole.
+            return
         if not all([self.api_id, self.api_hash, self.phone]):
             raise ValueError(
                 "Missing required Telegram credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE). "
