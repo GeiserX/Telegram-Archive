@@ -34,6 +34,9 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Repository-controlled code runs here; the token needs nothing but checkout.
+    permissions:
+      contents: read
     # PostgreSQL is a first-class supported backend, so the publish gate runs
     # against a real server, same as the Tests workflow.
     services:
