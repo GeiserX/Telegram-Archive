@@ -111,8 +111,9 @@ cleanly stopped in step 2, so the file is complete without sidecar files; if
 `-wal`/`-shm` files exist anyway, copy them alongside).
 
 Run the script **interactively** — it deliberately does not commit. You need
-the `sqlite3` command-line shell, version 3.16 or newer (`apt install sqlite3`
-on Debian/Ubuntu; macOS ships one):
+the `sqlite3` command-line shell, version 3.33.0 or newer — the script uses
+`.mode box` for its report (`apt install sqlite3` on Debian/Ubuntu; macOS
+ships one):
 
 ```bash
 cd telegram-archive          # the checkout containing scripts/merge/
@@ -170,11 +171,18 @@ Then run the merge (`SRC_PASSWORD` is the source *server's* password — for the
 scratch-database route above, that is the target server's own one):
 
 ```bash
+read -rs SRC_PW    # type the source password; it stays out of shell history
 docker exec -i telegram-postgres psql -U telegram -d telegram_backup \
   -v SRC_HOST=127.0.0.1 -v SRC_PORT=5432 -v SRC_DB=ta_merge_source \
-  -v SRC_USER=telegram -v SRC_PASSWORD='your-postgres-password' \
+  -v SRC_USER=telegram -v SRC_PASSWORD="$SRC_PW" \
   -f - < scripts/merge/merge_postgres.sql
 ```
+
+`read -rs` keeps the password out of your shell history; it still appears
+briefly in the container's process arguments while psql runs, which on a
+single-admin machine is usually acceptable. On a shared machine, prefer the
+scratch-database route above — restoring the dump into the target's own
+cluster means the only password involved is the target's own.
 
 Unlike the SQLite script, this one commits itself — but only if it gets to the
 end. The whole run is a single transaction; every precondition and every

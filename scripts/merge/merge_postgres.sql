@@ -468,10 +468,10 @@ END $$;
 DO $$
 DECLARE t text; s text;
 BEGIN
-  SELECT substring(file_path from '^(.*/media/)') INTO t
+  SELECT substring(file_path from '^(.*?/media/)') INTO t
     FROM media WHERE file_path LIKE '%/media/%'
    LIMIT 1;
-  SELECT substring(file_path from '^(.*/media/)') INTO s
+  SELECT substring(file_path from '^(.*?/media/)') INTO s
     FROM merge_source.media WHERE file_path LIKE '%/media/%'
    LIMIT 1;
   IF t IS NULL OR s IS NULL THEN
