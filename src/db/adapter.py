@@ -221,6 +221,19 @@ class DatabaseAdapter:
     Async database adapter compatible with the old Database class interface.
 
     All methods are async and should be awaited.
+
+    v8.0.0 account contract. Every table holding Telegram data is keyed by
+    ``account_id`` (see models.py), and the adapter names the account explicitly:
+
+    - Capture-side methods (writes, and reads that feed capture decisions such
+      as gap detection or sync state) take keyword-only ``account_id: int`` with
+      NO default — a caller that forgets the account is a TypeError at call
+      time, never a row written under the server default.
+    - Viewer/MCP-facing reads take ``account_id: int | None = None``; ``None``
+      means unscoped, which is correct while the archive holds one account.
+      Phase 4 (viewer entitlements) closes that hole by passing the account.
+    - Tables that are global by design (metadata, users, app_settings, the
+      viewer_* tables) keep their pre-8.0 signatures.
     """
 
     def __init__(self, db_manager: DatabaseManager):
@@ -268,10 +281,16 @@ class DatabaseAdapter:
                 logger.error(f"Failed to serialize raw_data even after conversion: {e2}")
                 return "{}"
 
-    def _message_values(self, message_data: dict[str, Any]) -> dict[str, Any]:
+    def _message_values(self, message_data: dict[str, Any], account_id: int) -> dict[str, Any]:
         sender_name = message_data.get("sender_name")
         sender_name = sender_name.strip() if _is_nonblank_text(sender_name) else None
         return {
+            # Always explicit, never the column's server default: an INSERT
+            # missing a server-defaulted PK column makes SQLAlchemy append
+            # RETURNING for it, and on the ON CONFLICT DO NOTHING path that
+            # changes what rowcount means — the caller then skips the update
+            # branch and an edited message's new text is silently dropped.
+            "account_id": account_id,
             "id": message_data["id"],
             "chat_id": message_data["chat_id"],
             "sender_id": message_data.get("sender_id"),
@@ -292,17 +311,32 @@ class DatabaseAdapter:
 
     def _insert_message_stmt(self, values: dict[str, Any]):
         if self._is_sqlite:
-            return sqlite_insert(Message).values(**values).on_conflict_do_nothing(index_elements=["id", "chat_id"])
-        return pg_insert(Message).values(**values).on_conflict_do_nothing(index_elements=["id", "chat_id"])
+            return (
+                sqlite_insert(Message)
+                .values(**values)
+                .on_conflict_do_nothing(index_elements=["account_id", "chat_id", "id"])
+            )
+        return (
+            pg_insert(Message).values(**values).on_conflict_do_nothing(index_elements=["account_id", "chat_id", "id"])
+        )
 
     def _insert_message_version_stmt(self, values: dict[str, Any]):
         if self._is_sqlite:
-            return sqlite_insert(MessageVersion).values(**values).on_conflict_do_nothing(index_elements=["change_hash"])
-        return pg_insert(MessageVersion).values(**values).on_conflict_do_nothing(index_elements=["change_hash"])
+            return (
+                sqlite_insert(MessageVersion)
+                .values(**values)
+                .on_conflict_do_nothing(index_elements=["account_id", "change_hash"])
+            )
+        return (
+            pg_insert(MessageVersion)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["account_id", "change_hash"])
+        )
 
     async def _record_message_version(
         self,
         session,
+        account_id: int,
         chat_id: int,
         message_id: int,
         text: str | None,
@@ -327,6 +361,9 @@ class DatabaseAdapter:
             date=date,
         )
         values = {
+            # The hash payload is a frozen contract and does NOT carry the
+            # account; the (account_id, change_hash) constraint does instead.
+            "account_id": account_id,
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
@@ -409,23 +446,24 @@ class DatabaseAdapter:
             return True
         return edit_date >= old_edit_date
 
-    async def _load_message_for_update(self, session, chat_id: int, message_id: int) -> Message | None:
+    async def _load_message_for_update(self, session, account_id: int, chat_id: int, message_id: int) -> Message | None:
+        pk = and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
         if self._is_sqlite:
             # SQLite has no row-level SELECT FOR UPDATE. A no-op write acquires the
             # transaction's write lock before we re-read and decide whether to update.
-            await session.execute(
-                update(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)).values(id=Message.id)
-            )
-            stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+            await session.execute(update(Message).where(pk).values(id=Message.id))
+            stmt = select(Message).where(pk)
         else:
-            stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)).with_for_update()
+            stmt = select(Message).where(pk).with_for_update()
 
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
-    async def _load_message_snapshot(self, session, chat_id: int, message_id: int) -> Message | None:
+    async def _load_message_snapshot(self, session, account_id: int, chat_id: int, message_id: int) -> Message | None:
         """Plain lock-free read, used only for the fast-path no-change check."""
-        stmt = select(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id))
+        stmt = select(Message).where(
+            and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
+        )
         result = await session.execute(stmt.execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
@@ -469,7 +507,7 @@ class DatabaseAdapter:
 
         changed = {}
         for key, value in update_values.items():
-            if key in ("id", "chat_id"):
+            if key in ("account_id", "id", "chat_id"):
                 continue
             if getattr(existing, key) != value:
                 changed[key] = value
@@ -487,14 +525,14 @@ class DatabaseAdapter:
         # below; skipping here is safe because a concurrent writer that changes the
         # row after our snapshot has, by definition, applied data at least as new
         # as ours.
-        snapshot = await self._load_message_snapshot(session, values["chat_id"], values["id"])
+        snapshot = await self._load_message_snapshot(session, values["account_id"], values["chat_id"], values["id"])
         if snapshot is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
         if not self._pending_update_values(snapshot, message_data, values):
             return
 
-        existing = await self._load_message_for_update(session, values["chat_id"], values["id"])
+        existing = await self._load_message_for_update(session, values["account_id"], values["chat_id"], values["id"])
         if existing is None:
             logger.debug("Upsert no-op: message row vanished during conflict resolution")
             return
@@ -505,6 +543,7 @@ class DatabaseAdapter:
         if "text" in update_values:
             await self._record_message_version(
                 session=session,
+                account_id=existing.account_id,
                 chat_id=existing.chat_id,
                 message_id=existing.id,
                 text=existing.text,
@@ -512,12 +551,18 @@ class DatabaseAdapter:
             )
         await session.execute(
             update(Message)
-            .where(and_(Message.chat_id == values["chat_id"], Message.id == values["id"]))
+            .where(
+                and_(
+                    Message.account_id == values["account_id"],
+                    Message.chat_id == values["chat_id"],
+                    Message.id == values["id"],
+                )
+            )
             .values(**update_values)
         )
 
-    async def _insert_or_update_message(self, session, message_data: dict[str, Any]) -> None:
-        values = self._message_values(message_data)
+    async def _insert_or_update_message(self, session, message_data: dict[str, Any], *, account_id: int) -> None:
+        values = self._message_values(message_data, account_id)
         result = await session.execute(self._insert_message_stmt(values))
         if result.rowcount:
             return
@@ -548,7 +593,7 @@ class DatabaseAdapter:
             row = result.scalar_one_or_none()
             return row
 
-    async def get_migration_markers(self) -> list[tuple[int, int]]:
+    async def get_migration_markers(self, *, account_id: int) -> list[tuple[int, int]]:
         """Return stored group→supergroup migration pointers (#228).
 
         Selects service messages whose ``raw_data.action_type`` is
@@ -566,7 +611,9 @@ class DatabaseAdapter:
         markers: list[tuple[int, int]] = []
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
-                select(Message.chat_id, Message.raw_data).where(Message.raw_data.like('%"chat_migrate_to"%'))
+                select(Message.chat_id, Message.raw_data).where(
+                    and_(Message.account_id == account_id, Message.raw_data.like('%"chat_migrate_to"%'))
+                )
             )
             for chat_id, raw in result.all():
                 if not raw:
@@ -585,15 +632,21 @@ class DatabaseAdapter:
     # ========== Chat Operations ==========
 
     @retry_on_locked()
-    async def upsert_chat(self, chat_data: dict[str, Any]) -> int:
+    async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
         """Insert or update a chat record.
 
         Only fields present in chat_data will be updated on conflict.
         This prevents the listener (which only provides basic fields)
         from overwriting is_forum/is_archived set by the backup.
+
+        ``ref`` is deliberately absent from both the values and the update set:
+        the model's Python-side default mints one on the INSERT branch, and the
+        DO UPDATE branch never touches the column, so a ref is stable for the
+        life of the row.
         """
         async with self.db_manager.async_session_factory() as session:
             values = {
+                "account_id": account_id,
                 "id": chat_data["id"],
                 "type": chat_data.get("type", "unknown"),
                 "title": chat_data.get("title"),
@@ -635,10 +688,10 @@ class DatabaseAdapter:
 
             if self._is_sqlite:
                 stmt = sqlite_insert(Chat).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
             else:
                 stmt = pg_insert(Chat).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
 
             await session.execute(stmt)
             await session.commit()
@@ -651,6 +704,8 @@ class DatabaseAdapter:
         search: str = None,
         archived: bool | None = None,
         folder_id: int | None = None,
+        *,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
 
@@ -660,6 +715,7 @@ class DatabaseAdapter:
             search: Optional search query (case-insensitive, matches title/first_name/last_name/username)
             archived: If True, only archived chats; if False, only non-archived; if None, all
             folder_id: If set, only chats in this folder
+            account_id: If set, only this account's chats (None = unscoped until phase 4)
         """
         async with self.db_manager.async_session_factory() as session:
             # Last message date, as a CORRELATED scalar subquery — one
@@ -671,9 +727,12 @@ class DatabaseAdapter:
             # every message in the archive on every /api/chats call. Measured on
             # 1,000 chats / 1,000,000 messages: 63 ms -> 1.3 ms, and flat in
             # archive size instead of linear.
+            # The account equality rides in the correlation (not only in an
+            # optional filter): a chat id repeats across accounts, so without it
+            # the max() would read BOTH accounts' copies of the chat.
             last_message_date = (
                 select(func.max(Message.date))
-                .where(Message.chat_id == Chat.id)
+                .where(and_(Message.account_id == Chat.account_id, Message.chat_id == Chat.id))
                 .correlate(Chat)
                 .scalar_subquery()
                 .label("last_message_date")
@@ -684,8 +743,16 @@ class DatabaseAdapter:
             # Filter by folder membership
             if folder_id is not None:
                 stmt = stmt.join(
-                    ChatFolderMember, and_(ChatFolderMember.chat_id == Chat.id, ChatFolderMember.folder_id == folder_id)
+                    ChatFolderMember,
+                    and_(
+                        ChatFolderMember.account_id == Chat.account_id,
+                        ChatFolderMember.chat_id == Chat.id,
+                        ChatFolderMember.folder_id == folder_id,
+                    ),
                 )
+
+            if account_id is not None:
+                stmt = stmt.where(Chat.account_id == account_id)
 
             # Filter by archived status
             if archived is True:
@@ -743,7 +810,12 @@ class DatabaseAdapter:
             return chats
 
     async def get_chat_count(
-        self, search: str = None, archived: bool | None = None, folder_id: int | None = None
+        self,
+        search: str = None,
+        archived: bool | None = None,
+        folder_id: int | None = None,
+        *,
+        account_id: int | None = None,
     ) -> int:
         """Get total number of chats (fast count for pagination).
 
@@ -751,14 +823,23 @@ class DatabaseAdapter:
             search: Optional search query to filter count
             archived: If True, only archived chats; if False, only non-archived; if None, all
             folder_id: If set, only chats in this folder
+            account_id: If set, only this account's chats (None = unscoped until phase 4)
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(func.count(Chat.id))
 
             if folder_id is not None:
                 stmt = stmt.join(
-                    ChatFolderMember, and_(ChatFolderMember.chat_id == Chat.id, ChatFolderMember.folder_id == folder_id)
+                    ChatFolderMember,
+                    and_(
+                        ChatFolderMember.account_id == Chat.account_id,
+                        ChatFolderMember.chat_id == Chat.id,
+                        ChatFolderMember.folder_id == folder_id,
+                    ),
                 )
+
+            if account_id is not None:
+                stmt = stmt.where(Chat.account_id == account_id)
 
             if archived is True:
                 stmt = stmt.where(Chat.is_archived == 1)
@@ -829,17 +910,17 @@ class DatabaseAdapter:
     # ========== Message Operations ==========
 
     @retry_on_locked()
-    async def insert_message(self, message_data: dict[str, Any]) -> None:
+    async def insert_message(self, message_data: dict[str, Any], *, account_id: int) -> None:
         """Insert a message record.
 
         v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
         """
         async with self.db_manager.async_session_factory() as session:
-            await self._insert_or_update_message(session, message_data)
+            await self._insert_or_update_message(session, message_data, account_id=account_id)
             await session.commit()
 
     @retry_on_locked()
-    async def insert_messages_batch(self, messages_data: list[dict[str, Any]]) -> None:
+    async def insert_messages_batch(self, messages_data: list[dict[str, Any]], *, account_id: int) -> None:
         """Insert multiple message records in a single transaction.
 
         v6.0.0: media_type, media_id, media_path removed - use insert_media() separately.
@@ -849,18 +930,25 @@ class DatabaseAdapter:
 
         async with self.db_manager.async_session_factory() as session:
             for m in messages_data:
-                await self._insert_or_update_message(session, m)
+                await self._insert_or_update_message(session, m, account_id=account_id)
 
             await session.commit()
 
     async def get_messages_by_date_range(
-        self, chat_id: int | None = None, start_date: datetime | None = None, end_date: datetime | None = None
+        self,
+        chat_id: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        *,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get messages within a date range."""
+        """Get messages within a date range (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
             stmt = select(Message)
 
             conditions = []
+            if account_id is not None:
+                conditions.append(Message.account_id == account_id)
             if chat_id:
                 conditions.append(Message.chat_id == chat_id)
             if start_date:
@@ -876,8 +964,10 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return [self._message_to_dict(m) for m in result.scalars()]
 
-    async def find_message_by_date(self, chat_id: int, target_date: datetime) -> dict[str, Any] | None:
-        """Find the first message on or after a specific date."""
+    async def find_message_by_date(
+        self, chat_id: int, target_date: datetime, *, account_id: int | None = None
+    ) -> dict[str, Any] | None:
+        """Find the first message on or after a specific date (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(Message)
@@ -885,22 +975,28 @@ class DatabaseAdapter:
                 .order_by(Message.date.asc())
                 .limit(1)
             )
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
             result = await session.execute(stmt)
             message = result.scalar_one_or_none()
             return self._message_to_dict(message) if message else None
 
-    async def get_messages_sync_data(self, chat_id: int) -> dict[int, str | None]:
+    async def get_messages_sync_data(self, chat_id: int, *, account_id: int) -> dict[int, str | None]:
         """Get message IDs and their edit dates for sync checking."""
         async with self.db_manager.async_session_factory() as session:
             # Exclude soft-deleted rows so sync doesn't re-check them. The is_(None) arm is
             # defensive (is_deleted is NOT NULL with server_default 0) and mirrors is_archived.
             stmt = select(Message.id, Message.edit_date).where(
-                and_(Message.chat_id == chat_id, or_(Message.is_deleted == 0, Message.is_deleted.is_(None)))
+                and_(
+                    Message.account_id == account_id,
+                    Message.chat_id == chat_id,
+                    or_(Message.is_deleted == 0, Message.is_deleted.is_(None)),
+                )
             )
             result = await session.execute(stmt)
             return {row.id: row.edit_date for row in result}
 
-    async def get_message_ids_since(self, chat_id: int, cutoff: datetime, limit: int) -> list[int]:
+    async def get_message_ids_since(self, chat_id: int, cutoff: datetime, limit: int, *, account_id: int) -> list[int]:
         """Return the newest message IDs in a chat dated at or after ``cutoff`` (#221).
 
         Used by the bounded reaction re-sweep to recover self-reactions Telegram
@@ -910,56 +1006,80 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(Message.id)
-                .where(and_(Message.chat_id == chat_id, Message.date >= cutoff))
+                .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.date >= cutoff))
                 .order_by(Message.id.desc())
                 .limit(limit)
             )
             result = await session.execute(stmt)
             return [row.id for row in result]
 
-    async def get_chat_id_for_message(self, message_id: int) -> int | None:
+    async def get_chat_id_for_message(self, message_id: int, *, account_id: int) -> int | None:
         """
-        Look up the chat_id for a message by its ID.
+        Look up the chat_id for a message by its ID, within one account.
 
-        Used when Telegram sends deletion events without chat_id.
+        Used when Telegram sends deletion events without chat_id — the event
+        arrived on one account's session, so only that account's rows are
+        candidates (idx_messages_account_msgid serves this seek).
         Note: Message IDs are only unique within a chat, so this may return
         multiple results. Returns the first match.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Message.chat_id).where(Message.id == message_id).limit(1)
+            stmt = (
+                select(Message.chat_id).where(and_(Message.account_id == account_id, Message.id == message_id)).limit(1)
+            )
             result = await session.execute(stmt)
             row = result.first()
             return row[0] if row else None
 
     @retry_on_locked()
-    async def delete_message(self, chat_id: int, message_id: int) -> None:
+    async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> None:
         """Delete a specific message and its media."""
         async with self.db_manager.async_session_factory() as session:
             # Delete previous versions
             await session.execute(
                 delete(MessageVersion).where(
-                    and_(MessageVersion.chat_id == chat_id, MessageVersion.message_id == message_id)
+                    and_(
+                        MessageVersion.account_id == account_id,
+                        MessageVersion.chat_id == chat_id,
+                        MessageVersion.message_id == message_id,
+                    )
                 )
             )
             # Delete associated media
-            await session.execute(delete(Media).where(and_(Media.chat_id == chat_id, Media.message_id == message_id)))
+            await session.execute(
+                delete(Media).where(
+                    and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id)
+                )
+            )
             # Delete reactions
             await session.execute(
-                delete(Reaction).where(and_(Reaction.chat_id == chat_id, Reaction.message_id == message_id))
+                delete(Reaction).where(
+                    and_(
+                        Reaction.account_id == account_id,
+                        Reaction.chat_id == chat_id,
+                        Reaction.message_id == message_id,
+                    )
+                )
             )
             # Delete the message
-            await session.execute(delete(Message).where(and_(Message.chat_id == chat_id, Message.id == message_id)))
+            await session.execute(
+                delete(Message).where(
+                    and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
+                )
+            )
             await session.commit()
             logger.debug(f"Deleted message {message_id}")
 
     @retry_on_locked()
-    async def mark_message_deleted(self, chat_id: int, message_id: int, deleted_at: datetime | None = None) -> None:
+    async def mark_message_deleted(
+        self, chat_id: int, message_id: int, deleted_at: datetime | None = None, *, account_id: int
+    ) -> None:
         """Mark a message as deleted on Telegram while keeping archive content."""
         deleted_at = _strip_tz(deleted_at) or utcnow_naive()
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
                 update(Message)
-                .where(and_(Message.chat_id == chat_id, Message.id == message_id))
+                .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
                 .values(
                     is_deleted=1,
                     deleted_at=func.coalesce(Message.deleted_at, deleted_at),
@@ -971,16 +1091,20 @@ class DatabaseAdapter:
             else:
                 logger.debug(f"Soft-delete no-op: message {message_id} not in archive")
 
-    async def resolve_message_chat_id(self, message_id: int) -> int | None:
+    async def resolve_message_chat_id(self, message_id: int, *, account_id: int) -> int | None:
         """
-        Find which chat a message belongs to.
+        Find which chat a message belongs to, within one account.
 
-        Returns the chat_id if found in exactly one chat.
+        Returns the chat_id if found in exactly one of the account's chats.
         Returns None if not found or ambiguous (same ID in multiple chats).
-        Telegram message IDs are only unique within a chat.
+        Telegram message IDs are only unique within a chat — and another
+        account's rows must never make this account's lookup ambiguous, nor
+        resolve a deletion onto a chat this account never archived.
         """
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(Message.chat_id).where(Message.id == message_id))
+            result = await session.execute(
+                select(Message.chat_id).where(and_(Message.account_id == account_id, Message.id == message_id))
+            )
             chat_ids = [row[0] for row in result.fetchall()]
 
             if len(chat_ids) == 1:
@@ -991,7 +1115,7 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def update_message_text(
-        self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None
+        self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None, *, account_id: int
     ) -> str:
         """Update a message's text and edit_date.
 
@@ -1002,7 +1126,7 @@ class DatabaseAdapter:
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
-            message = await self._load_message_for_update(session, chat_id, message_id)
+            message = await self._load_message_for_update(session, account_id, chat_id, message_id)
             if message is None:
                 logger.debug("Edit no-op: message not found in archive")
                 return "not_found"
@@ -1014,6 +1138,7 @@ class DatabaseAdapter:
             if message.text != new_text:
                 await self._record_message_version(
                     session=session,
+                    account_id=account_id,
                     chat_id=chat_id,
                     message_id=message_id,
                     text=message.text,
@@ -1021,14 +1146,16 @@ class DatabaseAdapter:
                 )
             await session.execute(
                 update(Message)
-                .where(and_(Message.chat_id == chat_id, Message.id == message_id))
+                .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
                 .values(text=new_text, edit_date=edit_date)
             )
             await session.commit()
             logger.debug("Updated archived message text")
             return "applied"
 
-    async def sender_has_message_in_chats(self, sender_id: int, chat_ids: Iterable[int]) -> bool:
+    async def sender_has_message_in_chats(
+        self, sender_id: int, chat_ids: Iterable[int], *, account_id: int | None = None
+    ) -> bool:
         """Return True if sender_id authored at least one message in any of chat_ids.
 
         SELECT-only membership probe used by the media ACL to decide whether a
@@ -1044,16 +1171,27 @@ class DatabaseAdapter:
                 .where(and_(Message.sender_id == sender_id, Message.chat_id.in_(chat_id_list)))
                 .limit(1)
             )
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
             result = await session.execute(stmt)
             return result.first() is not None
 
-    async def backfill_is_outgoing(self, owner_id: int) -> None:
-        """Backfill is_outgoing flag for messages sent by the owner."""
+    async def backfill_is_outgoing(self, owner_id: int, *, account_id: int) -> None:
+        """Backfill is_outgoing flag for messages sent by the owner.
+
+        Scoped to the account whose owner ``owner_id`` is: the same person can
+        be a mere participant in the other account's copy of a shared chat, and
+        those rows are genuinely not outgoing there.
+        """
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
                 update(Message)
                 .where(
-                    and_(Message.sender_id == owner_id, or_(Message.is_outgoing == 0, Message.is_outgoing.is_(None)))
+                    and_(
+                        Message.account_id == account_id,
+                        Message.sender_id == owner_id,
+                        or_(Message.is_outgoing == 0, Message.is_outgoing.is_(None)),
+                    )
                 )
                 .values(is_outgoing=1)
             )
@@ -1103,8 +1241,10 @@ class DatabaseAdapter:
             "date": row.date,
         }
 
-    async def get_message_versions(self, chat_id: int, message_id: int, limit: int = 100) -> list[dict[str, Any]]:
-        """Get preserved previous text versions for a message."""
+    async def get_message_versions(
+        self, chat_id: int, message_id: int, limit: int = 100, *, account_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get preserved previous text versions for a message (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(MessageVersion)
@@ -1112,6 +1252,8 @@ class DatabaseAdapter:
                 .order_by(MessageVersion.date.desc(), MessageVersion.id.desc())
                 .limit(limit)
             )
+            if account_id is not None:
+                stmt = stmt.where(MessageVersion.account_id == account_id)
             result = await session.execute(stmt)
             return [self._message_version_to_dict(row) for row in result.scalars()]
 
@@ -1120,6 +1262,7 @@ class DatabaseAdapter:
         chat_id: int | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        account_id: int | None = None,
     ):
         # No join to messages: versions already carry (chat_id, message_id), and
         # referential integrity is owned by the explicit deletes in
@@ -1127,6 +1270,8 @@ class DatabaseAdapter:
         stmt = select(MessageVersion)
 
         conditions = []
+        if account_id is not None:
+            conditions.append(MessageVersion.account_id == account_id)
         if chat_id is not None:
             conditions.append(MessageVersion.chat_id == chat_id)
         if start_date:
@@ -1148,39 +1293,46 @@ class DatabaseAdapter:
         chat_id: int | None = None,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        *,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get previous message versions by version date/chat filter."""
+        """Get previous message versions by version date/chat filter (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date))
+            result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
             return [self._message_version_to_dict(row) for row in result.scalars()]
 
-    async def iter_message_versions_for_export(self, chat_id: int):
+    async def iter_message_versions_for_export(self, chat_id: int, *, account_id: int | None = None):
         """Stream a chat's message versions one by one (async generator).
 
         Mirrors get_messages_for_export so the export endpoint never
         materializes an entire edit history in memory.
         """
         async with self.db_manager.async_session_factory() as session:
-            result = await session.stream(self._message_versions_query(chat_id))
+            result = await session.stream(self._message_versions_query(chat_id, account_id=account_id))
             async for row in result.scalars():
                 yield self._message_version_to_dict(row)
 
-    async def get_chat_stats(self, chat_id: int) -> dict[str, Any]:
+    async def get_chat_stats(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any]:
         """Get statistics for a specific chat (message count, media count, total size).
+
+        None account_id = unscoped until phase 4.
 
         Returns:
             Dict with keys: messages, media_files, total_size_bytes, first_message_date, last_message_date
         """
+        msg_where = [Message.chat_id == chat_id]
+        media_where = [Media.chat_id == chat_id]
+        if account_id is not None:
+            msg_where.append(Message.account_id == account_id)
+            media_where.append(Media.account_id == account_id)
         async with self.db_manager.async_session_factory() as session:
             # Message count
-            msg_result = await session.execute(select(func.count(Message.id)).where(Message.chat_id == chat_id))
+            msg_result = await session.execute(select(func.count(Message.id)).where(and_(*msg_where)))
             message_count = msg_result.scalar() or 0
 
             # Media count and total size
             media_result = await session.execute(
-                select(func.count(Media.id), func.coalesce(func.sum(Media.file_size), 0)).where(
-                    Media.chat_id == chat_id
-                )
+                select(func.count(Media.id), func.coalesce(func.sum(Media.file_size), 0)).where(and_(*media_where))
             )
             media_row = media_result.one()
             media_count = media_row[0] or 0
@@ -1188,7 +1340,7 @@ class DatabaseAdapter:
 
             # First and last message dates
             date_result = await session.execute(
-                select(func.min(Message.date), func.max(Message.date)).where(Message.chat_id == chat_id)
+                select(func.min(Message.date), func.max(Message.date)).where(and_(*msg_where))
             )
             date_row = date_result.one()
             first_message = date_row[0]
@@ -1207,7 +1359,7 @@ class DatabaseAdapter:
     # ========== Media Operations ==========
 
     @retry_on_locked()
-    async def insert_media(self, media_data: dict[str, Any]) -> None:
+    async def insert_media(self, media_data: dict[str, Any], *, account_id: int) -> None:
         """Insert (or upsert) a media file record.
 
         Contract for the ``downloaded`` key: include it whenever the caller
@@ -1219,6 +1371,7 @@ class DatabaseAdapter:
         """
         async with self.db_manager.async_session_factory() as session:
             values = {
+                "account_id": account_id,
                 "id": media_data["id"],
                 "message_id": media_data.get("message_id"),
                 "chat_id": media_data.get("chat_id"),
@@ -1284,15 +1437,24 @@ class DatabaseAdapter:
             # A fresh INSERT still lands 0 for an absent key — nothing is downloaded.
             if "downloaded" not in media_data:
                 update_values["downloaded"] = Media.downloaded
-            stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_values)
+            stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_values)
 
             await session.execute(stmt)
             await session.commit()
 
-    async def find_media_by_content_hash(self, content_hash: str) -> dict[str, Any] | None:
-        """Find an existing downloaded media record with the given SHA-256 content hash."""
+    async def find_media_by_content_hash(self, content_hash: str, *, account_id: int) -> dict[str, Any] | None:
+        """Find an existing downloaded media record with the given SHA-256 content hash.
+
+        Account-scoped on purpose: shared-store dedup must only reuse a blob the
+        SAME account's rows reference, so no account's media ever points at
+        content that exists solely under another account's lifecycle.
+        """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Media).where(and_(Media.content_hash == content_hash, Media.downloaded == 1)).limit(1)
+            stmt = (
+                select(Media)
+                .where(and_(Media.account_id == account_id, Media.content_hash == content_hash, Media.downloaded == 1))
+                .limit(1)
+            )
             result = await session.execute(stmt)
             media = result.scalar_one_or_none()
             if media is None:
@@ -1303,9 +1465,12 @@ class DatabaseAdapter:
                 "content_hash": media.content_hash,
             }
 
-    async def get_media_for_chat(self, chat_id: int) -> list[dict[str, Any]]:
+    async def get_media_for_chat(self, chat_id: int, *, account_id: int) -> list[dict[str, Any]]:
         """
-        Get all media records for a specific chat.
+        Get all media records for one account's copy of a chat.
+
+        Feeds the chat-cleanup path that deletes files from disk, so it must
+        never surface another account's rows.
 
         Args:
             chat_id: Chat identifier
@@ -1314,7 +1479,7 @@ class DatabaseAdapter:
             List of media records with file paths and metadata
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Media).where(Media.chat_id == chat_id)
+            stmt = select(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
             result = await session.execute(stmt)
             media_records = result.scalars().all()
 
@@ -1338,9 +1503,16 @@ class DatabaseAdapter:
         limit: int = 50,
         before_id: str | None = None,
         after_id: str | None = None,
+        *,
+        account_id: int | None = None,
     ) -> dict[str, Any]:
         """
         Get paginated media records for a chat with cursor-based pagination.
+
+        ``account_id=None`` is unscoped until phase 4. The media↔message joins
+        below carry the account equality UNCONDITIONALLY: a ``{chat}_{msg}_{type}``
+        media id repeats across accounts, so joining without it would multiply
+        rows even for a caller that asked for no scoping.
 
         ``before_id``/``after_id`` are opaque ``Media.id`` tokens (the gallery
         round-trips the composite ``{chat}_{msg}_{type}`` string), but each is resolved
@@ -1394,11 +1566,14 @@ class DatabaseAdapter:
             key_stmt = select(Media.id.label("page_media_id")).join(
                 Message,
                 and_(
+                    Media.account_id == Message.account_id,
                     Media.message_id == Message.id,
                     Media.chat_id == Message.chat_id,
                 ),
             )
             key_stmt = key_stmt.where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
+            if account_id is not None:
+                key_stmt = key_stmt.where(Media.account_id == account_id)
 
             if media_types:
                 key_stmt = key_stmt.where(Media.type.in_(media_types))
@@ -1408,10 +1583,16 @@ class DatabaseAdapter:
                     select(Media.id, Media.message_id, Message.date)
                     .join(
                         Message,
-                        and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id),
+                        and_(
+                            Media.account_id == Message.account_id,
+                            Media.message_id == Message.id,
+                            Media.chat_id == Message.chat_id,
+                        ),
                     )
                     .where(and_(Media.id == cursor_token, Media.chat_id == chat_id))
                 )
+                if account_id is not None:
+                    cursor_stmt = cursor_stmt.where(Media.account_id == account_id)
                 cursor_result = await session.execute(cursor_stmt)
                 cursor_row = cursor_result.one_or_none()
                 if cursor_row is None:
@@ -1455,7 +1636,8 @@ class DatabaseAdapter:
             else:
                 order_by = (Message.date.desc(), Media.message_id.desc(), Media.id.desc())
 
-            page_keys = key_stmt.order_by(*order_by).limit(limit + 1).subquery()
+            page_keys = key_stmt.add_columns(Media.account_id.label("page_account_id")).order_by(*order_by)
+            page_keys = page_keys.limit(limit + 1).subquery()
             stmt = (
                 select(
                     Media,
@@ -1465,10 +1647,14 @@ class DatabaseAdapter:
                     User.last_name,
                     User.username,
                 )
-                .join(page_keys, Media.id == page_keys.c.page_media_id)
+                .join(
+                    page_keys,
+                    and_(Media.account_id == page_keys.c.page_account_id, Media.id == page_keys.c.page_media_id),
+                )
                 .join(
                     Message,
                     and_(
+                        Media.account_id == Message.account_id,
                         Media.message_id == Message.id,
                         Media.chat_id == Message.chat_id,
                     ),
@@ -1501,12 +1687,13 @@ class DatabaseAdapter:
 
             return {"items": items, "has_more": has_more}
 
-    async def get_media_counts(self, chat_id: int) -> dict[str, int]:
+    async def get_media_counts(self, chat_id: int, *, account_id: int | None = None) -> dict[str, int]:
         """
         Get count of downloaded media grouped by type for a chat.
 
         Args:
             chat_id: Chat identifier
+            account_id: If set, only this account's media (None = unscoped until phase 4)
 
         Returns:
             Dict mapping media type to count (only types with count > 0)
@@ -1517,12 +1704,14 @@ class DatabaseAdapter:
                 .where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
                 .group_by(Media.type)
             )
+            if account_id is not None:
+                stmt = stmt.where(Media.account_id == account_id)
             result = await session.execute(stmt)
             return {row[0]: row[1] for row in result.all()}
 
-    async def delete_media_for_chat(self, chat_id: int) -> int:
+    async def delete_media_for_chat(self, chat_id: int, *, account_id: int) -> int:
         """
-        Delete all media records for a specific chat.
+        Delete one account's media records for a specific chat.
         Does not delete message records or the chat itself.
 
         Args:
@@ -1532,22 +1721,23 @@ class DatabaseAdapter:
             Number of media records deleted
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = delete(Media).where(Media.chat_id == chat_id)
+            stmt = delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
             result = await session.execute(stmt)
             await session.commit()
             return result.rowcount
 
-    async def get_media_for_verification(self) -> list[dict[str, Any]]:
+    async def get_media_for_verification(self, *, account_id: int) -> list[dict[str, Any]]:
         """
-        Get all media records that should have files on disk.
-        Used by VERIFY_MEDIA to check for missing/corrupted files.
+        Get one account's media records that should have files on disk.
+        Used by VERIFY_MEDIA to check for missing/corrupted files — the caller
+        re-downloads what is missing, and only this account's session can.
 
         Returns media where downloaded=1 OR file_path is not null.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(Media)
-                .where(or_(Media.downloaded == 1, Media.file_path.isnot(None)))
+                .where(and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None))))
                 .order_by(Media.chat_id, Media.message_id)
             )
             result = await session.execute(stmt)
@@ -1566,29 +1756,40 @@ class DatabaseAdapter:
             ]
 
     async def iter_media_paths_for_repair(self, batch_size: int = 500):
-        """Yield ``(id, file_path, file_name)`` batches for the #175 repair pass.
+        """Yield ``(account_id, id, file_path, file_name)`` batches for the #175 repair pass.
 
-        Keyset-paginated on the primary key and projecting only the three columns
-        the repair needs, so memory stays bounded regardless of table size. The
-        full-table materialization in ``get_media_for_verification`` OOM-killed
-        the 256m backup container on large archives; this streams instead.
+        Deliberately account-blind: extension repair fixes the file each row
+        points at, whatever account owns the row, so the sweep walks the whole
+        archive once. Keyset-paginated on the FULL primary key (account_id, id)
+        — ``id`` alone stopped being unique in v8.0.0, and a strict ``>`` on a
+        non-unique key silently skips the second account's copy of an id.
+        Projects only the columns the repair needs, so memory stays bounded
+        regardless of table size. The full-table materialization in
+        ``get_media_for_verification`` OOM-killed the 256m backup container on
+        large archives; this streams instead.
         """
-        last_id: str | None = None
+        last_key: tuple[int, str] | None = None
         while True:
             async with self.db_manager.async_session_factory() as session:
                 stmt = (
-                    select(Media.id, Media.file_path, Media.file_name)
+                    select(Media.account_id, Media.id, Media.file_path, Media.file_name)
                     .where(or_(Media.downloaded == 1, Media.file_path.isnot(None)))
-                    .order_by(Media.id)
+                    .order_by(Media.account_id, Media.id)
                     .limit(batch_size)
                 )
-                if last_id is not None:
-                    stmt = stmt.where(Media.id > last_id)
+                if last_key is not None:
+                    last_account, last_id = last_key
+                    stmt = stmt.where(
+                        or_(
+                            Media.account_id > last_account,
+                            and_(Media.account_id == last_account, Media.id > last_id),
+                        )
+                    )
                 rows = (await session.execute(stmt)).all()
             if not rows:
                 return
-            yield [{"id": r[0], "file_path": r[1], "file_name": r[2]} for r in rows]
-            last_id = rows[-1][0]
+            yield [{"account_id": r[0], "id": r[1], "file_path": r[2], "file_name": r[3]} for r in rows]
+            last_key = (rows[-1][0], rows[-1][1])
             if len(rows) < batch_size:
                 return
 
@@ -1597,6 +1798,8 @@ class DatabaseAdapter:
         max_media_size_bytes: int | None = None,
         max_attempts: int | None = None,
         limit: int | None = 1000,
+        *,
+        account_id: int,
     ) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 
@@ -1615,6 +1818,9 @@ class DatabaseAdapter:
         """
         async with self.db_manager.async_session_factory() as session:
             conditions = [
+                # Only this account's failures: retrying them needs this
+                # account's client, and only its session can fetch them.
+                Media.account_id == account_id,
                 Media.downloaded == 0,
                 Media.type.notin_(["contact", "geo", "poll"]),
             ]
@@ -1651,18 +1857,22 @@ class DatabaseAdapter:
             ]
 
     @retry_on_locked()
-    async def increment_media_download_attempts(self, media_id: str) -> None:
-        """Bump the failed-download attempt counter for a media record (#212)."""
+    async def increment_media_download_attempts(self, media_id: str, *, account_id: int) -> None:
+        """Bump the failed-download attempt counter for a media record (#212).
+
+        A media id repeats across accounts (it is ``{chat}_{msg}_{type}``), so
+        an id-only UPDATE here would charge one account's failure to both.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 update(Media)
-                .where(Media.id == media_id)
+                .where(and_(Media.account_id == account_id, Media.id == media_id))
                 .values(download_attempts=func.coalesce(Media.download_attempts, 0) + 1)
             )
             await session.execute(stmt)
             await session.commit()
 
-    async def mark_media_for_redownload(self, media_id: str) -> None:
+    async def mark_media_for_redownload(self, media_id: str, *, account_id: int) -> None:
         """Mark a media record as needing re-download.
 
         Also resets download_attempts so a row that previously hit the retry
@@ -1671,13 +1881,13 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 update(Media)
-                .where(Media.id == media_id)
+                .where(and_(Media.account_id == account_id, Media.id == media_id))
                 .values(downloaded=0, file_path=None, download_date=None, download_attempts=0)
             )
             await session.execute(stmt)
             await session.commit()
 
-    async def count_capped_media_downloads(self, max_attempts: int) -> int:
+    async def count_capped_media_downloads(self, max_attempts: int, *, account_id: int) -> int:
         """Count downloadable media permanently skipped after hitting the retry cap (#212).
 
         Lets the caller surface an aggregate signal instead of silently abandoning
@@ -1686,6 +1896,7 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             stmt = select(func.count(Media.id)).where(
                 and_(
+                    Media.account_id == account_id,
                     Media.downloaded == 0,
                     Media.type.notin_(["contact", "geo", "poll"]),
                     Media.download_attempts >= max_attempts,
@@ -1693,10 +1904,14 @@ class DatabaseAdapter:
             )
             return (await session.execute(stmt)).scalar() or 0
 
-    async def update_media_file_path(self, media_id: str, file_path: str) -> None:
+    async def update_media_file_path(self, media_id: str, file_path: str, *, account_id: int) -> None:
         """Update the stored file_path for a single media record."""
         async with self.db_manager.async_session_factory() as session:
-            stmt = update(Media).where(Media.id == media_id).values(file_path=file_path)
+            stmt = (
+                update(Media)
+                .where(and_(Media.account_id == account_id, Media.id == media_id))
+                .values(file_path=file_path)
+            )
             await session.execute(stmt)
             await session.commit()
 
@@ -1712,8 +1927,13 @@ class DatabaseAdapter:
                 await session.commit()
                 logger.info("Reset reactions_id_seq sequence")
 
-    async def get_reactions(self, message_id: int, chat_id: int) -> list[dict[str, Any]]:
-        """Get all currently-active reactions for a message (excludes tombstoned)."""
+    async def get_reactions(
+        self, message_id: int, chat_id: int, *, account_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get all currently-active reactions for a message (excludes tombstoned).
+
+        None account_id = unscoped until phase 4.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = (
                 select(Reaction)
@@ -1726,6 +1946,8 @@ class DatabaseAdapter:
                 )
                 .order_by(Reaction.emoji)
             )
+            if account_id is not None:
+                stmt = stmt.where(Reaction.account_id == account_id)
             result = await session.execute(stmt)
             return [{"emoji": r.emoji, "user_id": r.user_id, "count": r.count} for r in result.scalars()]
 
@@ -1736,6 +1958,7 @@ class DatabaseAdapter:
         chat_id: int,
         observed: list[dict[str, Any]],
         *,
+        account_id: int,
         mark_removed: bool = True,
         _after_seq_reset: bool = False,
     ) -> str:
@@ -1773,13 +1996,19 @@ class DatabaseAdapter:
             # NULL user_id, so nothing else dedups them → inflated viewer counts).
             # This also guards the FK: reactions.fk_reaction_message has no CASCADE,
             # so a reaction for an unarchived message would raise on PostgreSQL.
-            if await self._load_message_for_update(session, chat_id, message_id) is None:
+            if await self._load_message_for_update(session, account_id, chat_id, message_id) is None:
                 return "no_message"
 
             existing_rows = (
                 (
                     await session.execute(
-                        select(Reaction).where(and_(Reaction.message_id == message_id, Reaction.chat_id == chat_id))
+                        select(Reaction).where(
+                            and_(
+                                Reaction.account_id == account_id,
+                                Reaction.message_id == message_id,
+                                Reaction.chat_id == chat_id,
+                            )
+                        )
                     )
                 )
                 .scalars()
@@ -1824,6 +2053,7 @@ class DatabaseAdapter:
                 else:
                     session.add(
                         Reaction(
+                            account_id=account_id,
                             message_id=message_id,
                             chat_id=chat_id,
                             emoji=emoji,
@@ -1873,27 +2103,37 @@ class DatabaseAdapter:
                     logger.warning("Reactions sequence out of sync during reconcile, resetting and retrying")
                     await self._reset_reactions_sequence()
                     return await self.reconcile_reactions(
-                        message_id, chat_id, observed, mark_removed=mark_removed, _after_seq_reset=True
+                        message_id,
+                        chat_id,
+                        observed,
+                        account_id=account_id,
+                        mark_removed=mark_removed,
+                        _after_seq_reset=True,
                     )
                 raise
             return "reconciled"
 
     # ========== Sync Status Operations ==========
 
-    async def get_last_message_id(self, chat_id: int) -> int:
-        """Get the last synced message ID for a chat."""
+    async def get_last_message_id(self, chat_id: int, *, account_id: int) -> int:
+        """Get the last synced message ID for one account's copy of a chat."""
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(SyncStatus.last_message_id).where(SyncStatus.chat_id == chat_id)
+            stmt = select(SyncStatus.last_message_id).where(
+                and_(SyncStatus.account_id == account_id, SyncStatus.chat_id == chat_id)
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return row if row else 0
 
     @retry_on_locked()
-    async def update_sync_status(self, chat_id: int, last_message_id: int, message_count: int) -> None:
+    async def update_sync_status(
+        self, chat_id: int, last_message_id: int, message_count: int, *, account_id: int
+    ) -> None:
         """Update sync status for a chat using atomic upsert."""
         async with self.db_manager.async_session_factory() as session:
             now = utcnow_naive()
             values = {
+                "account_id": account_id,
                 "chat_id": chat_id,
                 "last_message_id": last_message_id,
                 "last_sync_date": now,
@@ -1903,7 +2143,7 @@ class DatabaseAdapter:
             if self._is_sqlite:
                 stmt = sqlite_insert(SyncStatus).values(**values)
                 stmt = stmt.on_conflict_do_update(
-                    index_elements=["chat_id"],
+                    index_elements=["account_id", "chat_id"],
                     set_={
                         "last_message_id": stmt.excluded.last_message_id,
                         "last_sync_date": stmt.excluded.last_sync_date,
@@ -1913,7 +2153,7 @@ class DatabaseAdapter:
             else:
                 stmt = pg_insert(SyncStatus).values(**values)
                 stmt = stmt.on_conflict_do_update(
-                    index_elements=["chat_id"],
+                    index_elements=["account_id", "chat_id"],
                     set_={
                         "last_message_id": stmt.excluded.last_message_id,
                         "last_sync_date": stmt.excluded.last_sync_date,
@@ -1926,10 +2166,16 @@ class DatabaseAdapter:
 
     # ========== Gap Detection ==========
 
-    async def detect_message_gaps(self, chat_id: int, threshold: int = 50) -> list[tuple[int, int, int]]:
-        """Detect gaps in message ID sequences for a chat.
+    async def detect_message_gaps(
+        self, chat_id: int, threshold: int = 50, *, account_id: int
+    ) -> list[tuple[int, int, int]]:
+        """Detect gaps in message ID sequences for one account's copy of a chat.
 
         Uses a SQL LAG() window function to find gaps larger than threshold.
+        The window MUST name the account: two accounts' id sequences for the
+        same chat interleave, so an account-blind LAG() reads them as one
+        sequence and a real gap disappears whenever the other account's ids
+        happen to fall inside it (measured on both backends).
 
         Returns:
             List of (gap_start_id, gap_end_id, gap_size) tuples where
@@ -1946,24 +2192,24 @@ class DatabaseAdapter:
                             id AS gap_end,
                             id - LAG(id) OVER (ORDER BY id) AS gap_size
                         FROM messages
-                        WHERE chat_id = :chat_id
+                        WHERE chat_id = :chat_id AND account_id = :account_id
                     ) gaps
                     WHERE gap_size > :threshold
                     ORDER BY gap_start
                     """
                 ),
-                {"chat_id": chat_id, "threshold": threshold},
+                {"chat_id": chat_id, "account_id": account_id, "threshold": threshold},
             )
             return [(row[0], row[1], row[2]) for row in result.fetchall()]
 
-    async def get_chats_with_messages(self) -> list[int]:
-        """Get all chat IDs that exist in the chats table.
+    async def get_chats_with_messages(self, *, account_id: int) -> list[int]:
+        """Get one account's chat IDs from the chats table.
 
         Queries the chats table directly instead of scanning the messages table,
         which would be extremely slow on large databases.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Chat.id)
+            stmt = select(Chat.id).where(Chat.account_id == account_id)
             result = await session.execute(stmt)
             return [row[0] for row in result.fetchall()]
 
@@ -2074,21 +2320,37 @@ class DatabaseAdapter:
 
     # ========== Delete Operations ==========
 
-    async def delete_chat_and_related_data(self, chat_id: int, media_base_path: str = None) -> None:
-        """Delete a chat and all related data."""
+    async def delete_chat_and_related_data(self, chat_id: int, media_base_path: str = None, *, account_id: int) -> None:
+        """Delete one account's copy of a chat and all related data.
+
+        The on-disk media directory below is chat-scoped, not account-scoped:
+        while the media layout stays ``<base>/<chat_id>`` this also removes any
+        files another account's copy of the chat still references. Single-account
+        (this stage) that set is empty; phase 5 owns the layout decision.
+        """
         async with self.db_manager.async_session_factory() as session:
             # Delete previous versions
-            await session.execute(delete(MessageVersion).where(MessageVersion.chat_id == chat_id))
+            await session.execute(
+                delete(MessageVersion).where(
+                    and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
+                )
+            )
             # Delete media records
-            await session.execute(delete(Media).where(Media.chat_id == chat_id))
+            await session.execute(delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id)))
             # Delete reactions
-            await session.execute(delete(Reaction).where(Reaction.chat_id == chat_id))
+            await session.execute(
+                delete(Reaction).where(and_(Reaction.account_id == account_id, Reaction.chat_id == chat_id))
+            )
             # Delete messages
-            await session.execute(delete(Message).where(Message.chat_id == chat_id))
+            await session.execute(
+                delete(Message).where(and_(Message.account_id == account_id, Message.chat_id == chat_id))
+            )
             # Delete sync status
-            await session.execute(delete(SyncStatus).where(SyncStatus.chat_id == chat_id))
+            await session.execute(
+                delete(SyncStatus).where(and_(SyncStatus.account_id == account_id, SyncStatus.chat_id == chat_id))
+            )
             # Delete chat
-            await session.execute(delete(Chat).where(Chat.id == chat_id))
+            await session.execute(delete(Chat).where(and_(Chat.account_id == account_id, Chat.id == chat_id)))
 
             await session.commit()
             logger.info("Deleted chat and all related data from database")
@@ -2125,7 +2387,9 @@ class DatabaseAdapter:
 
     # ========== Web Viewer Operations ==========
 
-    async def _attach_reply_metadata(self, session, chat_id: int, messages: list[dict[str, Any]]) -> None:
+    async def _attach_reply_metadata(
+        self, session, chat_id: int, messages: list[dict[str, Any]], account_id: int | None = None
+    ) -> None:
         """Resolve the reply targets of a whole page in ONE query (#268).
 
         THE single rule for what a reply quote block shows. Every read path that
@@ -2153,7 +2417,9 @@ class DatabaseAdapter:
 
         reply_media_type = (
             select(Media.type)
-            .where(and_(Media.chat_id == chat_id, Media.message_id == Message.id))
+            .where(
+                and_(Media.account_id == Message.account_id, Media.chat_id == chat_id, Media.message_id == Message.id)
+            )
             .order_by(Media.id)
             .limit(1)
             .scalar_subquery()
@@ -2172,6 +2438,8 @@ class DatabaseAdapter:
             .outerjoin(User, Message.sender_id == User.id)
             .where(and_(Message.chat_id == chat_id, Message.id.in_(reply_ids_needed)))
         )
+        if account_id is not None:
+            reply_stmt = reply_stmt.where(Message.account_id == account_id)
         reply_result = await session.execute(reply_stmt)
         reply_rows: dict[int, dict[str, Any]] = {
             row.id: {
@@ -2203,9 +2471,13 @@ class DatabaseAdapter:
         before_id: int | None = None,
         after_id: int | None = None,
         topic_id: int | None = None,
+        *,
+        account_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get messages with user info and media info for web viewer.
+
+        ``account_id=None`` is unscoped until phase 4 (viewer entitlements).
 
         v6.0.0: Media is now returned as a nested object from the media table.
         v6.2.0: Added topic_id filter for forum topic messages.
@@ -2251,9 +2523,19 @@ class DatabaseAdapter:
                     Media.duration.label("media_duration"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                .outerjoin(
+                    Media,
+                    and_(
+                        Media.account_id == Message.account_id,
+                        Media.message_id == Message.id,
+                        Media.chat_id == Message.chat_id,
+                    ),
+                )
                 .where(Message.chat_id == chat_id)
             )
+
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
 
             # v6.2.0: Filter by forum topic. NULL reply_to_top_id == General (id=1),
             # matching the coalesce in get_forum_topics counts.
@@ -2351,10 +2633,12 @@ class DatabaseAdapter:
                     )
                     .group_by(MessageVersion.message_id)
                 )
+                if account_id is not None:
+                    count_stmt = count_stmt.where(MessageVersion.account_id == account_id)
                 count_result = await session.execute(count_stmt)
                 version_counts.update({row.message_id: int(row.version_count or 0) for row in count_result})
 
-            await self._attach_reply_metadata(session, chat_id, messages)
+            await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
             # Batch reactions: one query for the whole page instead of one
             # get_reactions() call per message. Ties within the same emoji are
@@ -2374,6 +2658,8 @@ class DatabaseAdapter:
                     )
                     .order_by(Reaction.message_id, Reaction.emoji, Reaction.id)
                 )
+                if account_id is not None:
+                    reactions_stmt = reactions_stmt.where(Reaction.account_id == account_id)
                 reactions_result = await session.execute(reactions_stmt)
                 for r in reactions_result.scalars():
                     reactions_by_message[r.message_id].append(
@@ -2400,8 +2686,10 @@ class DatabaseAdapter:
         chat_id: int,
         day_ranges: list[tuple[str, datetime, datetime]],
         topic_id: int | None = None,
+        *,
+        account_id: int | None = None,
     ) -> list[str]:
-        """Return the requested local-calendar dates that contain messages."""
+        """Return the requested local-calendar dates that contain messages (None account_id = unscoped until phase 4)."""
         if not day_ranges:
             return []
 
@@ -2412,6 +2700,8 @@ class DatabaseAdapter:
                 Message.date >= utc_start,
                 Message.date < utc_end,
             ]
+            if account_id is not None:
+                conditions.append(Message.account_id == account_id)
             if topic_id is not None:
                 conditions.append(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
             branches.append(
@@ -2429,6 +2719,8 @@ class DatabaseAdapter:
         chat_id: int,
         target_date: datetime,
         topic_id: int | None = None,
+        *,
+        account_id: int | None = None,
     ) -> dict[str, Any] | None:
         """
         Find message by date with full user/media joins for web viewer.
@@ -2439,6 +2731,7 @@ class DatabaseAdapter:
             chat_id: Chat ID
             target_date: Target date to find message for
             topic_id: Optional forum topic ID to filter messages by thread
+            account_id: If set, only this account's messages (None = unscoped until phase 4)
 
         Returns:
             Message dictionary with user and media info, or None
@@ -2461,9 +2754,18 @@ class DatabaseAdapter:
                     Media.duration.label("media_duration"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                .outerjoin(
+                    Media,
+                    and_(
+                        Media.account_id == Message.account_id,
+                        Media.message_id == Message.id,
+                        Media.chat_id == Message.chat_id,
+                    ),
+                )
                 .where(Message.chat_id == chat_id)
             )
+            if account_id is not None:
+                base_stmt = base_stmt.where(Message.account_id == account_id)
             if topic_id is not None:
                 base_stmt = base_stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
@@ -2519,10 +2821,10 @@ class DatabaseAdapter:
             # Reply quote metadata — same helper, same rule as every other read
             # path. It replaces a text-only lookup that resolved less than the
             # message list did for the very same message.
-            await self._attach_reply_metadata(session, chat_id, [msg])
+            await self._attach_reply_metadata(session, chat_id, [msg], account_id)
 
             # Get reactions
-            reactions = await self.get_reactions(msg["id"], chat_id)
+            reactions = await self.get_reactions(msg["id"], chat_id, account_id=account_id)
             reactions_by_emoji = {}
             for reaction in reactions:
                 emoji = reaction["emoji"]
@@ -2535,10 +2837,13 @@ class DatabaseAdapter:
 
             return msg
 
-    async def get_chat_by_id(self, chat_id: int) -> dict[str, Any] | None:
-        """Get a single chat by ID."""
+    async def get_chat_by_id(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
+        """Get a single chat by ID (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(Chat).where(Chat.id == chat_id))
+            stmt = select(Chat).where(Chat.id == chat_id)
+            if account_id is not None:
+                stmt = stmt.where(Chat.account_id == account_id)
+            result = await session.execute(stmt)
             chat = result.scalar_one_or_none()
             if not chat:
                 return None
@@ -2556,10 +2861,11 @@ class DatabaseAdapter:
                 "is_archived": chat.is_archived,
             }
 
-    async def get_pinned_messages(self, chat_id: int) -> list[dict[str, Any]]:
+    async def get_pinned_messages(self, chat_id: int, *, account_id: int | None = None) -> list[dict[str, Any]]:
         """Get all pinned messages for a chat, ordered by date descending (newest first).
 
         v6.0.0: Media is now returned as a nested object from the media table.
+        None account_id = unscoped until phase 4.
 
         The pinned-only view swaps this list into the SAME message renderer the
         normal list uses, so a pinned reply must arrive with the same reply
@@ -2584,11 +2890,20 @@ class DatabaseAdapter:
                     Media.duration.label("media_duration"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                .outerjoin(
+                    Media,
+                    and_(
+                        Media.account_id == Message.account_id,
+                        Media.message_id == Message.id,
+                        Media.chat_id == Message.chat_id,
+                    ),
+                )
                 .where(Message.chat_id == chat_id)
                 .where(Message.is_pinned == 1)
                 .order_by(Message.date.desc())
             )
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
 
             result = await session.execute(stmt)
             rows = result.all()
@@ -2627,16 +2942,18 @@ class DatabaseAdapter:
                 messages.append(msg)
 
             # One query for the whole pinned list, not one per pinned reply.
-            await self._attach_reply_metadata(session, chat_id, messages)
+            await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
             return messages
 
-    async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: list[int]) -> None:
+    async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: list[int], *, account_id: int) -> None:
         """
-        Sync pinned messages for a chat.
+        Sync pinned messages for one account's copy of a chat.
 
         Sets is_pinned=1 for messages in the list and is_pinned=0 for all others.
         This ensures the database reflects the current state of pinned messages.
+        The unpin sweep is the dangerous half: unscoped it would strip the other
+        account's pins for the same chat id.
 
         Args:
             chat_id: Chat ID
@@ -2645,13 +2962,18 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             # First, unpin all messages in this chat
             await session.execute(
-                update(Message).where(Message.chat_id == chat_id).where(Message.is_pinned == 1).values(is_pinned=0)
+                update(Message)
+                .where(Message.account_id == account_id)
+                .where(Message.chat_id == chat_id)
+                .where(Message.is_pinned == 1)
+                .values(is_pinned=0)
             )
 
             # Then, pin the specified messages (if any exist in our database)
             if pinned_message_ids:
                 await session.execute(
                     update(Message)
+                    .where(Message.account_id == account_id)
                     .where(Message.chat_id == chat_id)
                     .where(Message.id.in_(pinned_message_ids))
                     .values(is_pinned=1)
@@ -2659,7 +2981,7 @@ class DatabaseAdapter:
 
             await session.commit()
 
-    async def update_message_pinned(self, chat_id: int, message_id: int, is_pinned: bool) -> None:
+    async def update_message_pinned(self, chat_id: int, message_id: int, is_pinned: bool, *, account_id: int) -> None:
         """
         Update the pinned status of a single message.
 
@@ -2673,6 +2995,7 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             await session.execute(
                 update(Message)
+                .where(Message.account_id == account_id)
                 .where(Message.chat_id == chat_id)
                 .where(Message.id == message_id)
                 .values(is_pinned=1 if is_pinned else 0)
@@ -2695,10 +3018,13 @@ class DatabaseAdapter:
                 "is_bot": user.is_bot,
             }
 
-    async def get_messages_for_export(self, chat_id: int, include_media: bool = False):
+    async def get_messages_for_export(
+        self, chat_id: int, include_media: bool = False, *, account_id: int | None = None
+    ):
         """
         Get messages for export with user info.
         Returns an async generator for streaming.
+        None account_id = unscoped until phase 4.
 
         v6.0.0: Media info now comes from the media table via JOIN.
 
@@ -2726,7 +3052,14 @@ class DatabaseAdapter:
                         User.username,
                     )
                     .outerjoin(User, Message.sender_id == User.id)
-                    .outerjoin(Media, and_(Media.message_id == Message.id, Media.chat_id == Message.chat_id))
+                    .outerjoin(
+                        Media,
+                        and_(
+                            Media.account_id == Message.account_id,
+                            Media.message_id == Message.id,
+                            Media.chat_id == Message.chat_id,
+                        ),
+                    )
                     .where(Message.chat_id == chat_id)
                     .order_by(Message.date.asc())
                 )
@@ -2747,6 +3080,9 @@ class DatabaseAdapter:
                     .where(Message.chat_id == chat_id)
                     .order_by(Message.date.asc())
                 )
+
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
 
             result = await session.stream(stmt)
             async for row in result:
@@ -2772,10 +3108,11 @@ class DatabaseAdapter:
     # ========== Forum Topic Operations (v6.2.0) ==========
 
     @retry_on_locked()
-    async def upsert_forum_topic(self, topic_data: dict[str, Any]) -> None:
+    async def upsert_forum_topic(self, topic_data: dict[str, Any], *, account_id: int) -> None:
         """Insert or update a forum topic record."""
         async with self.db_manager.async_session_factory() as session:
             values = {
+                "account_id": account_id,
                 "id": topic_data["id"],
                 "chat_id": topic_data["chat_id"],
                 "title": topic_data["title"],
@@ -2803,29 +3140,35 @@ class DatabaseAdapter:
 
             if self._is_sqlite:
                 stmt = sqlite_insert(ForumTopic).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "chat_id", "id"], set_=update_set)
             else:
                 stmt = pg_insert(ForumTopic).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id", "chat_id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "chat_id", "id"], set_=update_set)
 
             await session.execute(stmt)
             await session.commit()
 
-    async def get_forum_topics(self, chat_id: int) -> list[dict[str, Any]]:
-        """Get all forum topics for a chat, with message count per topic."""
+    async def get_forum_topics(self, chat_id: int, *, account_id: int | None = None) -> list[dict[str, Any]]:
+        """Get all forum topics for a chat, with message count per topic.
+
+        None account_id = unscoped until phase 4.
+        """
         async with self.db_manager.async_session_factory() as session:
             # Subquery for message counts and last message date per topic.
             # Messages with reply_to_top_id=NULL are treated as General topic (id=1),
             # since pre-v6.2.0 messages and pre-forum messages lack topic assignment
             # and Telegram's client displays them under General.
             effective_topic_id = func.coalesce(Message.reply_to_top_id, 1).label("effective_topic_id")
+            msg_where = [Message.chat_id == chat_id]
+            if account_id is not None:
+                msg_where.append(Message.account_id == account_id)
             msg_subq = (
                 select(
                     effective_topic_id,
                     func.count(Message.id).label("message_count"),
                     func.max(Message.date).label("last_message_date"),
                 )
-                .where(Message.chat_id == chat_id)
+                .where(and_(*msg_where))
                 .group_by(effective_topic_id)
                 .subquery()
             )
@@ -2836,6 +3179,8 @@ class DatabaseAdapter:
                 .where(ForumTopic.chat_id == chat_id)
                 .order_by(ForumTopic.is_pinned.desc(), msg_subq.c.last_message_date.desc().nullslast())
             )
+            if account_id is not None:
+                stmt = stmt.where(ForumTopic.account_id == account_id)
 
             result = await session.execute(stmt)
             topics = []
@@ -2862,10 +3207,11 @@ class DatabaseAdapter:
     # ========== Chat Folder Operations (v6.2.0) ==========
 
     @retry_on_locked()
-    async def upsert_chat_folder(self, folder_data: dict[str, Any]) -> None:
+    async def upsert_chat_folder(self, folder_data: dict[str, Any], *, account_id: int) -> None:
         """Insert or update a chat folder."""
         async with self.db_manager.async_session_factory() as session:
             values = {
+                "account_id": account_id,
                 "id": folder_data["id"],
                 "title": folder_data["title"],
                 "emoticon": folder_data.get("emoticon"),
@@ -2882,10 +3228,10 @@ class DatabaseAdapter:
 
             if self._is_sqlite:
                 stmt = sqlite_insert(ChatFolder).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
             else:
                 stmt = pg_insert(ChatFolder).values(**values)
-                stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
+                stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
 
             await session.execute(stmt)
             await session.commit()
@@ -2896,11 +3242,20 @@ class DatabaseAdapter:
     _FOLDER_MEMBER_CHUNK = 500
 
     @retry_on_locked()
-    async def sync_folder_members(self, folder_id: int, chat_ids: list[int]) -> None:
-        """Sync folder membership: replace all members for a folder."""
+    async def sync_folder_members(self, folder_id: int, chat_ids: list[int], *, account_id: int) -> None:
+        """Sync folder membership: replace all members for one account's folder.
+
+        Folder ids start at 2 for every account, so the replace-all delete must
+        name the account or it wipes the other account's identically-numbered
+        folder.
+        """
         async with self.db_manager.async_session_factory() as session:
             # Delete existing members
-            await session.execute(delete(ChatFolderMember).where(ChatFolderMember.folder_id == folder_id))
+            await session.execute(
+                delete(ChatFolderMember).where(
+                    and_(ChatFolderMember.account_id == account_id, ChatFolderMember.folder_id == folder_id)
+                )
+            )
 
             # Insert new members (only for chats that exist in our DB)
             if chat_ids:
@@ -2909,16 +3264,20 @@ class DatabaseAdapter:
                 existing_ids: set[int] = set()
                 for i in range(0, len(unique_ids), self._FOLDER_MEMBER_CHUNK):
                     chunk = unique_ids[i : i + self._FOLDER_MEMBER_CHUNK]
-                    result = await session.execute(select(Chat.id).where(Chat.id.in_(chunk)))
+                    result = await session.execute(
+                        select(Chat.id).where(and_(Chat.account_id == account_id, Chat.id.in_(chunk)))
+                    )
                     existing_ids.update(row[0] for row in result)
 
                 for cid in unique_ids:
                     if cid in existing_ids:
-                        session.add(ChatFolderMember(folder_id=folder_id, chat_id=cid))
+                        session.add(ChatFolderMember(account_id=account_id, folder_id=folder_id, chat_id=cid))
 
             await session.commit()
 
-    async def get_all_folders(self, allowed_chat_ids: set[int] | None = None) -> list[dict[str, Any]]:
+    async def get_all_folders(
+        self, allowed_chat_ids: set[int] | None = None, *, account_id: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get all chat folders with their chat counts.
 
         Only folders that contain at least one backed-up (and, for restricted
@@ -2931,11 +3290,14 @@ class DatabaseAdapter:
 
         Args:
             allowed_chat_ids: If set, only count chats the user can access.
+            account_id: If set, only this account's folders (None = unscoped until phase 4).
         """
         async with self.db_manager.async_session_factory() as session:
             count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
             if allowed_chat_ids is not None:
                 count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids))
+            if account_id is not None:
+                count_q = count_q.where(ChatFolderMember.account_id == account_id)
             count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()
 
             stmt = (
@@ -2943,6 +3305,8 @@ class DatabaseAdapter:
                 .outerjoin(count_subq, ChatFolder.id == count_subq.c.folder_id)
                 .order_by(ChatFolder.sort_order, ChatFolder.title)
             )
+            if account_id is not None:
+                stmt = stmt.where(ChatFolder.account_id == account_id)
 
             result = await session.execute(stmt)
             folders = []
@@ -2963,9 +3327,12 @@ class DatabaseAdapter:
                 )
             return folders
 
-    async def get_chats_for_folder_resolution(self) -> list[dict[str, Any]]:
-        """Return every archived chat with the facts needed to evaluate a folder's
-        category flags: id, type, whether it is a bot, and archived state.
+    async def get_chats_for_folder_resolution(self, *, account_id: int) -> list[dict[str, Any]]:
+        """Return one account's archived chats with the facts needed to evaluate a
+        folder's category flags: id, type, whether it is a bot, and archived state.
+
+        Account-scoped because the result becomes folder membership WRITES for
+        this account's folders — another account's chats must never be swept in.
 
         Bot-ness is only meaningful for private chats and is read from the users
         table (chats store bots as type ``private``). The join is on ``User.id ==
@@ -2974,12 +3341,16 @@ class DatabaseAdapter:
         they always resolve to ``is_bot = 0``.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(
-                Chat.id,
-                Chat.type,
-                Chat.is_archived,
-                func.coalesce(User.is_bot, 0).label("is_bot"),
-            ).outerjoin(User, User.id == Chat.id)
+            stmt = (
+                select(
+                    Chat.id,
+                    Chat.type,
+                    Chat.is_archived,
+                    func.coalesce(User.is_bot, 0).label("is_bot"),
+                )
+                .outerjoin(User, User.id == Chat.id)
+                .where(Chat.account_id == account_id)
+            )
             result = await session.execute(stmt)
             return [
                 {
@@ -2992,19 +3363,31 @@ class DatabaseAdapter:
             ]
 
     @retry_on_locked()
-    async def cleanup_stale_folders(self, active_folder_ids: list[int]) -> None:
-        """Remove folders that no longer exist in Telegram."""
+    async def cleanup_stale_folders(self, active_folder_ids: list[int], *, account_id: int) -> None:
+        """Remove one account's folders that no longer exist in Telegram.
+
+        ``active_folder_ids`` comes from ONE account's dialog filters, so the
+        NOT IN sweep must stay inside that account — unscoped it deletes every
+        other account's folders wholesale (their ids are never in this list).
+        """
         async with self.db_manager.async_session_factory() as session:
             if active_folder_ids:
-                await session.execute(delete(ChatFolder).where(ChatFolder.id.notin_(active_folder_ids)))
+                await session.execute(
+                    delete(ChatFolder).where(
+                        and_(ChatFolder.account_id == account_id, ChatFolder.id.notin_(active_folder_ids))
+                    )
+                )
             else:
-                await session.execute(delete(ChatFolder))
+                await session.execute(delete(ChatFolder).where(ChatFolder.account_id == account_id))
             await session.commit()
 
-    async def get_archived_chat_count(self) -> int:
-        """Get the count of archived chats."""
+    async def get_archived_chat_count(self, *, account_id: int | None = None) -> int:
+        """Get the count of archived chats (None account_id = unscoped until phase 4)."""
         async with self.db_manager.async_session_factory() as session:
-            result = await session.execute(select(func.count(Chat.id)).where(Chat.is_archived == 1))
+            stmt = select(func.count(Chat.id)).where(Chat.is_archived == 1)
+            if account_id is not None:
+                stmt = stmt.where(Chat.account_id == account_id)
+            result = await session.execute(stmt)
             return result.scalar() or 0
 
     # ========================================================================

@@ -335,7 +335,8 @@ class TestTheQuietOne:
     The schema cannot fix this on its own; the query has to name the account.
     Both spellings are run here so the difference is a measurement rather than a
     warning, and so the corrected SQL is written down where the change that
-    needs it will find it.
+    needs it will find it. The adapter now ships that SQL, and the last test
+    here calls the real method — losing the filter again cannot be silent.
     """
 
     GAP_SQL = """
@@ -394,6 +395,30 @@ class TestTheQuietOne:
                 account_id=DEFAULT_ACCOUNT_ID,
             )
             assert gaps == [(100, 400, 300)]
+
+    async def test_the_shipped_adapter_names_the_account(self, real_adapter):
+        """Pin ``DatabaseAdapter.detect_message_gaps`` itself, not a copy of it.
+
+        The two tests above measure the SQL; this one seeds the same interleave
+        THROUGH the adapter and calls the real method. If the shipped query ever
+        drops its account filter, account 2's ids fill the hole and account 1's
+        answer degrades to [] — which this test turns from a silent wrong answer
+        into a red one.
+        """
+        for account_id in (DEFAULT_ACCOUNT_ID, OTHER_ACCOUNT):
+            await real_adapter.upsert_chat({"id": CHAT_ID, "type": "supergroup"}, account_id=account_id)
+        await real_adapter.insert_messages_batch(
+            [{"id": message_id, "chat_id": CHAT_ID, "date": WHEN, "raw_data": {}} for message_id in (100, 400)],
+            account_id=DEFAULT_ACCOUNT_ID,
+        )
+        await real_adapter.insert_messages_batch(
+            [{"id": message_id, "chat_id": CHAT_ID, "date": WHEN, "raw_data": {}} for message_id in (200, 300)],
+            account_id=OTHER_ACCOUNT,
+        )
+
+        gaps = await real_adapter.detect_message_gaps(CHAT_ID, threshold=150, account_id=DEFAULT_ACCOUNT_ID)
+        assert gaps == [(100, 400, 300)]
+        assert await real_adapter.detect_message_gaps(CHAT_ID, threshold=150, account_id=OTHER_ACCOUNT) == []
 
 
 class TestChatRef:

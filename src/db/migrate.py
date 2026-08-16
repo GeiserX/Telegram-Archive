@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base import DatabaseManager
 from .models import (
+    Account,
     AppSettings,
     Base,
     Chat,
@@ -36,7 +37,11 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Account leads: it is the registry every account_id below points at, and it
+# carries real data — label, telegram_user_id (filled on first login) — that
+# the target's own 022 seed cannot recreate: it only knows (1, 'default', NULL).
 MIGRATION_MODELS = [
+    Account,
     User,
     Chat,
     Message,

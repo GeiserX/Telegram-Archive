@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .db import DatabaseAdapter, close_database, get_adapter, init_database
+from .db.models import DEFAULT_ACCOUNT_ID
 from .message_utils import build_media_filename, utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -563,8 +564,10 @@ def _parse_html_export(html_files: list[Path], export_path: Path) -> tuple[str, 
 class TelegramImporter:
     """Import Telegram Desktop exports into Telegram-Archive database."""
 
-    def __init__(self, db: DatabaseAdapter, media_path: str, max_filename_bytes: int = 143):
+    def __init__(self, db: DatabaseAdapter, media_path: str, max_filename_bytes: int = 143, *, account_id: int):
         self.db = db
+        # accounts.id every row written by this import belongs to.
+        self.account_id = account_id
         self.media_path = media_path
         self.media_root = Path(media_path).resolve()
         self.max_filename_bytes = max_filename_bytes
@@ -573,7 +576,9 @@ class TelegramImporter:
     async def create(cls, media_path: str, max_filename_bytes: int = 143) -> TelegramImporter:
         await init_database()
         db = await get_adapter()
-        return cls(db, media_path, max_filename_bytes)
+        # Single-account stage: imports land under the migration-seeded account.
+        # Phase 5 replaces the constant with real per-account resolution here.
+        return cls(db, media_path, max_filename_bytes, account_id=DEFAULT_ACCOUNT_ID)
 
     async def close(self) -> None:
         await close_database()
@@ -678,7 +683,7 @@ class TelegramImporter:
         logger.info(f"Importing chat (type: {export_type}) - {len(messages)} messages")
 
         if not merge and not dry_run:
-            existing = await self.db.get_chat_stats(chat_id)
+            existing = await self.db.get_chat_stats(chat_id, account_id=self.account_id)
             if existing and existing.get("messages", 0) > 0:
                 raise ValueError(
                     f"Chat {chat_id} ('{chat_name}') already has {existing['messages']} messages. "
@@ -692,7 +697,8 @@ class TelegramImporter:
                     "type": CHAT_TYPE_MAP.get(export_type, "unknown"),
                     "title": chat_name if export_type not in ("personal_chat", "bot_chat") else None,
                     "first_name": chat_name if export_type in ("personal_chat", "bot_chat") else None,
-                }
+                },
+                account_id=self.account_id,
             )
 
         seen_users: set[int] = set()
@@ -821,7 +827,7 @@ class TelegramImporter:
             media_count += await self._flush_batch(batch, media_batch)
 
         if not dry_run and msg_count > 0:
-            await self.db.update_sync_status(chat_id, max_msg_id, msg_count)
+            await self.db.update_sync_status(chat_id, max_msg_id, msg_count, account_id=self.account_id)
 
         action = "Would import" if dry_run else "Imported"
         logger.info(f"{action} {msg_count} messages and {media_count} media files")
@@ -840,7 +846,7 @@ class TelegramImporter:
         media: list[dict[str, Any]],
     ) -> int:
         """Flush a batch of messages and media to the database."""
-        await self.db.insert_messages_batch(messages)
+        await self.db.insert_messages_batch(messages, account_id=self.account_id)
         copied = 0
 
         for m in media:
@@ -861,7 +867,7 @@ class TelegramImporter:
                 logger.warning("Skipping imported media after a filesystem error (%s)", type(exc).__name__)
                 continue
 
-            await self.db.insert_media(m)
+            await self.db.insert_media(m, account_id=self.account_id)
             copied += 1
 
         return copied

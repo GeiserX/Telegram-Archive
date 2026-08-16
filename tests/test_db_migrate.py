@@ -47,6 +47,25 @@ def _make_mock_engine_begin(conn_mock=None):
 
 
 # ============================================================
+# MIGRATION_MODELS: the accounts registry rides along
+# ============================================================
+
+
+class TestMigrationModelsRegistry:
+    """The accounts registry is data like any other table.
+
+    8.0 fills accounts.label / telegram_user_id on first login; the target's
+    own 022 seed only knows (1, 'default', NULL), so dropping Account from
+    MIGRATION_MODELS would silently reset the registry on the moved archive.
+    """
+
+    def test_accounts_is_copied_and_leads(self):
+        from src.db.models import Account
+
+        assert MIGRATION_MODELS[0] is Account
+
+
+# ============================================================
 # migrate_sqlite_to_postgres: path resolution
 # ============================================================
 

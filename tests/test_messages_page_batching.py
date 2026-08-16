@@ -168,10 +168,10 @@ class TestPendingMediaDownloadsLimit:
         await self._add_media(adapter, "b", attempts=0)
         await self._add_media(adapter, "d", attempts=1)
 
-        limited = await adapter.get_pending_media_downloads(limit=2)
+        limited = await adapter.get_pending_media_downloads(limit=2, account_id=1)
         assert [m["id"] for m in limited] == ["a", "b"]
 
-        unlimited = await adapter.get_pending_media_downloads(limit=None)
+        unlimited = await adapter.get_pending_media_downloads(limit=None, account_id=1)
         assert [m["id"] for m in unlimited] == ["a", "b", "d", "c"]
 
     @pytest.mark.asyncio
@@ -180,7 +180,7 @@ class TestPendingMediaDownloadsLimit:
             await self._add_media(adapter, f"m{i}", attempts=0)
 
         # Default limit=1000 is well above 5 rows, so nothing gets truncated.
-        pending = await adapter.get_pending_media_downloads()
+        pending = await adapter.get_pending_media_downloads(account_id=1)
         assert len(pending) == 5
 
     @pytest.mark.asyncio
@@ -189,12 +189,12 @@ class TestPendingMediaDownloadsLimit:
             await self._add_media(adapter, f"m{i}", attempts=0)
 
         with caplog.at_level(logging.INFO, logger="src.db.adapter"):
-            limited = await adapter.get_pending_media_downloads(limit=3)
+            limited = await adapter.get_pending_media_downloads(limit=3, account_id=1)
         assert len(limited) == 3
         assert any("media retry: processing 3 of 5 pending" in r.getMessage() for r in caplog.records)
 
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="src.db.adapter"):
-            not_truncated = await adapter.get_pending_media_downloads(limit=5)
+            not_truncated = await adapter.get_pending_media_downloads(limit=5, account_id=1)
         assert len(not_truncated) == 5
         assert not any("media retry" in r.getMessage() for r in caplog.records)

@@ -43,7 +43,8 @@ async def _create_in_memory_adapter():
         await conn.execute(
             text(
                 "CREATE TABLE IF NOT EXISTS chats ("
-                "  id INTEGER PRIMARY KEY,"
+                "  account_id INTEGER NOT NULL DEFAULT 1,"
+                "  id INTEGER NOT NULL,"
                 "  type TEXT NOT NULL DEFAULT 'channel',"
                 "  title TEXT,"
                 "  username TEXT,"
@@ -56,13 +57,15 @@ async def _create_in_memory_adapter():
                 "  is_archived INTEGER DEFAULT 0,"
                 "  last_synced_message_id INTEGER DEFAULT 0,"
                 "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
-                "  updated_at TEXT DEFAULT CURRENT_TIMESTAMP"
+                "  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+                "  PRIMARY KEY (account_id, id)"
                 ")"
             )
         )
         await conn.execute(
             text(
                 "CREATE TABLE IF NOT EXISTS messages ("
+                "  account_id INTEGER NOT NULL DEFAULT 1,"
                 "  id INTEGER NOT NULL,"
                 "  chat_id INTEGER NOT NULL,"
                 "  sender_id INTEGER,"
@@ -77,7 +80,7 @@ async def _create_in_memory_adapter():
                 "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
                 "  is_outgoing INTEGER DEFAULT 0,"
                 "  is_pinned INTEGER DEFAULT 0,"
-                "  PRIMARY KEY (id, chat_id)"
+                "  PRIMARY KEY (account_id, chat_id, id)"
                 ")"
             )
         )
@@ -130,7 +133,7 @@ class TestDetectMessageGaps:
         adapter, engine = await _create_in_memory_adapter()
         try:
             await _insert_messages(adapter, chat_id=100, msg_ids=list(range(1, 51)))
-            gaps = await adapter.detect_message_gaps(chat_id=100, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=100, threshold=50, account_id=1)
             assert gaps == []
         finally:
             await engine.dispose()
@@ -141,7 +144,7 @@ class TestDetectMessageGaps:
         try:
             ids = list(range(1, 51)) + list(range(100, 151))
             await _insert_messages(adapter, chat_id=200, msg_ids=ids)
-            gaps = await adapter.detect_message_gaps(chat_id=200, threshold=49)
+            gaps = await adapter.detect_message_gaps(chat_id=200, threshold=49, account_id=1)
 
             assert len(gaps) == 1
             gap_start, gap_end, gap_size = gaps[0]
@@ -159,7 +162,7 @@ class TestDetectMessageGaps:
             # Gap 2: between 110 and 300 (size 190)
             ids = list(range(1, 11)) + list(range(100, 111)) + list(range(300, 311))
             await _insert_messages(adapter, chat_id=300, msg_ids=ids)
-            gaps = await adapter.detect_message_gaps(chat_id=300, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=300, threshold=50, account_id=1)
 
             assert len(gaps) == 2
             assert gaps[0] == (10, 100, 90)
@@ -177,7 +180,7 @@ class TestDetectMessageGaps:
             # gap_size = 60 - 10 = 50, and the query uses > threshold, so 50 is NOT > 50
             ids = list(range(1, 11)) + list(range(60, 71))
             await _insert_messages(adapter, chat_id=400, msg_ids=ids)
-            gaps = await adapter.detect_message_gaps(chat_id=400, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=400, threshold=50, account_id=1)
 
             assert gaps == [], f"Gap of exactly threshold should not be returned, got {gaps}"
         finally:
@@ -190,7 +193,7 @@ class TestDetectMessageGaps:
             # IDs 1-10 then 62-70 → gap_size = 62 - 10 = 52 > 50
             ids = list(range(1, 11)) + list(range(62, 71))
             await _insert_messages(adapter, chat_id=401, msg_ids=ids)
-            gaps = await adapter.detect_message_gaps(chat_id=401, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=401, threshold=50, account_id=1)
 
             assert len(gaps) == 1
             assert gaps[0] == (10, 62, 52)
@@ -202,7 +205,7 @@ class TestDetectMessageGaps:
         adapter, engine = await _create_in_memory_adapter()
         try:
             await _insert_messages(adapter, chat_id=500, msg_ids=[42])
-            gaps = await adapter.detect_message_gaps(chat_id=500, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=500, threshold=50, account_id=1)
             assert gaps == []
         finally:
             await engine.dispose()
@@ -211,7 +214,7 @@ class TestDetectMessageGaps:
         """A chat with zero messages should produce no gaps."""
         adapter, engine = await _create_in_memory_adapter()
         try:
-            gaps = await adapter.detect_message_gaps(chat_id=999, threshold=50)
+            gaps = await adapter.detect_message_gaps(chat_id=999, threshold=50, account_id=1)
             assert gaps == []
         finally:
             await engine.dispose()
@@ -225,8 +228,8 @@ class TestDetectMessageGaps:
             # Chat 2: no gap
             await _insert_messages(adapter, chat_id=20, msg_ids=[1, 2, 3, 4, 5])
 
-            gaps_chat1 = await adapter.detect_message_gaps(chat_id=10, threshold=50)
-            gaps_chat2 = await adapter.detect_message_gaps(chat_id=20, threshold=50)
+            gaps_chat1 = await adapter.detect_message_gaps(chat_id=10, threshold=50, account_id=1)
+            gaps_chat2 = await adapter.detect_message_gaps(chat_id=20, threshold=50, account_id=1)
 
             assert len(gaps_chat1) == 1
             assert gaps_chat1[0] == (3, 100, 97)
@@ -251,7 +254,7 @@ class TestGetChatsWithMessages:
             await _insert_chat(adapter, chat_id=-1002, title="Chat B")
             await _insert_chat(adapter, chat_id=-1003, title="Chat C")
 
-            result = await adapter.get_chats_with_messages()
+            result = await adapter.get_chats_with_messages(account_id=1)
             assert sorted(result) == [-1003, -1002, -1001]
         finally:
             await engine.dispose()
@@ -260,7 +263,7 @@ class TestGetChatsWithMessages:
         """Should return empty list when no chats exist."""
         adapter, engine = await _create_in_memory_adapter()
         try:
-            result = await adapter.get_chats_with_messages()
+            result = await adapter.get_chats_with_messages(account_id=1)
             assert result == []
         finally:
             await engine.dispose()
@@ -274,6 +277,7 @@ class TestGetChatsWithMessages:
 def _make_backup_instance(db_mock=None, client_mock=None, config_mock=None):
     """Create a TelegramBackup instance with mocked dependencies."""
     backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
     backup.db = db_mock or AsyncMock()
     backup.client = client_mock or AsyncMock()
     backup.config = config_mock or MagicMock()
@@ -461,7 +465,7 @@ class TestFillGaps:
 
         await backup._fill_gaps(chat_id=None)
 
-        db.detect_message_gaps.assert_awaited_once_with(-1001, 123)
+        db.detect_message_gaps.assert_awaited_once_with(-1001, 123, account_id=1)
 
 
 class TestFillGapRange:

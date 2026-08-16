@@ -594,7 +594,7 @@ class TestChatOperations:
         adapter = DatabaseAdapter(db_manager)
 
         chat_data = {"id": 12345, "type": "private", "title": "Test Chat"}
-        result = await adapter.upsert_chat(chat_data)
+        result = await adapter.upsert_chat(chat_data, account_id=1)
 
         assert result == 12345
         mock_session.execute.assert_awaited_once()
@@ -607,7 +607,7 @@ class TestChatOperations:
         adapter = DatabaseAdapter(db_manager)
 
         chat_data = {"id": 99999, "type": "group", "title": "PG Group"}
-        result = await adapter.upsert_chat(chat_data)
+        result = await adapter.upsert_chat(chat_data, account_id=1)
 
         assert result == 99999
         mock_session.execute.assert_awaited_once()
@@ -621,7 +621,7 @@ class TestChatOperations:
 
         # Provide minimal fields -- is_forum and is_archived NOT in chat_data
         chat_data = {"id": 111, "title": "Minimal"}
-        await adapter.upsert_chat(chat_data)
+        await adapter.upsert_chat(chat_data, account_id=1)
 
         # The important thing is it succeeds without error
         mock_session.execute.assert_awaited_once()
@@ -798,7 +798,7 @@ class TestMessageOperations:
             "date": datetime(2025, 1, 1),
             "text": "Hello",
         }
-        await adapter.insert_message(msg_data)
+        await adapter.insert_message(msg_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -815,7 +815,7 @@ class TestMessageOperations:
             "date": datetime(2025, 1, 1),
             "text": "PG Hello",
         }
-        await adapter.insert_message(msg_data)
+        await adapter.insert_message(msg_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -826,7 +826,7 @@ class TestMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.insert_messages_batch([])
+        await adapter.insert_messages_batch([], account_id=1)
 
         mock_session.execute.assert_not_awaited()
         mock_session.commit.assert_not_awaited()
@@ -841,7 +841,7 @@ class TestMessageOperations:
             {"id": 1, "chat_id": 100, "date": datetime(2025, 1, 1), "text": "msg1"},
             {"id": 2, "chat_id": 100, "date": datetime(2025, 1, 2), "text": "msg2"},
         ]
-        await adapter.insert_messages_batch(messages)
+        await adapter.insert_messages_batch(messages, account_id=1)
 
         assert mock_session.execute.await_count == 2
         mock_session.commit.assert_awaited_once()
@@ -856,7 +856,7 @@ class TestMessageOperations:
         mock_result.scalar_one_or_none.return_value = 500
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_last_message_id(100)
+        result = await adapter.get_last_message_id(100, account_id=1)
         assert result == 500
 
     @pytest.mark.asyncio
@@ -869,7 +869,7 @@ class TestMessageOperations:
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_last_message_id(999)
+        result = await adapter.get_last_message_id(999, account_id=1)
         assert result == 0
 
     @pytest.mark.asyncio
@@ -878,7 +878,7 @@ class TestMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.delete_message(chat_id=100, message_id=42)
+        await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
 
         # 4 deletes: versions, media, reactions, message
         assert mock_session.execute.await_count == 4
@@ -895,7 +895,7 @@ class TestMessageOperations:
         mock_result.first.return_value = mock_row
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_chat_id_for_message(42)
+        result = await adapter.get_chat_id_for_message(42, account_id=1)
         assert result == 100
 
     @pytest.mark.asyncio
@@ -908,7 +908,7 @@ class TestMessageOperations:
         mock_result.first.return_value = None
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_chat_id_for_message(9999)
+        result = await adapter.get_chat_id_for_message(9999, account_id=1)
         assert result is None
 
     @pytest.mark.asyncio
@@ -921,7 +921,7 @@ class TestMessageOperations:
         mock_result.fetchall.return_value = [(100,)]
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.resolve_message_chat_id(42)
+        result = await adapter.resolve_message_chat_id(42, account_id=1)
         assert result == 100
 
     @pytest.mark.asyncio
@@ -934,7 +934,7 @@ class TestMessageOperations:
         mock_result.fetchall.return_value = [(100,), (200,)]
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.resolve_message_chat_id(42)
+        result = await adapter.resolve_message_chat_id(42, account_id=1)
         assert result is None
 
     @pytest.mark.asyncio
@@ -947,7 +947,7 @@ class TestMessageOperations:
         mock_result.fetchall.return_value = []
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.resolve_message_chat_id(9999)
+        result = await adapter.resolve_message_chat_id(9999, account_id=1)
         assert result is None
 
     @pytest.mark.asyncio
@@ -967,7 +967,7 @@ class TestMessageOperations:
         # _record_message_version runs inside a SAVEPOINT (session.begin_nested)
         mock_session.begin_nested = MagicMock(return_value=AsyncMock())
 
-        outcome = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1))
+        outcome = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1), account_id=1)
 
         assert outcome == "applied"
         assert mock_session.execute.await_count == 4
@@ -979,7 +979,7 @@ class TestMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.mark_message_deleted(100, 42, datetime(2025, 6, 1))
+        await adapter.mark_message_deleted(100, 42, datetime(2025, 6, 1), account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1043,7 +1043,7 @@ class TestMediaOperations:
         adapter = DatabaseAdapter(db_manager)
 
         media_data = {"id": "file_abc", "type": "photo", "downloaded": True}
-        await adapter.insert_media(media_data)
+        await adapter.insert_media(media_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1055,7 +1055,7 @@ class TestMediaOperations:
         adapter = DatabaseAdapter(db_manager)
 
         media_data = {"id": "file_xyz", "type": "video", "downloaded": False}
-        await adapter.insert_media(media_data)
+        await adapter.insert_media(media_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1070,7 +1070,7 @@ class TestMediaOperations:
         mock_result.rowcount = 7
         mock_session.execute.return_value = mock_result
 
-        count = await adapter.delete_media_for_chat(100)
+        count = await adapter.delete_media_for_chat(100, account_id=1)
         assert count == 7
         mock_session.commit.assert_awaited_once()
 
@@ -1080,7 +1080,7 @@ class TestMediaOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.mark_media_for_redownload("file_abc")
+        await adapter.mark_media_for_redownload("file_abc", account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1142,7 +1142,7 @@ class TestSyncStatusOperations:
         db_manager, mock_session = _make_mock_db_manager(is_sqlite=True)
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.update_sync_status(100, 500, 50)
+        await adapter.update_sync_status(100, 500, 50, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1153,7 +1153,7 @@ class TestSyncStatusOperations:
         db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.update_sync_status(200, 1000, 100)
+        await adapter.update_sync_status(200, 1000, 100, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1173,7 +1173,7 @@ class TestDeleteChatOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.delete_chat_and_related_data(100)
+        await adapter.delete_chat_and_related_data(100, account_id=1)
 
         # 6 deletes: versions, media, reactions, messages, sync_status, chat
         assert mock_session.execute.await_count == 6
@@ -1190,7 +1190,7 @@ class TestDeleteChatOperations:
             patch("src.db.adapter.shutil.rmtree") as mock_rmtree,
             patch("src.db.adapter.glob.glob", return_value=[]),
         ):
-            await adapter.delete_chat_and_related_data(100, media_base_path="/data/media")
+            await adapter.delete_chat_and_related_data(100, media_base_path="/data/media", account_id=1)
 
         mock_rmtree.assert_called_once_with(os.path.join("/data/media", "100"))
 
@@ -1201,7 +1201,7 @@ class TestDeleteChatOperations:
         adapter = DatabaseAdapter(db_manager)
 
         with patch("src.db.adapter.shutil.rmtree") as mock_rmtree:
-            await adapter.delete_chat_and_related_data(100, media_base_path=None)
+            await adapter.delete_chat_and_related_data(100, media_base_path=None, account_id=1)
 
         mock_rmtree.assert_not_called()
 
@@ -1420,7 +1420,7 @@ class TestPinnedMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.sync_pinned_messages(100, [1, 2, 3])
+        await adapter.sync_pinned_messages(100, [1, 2, 3], account_id=1)
 
         assert mock_session.execute.await_count == 2
         mock_session.commit.assert_awaited_once()
@@ -1431,7 +1431,7 @@ class TestPinnedMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.sync_pinned_messages(100, [])
+        await adapter.sync_pinned_messages(100, [], account_id=1)
 
         assert mock_session.execute.await_count == 1
         mock_session.commit.assert_awaited_once()
@@ -1442,7 +1442,7 @@ class TestPinnedMessageOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.update_message_pinned(100, 42, True)
+        await adapter.update_message_pinned(100, 42, True, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1466,7 +1466,7 @@ class TestBackfillAndGapDetection:
         mock_result.rowcount = 10
         mock_session.execute.return_value = mock_result
 
-        await adapter.backfill_is_outgoing(owner_id=12345)
+        await adapter.backfill_is_outgoing(owner_id=12345, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1481,7 +1481,7 @@ class TestBackfillAndGapDetection:
         mock_result.fetchall.return_value = [(100,), (200,), (300,)]
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_chats_with_messages()
+        result = await adapter.get_chats_with_messages(account_id=1)
         assert result == [100, 200, 300]
 
     @pytest.mark.asyncio
@@ -1501,7 +1501,7 @@ class TestBackfillAndGapDetection:
         mock_result.__iter__ = MagicMock(return_value=iter([mock_row1, mock_row2]))
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_messages_sync_data(100)
+        result = await adapter.get_messages_sync_data(100, account_id=1)
         assert result == {1: None, 2: "2025-06-01"}
 
 
@@ -1583,7 +1583,7 @@ class TestFolderOperations:
         adapter = DatabaseAdapter(db_manager)
 
         folder_data = {"id": 1, "title": "Work", "emoticon": None, "sort_order": 0}
-        await adapter.upsert_chat_folder(folder_data)
+        await adapter.upsert_chat_folder(folder_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1594,7 +1594,7 @@ class TestFolderOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.cleanup_stale_folders([1, 2, 3])
+        await adapter.cleanup_stale_folders([1, 2, 3], account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -1605,7 +1605,7 @@ class TestFolderOperations:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.cleanup_stale_folders([])
+        await adapter.cleanup_stale_folders([], account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -2386,7 +2386,7 @@ class TestUpsertForumTopic:
         adapter = DatabaseAdapter(db_manager)
 
         topic_data = {"id": 1, "chat_id": -1001234, "title": "General"}
-        await adapter.upsert_forum_topic(topic_data)
+        await adapter.upsert_forum_topic(topic_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -2398,7 +2398,7 @@ class TestUpsertForumTopic:
         adapter = DatabaseAdapter(db_manager)
 
         topic_data = {"id": 2, "chat_id": -1001234, "title": "Dev"}
-        await adapter.upsert_forum_topic(topic_data)
+        await adapter.upsert_forum_topic(topic_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -2539,7 +2539,7 @@ class TestSyncFolderMembers:
             existing_result,  # select existing chat IDs
         ]
 
-        await adapter.sync_folder_members(folder_id=1, chat_ids=[100, 200, 300])
+        await adapter.sync_folder_members(folder_id=1, chat_ids=[100, 200, 300], account_id=1)
 
         # delete + select existing = 2 execute calls
         assert mock_session.execute.await_count == 2
@@ -2553,7 +2553,7 @@ class TestSyncFolderMembers:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        await adapter.sync_folder_members(folder_id=1, chat_ids=[])
+        await adapter.sync_folder_members(folder_id=1, chat_ids=[], account_id=1)
 
         mock_session.execute.assert_awaited_once()  # just the delete
         mock_session.commit.assert_awaited_once()
@@ -2683,7 +2683,7 @@ class TestGetChatsForFolderResolution:
         mock_result.__iter__ = MagicMock(return_value=iter([_row(500, "private", 0, 1), _row(-100, "group", 1, 0)]))
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_chats_for_folder_resolution()
+        result = await adapter.get_chats_for_folder_resolution(account_id=1)
 
         assert result == [
             {"id": 500, "type": "private", "is_bot": True, "is_archived": False},
@@ -3379,7 +3379,7 @@ class TestUpsertChatFolderPostgres:
         adapter = DatabaseAdapter(db_manager)
 
         folder_data = {"id": 1, "title": "Work", "emoticon": None, "sort_order": 0}
-        await adapter.upsert_chat_folder(folder_data)
+        await adapter.upsert_chat_folder(folder_data, account_id=1)
 
         mock_session.execute.assert_awaited_once()
         mock_session.commit.assert_awaited_once()
@@ -3414,10 +3414,11 @@ class TestIterMediaPathsForRepair:
                         "file_name": f"f{i}.jpg",
                         "file_path": f"/data/f{i}.jpg",
                         "downloaded": True,
-                    }
+                    },
+                    account_id=1,
                 )
             # A row with downloaded=0 AND no file_path must be excluded.
-            await adapter.insert_media({"id": "skip", "type": "photo", "downloaded": False})
+            await adapter.insert_media({"id": "skip", "type": "photo", "downloaded": False}, account_id=1)
 
             batches = [b async for b in adapter.iter_media_paths_for_repair(batch_size=2)]
 
@@ -3425,7 +3426,9 @@ class TestIterMediaPathsForRepair:
             assert [len(b) for b in batches] == [2, 2, 1]
             flat = [r for b in batches for r in b]
             assert [r["id"] for r in flat] == ["id0", "id1", "id2", "id3", "id4"]
-            assert flat[0] == {"id": "id0", "file_path": "/data/f0.jpg", "file_name": "f0.jpg"}
+            # v8.0.0: rows carry account_id so the repair caller can address the
+            # exact row back (media ids repeat across accounts).
+            assert flat[0] == {"account_id": 1, "id": "id0", "file_path": "/data/f0.jpg", "file_name": "f0.jpg"}
             assert all(r["id"] != "skip" for r in flat)
         finally:
             await db_manager.close()
@@ -3509,7 +3512,8 @@ class TestCalculateAndStoreStatisticsStorage:
                     "type": "photo",
                     "file_size": 5 * 1024 * 1024 * 1024,  # 5 GiB (bogus, DB-only)
                     "downloaded": True,
-                }
+                },
+                account_id=1,
             )
 
             storage_dir = tmp_path / "storage"
@@ -3540,7 +3544,8 @@ class TestCalculateAndStoreStatisticsStorage:
                     "type": "photo",
                     "file_size": 3 * 1024 * 1024,  # 3 MiB
                     "downloaded": True,
-                }
+                },
+                account_id=1,
             )
 
             stats = await adapter.calculate_and_store_statistics()
@@ -3564,7 +3569,8 @@ class TestCalculateAndStoreStatisticsStorage:
                     "type": "photo",
                     "file_size": 4 * 1024 * 1024,  # 4 MiB recorded in DB
                     "downloaded": True,
-                }
+                },
+                account_id=1,
             )
             missing = tmp_path / "does_not_exist"  # never created → compute_directory_size returns 0
 
