@@ -1518,3 +1518,297 @@ class TestWhitelistResolveDialogLimit(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config()
         self.assertEqual(config.whitelist_resolve_dialog_limit, 0)
+
+
+def _account_triple(index: int) -> dict:
+    """A complete TG_ACCOUNT_<index>_* credential triple with obviously-fake values."""
+    return {
+        f"TG_ACCOUNT_{index}_API_ID": str(10000 + index),
+        f"TG_ACCOUNT_{index}_API_HASH": f"test-hash-account-{index}",
+        f"TG_ACCOUNT_{index}_PHONE_NUMBER": f"+3460000000{index}",
+    }
+
+
+class TestMultiAccountConfig(unittest.TestCase):
+    """TG_ACCOUNT_<N>_* parsing (v8.0.0 multi-account) and the zero-config upgrade.
+
+    Two rules run through every test here:
+    - Zero-config (no TG_ACCOUNT_* set) must be byte-identical to 7.x: one
+      synthesized account with the legacy session resolution, no new log lines.
+    - Error messages and reprs name VARIABLES, never values — phone numbers are
+      PII and the hash is a credential (#272), so each error test also asserts
+      the offending VALUE is absent from the exception text.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        # SESSION_DIR keeps Config._ensure_directories inside the temp dir and
+        # makes session_path assertions independent of BACKUP_PATH's parent.
+        self.session_dir = os.path.join(self.temp_dir, "session")
+        self.base_env = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "SESSION_DIR": self.session_dir,
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # Zero-config synthesis (the 7.x upgrade path)
+    # ------------------------------------------------------------------
+
+    def test_legacy_only_env_synthesizes_one_account_with_legacy_session(self):
+        """No TG_ACCOUNT_*: exactly one account from TELEGRAM_*, same session file."""
+        env = self.base_env | {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "abcdef",
+            "TELEGRAM_PHONE": "+1234567890",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(len(config.accounts), 1)
+        account = config.accounts[0]
+        self.assertEqual(account.index, 1)
+        self.assertEqual(account.api_id, 12345)
+        self.assertEqual(account.api_hash, "abcdef")
+        self.assertEqual(account.phone, "+1234567890")
+        self.assertEqual(account.label, "default")
+        self.assertEqual(account.session_name, "telegram_backup")
+        self.assertEqual(account.session_name, config.session_name)
+        # String-identical to config.session_path: same session file, no re-login.
+        self.assertEqual(account.session_path, config.session_path)
+        self.assertFalse(config._indexed_accounts)
+
+    def test_legacy_only_env_honors_session_name_env(self):
+        env = self.base_env | {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "abcdef",
+            "TELEGRAM_PHONE": "+1234567890",
+            "SESSION_NAME": "my_session",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.accounts[0].session_name, "my_session")
+        self.assertEqual(config.accounts[0].session_path, config.session_path)
+
+    def test_viewer_without_credentials_still_gets_one_account(self):
+        """The viewer builds Config with no credentials at all; the synthesized
+        account carries Nones rather than the parse raising."""
+        with patch.dict(os.environ, dict(self.base_env), clear=True):
+            config = Config()
+        self.assertEqual(len(config.accounts), 1)
+        account = config.accounts[0]
+        self.assertIsNone(account.api_id)
+        self.assertIsNone(account.api_hash)
+        self.assertIsNone(account.phone)
+        self.assertEqual(account.session_name, "telegram_backup")
+
+    # ------------------------------------------------------------------
+    # Indexed accounts: session-name and label chains
+    # ------------------------------------------------------------------
+
+    def test_two_indexed_accounts_default_sessions_and_labels(self):
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertTrue(config._indexed_accounts)
+        self.assertEqual([a.index for a in config.accounts], [1, 2])
+        one, two = config.accounts
+        # Account 1 keeps the legacy default so no existing deployment re-logins.
+        self.assertEqual(one.session_name, "telegram_backup")
+        self.assertEqual(two.session_name, "telegram_backup_account2")
+        self.assertEqual(one.label, "default")
+        self.assertEqual(two.label, "account2")
+        self.assertEqual(one.api_id, 10001)
+        self.assertEqual(two.api_id, 10002)
+        for account in config.accounts:
+            self.assertEqual(account.session_path, os.path.join(config.session_dir, account.session_name))
+
+    def test_account_one_explicit_session_name_wins(self):
+        env = self.base_env | _account_triple(1) | _account_triple(2) | {"TG_ACCOUNT_1_SESSION_NAME": "primary"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.accounts[0].session_name, "primary")
+
+    def test_account_one_falls_back_to_session_name_env(self):
+        """Full legacy chain for account 1: TG_ACCOUNT_1_SESSION_NAME →
+        SESSION_NAME env → 'telegram_backup'. Accounts 2+ never read SESSION_NAME."""
+        env = self.base_env | _account_triple(1) | _account_triple(2) | {"SESSION_NAME": "legacy_sess"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(config.accounts[0].session_name, "legacy_sess")
+        self.assertEqual(config.accounts[1].session_name, "telegram_backup_account2")
+
+    def test_labels_come_from_env_when_set(self):
+        env = (
+            self.base_env
+            | _account_triple(1)
+            | _account_triple(2)
+            | {"TG_ACCOUNT_1_LABEL": "personal", "TG_ACCOUNT_2_LABEL": "work"}
+        )
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual([a.label for a in config.accounts], ["personal", "work"])
+
+    # ------------------------------------------------------------------
+    # Error matrix — every message names variables, never values
+    # ------------------------------------------------------------------
+
+    def _assert_no_credential_values(self, message: str, *envs: dict):
+        """#272: no phone number or hash VALUE may appear in exception text."""
+        for env in envs:
+            for key, value in env.items():
+                if value and ("PHONE_NUMBER" in key or "API_HASH" in key or key.startswith("TELEGRAM_")):
+                    self.assertNotIn(value, message, f"value of {key} leaked into the error text")
+
+    def test_index_gap_is_a_loud_error_naming_the_missing_variable(self):
+        env = self.base_env | _account_triple(1) | _account_triple(3)
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        message = str(ctx.exception)
+        self.assertIn("contiguous", message)
+        self.assertIn("TG_ACCOUNT_2_API_ID", message)
+        self._assert_no_credential_values(message, env)
+
+    def test_indexes_must_start_at_one(self):
+        env = self.base_env | _account_triple(2)
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        message = str(ctx.exception)
+        self.assertIn("contiguous", message)
+        self.assertIn("TG_ACCOUNT_1_API_ID", message)
+
+    def test_partial_triple_is_a_loud_error_naming_the_variables(self):
+        env = self.base_env | _account_triple(1) | {"TG_ACCOUNT_2_API_ID": "10002"}
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        message = str(ctx.exception)
+        self.assertIn("Account 2 is incomplete", message)
+        self.assertIn("TG_ACCOUNT_2_API_HASH", message)
+        self.assertIn("TG_ACCOUNT_2_PHONE_NUMBER", message)
+        self._assert_no_credential_values(message, env)
+
+    def test_duplicate_phone_is_a_loud_error_without_the_number(self):
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        env["TG_ACCOUNT_2_PHONE_NUMBER"] = env["TG_ACCOUNT_1_PHONE_NUMBER"]
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        message = str(ctx.exception)
+        self.assertIn("TG_ACCOUNT_2_PHONE_NUMBER", message)
+        self.assertIn("TG_ACCOUNT_1_PHONE_NUMBER", message)
+        self._assert_no_credential_values(message, env)
+
+    def test_non_integer_api_id_error_never_echoes_the_value(self):
+        env = self.base_env | _account_triple(1)
+        env["TG_ACCOUNT_1_API_ID"] = "not-an-int-credential"
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        message = str(ctx.exception)
+        self.assertIn("TG_ACCOUNT_1_API_ID must be an integer", message)
+        self.assertNotIn("not-an-int-credential", message)
+        # ``raise ... from None``: the chained int() text (which echoes the
+        # value) must not ride along as __cause__/__context__.
+        self.assertIsNone(ctx.exception.__cause__)
+        self.assertTrue(ctx.exception.__suppress_context__)
+
+    def test_unrecognized_variable_shapes_raise(self):
+        for bad_key in ("TG_ACCOUNT_2_APIHASH", "TG_ACCOUNT_0_API_ID", "TG_ACCOUNT_01_API_ID"):
+            with self.subTest(bad_key=bad_key):
+                env = self.base_env | _account_triple(1) | {bad_key: "anything"}
+                with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+                    Config()
+                message = str(ctx.exception)
+                self.assertIn("Unrecognized account variable", message)
+                self.assertIn(bad_key, message)
+
+    def test_session_collision_is_a_loud_error(self):
+        """Account 2 explicitly naming account 1's resolved default ('telegram_backup')
+        would put two clients on one Telethon SQLite session."""
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        env["TG_ACCOUNT_2_SESSION_NAME"] = "telegram_backup"
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError) as ctx:
+            Config()
+        self.assertIn("same session file", str(ctx.exception))
+        self.assertIn("TG_ACCOUNT_2_SESSION_NAME", str(ctx.exception))
+
+    def test_empty_values_are_treated_as_absent(self):
+        """docker-compose's ${VAR:-} idiom injects empty strings; an index whose
+        variables are all empty is undeclared, and an empty LABEL falls back."""
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        env |= {
+            "TG_ACCOUNT_3_API_ID": "",
+            "TG_ACCOUNT_3_API_HASH": "",
+            "TG_ACCOUNT_3_PHONE_NUMBER": "",
+            "TG_ACCOUNT_2_LABEL": "",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertEqual(len(config.accounts), 2)
+        self.assertEqual(config.accounts[1].label, "account2")
+
+    # ------------------------------------------------------------------
+    # Precedence, validate_credentials, logging, repr
+    # ------------------------------------------------------------------
+
+    def test_indexed_wins_over_legacy_but_config_triple_reflects_legacy(self):
+        """Both set: accounts come from TG_ACCOUNT_*; config.api_id/api_hash/phone
+        still reflect TELEGRAM_* (and must not be read for capture)."""
+        env = (
+            self.base_env
+            | {
+                "TELEGRAM_API_ID": "12345",
+                "TELEGRAM_API_HASH": "abcdef",
+                "TELEGRAM_PHONE": "+1234567890",
+            }
+            | _account_triple(1)
+            | _account_triple(2)
+        )
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.assertTrue(config._indexed_accounts)
+        self.assertEqual([a.api_id for a in config.accounts], [10001, 10002])
+        self.assertEqual(config.api_id, 12345)
+        self.assertEqual(config.api_hash, "abcdef")
+        self.assertEqual(config.phone, "+1234567890")
+
+    def test_validate_credentials_returns_immediately_in_indexed_mode(self):
+        """Indexed triples were proven whole at parse time, so the legacy
+        TELEGRAM_* check must not fire even with those variables absent."""
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+            config.validate_credentials()  # must not raise
+
+    def test_indexed_mode_logs_count_only(self):
+        env = self.base_env | _account_triple(1) | _account_triple(2)
+        with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="INFO") as captured:
+            Config()
+        multi = [m for m in captured.output if "Multi-account" in m]
+        self.assertEqual(len(multi), 1)
+        self.assertIn("Multi-account: using 2 configured account(s)", multi[0])
+        self._assert_no_credential_values("\n".join(captured.output), env)
+
+    def test_zero_config_logs_nothing_new(self):
+        """The 7.x-byte-identical claim: no 'Multi-account' line without TG_ACCOUNT_*."""
+        env = self.base_env | {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "abcdef",
+            "TELEGRAM_PHONE": "+1234567890",
+        }
+        with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="DEBUG") as captured:
+            Config()
+        self.assertFalse([m for m in captured.output if "Multi-account" in m])
+
+    def test_account_config_repr_hides_credentials_phone_and_label(self):
+        """Reprs travel into logs and exception text: the credential fields and
+        the label must be excluded, so logging the dataclass is safe."""
+        env = self.base_env | _account_triple(1) | {"TG_ACCOUNT_1_LABEL": "very-private-label"}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config()
+        text = repr(config.accounts[0])
+        self.assertNotIn("test-hash-account-1", text)
+        self.assertNotIn("+34600000001", text)
+        self.assertNotIn("very-private-label", text)
+        self.assertNotIn("10001", text)
+        self.assertIn("index=1", text)

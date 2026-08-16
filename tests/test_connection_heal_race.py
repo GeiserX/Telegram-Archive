@@ -35,6 +35,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.connection import TelegramConnection
 
 
+def _wire_default_account(config):
+    """Mirror Config on a MagicMock: ``accounts[0]`` carries the credentials.
+
+    v8.0.0: TelegramConnection reads the session path and API credentials from
+    its AccountConfig (defaulting to ``config.accounts[0]``), never from the
+    legacy config attributes — a real Config always provides that list.
+    """
+    account = MagicMock()
+    account.index = 1
+    account.label = "default"
+    account.session_path = config.session_path
+    account.api_id = config.api_id
+    account.api_hash = config.api_hash
+    config.accounts = [account]
+    return config
+
+
 def _shared_client():
     """A Telethon-shaped shared client that can die and be revived in place."""
     state = {"alive": True, "connects": 0, "disconnects": 0, "fail_next_connect": False, "slow_connect": False}
@@ -81,6 +98,7 @@ def _connection(tmp_path, client):
     config.api_id = 12345
     config.api_hash = "test-api-hash"
     config.get_telegram_client_kwargs.return_value = {}
+    _wire_default_account(config)
 
     conn = TelegramConnection(config)
     conn._client = client
@@ -161,13 +179,16 @@ class TestWatchdogHealsWhileABackupIsSuspended:
 
     def _scheduler(self, connection):
         with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+            from src.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
             config.fill_gaps = False
             scheduler = BackupScheduler(config)
-        scheduler._connection = connection
+        account = MagicMock()
+        account.index = 1
+        account.label = "default"
+        scheduler._accounts = [_AccountRuntime(account=account, connection=connection, row_id=1)]
         scheduler._listener_enabled = True
         return scheduler
 
@@ -205,7 +226,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
         watchdog_done = asyncio.Event()
         seen = {}
 
-        async def fake_run_backup(config, client=None):
+        async def fake_run_backup(config, client=None, account_id=None):
             seen["at_start"] = client
             backup_started.set()
             # Suspended mid-run: every await inside a real backup is a point
@@ -234,8 +255,9 @@ class TestWatchdogHealsWhileABackupIsSuspended:
             watchdog_done.set()
             await backup_task
 
-        assert scheduler._listener is not None
-        scheduler._listener_task.cancel()
+        entry = scheduler._accounts[0]
+        assert entry.listener is not None
+        entry.listener_task.cancel()
 
         assert builder.call_count == 0, "healing built a new client instead of reviving the shared one"
         assert seen["at_start"] is client
@@ -243,7 +265,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
         assert seen["still_the_connections_client"] is True, "the watchdog replaced the client under the backup"
         assert seen["usable_at_resume"] is True, "the backup resumed on a disconnected client"
         # The listener was started on the very same client the backup is using.
-        assert scheduler._listener.client is client
+        assert entry.listener.client is client
 
     async def test_the_backup_never_overlaps_the_watchdogs_connect(self, tmp_path):
         """Both reach ensure_connected(); the lock keeps them out of each other."""
@@ -266,7 +288,7 @@ class TestWatchdogHealsWhileABackupIsSuspended:
 
         client.connect = AsyncMock(side_effect=counting_connect)
 
-        async def fake_run_backup(config, client=None):
+        async def fake_run_backup(config, client=None, account_id=None):
             return None
 
         with (
@@ -276,8 +298,8 @@ class TestWatchdogHealsWhileABackupIsSuspended:
         ):
             await asyncio.gather(scheduler._run_backup_job(), scheduler._start_listener())
 
-        if scheduler._listener_task:
-            scheduler._listener_task.cancel()
+        if scheduler._accounts[0].listener_task:
+            scheduler._accounts[0].listener_task.cancel()
 
         assert inside["max"] == 1, "a backup and the watchdog were inside connect() at the same time"
         # The loser of the race finds a healthy client and does not connect again.
@@ -342,6 +364,7 @@ class TestRebuildingIsReservedForARestoredSession:
         config.api_id = 12345
         config.api_hash = "test-api-hash"
         config.get_telegram_client_kwargs.return_value = {}
+        _wire_default_account(config)
         conn = TelegramConnection(config)
         conn._client = old_client
         conn._connected = False
@@ -386,13 +409,16 @@ class TestTheOriginalFailureStillHeals:
         assert not client.is_connected()  # real state
 
         with patch("src.scheduler.signal.signal"):
-            from src.scheduler import BackupScheduler
+            from src.scheduler import BackupScheduler, _AccountRuntime
 
             config = MagicMock()
             config.enable_listener = True
             config.fill_gaps = False
             scheduler = BackupScheduler(config)
-        scheduler._connection = conn
+        account = MagicMock()
+        account.index = 1
+        account.label = "default"
+        scheduler._accounts = [_AccountRuntime(account=account, connection=conn, row_id=1)]
 
         seen = {}
 
@@ -416,9 +442,10 @@ class TestTheOriginalFailureStillHeals:
 
         assert revived["n"] == 1
         assert seen["connected_at_connect"] is True
-        assert scheduler._listener.client is client, "the listener must share the connection's own client"
+        entry = scheduler._accounts[0]
+        assert entry.listener.client is client, "the listener must share the connection's own client"
         assert conn.client is client
-        scheduler._listener_task.cancel()
+        entry.listener_task.cancel()
 
 
 @pytest.mark.asyncio

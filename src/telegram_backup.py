@@ -49,9 +49,8 @@ from telethon.tl.types import (
 from telethon.utils import get_peer_id
 
 from .avatar_utils import get_avatar_paths
-from .config import Config
+from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
-from .db.models import DEFAULT_ACCOUNT_ID
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
@@ -595,7 +594,16 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
 class TelegramBackup:
     """Main class for managing Telegram backups."""
 
-    def __init__(self, config: Config, db: DatabaseAdapter, client: TelegramClient | None = None, *, account_id: int):
+    def __init__(
+        self,
+        config: Config,
+        db: DatabaseAdapter,
+        client: TelegramClient | None = None,
+        *,
+        account_id: int | None = None,
+        account: AccountConfig | None = None,
+        account_resolver=None,
+    ):
         """
         Initialize Telegram backup manager.
 
@@ -605,11 +613,25 @@ class TelegramBackup:
             client: Optional existing TelegramClient to use (for shared connection).
                    If not provided, will create a new client in connect().
             account_id: accounts.id every row written by this backup belongs to.
+                May be None only when ``account_resolver`` is given.
+            account: The configured account this backup captures with (session
+                file and API credentials for the own-client path). Defaults to
+                ``config.accounts[0]`` — the synthesized legacy account in a
+                zero-config deployment.
+            account_resolver: Optional ``async (client, db) -> int`` awaited by
+                connect() once the client is proven authorized, yielding the
+                accounts.id. This exists because the own-client path cannot know
+                the row id before a client exists: the row is keyed on the
+                Telegram user id, which only a logged-in client can produce.
         """
+        if account_id is None and account_resolver is None:
+            raise ValueError("account_id or account_resolver is required")
         self.config = config
         self.config.validate_credentials()
         self.db = db
         self.account_id = account_id
+        self.account = account if account is not None else config.accounts[0]
+        self._account_resolver = account_resolver
         self.client: TelegramClient | None = client
         self._owns_client = client is None  # Track if we created the client
         self._cleaned_media_chats: set[int] = set()  # Track chats already cleaned this session
@@ -843,7 +865,15 @@ class TelegramBackup:
         return True
 
     @classmethod
-    async def create(cls, config: Config, client: TelegramClient | None = None, *, account_id: int) -> TelegramBackup:
+    async def create(
+        cls,
+        config: Config,
+        client: TelegramClient | None = None,
+        *,
+        account_id: int | None = None,
+        account: AccountConfig | None = None,
+        account_resolver=None,
+    ) -> TelegramBackup:
         """
         Factory method to create TelegramBackup with initialized database.
 
@@ -851,12 +881,15 @@ class TelegramBackup:
             config: Configuration object
             client: Optional existing TelegramClient to use (for shared connection)
             account_id: accounts.id every row written by this backup belongs to
+                (omit only when ``account_resolver`` is given)
+            account: The configured account to capture with (see ``__init__``)
+            account_resolver: Deferred accounts.id resolution (see ``__init__``)
 
         Returns:
             Initialized TelegramBackup instance
         """
         db = await create_adapter()
-        return cls(config, db, client=client, account_id=account_id)
+        return cls(config, db, client=client, account_id=account_id, account=account, account_resolver=account_resolver)
 
     async def connect(self):
         """
@@ -876,50 +909,55 @@ class TelegramBackup:
             if not await self.client.is_user_authorized():
                 raise RuntimeError("Shared client session is not authorized")
             logger.debug("Using shared Telegram client")
-            return
+        else:
+            # Create new client
+            logger.info(f"Using Telethon session database: {self.account.session_path}.session")
+            self.client = TelegramClient(
+                self.account.session_path,
+                self.account.api_id,
+                self.account.api_hash,
+                **self.config.get_telegram_client_kwargs(),
+            )
+            self._owns_client = True
 
-        # Create new client
-        logger.info(f"Using Telethon session database: {self.config.session_path}.session")
-        self.client = TelegramClient(
-            self.config.session_path,
-            self.config.api_id,
-            self.config.api_hash,
-            **self.config.get_telegram_client_kwargs(),
-        )
-        self._owns_client = True
+            # Fix for database locked errors: Enable WAL mode for session DB
+            # This is critical for concurrency when the viewer is also running
+            try:
+                if hasattr(self.client.session, "_conn"):
+                    # Ensure connection is open
+                    if self.client.session._conn is None:
+                        # Trigger connection if lazy loaded (though usually it's open)
+                        pass
 
-        # Fix for database locked errors: Enable WAL mode for session DB
-        # This is critical for concurrency when the viewer is also running
-        try:
-            if hasattr(self.client.session, "_conn"):
-                # Ensure connection is open
-                if self.client.session._conn is None:
-                    # Trigger connection if lazy loaded (though usually it's open)
-                    pass
+                    if self.client.session._conn:
+                        self.client.session._conn.execute("PRAGMA journal_mode=WAL")
+                        self.client.session._conn.execute("PRAGMA busy_timeout=30000")
+                        logger.info("Enabled WAL mode for Telethon session database")
+            except Exception as e:
+                logger.warning(f"Could not enable WAL mode for session DB: {e}")
 
-                if self.client.session._conn:
-                    self.client.session._conn.execute("PRAGMA journal_mode=WAL")
-                    self.client.session._conn.execute("PRAGMA busy_timeout=30000")
-                    logger.info("Enabled WAL mode for Telethon session database")
-        except Exception as e:
-            logger.warning(f"Could not enable WAL mode for session DB: {e}")
+            # Connect without starting interactive flow
+            await self.client.connect()
 
-        # Connect without starting interactive flow
-        await self.client.connect()
+            # Check authorization status
+            if not await self.client.is_user_authorized():
+                logger.error("❌ Session not authorized!")
+                logger.error("Please run the authentication setup first:")
+                logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
+                logger.error("  Local:  python -m src.setup_auth")
+                raise RuntimeError("Session not authorized. Please run authentication setup.")
 
-        # Check authorization status
-        if not await self.client.is_user_authorized():
-            logger.error("❌ Session not authorized!")
-            logger.error("Please run the authentication setup first:")
-            logger.error("  Docker: ./init_auth.bat (Windows) or ./init_auth.sh (Linux/Mac)")
-            logger.error("  Local:  python -m src.setup_auth")
-            raise RuntimeError("Session not authorized. Please run authentication setup.")
+            # No get_me() here: authorization is already proven by the check above,
+            # and the account's name and phone must not be logged (#272). Telethon's
+            # get_me() would not add a guarantee anyway — it returns None on an
+            # unauthorized session rather than raising.
+            logger.info("Connected")
 
-        # No get_me() here: authorization is already proven by the check above,
-        # and the account's name and phone must not be logged (#272). Telethon's
-        # get_me() would not add a guarantee anyway — it returns None on an
-        # unauthorized session rather than raising.
-        logger.info("Connected")
+        # Resolve which accounts row this login writes under, now that the
+        # client is proven authorized. Runs before any capture write and logs
+        # nothing at INFO, so the single-account startup output is unchanged.
+        if self._account_resolver is not None and self.account_id is None:
+            self.account_id = await self._account_resolver(self.client, self.db)
 
     async def disconnect(self):
         """
@@ -3908,18 +3946,24 @@ class TelegramBackup:
             return 0
 
 
-async def run_backup(config: Config, client: TelegramClient | None = None):
-    """
-    Run a single backup operation.
+def _account_row_resolver(account: AccountConfig):
+    """Deferred accounts-row resolution for one configured account.
 
-    Args:
-        config: Configuration object
-        client: Optional existing TelegramClient to use (for shared connection).
-               If provided, the backup will use this client instead of creating
-               its own, avoiding session file lock conflicts.
+    The row an account writes under is keyed on the Telegram user id, which
+    only a logged-in client can produce — so resolution has to run after
+    connect(), not at construction. TelegramBackup/TelegramListener await this
+    right after their client is proven authorized and before any capture write.
     """
-    # Single-account stage: phase 5 resolves per-account ids from indexed env vars.
-    backup = await TelegramBackup.create(config, client=client, account_id=DEFAULT_ACCOUNT_ID)
+
+    async def resolve(client: TelegramClient, db: DatabaseAdapter) -> int:
+        me = await client.get_me()
+        return await db.ensure_account(telegram_user_id=me.id, env_index=account.index, label=account.label)
+
+    return resolve
+
+
+async def _execute_backup(backup: TelegramBackup, config: Config) -> None:
+    """connect → repair → backup_all → teardown, for one account's backup."""
     try:
         await backup.connect()
         # One-time repair of media files corrupted by the pre-7.11.3 finalize bug (#175).
@@ -3932,22 +3976,48 @@ async def run_backup(config: Config, client: TelegramClient | None = None):
         await backup.db.close()
 
 
-async def run_fill_gaps(config: Config, client: TelegramClient | None = None, chat_id: int | None = None) -> dict:
+async def run_backup(config: Config, client: TelegramClient | None = None, *, account_id: int | None = None):
     """
-    Run gap-fill to recover missing messages in backed-up chats.
+    Run a single backup operation for every configured account, sequentially.
 
     Args:
         config: Configuration object
         client: Optional existing TelegramClient to use (for shared connection).
-               If provided, the operation will use this client instead of creating
-               its own, avoiding session file lock conflicts.
-        chat_id: If provided, scan only this chat. Otherwise scan all chats.
-
-    Returns:
-        Summary dict with gap-fill statistics.
+               If provided, the backup sweeps ONLY the account that client is
+               logged in as — the scheduler calls this once per account with
+               each account's own shared client.
+        account_id: That client's resolved accounts.id (scheduler path). When
+               omitted with a client, the row is resolved from the client's own
+               login on connect.
     """
-    # Single-account stage: phase 5 resolves per-account ids from indexed env vars.
-    backup = await TelegramBackup.create(config, client=client, account_id=DEFAULT_ACCOUNT_ID)
+    if client is not None:
+        resolver = _account_row_resolver(config.accounts[0]) if account_id is None else None
+        backup = await TelegramBackup.create(config, client=client, account_id=account_id, account_resolver=resolver)
+        await _execute_backup(backup, config)
+        return
+
+    failed = 0
+    for account in config.accounts:
+        try:
+            backup = await TelegramBackup.create(
+                config, account=account, account_resolver=_account_row_resolver(account)
+            )
+            await _execute_backup(backup, config)
+        except Exception as e:
+            # One broken account must not consume the other accounts' sweeps —
+            # but with a single account there is nothing to shield, so keep the
+            # pre-8.0 behavior of letting the failure propagate to the caller.
+            if len(config.accounts) == 1:
+                raise
+            # Type name only: Telethon exception text can carry the phone (#272).
+            failed += 1
+            logger.error(f"account {account.index} failed: {type(e).__name__}")
+    if failed and failed == len(config.accounts):
+        raise RuntimeError(f"all {failed} configured accounts failed to back up")
+
+
+async def _execute_fill_gaps(backup: TelegramBackup, config: Config, chat_id: int | None) -> dict:
+    """connect → _fill_gaps → stats refresh → teardown, for one account."""
     try:
         await backup.connect()
         summary = await backup._fill_gaps(chat_id=chat_id)
@@ -3965,6 +4035,67 @@ async def run_fill_gaps(config: Config, client: TelegramClient | None = None, ch
     finally:
         await backup.disconnect()
         await backup.db.close()
+
+
+async def run_fill_gaps(
+    config: Config,
+    client: TelegramClient | None = None,
+    chat_id: int | None = None,
+    *,
+    account_id: int | None = None,
+) -> dict:
+    """
+    Run gap-fill to recover missing messages, for every configured account.
+
+    Args:
+        config: Configuration object
+        client: Optional existing TelegramClient to use (for shared connection).
+               If provided, only that client's account is scanned — the
+               scheduler calls this once per account.
+        chat_id: If provided, scan only this chat. Otherwise scan all chats.
+        account_id: That client's resolved accounts.id (scheduler path). When
+               omitted with a client, resolved from the client's login.
+
+    Returns:
+        Summary dict with gap-fill statistics (summed across accounts when
+        more than one is configured; a failed account counts into ``errors``).
+    """
+    if client is not None:
+        resolver = _account_row_resolver(config.accounts[0]) if account_id is None else None
+        backup = await TelegramBackup.create(config, client=client, account_id=account_id, account_resolver=resolver)
+        return await _execute_fill_gaps(backup, config, chat_id)
+
+    summaries: list[dict] = []
+    failed = 0
+    for account in config.accounts:
+        try:
+            backup = await TelegramBackup.create(
+                config, account=account, account_resolver=_account_row_resolver(account)
+            )
+            summaries.append(await _execute_fill_gaps(backup, config, chat_id))
+        except Exception as e:
+            # Same continuation rule as run_backup, same type-name-only logging.
+            if len(config.accounts) == 1:
+                raise
+            failed += 1
+            logger.error(f"account {account.index} failed: {type(e).__name__}")
+    if failed and failed == len(config.accounts):
+        raise RuntimeError(f"all {failed} configured accounts failed to fill gaps")
+    if len(config.accounts) == 1:
+        return summaries[0]
+    total = {
+        "chats_scanned": 0,
+        "chats_with_gaps": 0,
+        "total_gaps": 0,
+        "total_recovered": 0,
+        "errors": failed,
+        "details": [],
+    }
+    for summary in summaries:
+        for key in ("chats_scanned", "chats_with_gaps", "total_gaps", "total_recovered", "errors"):
+            total[key] += summary.get(key, 0)
+        total["details"].extend(summary.get("details", []))
+    return total
 
 
 def main():

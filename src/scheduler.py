@@ -6,31 +6,59 @@ Optionally runs a real-time listener that catches message edits and deletions
 between scheduled backup runs (when ENABLE_LISTENER=true).
 
 SHARED CONNECTION ARCHITECTURE:
-A single TelegramClient is shared between the backup and listener components.
-This avoids session file lock conflicts and allows both to run simultaneously.
+Each configured account has a single TelegramClient shared between its backup
+and listener components. This avoids session file lock conflicts and allows
+both to run simultaneously. Accounts are swept SEQUENTIALLY: account 1's full
+backup completes before account 2's starts — Telegram tolerates N sessions,
+not N concurrent full sweeps from one box.
 """
 
 import asyncio
 import logging
 import signal
 import sys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from .config import Config
+from .config import AccountConfig, Config
 from .connection import TelegramConnection
 from .telegram_backup import run_backup
 
+if TYPE_CHECKING:
+    from .listener import TelegramListener
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _AccountRuntime:
+    """Per-account runtime state: one shared connection, one listener, one row id.
+
+    ``row_id`` is the ``accounts.id`` resolved from the Telegram user id after
+    login (see ``DatabaseAdapter.ensure_account``); None until the account has
+    connected once. ``log_prefix`` is "" in a single-account deployment — log
+    lines stay byte-identical to pre-8.0 — and ``"[account <index>] "``
+    otherwise, so multi-account output is attributable by env index, never by
+    label or phone (#272).
+    """
+
+    account: AccountConfig
+    connection: TelegramConnection
+    log_prefix: str = ""
+    row_id: int | None = None
+    listener: TelegramListener | None = None
+    listener_task: asyncio.Task | None = None
 
 
 class BackupScheduler:
     """
     Scheduler for automated backups with optional real-time listener.
 
-    Uses a shared TelegramClient connection for both backup and listener,
-    eliminating session file lock conflicts.
+    Uses a shared TelegramClient connection per account for both backup and
+    listener, eliminating session file lock conflicts.
     """
 
     def __init__(self, config: Config):
@@ -44,17 +72,20 @@ class BackupScheduler:
         self.scheduler = AsyncIOScheduler()
         self.running = False
         self._backup_lock = asyncio.Lock()
+        # Serializes account-row resolution: the sweep, a listener start and the
+        # initial backup can all call it concurrently, and accounts has no
+        # DB-level unique on telegram_user_id, so two interleaved misses would
+        # both INSERT a row for the same account.
+        self._resolve_rows_lock = asyncio.Lock()
 
-        # Shared Telegram connection (used by both backup and listener)
-        self._connection: TelegramConnection | None = None
+        # Per-account runtime state (one shared connection + listener each),
+        # populated by _connect() in config order. Sweeps iterate it in order.
+        self._accounts: list[_AccountRuntime] = []
 
-        # Real-time listener (optional)
-        self._listener = None
-        self._listener_task: asyncio.Task | None = None
-        # Set once (in run_forever) when the listener is supposed to be running for
-        # the life of the process. Unlike checking config directly, this lets the
-        # watchdog keep retrying after a failed start -- _start_listener resets
-        # _listener_task to None on failure, but the listener is still "enabled".
+        # Set once (in run_forever) when the listeners are supposed to be running
+        # for the life of the process. Unlike checking config directly, this lets
+        # the watchdog keep retrying after a failed start -- _start_account_listener
+        # resets listener_task to None on failure, but the listener is still "enabled".
         self._listener_enabled = False
 
         # Setup signal handlers for graceful shutdown
@@ -66,12 +97,87 @@ class BackupScheduler:
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.stop()
 
+    async def _resolve_account_rows(self) -> None:
+        """Resolve each connected account's ``accounts`` row id, once.
+
+        The row is keyed on the Telegram user id from the account's own login
+        (``DatabaseAdapter.ensure_account`` — including the claim of the
+        migrated pre-8.0 row by the account at env index 1). Entries whose
+        connection has not come up yet are left unresolved and retried by the
+        next sweep or listener start. Uses one short-lived adapter, the same
+        engine lifecycle run_backup itself uses per run.
+        """
+        async with self._resolve_rows_lock:
+            # Recomputed under the lock: a caller that queued behind a completed
+            # resolution finds nothing pending and does no database work.
+            pending = [e for e in self._accounts if e.row_id is None and e.connection.me is not None]
+            if not pending:
+                return
+            from .db import create_adapter
+
+            db = await create_adapter()
+            try:
+                for entry in pending:
+                    entry.row_id = await db.ensure_account(
+                        telegram_user_id=entry.connection.me.id,
+                        env_index=entry.account.index,
+                        label=entry.account.label,
+                    )
+            finally:
+                await db.close()
+
+    async def _sweep_account(self, entry: _AccountRuntime) -> bool:
+        """One account's full scheduled sweep: backup, then optional gap-fill.
+
+        Returns False when gap-fill reported errors. Raises on hard failure
+        (connection, row resolution, backup) — the caller decides whether that
+        kills the run (single account) or moves on to the next account.
+        """
+        # Ensure connection is still alive
+        client = await entry.connection.ensure_connected()
+
+        # Normally resolved at startup; retried here for an account whose
+        # connection (or the database) was down back then.
+        if entry.row_id is None:
+            await self._resolve_account_rows()
+        if entry.row_id is None:
+            raise RuntimeError(f"account {entry.account.index} row not resolved")
+
+        # Run backup using this account's shared client
+        await run_backup(self.config, client=client, account_id=entry.row_id)
+
+        # Run gap-fill if enabled
+        gap_fill_ok = True
+        if self.config.fill_gaps:
+            try:
+                from .telegram_backup import run_fill_gaps
+
+                logger.info(f"{entry.log_prefix}Running post-backup gap-fill...")
+                result = await run_fill_gaps(self.config, client=client, account_id=entry.row_id)
+                if result.get("errors", 0) > 0:
+                    gap_fill_ok = False
+                    logger.warning(
+                        f"{entry.log_prefix}Gap-fill completed with {result['errors']} error(s) "
+                        f"({result['total_recovered']} messages recovered)"
+                    )
+            except Exception as e:
+                gap_fill_ok = False
+                logger.error(f"{entry.log_prefix}Gap-fill failed: {e}", exc_info=True)
+
+        # Reload tracked chats in this account's listener after its backup
+        # (new chats may have been added)
+        if entry.listener:
+            await entry.listener._load_tracked_chats()
+
+        return gap_fill_ok
+
     async def _run_backup_job(self):
         """
         Wrapper for backup job that handles errors.
 
-        Uses the shared connection - no need to pause the listener since both
-        use the same TelegramClient.
+        Uses the shared connections - no need to pause the listeners since each
+        account's backup and listener use the same TelegramClient. Accounts are
+        swept sequentially, in config order.
         """
         if self._backup_lock.locked():
             logger.warning("Skipping scheduled backup because another backup is already running")
@@ -81,36 +187,24 @@ class BackupScheduler:
             try:
                 logger.info("Scheduled backup starting...")
 
-                # Ensure connection is still alive
-                client = await self._connection.ensure_connected()
-
-                # Run backup using shared client
-                await run_backup(self.config, client=client)
-
-                # Run gap-fill if enabled
                 gap_fill_ok = True
-                if self.config.fill_gaps:
+                failed = 0
+                for entry in self._accounts:
                     try:
-                        from .telegram_backup import run_fill_gaps
-
-                        logger.info("Running post-backup gap-fill...")
-                        result = await run_fill_gaps(self.config, client=client)
-                        if result.get("errors", 0) > 0:
-                            gap_fill_ok = False
-                            logger.warning(
-                                f"Gap-fill completed with {result['errors']} error(s) "
-                                f"({result['total_recovered']} messages recovered)"
-                            )
+                        gap_fill_ok = await self._sweep_account(entry) and gap_fill_ok
                     except Exception as e:
-                        gap_fill_ok = False
-                        logger.error(f"Gap-fill failed: {e}", exc_info=True)
+                        # One broken account must not consume the other accounts'
+                        # sweeps; a single-account deployment keeps the pre-8.0
+                        # error path below instead.
+                        if len(self._accounts) == 1:
+                            raise
+                        # Type name only: exception text can carry the phone (#272).
+                        failed += 1
+                        logger.error(f"account {entry.account.index} failed: {type(e).__name__}")
 
-                # Reload tracked chats in listener after backup
-                # (new chats may have been added)
-                if self._listener:
-                    await self._listener._load_tracked_chats()
-
-                if gap_fill_ok:
+                if failed:
+                    logger.warning(f"Scheduled backup completed, but {failed} account(s) failed")
+                elif gap_fill_ok:
                     logger.info("Scheduled backup completed successfully")
                 else:
                     logger.warning("Scheduled backup completed, but gap-fill had errors")
@@ -165,27 +259,68 @@ class BackupScheduler:
             logger.info("Scheduler stopped")
 
     async def _connect(self) -> None:
-        """Establish shared Telegram connection."""
-        logger.info("Establishing shared Telegram connection...")
-        self._connection = TelegramConnection(self.config)
-        await self._connection.connect()
-        logger.info("Shared connection established")
+        """Establish one shared Telegram connection per configured account."""
+        multi = len(self.config.accounts) > 1
+        for account in self.config.accounts:
+            prefix = f"[account {account.index}] " if multi else ""
+            logger.info(f"{prefix}Establishing shared Telegram connection...")
+            entry = _AccountRuntime(
+                account=account,
+                connection=TelegramConnection(self.config, account=account),
+                log_prefix=prefix,
+            )
+            try:
+                await entry.connection.connect()
+                logger.info(f"{prefix}Shared connection established")
+            except Exception as e:
+                # One unreachable account must not keep the others from coming
+                # up; its connection heals through ensure_connected() on later
+                # sweeps and listener starts. A single-account deployment keeps
+                # the pre-8.0 fail-fast startup.
+                if not multi:
+                    raise
+                # Type name only: exception text can carry the phone (#272).
+                logger.error(f"account {account.index} failed: {type(e).__name__}")
+            self._accounts.append(entry)
+
+        try:
+            await self._resolve_account_rows()
+        except Exception as e:
+            # The database being down at startup must not kill the process:
+            # pre-8.0 the first DB touch happened inside the initial backup,
+            # which is retried every cycle — keep that resilience. Resolution
+            # is retried by every sweep and listener start. Type name only
+            # (the text can carry a connection DSN).
+            logger.warning(f"Could not resolve account rows yet: {type(e).__name__}")
 
     async def _disconnect(self) -> None:
-        """Close shared Telegram connection."""
-        if self._connection:
-            await self._connection.disconnect()
-            self._connection = None
+        """Close all shared Telegram connections."""
+        for entry in self._accounts:
+            await entry.connection.disconnect()
+        self._accounts = []
 
     async def _start_listener(self) -> None:
-        """Start the real-time listener if enabled."""
+        """Start the real-time listener for every account, if enabled.
+
+        Idempotent per account: an entry whose listener task is alive is left
+        untouched, so the watchdog can call this to revive only what died —
+        healthy accounts' handlers are never re-registered (the duplicate-
+        handler trap _remove_handlers exists for).
+        """
         if not self.config.enable_listener:
             return
 
-        if not self._connection:
+        if not self._accounts:
             logger.error("Cannot start listener: not connected to Telegram")
             return
 
+        for entry in self._accounts:
+            if entry.listener_task is not None and not entry.listener_task.done():
+                continue
+            await self._start_account_listener(entry)
+
+    async def _start_account_listener(self, entry: _AccountRuntime) -> None:
+        """Start one account's real-time listener on its shared connection."""
         # ``TelegramConnection.is_connected`` is an app-level flag: it stays True
         # after Telethon's sender exhausts its own reconnect budget (~55s) and
         # marks itself disconnected, so it cannot tell us the socket is dead.
@@ -203,43 +338,63 @@ class BackupScheduler:
         # a backup can run for hours, and the listener would stay dead for all
         # of it, which is the outage #265 is about.
         try:
-            await self._connection.ensure_connected()
+            await entry.connection.ensure_connected()
         except Exception as e:
-            logger.warning(f"Could not re-establish the shared connection before starting the listener: {e}")
+            logger.warning(
+                # Exception text can embed the DSN or host; type name only, like
+                # the sibling handlers in this file.
+                f"{entry.log_prefix}Could not re-establish the shared connection before starting the listener: "
+                f"{type(e).__name__}"
+            )
 
-        if not self._connection.is_connected:
-            logger.error("Cannot start listener: not connected to Telegram")
+        if not entry.connection.is_connected:
+            logger.error(f"{entry.log_prefix}Cannot start listener: not connected to Telegram")
             return
 
         try:
-            from .db.models import DEFAULT_ACCOUNT_ID
             from .listener import TelegramListener
 
-            logger.info("Starting real-time listener...")
+            logger.info(f"{entry.log_prefix}Starting real-time listener...")
 
-            # Create listener with shared client.
-            # Single-account stage: phase 5 resolves per-account ids here.
-            self._listener = await TelegramListener.create(
-                self.config, client=self._connection.client, account_id=DEFAULT_ACCOUNT_ID
+            # Normally resolved at startup; retried here for an account whose
+            # connection (or the database) was down back then.
+            if entry.row_id is None:
+                await self._resolve_account_rows()
+            if entry.row_id is None:
+                raise RuntimeError(f"account {entry.account.index} row not resolved")
+
+            # Create listener with this account's shared client.
+            entry.listener = await TelegramListener.create(
+                self.config, client=entry.connection.client, account_id=entry.row_id
             )
-            await self._listener.connect()
+            await entry.listener.connect()
 
             # Run listener in background task
-            self._listener_task = asyncio.create_task(self._listener.run(), name="telegram_listener")
-            logger.info("Real-time listener started successfully")
+            task_name = (
+                "telegram_listener" if len(self._accounts) == 1 else f"telegram_listener_account{entry.account.index}"
+            )
+            entry.listener_task = asyncio.create_task(entry.listener.run(), name=task_name)
+            logger.info(f"{entry.log_prefix}Real-time listener started successfully")
 
         except Exception as e:
-            logger.error(f"Failed to start listener: {e}", exc_info=True)
-            self._listener = None
-            self._listener_task = None
+            logger.error(f"{entry.log_prefix}Failed to start listener: {e}", exc_info=True)
+            entry.listener = None
+            entry.listener_task = None
 
-    async def _stop_listener(self) -> None:
-        """Stop the real-time listener if running."""
-        if self._listener_task:
-            logger.info("Stopping real-time listener...")
-            self._listener_task.cancel()
+    async def _stop_listener(self, only_dead: bool = False) -> None:
+        """Stop listeners — all of them (shutdown), or only dead ones (watchdog)."""
+        for entry in self._accounts:
+            if only_dead and entry.listener_task is not None and not entry.listener_task.done():
+                continue
+            await self._stop_account_listener(entry)
+
+    async def _stop_account_listener(self, entry: _AccountRuntime) -> None:
+        """Stop one account's real-time listener if running."""
+        if entry.listener_task:
+            logger.info(f"{entry.log_prefix}Stopping real-time listener...")
+            entry.listener_task.cancel()
             try:
-                await self._listener_task
+                await entry.listener_task
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -248,57 +403,86 @@ class BackupScheduler:
                 # task re-raises it, so swallow here to let teardown/restart
                 # proceed instead of crashing the process.
                 pass
-            self._listener_task = None
+            entry.listener_task = None
 
-        if self._listener:
-            await self._listener.close()
-            self._listener = None
-            logger.info("Real-time listener stopped")
+        if entry.listener:
+            await entry.listener.close()
+            entry.listener = None
+            logger.info(f"{entry.log_prefix}Real-time listener stopped")
+
+    async def _initial_backup_account(self, entry: _AccountRuntime) -> None:
+        """The startup backup for one account, mirroring the scheduled sweep.
+
+        Kept separate from _sweep_account because the startup sequence logs
+        'Initial backup completed' between the backup and the gap-fill — the
+        pre-8.0 order, which single-account deployments keep byte-for-byte.
+        """
+        # The connection was just established by _connect(); the ensure below
+        # only matters for an account whose startup connect failed (multi-
+        # account mode) — it raises into the caller's per-account handler.
+        client = entry.connection.client
+        if client is None or not entry.connection.is_connected:
+            client = await entry.connection.ensure_connected()
+
+        if entry.row_id is None:
+            await self._resolve_account_rows()
+        if entry.row_id is None:
+            raise RuntimeError(f"account {entry.account.index} row not resolved")
+
+        await run_backup(self.config, client=client, account_id=entry.row_id)
+        logger.info(f"{entry.log_prefix}Initial backup completed")
+
+        # Run gap-fill if enabled
+        if self.config.fill_gaps:
+            try:
+                from .telegram_backup import run_fill_gaps
+
+                logger.info(f"{entry.log_prefix}Running initial gap-fill...")
+                result = await run_fill_gaps(self.config, client=client, account_id=entry.row_id)
+                if result.get("errors", 0) > 0:
+                    logger.warning(f"{entry.log_prefix}Initial gap-fill completed with {result['errors']} error(s)")
+            except Exception as e:
+                logger.error(f"{entry.log_prefix}Initial gap-fill failed: {e}", exc_info=True)
+
+        # Reload tracked chats in this account's listener after initial backup
+        if entry.listener:
+            await entry.listener._load_tracked_chats()
 
     async def run_forever(self):
         """
-        Keep the scheduler running with optional listener.
+        Keep the scheduler running with optional listeners.
 
         Flow:
-        1. Connect to Telegram (shared connection)
+        1. Connect to Telegram (one shared connection per account)
         2. Start scheduler
-        3. Start listener if enabled (uses shared connection)
-        4. Run initial backup (uses shared connection)
+        3. Start listeners if enabled (each on its account's shared connection)
+        4. Run initial backup, account by account (shared connections)
         5. Keep running until stopped
         """
-        # Establish shared connection
+        # Establish shared connections
         await self._connect()
 
         # Start scheduler
         self.start()
 
-        # Start real-time listener if enabled (uses shared connection).
+        # Start real-time listeners if enabled (each uses its shared connection).
         self._listener_enabled = self.config.enable_listener
         await self._start_listener()
 
-        # Run initial backup immediately on startup (uses shared connection)
+        # Run initial backup immediately on startup (uses shared connections)
         logger.info("Running initial backup on startup...")
         async with self._backup_lock:
             try:
-                await run_backup(self.config, client=self._connection.client)
-                logger.info("Initial backup completed")
-
-                # Run gap-fill if enabled
-                if self.config.fill_gaps:
+                for entry in self._accounts:
                     try:
-                        from .telegram_backup import run_fill_gaps
-
-                        logger.info("Running initial gap-fill...")
-                        result = await run_fill_gaps(self.config, client=self._connection.client)
-                        if result.get("errors", 0) > 0:
-                            logger.warning(f"Initial gap-fill completed with {result['errors']} error(s)")
+                        await self._initial_backup_account(entry)
                     except Exception as e:
-                        logger.error(f"Initial gap-fill failed: {e}", exc_info=True)
-
-                # Reload tracked chats in listener after initial backup
-                if self._listener:
-                    await self._listener._load_tracked_chats()
-
+                        # Same continuation rule as the scheduled sweep: only a
+                        # single-account deployment lets the failure reach the
+                        # pre-8.0 catch below.
+                        if len(self._accounts) == 1:
+                            raise
+                        logger.error(f"account {entry.account.index} failed: {type(e).__name__}")
             except Exception as e:
                 logger.error(f"Initial backup failed: {e}", exc_info=True)
 
@@ -307,23 +491,27 @@ class BackupScheduler:
             while self.running:
                 await asyncio.sleep(1)
 
-                # Check if the listener task died, or never came up at all (a failed
-                # restart leaves _listener_task as None -- see _start_listener), and
-                # restart it either way. Retrying on None (not just "died") is what
+                # Check if any listener task died, or never came up at all (a failed
+                # restart leaves listener_task as None -- see _start_account_listener),
+                # and restart it either way. Retrying on None (not just "died") is what
                 # keeps a flapping listener from being permanently disabled after a
-                # single failed restart attempt.
-                if self._listener_enabled and (self._listener_task is None or self._listener_task.done()):
-                    if self._listener_task is not None and self._listener_task.done():
-                        # Check if there was an exception
-                        try:
-                            exc = self._listener_task.exception()
-                            if exc:
-                                logger.error(f"Listener task died with error: {exc}")
-                        except asyncio.CancelledError:
-                            pass
+                # single failed restart attempt. Only dead entries are restarted --
+                # healthy accounts' listeners keep running untouched.
+                if self._listener_enabled and any(
+                    entry.listener_task is None or entry.listener_task.done() for entry in self._accounts
+                ):
+                    for entry in self._accounts:
+                        if entry.listener_task is not None and entry.listener_task.done():
+                            # Check if there was an exception
+                            try:
+                                exc = entry.listener_task.exception()
+                                if exc:
+                                    logger.error(f"{entry.log_prefix}Listener task died with error: {exc}")
+                            except asyncio.CancelledError:
+                                pass
 
                     logger.warning("Listener task not running, attempting restart...")
-                    await self._stop_listener()
+                    await self._stop_listener(only_dead=True)
                     await asyncio.sleep(5)  # Brief pause before restart
                     await self._start_listener()
 
