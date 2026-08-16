@@ -85,10 +85,15 @@ ships, `git pull` brings the new pins. If you keep your own, edit both:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.0.0
+    image: drumsergio/telegram-archive:8.0.1
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.0.0
+    image: drumsergio/telegram-archive-viewer:8.0.1
 ```
+
+Use 8.0.1 or later, not 8.0.0: the first production archive to attempt this
+upgrade was refused by 8.0.0 over messages whose chat no longer existed —
+history that Telegram's group→supergroup renumbering leaves behind in any
+sufficiently old archive — and 8.0.1 upgrades those archives instead.
 
 **2. Start the backup container on its own**, and let it migrate:
 
@@ -122,6 +127,13 @@ of the rewrite, so nobody has to be set up again.
 The one thing that will look wrong is a bookmark. Every chat URL changed, so an
 old one no longer resolves. Open the chat from the sidebar and bookmark it again.
 
+You may also find chats with no title in the sidebar that you have never seen
+before. Those are recovered history: messages whose chat vanished from Telegram
+years ago — group→supergroup migrations leave exactly this behind — were
+unreachable in 7.x, and the upgrade gives each such orphaned chat id a
+placeholder chat so its messages can be served again. The migration reports
+how many it created, as a count.
+
 ## If it fails
 
 **An interrupted upgrade leaves your 7.x database intact.** The migration is a
@@ -139,6 +151,14 @@ so explicitly and end with "Nothing has been changed":
   anything else pointed at the same file, then start the backup container again.
 - **Not enough free disk space.** The message gives you both numbers — what it
   needs and what is free. Free some space and start the container again.
+
+If 8.0.0 refused your archive with a foreign-key violation on
+`fk_messages_chat`, that is the one failure that was the migration's fault
+rather than your machine's: your archive holds messages whose chat no longer
+exists, and 8.0.0 refused them where it should have recovered them. Your
+database is intact — the transaction rolled back — and the fix is to upgrade
+with 8.0.1 or later instead, which turns exactly that refusal into recovered
+history.
 
 **A completed upgrade cannot be migrated back below `022`.** Reversing the
 search-index migration (`023`) works; `alembic downgrade` past `022` refuses,
