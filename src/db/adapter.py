@@ -36,6 +36,7 @@ from .models import (
     Message,
     MessageVersion,
     Metadata,
+    PushSubscription,
     Reaction,
     SyncStatus,
     User,
@@ -3827,6 +3828,20 @@ class DatabaseAdapter:
         """Delete all sessions created from a specific share token."""
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(delete(ViewerSession).where(ViewerSession.source_token_id == token_id))
+            await session.commit()
+            return result.rowcount
+
+    @retry_on_locked()
+    async def delete_push_subscriptions_for_username(self, *, username: str) -> int:
+        """Delete every push subscription owned by ``username``. Returns count deleted.
+
+        The revocation half of push ownership: a subscription is a delivery
+        channel that survives the session that created it, so every path that
+        invalidates a principal's sessions deletes its push rows through here.
+        Writes push_subscriptions and nothing else.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(delete(PushSubscription).where(PushSubscription.username == username))
             await session.commit()
             return result.rowcount
 
