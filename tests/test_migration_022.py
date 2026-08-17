@@ -329,7 +329,7 @@ def sqlite_digest(path: Path) -> dict:
         if "chats" in live and "ref" in {c[1] for c in conn.execute("PRAGMA table_info(chats)")}:
             ref_to_chat = {row[0]: str(row[1]) for row in conn.execute("SELECT ref, id FROM chats") if row[0]}
 
-        def canonical(value):
+        def canonical(value: str) -> str:
             return f"<ref:{ref_to_chat.get(value, '?')}>" if value in ref_to_chat else value
 
         for table in DIGESTED_TABLES:
