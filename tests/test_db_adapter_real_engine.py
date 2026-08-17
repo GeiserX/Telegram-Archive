@@ -162,8 +162,9 @@ class TestPaginationRealEngine:
     async def test_trgm_index_exists_on_postgresql(self, real_adapter):
         """idx_messages_text_trgm must be a real GIN/pg_trgm index, not just present by name.
 
-        #301: this is what makes the leading-wildcard ILIKE search's cost
-        independent of table size instead of scaling linearly with it. Checked
+        #301: this is what lets the planner satisfy a leading-wildcard ILIKE
+        from a bitmap index scan instead of reading every row, so the search
+        stops scaling linearly with the table. Checked
         against the catalog (not EXPLAIN) deliberately - on a near-empty test
         table the planner can rightfully prefer a seq scan over any index
         regardless of what exists, so asserting on the *chosen plan* here
