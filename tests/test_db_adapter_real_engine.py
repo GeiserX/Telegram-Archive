@@ -162,14 +162,18 @@ class TestPaginationRealEngine:
     async def test_trgm_index_exists_on_postgresql(self, real_adapter):
         """idx_messages_text_trgm must be a real GIN/pg_trgm index, not just present by name.
 
-        #295-perf: this is what makes the leading-wildcard ILIKE search's cost
+        #301: this is what makes the leading-wildcard ILIKE search's cost
         independent of table size instead of scaling linearly with it. Checked
         against the catalog (not EXPLAIN) deliberately - on a near-empty test
         table the planner can rightfully prefer a seq scan over any index
         regardless of what exists, so asserting on the *chosen plan* here
         would be a table-size-dependent flake, not a check of the fix.
-        SQLite has no gin_trgm_ops equivalent (see migration 022 / models.py's
+        SQLite has no gin_trgm_ops equivalent (see migration 023 / models.py's
         Index() dialect kwargs), so this only runs on PostgreSQL.
+
+        The catalog lookup is bound to ``messages`` by oid: a name alone is
+        unique per schema, not per database, so an index of the same name on
+        another table would otherwise answer for the one being asserted.
         """
         if real_adapter.db_manager.engine.dialect.name != "postgresql":
             import pytest
@@ -188,6 +192,7 @@ class TestPaginationRealEngine:
                         "JOIN pg_am am ON am.oid = i.relam "
                         "JOIN pg_opclass opc ON opc.oid = ANY(ix.indclass) "
                         "WHERE i.relname = 'idx_messages_text_trgm' "
+                        "AND ix.indrelid = 'messages'::regclass "
                         "GROUP BY am.amname"
                     )
                 )
