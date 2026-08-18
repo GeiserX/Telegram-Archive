@@ -1192,7 +1192,7 @@ wheels = [
 
 [[package]]
 name = "telegram-archive"
-version = "8.0.1"
+version = "8.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1248,7 +1248,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "py-vapid", specifier = ">=1.9.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.26.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },

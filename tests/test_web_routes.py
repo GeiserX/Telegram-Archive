@@ -13,6 +13,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import scoped_chat_source
+
 try:
     os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_wr_"))
     from src.web import main as web_main
@@ -358,7 +360,11 @@ class TestChatsEndpoint(_WebTestBase):
             {"id": 2, "account_id": 1, "ref": "chatRefTwo0000000002A", "title": "Denied", "type": "group"},
             {"id": 3, "account_id": 1, "ref": "chatRefThree00000003A", "title": "Also Allowed", "type": "private"},
         ]
-        self.mock_db.get_all_chats = AsyncMock(return_value=all_chats)
+        # Scope-honouring stand-in: the route no longer filters in Python, so a
+        # fixed-list mock would pass even if it stopped passing the grant.
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            all_chats
+        )
         async with self._client() as client:
             resp = await client.get("/api/chats", cookies={"viewer_auth": token})
         data = resp.json()
@@ -367,6 +373,48 @@ class TestChatsEndpoint(_WebTestBase):
         self.assertIn(1, chat_ids)
         self.assertIn(3, chat_ids)
         self.assertNotIn(2, chat_ids)
+
+    async def test_restricted_chat_list_is_bounded_and_scoped_in_sql(self):
+        """The restricted branch must never ask for the unbounded chat list.
+
+        This is the regression guard for the production incident: /api/chats
+        used to call get_all_chats() with NO limit for any restricted principal
+        and slice in Python afterwards, so a viewer entitled to one chat
+        materialised every chat row in the archive. The route must hand the
+        adapter the page bounds AND the grant, exactly as it does for an
+        unrestricted principal.
+        """
+        web_main.AUTH_ENABLED = True
+        token = "bt"
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"chatRefOne0000000001A"}
+        )
+        web_main.config.display_chat_ids = {7}
+        calls = []
+
+        async def recording_get_all_chats(
+            limit=None, offset=0, search=None, archived=None, folder_id=None, *, account_id=None, scope=None
+        ):
+            calls.append({"limit": limit, "offset": offset, "scope": scope})
+            return []
+
+        self.mock_db.get_all_chats = recording_get_all_chats
+        self.mock_db.get_chat_count = AsyncMock(return_value=0)
+        async with self._client() as client:
+            resp = await client.get("/api/chats?limit=25&offset=50", cookies={"viewer_auth": token})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(calls), 1)
+        # limit=None here would mean "load the whole archive" — the bug.
+        self.assertEqual(calls[0]["limit"], 25)
+        self.assertEqual(calls[0]["offset"], 50)
+        scope = calls[0]["scope"]
+        self.assertIsNotNone(scope)
+        self.assertEqual(scope.refs, frozenset({"chatRefOne0000000001A"}))
+        self.assertEqual(scope.ids, frozenset({7}))
+        self.assertIsNone(scope.accounts)
+        # The count is taken under the SAME scope, or total and the page disagree.
+        self.assertEqual(self.mock_db.get_chat_count.call_args.kwargs["scope"], scope)
 
     async def test_chats_search_parameter(self):
         """get_chats passes search parameter to db."""
@@ -629,8 +677,10 @@ class TestArchivedCountEndpoint(_WebTestBase):
             role="viewer",
             allowed_chat_refs={"archRefA000000000001A", "archRefB000000000002A", "archRefC000000000003A"},
         )
-        self.mock_db.get_all_chats = AsyncMock(
-            return_value=[
+        # Every row here stands for an archived chat, so the count fake needs no
+        # is_archived of its own; what it must honour is the scope.
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            [
                 {"id": 1, "account_id": 1, "ref": "archRefA000000000001A"},
                 {"id": 2, "account_id": 1, "ref": "archRefB000000000002A"},
                 {"id": 99, "account_id": 1, "ref": "archRefZ000000000099A"},
@@ -670,8 +720,8 @@ class TestStatsEndpoint(_WebTestBase):
         web_main._sessions[token] = web_main.SessionData(
             username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
         )
-        self.mock_db.get_all_chats = AsyncMock(
-            return_value=[
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            [
                 {"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"},
                 {"id": 2, "account_id": 1, "ref": "statsRefTwo000000002A"},
             ]
