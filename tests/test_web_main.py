@@ -12,6 +12,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import scoped_chat_source
+
 # The module import triggers FastAPI initialization, which may fail on
 # environments with pydantic version mismatches.  Guard the import so
 # pure-function tests still run even when FastAPI cannot be loaded.
@@ -436,6 +438,84 @@ class TestGetSecureCookies(unittest.TestCase):
 
 
 # ============================================================================
+# _chat_scope (the ONE place config + grant become the shared visibility rules)
+# ============================================================================
+
+
+@_skip_unless_web_main
+class TestChatScope(unittest.TestCase):
+    """Two different meanings of "empty" meet in _chat_scope; both are pinned here.
+
+    DISPLAY_CHAT_IDS is operator config: unset means "no filter" and must become
+    ``ids=None``. allowed_accounts / allowed_chat_refs are entitlements: None
+    means unrestricted and the EMPTY set means entitled to nothing, so it must
+    survive as an empty set — collapsing it to None is a total bypass.
+    """
+
+    def setUp(self):
+        self._saved_display = web_main.config.display_chat_ids
+        web_main.config.display_chat_ids = set()
+
+    def tearDown(self):
+        web_main.config.display_chat_ids = self._saved_display
+
+    def test_unset_display_filter_is_no_filter(self):
+        scope = web_main._chat_scope(web_main.UserContext(username="admin", role="master"))
+        self.assertIsNone(scope.ids)
+        self.assertTrue(scope.unrestricted)
+
+    def test_display_filter_becomes_the_id_rule(self):
+        web_main.config.display_chat_ids = {11, 22}
+        scope = web_main._chat_scope(web_main.UserContext(username="admin", role="master"))
+        self.assertEqual(scope.ids, frozenset({11, 22}))
+        self.assertFalse(scope.unrestricted)
+
+    def test_empty_account_grant_is_preserved_as_deny_all(self):
+        scope = web_main._chat_scope(web_main.UserContext(username="v", role="viewer", allowed_accounts=set()))
+        self.assertEqual(scope.accounts, frozenset())
+        self.assertIsNotNone(scope.accounts)
+        self.assertFalse(scope.unrestricted)
+
+    def test_empty_ref_grant_is_preserved_as_deny_all(self):
+        scope = web_main._chat_scope(web_main.UserContext(username="v", role="viewer", allowed_chat_refs=set()))
+        self.assertEqual(scope.refs, frozenset())
+        self.assertIsNotNone(scope.refs)
+        self.assertFalse(scope.unrestricted)
+
+    def test_grants_are_carried_through_verbatim(self):
+        scope = web_main._chat_scope(
+            web_main.UserContext(
+                username="v", role="viewer", allowed_accounts={2}, allowed_chat_refs={"refA00000000000000001"}
+            )
+        )
+        self.assertEqual(scope.accounts, frozenset({2}))
+        self.assertEqual(scope.refs, frozenset({"refA00000000000000001"}))
+
+    def test_chat_visible_delegates_to_the_scope(self):
+        """_chat_visible and the SQL filter must not be two different rules."""
+        user = web_main.UserContext(username="v", role="viewer", allowed_chat_refs={"refA00000000000000001"})
+        scope = web_main._chat_scope(user)
+        for row in (
+            _chat_row(1, "refA00000000000000001"),
+            _chat_row(2, "refB00000000000000002"),
+            _chat_row(3, "refA00000000000000001", account_id=9),
+        ):
+            self.assertEqual(web_main._chat_visible(user, row), scope.allows(row))
+
+    def test_restricted_is_exactly_not_unrestricted(self):
+        cases = [
+            (set(), web_main.UserContext(username="a", role="master"), False),
+            ({7}, web_main.UserContext(username="a", role="master"), True),
+            (set(), web_main.UserContext(username="v", role="viewer", allowed_accounts=set()), True),
+            (set(), web_main.UserContext(username="v", role="viewer", allowed_chat_refs=set()), True),
+            (set(), web_main.UserContext(username="v", role="viewer", allowed_accounts={1}), True),
+        ]
+        for display, user, expected in cases:
+            web_main.config.display_chat_ids = display
+            self.assertEqual(web_main._user_is_restricted(user), expected)
+
+
+# ============================================================================
 # _visible_chat_id_set (access control logic; replaced get_user_chat_ids in v8.0)
 # ============================================================================
 
@@ -454,8 +534,11 @@ class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
         self._saved_db = web_main.db
         web_main.config.display_chat_ids = set()
         web_main.db = AsyncMock()
-        web_main.db.get_all_chats = AsyncMock(
-            return_value=[
+        # The scope now rides into SQL, so the stand-in must honour it — a mock
+        # returning all four rows regardless would pass even if the grant were
+        # dropped on the floor.
+        web_main.db.get_all_chats, web_main.db.get_chat_count = scoped_chat_source(
+            [
                 _chat_row(5, "refChat0000000000005A"),
                 _chat_row(10, "refChat0000000000010A"),
                 _chat_row(20, "refChat0000000000020A"),

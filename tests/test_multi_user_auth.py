@@ -10,6 +10,7 @@ import tempfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from conftest import scoped_chat_source
 from fastapi.testclient import TestClient
 
 
@@ -28,16 +29,17 @@ def _reset_auth_module():
 def _make_mock_db():
     db = AsyncMock()
     # v8.0.0 chat rows always carry account_id and the opaque ref — the
-    # entitlement filter and the payload builders read both.
-    db.get_all_chats = AsyncMock(
-        return_value=[
+    # entitlement filter and the payload builders read both. The chat list
+    # applies the grant in SQL now, so these two stand-ins honour ``scope=``
+    # rather than handing back a fixed list whatever the grant says.
+    db.get_all_chats, db.get_chat_count = scoped_chat_source(
+        [
             {"id": -1001, "account_id": 1, "ref": "refchatAchatAchatAchat", "title": "Chat A", "type": "channel"},
             {"id": -1002, "account_id": 1, "ref": "refchatBchatBchatBchat", "title": "Chat B", "type": "channel"},
             {"id": -1003, "account_id": 1, "ref": "refchatCchatCchatCchat", "title": "Chat C", "type": "channel"},
         ]
     )
     db.get_chat_by_ref = AsyncMock(return_value=None)
-    db.get_chat_count = AsyncMock(return_value=3)
     db.get_cached_statistics = AsyncMock(return_value={"total_chats": 3, "total_messages": 100})
     db.get_metadata = AsyncMock(return_value=None)
     db.get_viewer_by_username = AsyncMock(return_value=None)

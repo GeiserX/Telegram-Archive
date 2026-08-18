@@ -419,6 +419,73 @@ async def test_empty_list_grant_denies_everything(viewer_app):
 
 
 # ============================================================================
+# (e2) Paging and `total` describe the VISIBLE list, not the archive
+# ============================================================================
+
+
+async def test_restricted_paging_and_total_describe_only_visible_chats(viewer_app):
+    """A restricted viewer pages the same way an unrestricted one does.
+
+    The grant is applied in SQL now, so limit/offset/COUNT all run against the
+    visible row set. Three things have to hold together, and each of them was a
+    way the old load-everything-then-slice code could have gone wrong:
+
+    * ``total`` counts VISIBLE chats — leaking the archive's chat count would
+      tell a one-chat viewer how many chats exist.
+    * paging is stable: walking the list one page at a time yields every
+      visible chat exactly once, in the same order as one unpaged request.
+    * the order is the unrestricted order with the invisible rows removed, so a
+      restricted viewer sees the same "most recent first" list everyone else
+      does.
+    """
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a, archive.ref_b]))
+        whole = (await client.get("/api/chats")).json()
+        assert whole["total"] == 2
+        assert whole["has_more"] is False
+        order = [chat["ref"] for chat in whole["chats"]]
+
+        paged = []
+        for offset in (0, 1):
+            page = (await client.get(f"/api/chats?limit=1&offset={offset}")).json()
+            assert page["total"] == 2
+            assert page["limit"] == 1
+            assert page["offset"] == offset
+            assert page["has_more"] is (offset == 0)
+            paged += [chat["ref"] for chat in page["chats"]]
+        assert paged == order
+
+    # The same list, seen by a principal with no grant at all: the restricted
+    # order must be that order, not a differently-sorted subset.
+    async with _client() as client:
+        resp = await client.post("/api/login", json={"username": MASTER_USERNAME, "password": MASTER_PASSWORD})
+        assert resp.status_code == 200, resp.text
+        unrestricted = (await client.get("/api/chats")).json()
+        assert unrestricted["total"] == 2
+        assert [chat["ref"] for chat in unrestricted["chats"]] == order
+
+
+async def test_total_for_a_one_chat_grant_never_reveals_the_archive_size(viewer_app):
+    archive = viewer_app.archive
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_a]))
+        body = (await client.get("/api/chats")).json()
+        assert body["total"] == 1
+        assert [chat["ref"] for chat in body["chats"]] == [archive.ref_a]
+        assert body["has_more"] is False
+
+
+async def test_empty_grant_totals_zero_rather_than_everything(viewer_app):
+    """The bypass shape: an empty grant must not degrade to "no filter"."""
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs="[]")
+        body = (await client.get("/api/chats")).json()
+        assert body == {"chats": [], "total": 0, "limit": 50, "offset": 0, "has_more": False}
+        assert (await client.get("/api/archived/count")).json() == {"count": 0}
+
+
+# ============================================================================
 # (f) The legacy column is rollback data, never a grant
 # ============================================================================
 
