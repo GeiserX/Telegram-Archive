@@ -212,3 +212,61 @@ async def real_db(request, postgres_test_url, tmp_path):
 async def real_adapter(real_db):
     """A :class:`DatabaseAdapter` whose SQL is really compiled and really run."""
     return DatabaseAdapter(real_db)
+
+
+# ---------------------------------------------------------------------------
+# Scope-honouring stand-ins for the two chat-list adapter methods
+# ---------------------------------------------------------------------------
+#
+# /api/chats pushes the viewer's entitlement into SQL (``scope=``) instead of
+# loading every chat and filtering in Python. A plain ``AsyncMock`` that hands
+# back a fixed list whatever ``scope`` says therefore proves nothing about
+# filtering — it would stay green if the route dropped the scope entirely,
+# which is exactly the entitlement bypass these tests exist to catch.
+#
+# ``scoped_chat_source`` builds fakes that apply the scope the way a database
+# would. The rule check below is deliberately written out by hand rather than
+# delegated to ``ChatScope.allows``: the endpoint tests must fail when the
+# route builds the WRONG scope, and reusing the production predicate would hide
+# a scope whose fields are all None. (That the SQL and ``allows`` agree is a
+# separate claim, proved against a real engine in
+# tests/test_chat_scope_equivalence.py.)
+
+
+def chat_row_in_scope(row: dict, scope) -> bool:
+    """Independent restatement of the three visibility rules, for test fakes."""
+    if scope is None:
+        return True
+    if scope.ids is not None and row["id"] not in scope.ids:
+        return False
+    if scope.accounts is not None and row["account_id"] not in scope.accounts:
+        return False
+    if scope.refs is not None and row["ref"] not in scope.refs:
+        return False
+    return True
+
+
+def scoped_chat_source(rows: list[dict]):
+    """``(get_all_chats, get_chat_count, get_visible_chat_ids)`` fakes over ``rows``.
+
+    All three honour ``scope`` through the same predicate the real adapter
+    compiles to SQL, so a route that switches between them keeps reading the
+    same visibility rules here as it does in production.
+
+    ``archived``/``folder_id``/``search`` are ignored: callers that need those
+    pass rows already narrowed to the case under test.
+    """
+
+    async def get_all_chats(
+        limit=None, offset=0, search=None, archived=None, folder_id=None, *, account_id=None, scope=None
+    ):
+        visible = [dict(row) for row in rows if chat_row_in_scope(row, scope)]
+        return visible[offset:] if limit is None else visible[offset : offset + limit]
+
+    async def get_chat_count(search=None, archived=None, folder_id=None, *, account_id=None, scope=None):
+        return sum(1 for row in rows if chat_row_in_scope(row, scope))
+
+    async def get_visible_chat_ids(scope):
+        return {row["id"] for row in rows if chat_row_in_scope(row, scope)}
+
+    return get_all_chats, get_chat_count, get_visible_chat_ids

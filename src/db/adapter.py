@@ -13,12 +13,27 @@ import logging
 import os
 import secrets
 import shutil
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import and_, delete, desc, exists, func, literal, nulls_last, or_, select, text, union_all, update
+from sqlalchemy import (
+    and_,
+    delete,
+    desc,
+    exists,
+    false,
+    func,
+    literal,
+    nulls_last,
+    or_,
+    select,
+    text,
+    union_all,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -115,6 +130,82 @@ def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
             return set()
         values.add(element)
     return values
+
+
+@dataclass(frozen=True)
+class ChatScope:
+    """The set of chat rows one principal may see, as data both Python and SQL can read.
+
+    Chat visibility is decided by exactly three rules, and this object is the
+    ONE place they are written down:
+
+    * ``ids``      - the operator's DISPLAY_CHAT_IDS filter (``chats.id``)
+    * ``accounts`` - the viewer's account grant (``chats.account_id``)
+    * ``refs``     - the viewer's chat-ref grant (``chats.ref``)
+
+    Each field is ``None`` (that rule restricts nothing) or a collection (the
+    grant). ``None`` and the EMPTY collection are NOT the same thing and the
+    difference is the whole security story: an empty grant means "entitled to
+    nothing" and MUST match zero rows. Rendering it as a skipped filter — the
+    classic falsy-empty-list bug — is a total entitlement bypass, so
+    :meth:`sql_predicates` maps it to ``false()`` explicitly rather than
+    trusting any dialect's empty-``IN`` rendering.
+
+    :meth:`allows` and :meth:`sql_predicates` are twins: the same three rules,
+    in the same order, one evaluated in Python (websocket delivery, the ref
+    resolver) and one pushed into the WHERE clause (the chat list). They are
+    written next to each other so they cannot drift, and
+    ``tests/test_chat_scope_equivalence.py`` runs the whole rule space through
+    both and asserts the two answers are identical.
+    """
+
+    ids: frozenset[int] | None = None
+    accounts: frozenset[int] | None = None
+    refs: frozenset[str] | None = None
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        ids: Collection[int] | None = None,
+        accounts: Collection[int] | None = None,
+        refs: Collection[str] | None = None,
+    ) -> ChatScope:
+        """Freeze caller-supplied grants, preserving None-vs-empty exactly."""
+        return cls(
+            ids=None if ids is None else frozenset(ids),
+            accounts=None if accounts is None else frozenset(accounts),
+            refs=None if refs is None else frozenset(refs),
+        )
+
+    @property
+    def unrestricted(self) -> bool:
+        """True when no rule restricts anything, so the scope can be skipped entirely."""
+        return self.ids is None and self.accounts is None and self.refs is None
+
+    def allows(self, chat: Mapping[str, Any]) -> bool:
+        """Whether ``chat`` (a row dict carrying id/account_id/ref) is in scope.
+
+        Each key is read ONLY when its rule is active, so a partial row dict is
+        as acceptable here as it was to the hand-written check this replaces.
+        """
+        if self.ids is not None and chat["id"] not in self.ids:
+            return False
+        if self.accounts is not None and chat["account_id"] not in self.accounts:
+            return False
+        if self.refs is not None and chat["ref"] not in self.refs:
+            return False
+        return True
+
+    def sql_predicates(self) -> list[Any]:
+        """The same three rules as WHERE-clause fragments against ``chats``."""
+        predicates: list[Any] = []
+        for column, grant in ((Chat.id, self.ids), (Chat.account_id, self.accounts), (Chat.ref, self.refs)):
+            if grant is None:
+                continue
+            # An empty grant is "nothing", never "no filter".
+            predicates.append(column.in_(grant) if grant else false())
+        return predicates
 
 
 # Message columns an upsert may refresh ONLY when the writer actually supplied
@@ -802,6 +893,7 @@ class DatabaseAdapter:
         folder_id: int | None = None,
         *,
         account_id: int | None = None,
+        scope: ChatScope | None = None,
     ) -> list[dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
 
@@ -812,6 +904,11 @@ class DatabaseAdapter:
             archived: If True, only archived chats; if False, only non-archived; if None, all
             folder_id: If set, only chats in this folder
             account_id: If set, only this account's chats (None = unscoped until phase 4)
+            scope: Viewer entitlement, applied as WHERE predicates so a restricted
+                viewer reads only the rows it may see. The caller must NOT
+                post-filter: pushing the grant down here is what keeps limit /
+                offset / COUNT honest, and what stops a one-chat viewer from
+                paying for every chat in the archive.
         """
         async with self.db_manager.async_session_factory() as session:
             # Last message date, as a CORRELATED scalar subquery — one
@@ -849,6 +946,12 @@ class DatabaseAdapter:
 
             if account_id is not None:
                 stmt = stmt.where(Chat.account_id == account_id)
+
+            # Viewer entitlement, in SQL. Applied before ORDER BY/LIMIT so the
+            # page, the ordering and the count all describe the same row set.
+            if scope is not None:
+                for predicate in scope.sql_predicates():
+                    stmt = stmt.where(predicate)
 
             # Filter by archived status
             if archived is True:
@@ -907,6 +1010,21 @@ class DatabaseAdapter:
                 chats.append(chat_dict)
             return chats
 
+    async def get_visible_chat_ids(self, scope: ChatScope) -> set[int]:
+        """Just the chat ids a scope selects — no row build, no date subquery.
+
+        ``get_all_chats`` attaches a correlated ``MAX(messages.date)`` per row,
+        which is exactly what the callers of this (folder counts, cached stats)
+        throw away. A grant can be as wide as a whole account, so paying that
+        subquery per chat to collect ids is waste that grows with the archive.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.id)
+            for predicate in scope.sql_predicates():
+                stmt = stmt.where(predicate)
+            result = await session.execute(stmt)
+            return {row[0] for row in result}
+
     async def get_chat_count(
         self,
         search: str = None,
@@ -914,6 +1032,7 @@ class DatabaseAdapter:
         folder_id: int | None = None,
         *,
         account_id: int | None = None,
+        scope: ChatScope | None = None,
     ) -> int:
         """Get total number of chats (fast count for pagination).
 
@@ -922,6 +1041,8 @@ class DatabaseAdapter:
             archived: If True, only archived chats; if False, only non-archived; if None, all
             folder_id: If set, only chats in this folder
             account_id: If set, only this account's chats (None = unscoped until phase 4)
+            scope: Viewer entitlement (see get_all_chats). Must be the SAME scope the
+                matching get_all_chats call used, or ``total`` and the page disagree.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(func.count(Chat.id))
@@ -938,6 +1059,10 @@ class DatabaseAdapter:
 
             if account_id is not None:
                 stmt = stmt.where(Chat.account_id == account_id)
+
+            if scope is not None:
+                for predicate in scope.sql_predicates():
+                    stmt = stmt.where(predicate)
 
             if archived is True:
                 stmt = stmt.where(Chat.is_archived == 1)
@@ -3476,7 +3601,11 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
             if allowed_chat_ids is not None:
-                count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids))
+                # Same rule as ChatScope.sql_predicates: an empty grant is
+                # "nothing", never "no filter". SQLAlchemy 2.0 does render an
+                # empty IN as an always-false expression, but an access-control
+                # filter must not rest on how the ORM renders an edge case.
+                count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids) if allowed_chat_ids else false())
             if account_id is not None:
                 count_q = count_q.where(ChatFolderMember.account_id == account_id)
             count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()

@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.0.2] - 2026-08-18
+
+### Fixed
+
+- **The chat list could take minutes, or never finish, on an archive missing an index it was never told it lacked.** `get_all_chats` reads each chat's last message through a correlated `MAX(messages.date)` subquery — one seek per chat against `idx_messages_chat_date_desc`. Where that index is absent, every listed chat instead scans its own messages, so listing chats costs a read of the archive: on the installation that reported this, chat-list queries ran for twenty to thirty-five minutes and stacked up until the database served nothing else. The index has been declared in models.py since migration `002`, which is exactly why nobody noticed it could be missing. `Base.metadata.create_all(checkfirst=True)` — how the SQLite→PostgreSQL move builds its target schema — skips a table *and every index on it* once the table exists, `checkfirst` being per-table and not per-index; an index added to models.py after a database was created therefore never appears in it, while the migration that would have added it is skipped too because the database was stamped past that revision. Migration `024` recreates `idx_messages_chat_date_desc` and `idx_messages_chat_pinned` wherever they are absent, and is a no-op on the databases that have them. Restoring them took that query from over twenty minutes to 39 ms on the affected archive. ([#314](https://github.com/GeiserX/Telegram-Archive/pull/314))
+- **A viewer restricted to a few chats made the server read every chat in the archive, four times per page load.** Entitlements were applied in Python after the fact: the chat list, the folder list, the archive counter and the statistics panel each loaded every chat row and then filtered, so the narrower a viewer's grant, the more work their page cost — a restricted account paid an 18× penalty over an unrestricted one on the same page. Visibility now compiles to SQL, from the same `ChatScope` definition the per-row check uses, so the two cannot drift apart: a viewer entitled to one chat touches one row instead of 4,784, with 2,262× less I/O. An empty grant emits an explicitly false predicate rather than relying on how a database renders `IN ()` — access control should not rest on that. Unrestricted access is unchanged, byte-for-byte the same statements as before, and 6,006 comparisons across 546 grant configurations confirmed the SQL filter admits and refuses exactly what the Python one did. ([#314](https://github.com/GeiserX/Telegram-Archive/pull/314))
+
 ## [8.0.1] - 2026-08-16
 
 ### Fixed

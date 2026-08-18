@@ -32,7 +32,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
-from ..db.adapter import parse_entitlement_column
+from ..db.adapter import ChatScope, parse_entitlement_column
 from ..message_utils import describe_exception, media_display_filename
 from ..realtime import RealtimeListener
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
@@ -708,40 +708,60 @@ class ChatContext:
     type: str | None = None
 
 
+def _chat_scope(user: UserContext) -> ChatScope:
+    """The three visibility rules for ``user``, as one object Python and SQL share.
+
+    This is where the operator's config and the session's grant are combined,
+    and the ONLY place that combination is written down. Two different
+    meanings of "empty" meet here, so both are spelled out:
+
+    * ``config.display_chat_ids`` is operator config — unset (empty/None) means
+      the operator asked for no filter, so it becomes ``ids=None``.
+    * ``allowed_accounts`` / ``allowed_chat_refs`` are entitlements — ``None``
+      means unrestricted, and the EMPTY set means entitled to nothing and is
+      passed through as an empty set so it denies every chat.
+
+    ChatScope.allows() then decides per row (websocket delivery, ref resolver)
+    and ChatScope.sql_predicates() decides in the WHERE clause (the chat list),
+    from these same three fields.
+    """
+    return ChatScope.build(
+        ids=config.display_chat_ids or None,
+        accounts=user.allowed_accounts,
+        refs=user.allowed_chat_refs,
+    )
+
+
 def _chat_visible(user: UserContext, chat: dict) -> bool:
     """Whether ``user`` may see ``chat`` (a row dict carrying id, account_id, ref).
 
-    One rule for every surface — HTTP routes, list filtering, websocket
-    broadcast, and the resolver below all decide through here. The operator's
-    DISPLAY_CHAT_IDS filter binds every role (as get_user_chat_ids did);
-    entitlements bind sessions whose grant is a set (masters carry None).
+    One rule for every surface — HTTP routes, websocket broadcast, and the
+    resolver below all decide through here, and the chat list decides through
+    the SQL twin of the very same ChatScope. The operator's DISPLAY_CHAT_IDS
+    filter binds every role (as get_user_chat_ids did); entitlements bind
+    sessions whose grant is a set (masters carry None).
     """
-    if config.display_chat_ids and chat["id"] not in config.display_chat_ids:
-        return False
-    if user.allowed_accounts is not None and chat["account_id"] not in user.allowed_accounts:
-        return False
-    if user.allowed_chat_refs is not None and chat["ref"] not in user.allowed_chat_refs:
-        return False
-    return True
+    return _chat_scope(user).allows(chat)
 
 
 def _user_is_restricted(user: UserContext) -> bool:
     """True when the visible-chat set is narrower than "everything"."""
-    return bool(config.display_chat_ids) or user.allowed_accounts is not None or user.allowed_chat_refs is not None
+    return not _chat_scope(user).unrestricted
 
 
 async def _visible_chat_id_set(user: UserContext) -> set[int] | None:
     """Chat ids the user may see, or None when unrestricted.
 
     The bridge that lets id-keyed internals (folder counts, cached stats) keep
-    working: entitlements are ref-based, so the set is computed by filtering
-    the chat list. Single-account caveat: the ids are bare (phase 5 will need
-    account-qualified sets once a second account can collide on an id).
+    working: entitlements are ref-based, so the ids come from the chat rows the
+    grant selects — selected BY the grant in SQL and read as bare ids, so a
+    viewer entitled to one chat reads one id and no message dates. Single-account caveat: the ids are bare (phase 5 will
+    need account-qualified sets once a second account can collide on an id).
     """
-    if not _user_is_restricted(user):
+    scope = _chat_scope(user)
+    if scope.unrestricted:
         return None
-    chats = await db.get_all_chats()
-    return {c["id"] for c in chats if _chat_visible(user, c)}
+    return await db.get_visible_chat_ids(scope)
 
 
 async def _resolve_chat_ref(chat_ref: str, user: UserContext) -> ChatContext:
@@ -2157,20 +2177,21 @@ async def get_chats(
     v6.2.0: Added archived and folder_id filters.
     """
     try:
-        # If user has chat restrictions, we need to load all matching chats
-        # (entitlements are ref/account-based, so filtering happens here).
-        # Otherwise, use pagination
-        if _user_is_restricted(user):
-            chats = await db.get_all_chats(search=search, archived=archived, folder_id=folder_id)
-            chats = [c for c in chats if _chat_visible(user, c)]
-            total = len(chats)
-            # Apply pagination after filtering
-            chats = chats[offset : offset + limit]
-        else:
-            chats = await db.get_all_chats(
-                limit=limit, offset=offset, search=search, archived=archived, folder_id=folder_id
-            )
-            total = await db.get_chat_count(search=search, archived=archived, folder_id=folder_id)
+        # ONE path for every principal. The entitlement rides into SQL as WHERE
+        # predicates, so limit/offset/COUNT all describe the same visible row
+        # set and a restricted viewer touches only the rows it may see.
+        #
+        # This used to fork: the restricted branch called get_all_chats() with
+        # NO limit, filtered in Python, then sliced. Every chat row in the
+        # archive was materialised — each carrying the correlated MAX(date)
+        # subquery — to render one page, so /api/chats went from slow to
+        # unusable as the archive grew (4,784 chats / ~2.7M messages: >120s for
+        # a viewer entitled to a single chat).
+        scope = _chat_scope(user)
+        chats = await db.get_all_chats(
+            limit=limit, offset=offset, search=search, archived=archived, folder_id=folder_id, scope=scope
+        )
+        total = await db.get_chat_count(search=search, archived=archived, folder_id=folder_id, scope=scope)
 
         # Ref-addressed avatar URLs; the avatar bytes route re-resolves at serve
         # time, this only decides whether the viewer renders an <img> at all.
@@ -2428,11 +2449,13 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
     Respects DISPLAY_CHAT_IDS so restricted viewers only see relevant archived chats.
     """
     try:
-        if _user_is_restricted(user):
-            all_archived = await db.get_all_chats(archived=True)
-            count = sum(1 for c in all_archived if _chat_visible(user, c))
-        else:
+        scope = _chat_scope(user)
+        if scope.unrestricted:
             count = await db.get_archived_chat_count()
+        else:
+            # Counted in SQL under the same scope the chat list uses, rather
+            # than by loading every archived chat and filtering in Python.
+            count = await db.get_chat_count(archived=True, scope=scope)
         return {"count": count}
     except Exception as e:
         logger.error(f"Error fetching archived count: {e}", exc_info=True)
