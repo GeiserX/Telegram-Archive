@@ -247,7 +247,11 @@ def chat_row_in_scope(row: dict, scope) -> bool:
 
 
 def scoped_chat_source(rows: list[dict]):
-    """``(get_all_chats, get_chat_count)`` fakes over ``rows`` that honour ``scope``.
+    """``(get_all_chats, get_chat_count, get_visible_chat_ids)`` fakes over ``rows``.
+
+    All three honour ``scope`` through the same predicate the real adapter
+    compiles to SQL, so a route that switches between them keeps reading the
+    same visibility rules here as it does in production.
 
     ``archived``/``folder_id``/``search`` are ignored: callers that need those
     pass rows already narrowed to the case under test.
@@ -262,4 +266,7 @@ def scoped_chat_source(rows: list[dict]):
     async def get_chat_count(search=None, archived=None, folder_id=None, *, account_id=None, scope=None):
         return sum(1 for row in rows if chat_row_in_scope(row, scope))
 
-    return get_all_chats, get_chat_count
+    async def get_visible_chat_ids(scope):
+        return {row["id"] for row in rows if chat_row_in_scope(row, scope)}
+
+    return get_all_chats, get_chat_count, get_visible_chat_ids

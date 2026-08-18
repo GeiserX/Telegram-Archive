@@ -1010,6 +1010,21 @@ class DatabaseAdapter:
                 chats.append(chat_dict)
             return chats
 
+    async def get_visible_chat_ids(self, scope: ChatScope) -> set[int]:
+        """Just the chat ids a scope selects — no row build, no date subquery.
+
+        ``get_all_chats`` attaches a correlated ``MAX(messages.date)`` per row,
+        which is exactly what the callers of this (folder counts, cached stats)
+        throw away. A grant can be as wide as a whole account, so paying that
+        subquery per chat to collect ids is waste that grows with the archive.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.id)
+            for predicate in scope.sql_predicates():
+                stmt = stmt.where(predicate)
+            result = await session.execute(stmt)
+            return {row[0] for row in result}
+
     async def get_chat_count(
         self,
         search: str = None,

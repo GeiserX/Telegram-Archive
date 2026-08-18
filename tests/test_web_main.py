@@ -537,7 +537,7 @@ class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
         # The scope now rides into SQL, so the stand-in must honour it — a mock
         # returning all four rows regardless would pass even if the grant were
         # dropped on the floor.
-        web_main.db.get_all_chats, web_main.db.get_chat_count = scoped_chat_source(
+        web_main.db.get_all_chats, web_main.db.get_chat_count, web_main.db.get_visible_chat_ids = scoped_chat_source(
             [
                 _chat_row(5, "refChat0000000000005A"),
                 _chat_row(10, "refChat0000000000010A"),

@@ -754,14 +754,14 @@ async def _visible_chat_id_set(user: UserContext) -> set[int] | None:
 
     The bridge that lets id-keyed internals (folder counts, cached stats) keep
     working: entitlements are ref-based, so the ids come from the chat rows the
-    grant selects — selected BY the grant in SQL, so a viewer entitled to one
-    chat reads one row. Single-account caveat: the ids are bare (phase 5 will
+    grant selects — selected BY the grant in SQL and read as bare ids, so a
+    viewer entitled to one chat reads one id and no message dates. Single-account caveat: the ids are bare (phase 5 will
     need account-qualified sets once a second account can collide on an id).
     """
     scope = _chat_scope(user)
     if scope.unrestricted:
         return None
-    return {c["id"] for c in await db.get_all_chats(scope=scope)}
+    return await db.get_visible_chat_ids(scope)
 
 
 async def _resolve_chat_ref(chat_ref: str, user: UserContext) -> ChatContext:

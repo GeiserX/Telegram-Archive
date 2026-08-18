@@ -32,7 +32,7 @@ def _make_mock_db():
     # entitlement filter and the payload builders read both. The chat list
     # applies the grant in SQL now, so these two stand-ins honour ``scope=``
     # rather than handing back a fixed list whatever the grant says.
-    db.get_all_chats, db.get_chat_count = scoped_chat_source(
+    db.get_all_chats, db.get_chat_count, db.get_visible_chat_ids = scoped_chat_source(
         [
             {"id": -1001, "account_id": 1, "ref": "refchatAchatAchatAchat", "title": "Chat A", "type": "channel"},
             {"id": -1002, "account_id": 1, "ref": "refchatBchatBchatBchat", "title": "Chat B", "type": "channel"},

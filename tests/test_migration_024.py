@@ -59,6 +59,16 @@ def _indexes(conn: Connection) -> set[str]:
     return {index["name"] for index in sa.inspect(conn).get_indexes("messages")}
 
 
+def _index_ddl(conn: Connection) -> dict[str, str]:
+    """Every index's CREATE statement verbatim — identity, not just presence."""
+    rows = conn.execute(
+        sa.text(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' AND sql IS NOT NULL"
+        )
+    ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
 class TestMigration024(unittest.TestCase):
     def test_revision_chain(self) -> None:
         migration = _load_migration()
@@ -93,16 +103,23 @@ class TestMigration024(unittest.TestCase):
             self.assertIn("DESC", columns_clause)
 
     def test_a_healthy_database_is_untouched_and_rerunning_is_a_no_op(self) -> None:
+        """Untouched means the definitions too, not just the names.
+
+        Comparing names alone would pass a migration that dropped each index
+        and built it again — which on a real archive is minutes of rewriting
+        for no change, and on SQLite silently loses the DESC that reflection
+        cannot see.
+        """
         migration = _load_migration()
         engine = sa.create_engine("sqlite://")
         with engine.connect() as conn:
             _create_messages_table(conn, with_indexes=True)
-            before = _indexes(conn)
+            before = _index_ddl(conn)
 
             _run(conn, migration.upgrade)
             _run(conn, migration.upgrade)
 
-            self.assertEqual(_indexes(conn), before)
+            self.assertEqual(_index_ddl(conn), before)
 
     def test_downgrade_keeps_the_indexes(self) -> None:
         """Dropping them on the way down would reintroduce the fault."""

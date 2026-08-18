@@ -456,6 +456,25 @@ async def test_restricted_paging_and_total_describe_only_visible_chats(viewer_ap
             paged += [chat["ref"] for chat in page["chats"]]
         assert paged == order
 
+    # The walk above grants every chat the archive holds, so on its own it
+    # would read the same whether or not the grant reached the query at all.
+    # Page a STRICT subset too: with the scope dropped these totals become the
+    # archive's, and this test is the one that says so.
+    async with _client() as client:
+        await _login_viewer(client, viewer_app.adapter, allowed_chat_refs=json.dumps([archive.ref_b]))
+        subset = (await client.get("/api/chats")).json()
+        assert subset["total"] == 1, "a one-ref grant must not count the chats it cannot see"
+        assert [chat["ref"] for chat in subset["chats"]] == [archive.ref_b]
+
+        first = (await client.get("/api/chats?limit=1&offset=0")).json()
+        assert first["total"] == 1
+        assert first["has_more"] is False, "there is no second page inside a one-chat grant"
+        assert [chat["ref"] for chat in first["chats"]] == [archive.ref_b]
+
+        beyond = (await client.get("/api/chats?limit=1&offset=1")).json()
+        assert beyond["chats"] == []
+        assert beyond["total"] == 1
+
     # The same list, seen by a principal with no grant at all: the restricted
     # order must be that order, not a differently-sorted subset.
     async with _client() as client:

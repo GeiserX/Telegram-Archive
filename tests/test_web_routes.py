@@ -362,7 +362,9 @@ class TestChatsEndpoint(_WebTestBase):
         ]
         # Scope-honouring stand-in: the route no longer filters in Python, so a
         # fixed-list mock would pass even if it stopped passing the grant.
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count = scoped_chat_source(all_chats)
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            all_chats
+        )
         async with self._client() as client:
             resp = await client.get("/api/chats", cookies={"viewer_auth": token})
         data = resp.json()
@@ -677,7 +679,7 @@ class TestArchivedCountEndpoint(_WebTestBase):
         )
         # Every row here stands for an archived chat, so the count fake needs no
         # is_archived of its own; what it must honour is the scope.
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count = scoped_chat_source(
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
             [
                 {"id": 1, "account_id": 1, "ref": "archRefA000000000001A"},
                 {"id": 2, "account_id": 1, "ref": "archRefB000000000002A"},
@@ -718,7 +720,7 @@ class TestStatsEndpoint(_WebTestBase):
         web_main._sessions[token] = web_main.SessionData(
             username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
         )
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count = scoped_chat_source(
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
             [
                 {"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"},
                 {"id": 2, "account_id": 1, "ref": "statsRefTwo000000002A"},
