@@ -116,10 +116,36 @@ def build_telegram_client_kwargs() -> dict:
 # this exact shape, so a typo'd suffix or index (TG_ACCOUNT_2_APIHASH,
 # TG_ACCOUNT_02_API_ID) is a loud startup error instead of a credential
 # silently not applying.
-_TG_ACCOUNT_ENV_RE = re.compile(r"^TG_ACCOUNT_([1-9]\d*)_(API_ID|API_HASH|PHONE_NUMBER|LABEL|SESSION_NAME)$")
+_TG_ACCOUNT_CREDENTIAL_SUFFIXES = ("API_ID", "API_HASH", "PHONE_NUMBER", "LABEL", "SESSION_NAME")
+
+# Per-account capture-filter overrides (8.1, #313): the indexed variable wins
+# for that account, the global one is the fallback. The indexed include/exclude
+# names drop the GLOBAL_ prefix (TG_ACCOUNT_2_INCLUDE_CHAT_IDS overrides
+# GLOBAL_INCLUDE_CHAT_IDS / legacy INCLUDE_CHAT_IDS).
+_TG_ACCOUNT_FILTER_SUFFIXES = (
+    "CHAT_IDS",
+    "CHAT_TYPES",
+    "INCLUDE_CHAT_IDS",
+    "EXCLUDE_CHAT_IDS",
+    "PRIVATE_INCLUDE_CHAT_IDS",
+    "PRIVATE_EXCLUDE_CHAT_IDS",
+    "GROUPS_INCLUDE_CHAT_IDS",
+    "GROUPS_EXCLUDE_CHAT_IDS",
+    "CHANNELS_INCLUDE_CHAT_IDS",
+    "CHANNELS_EXCLUDE_CHAT_IDS",
+    "PRIORITY_CHAT_IDS",
+    "SKIP_MEDIA_CHAT_IDS",
+)
+
+_TG_ACCOUNT_ENV_RE = re.compile(
+    "^TG_ACCOUNT_([1-9]\\d*)_(" + "|".join(_TG_ACCOUNT_CREDENTIAL_SUFFIXES + _TG_ACCOUNT_FILTER_SUFFIXES) + ")$"
+)
 
 # The suffixes every account must declare; LABEL and SESSION_NAME are optional.
 _TG_ACCOUNT_REQUIRED_SUFFIXES = ("API_ID", "API_HASH", "PHONE_NUMBER")
+
+# Valid CHAT_TYPES tokens, shared by the global and per-account validators.
+_VALID_CHAT_TYPES = {"private", "groups", "channels", "bots"}
 
 
 @dataclass(frozen=True)
@@ -146,6 +172,137 @@ class AccountConfig:
     label: str = field(repr=False)
     session_name: str
     session_path: str
+
+
+@dataclass(frozen=True)
+class AccountFilters:
+    """The effective capture-filter set one account sweeps and listens with (8.1, #313).
+
+    Resolved once at startup from the global filter variables plus any
+    TG_ACCOUNT_<N>_<FILTER> overrides: the indexed variable wins for that
+    account, the global one is the fallback, so a single-account install with
+    no overrides behaves byte-identically to 8.0. An EMPTY indexed value
+    inherits (docker-compose's ${VAR:-} idiom injects empty strings, and
+    silently clearing a whitelist would widen capture); the literal token
+    ``none`` is the explicit-empty override.
+
+    The decision methods mirror Config.should_backup_chat/_type exactly —
+    tests assert the two stay equivalent for an override-free account.
+    """
+
+    chat_ids: frozenset
+    chat_types: tuple
+    global_include_ids: frozenset
+    global_exclude_ids: frozenset
+    private_include_ids: frozenset
+    private_exclude_ids: frozenset
+    groups_include_ids: frozenset
+    groups_exclude_ids: frozenset
+    channels_include_ids: frozenset
+    channels_exclude_ids: frozenset
+    priority_chat_ids: frozenset
+    skip_media_chat_ids: frozenset
+
+    @property
+    def whitelist_mode(self) -> bool:
+        """CHAT_IDS takes absolute priority when non-empty, per-account."""
+        return len(self.chat_ids) > 0
+
+    def should_backup_chat_type(self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False) -> bool:
+        """Type filter for this account; mirrors Config.should_backup_chat_type."""
+        if is_bot and "bots" in self.chat_types:
+            return True
+        if is_user and "private" in self.chat_types:
+            return True
+        if is_group and "groups" in self.chat_types:
+            return True
+        if is_channel and "channels" in self.chat_types:
+            return True
+        return False
+
+    def should_backup_chat(
+        self, chat_id: int, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False
+    ) -> bool:
+        """Two-mode capture decision for this account; mirrors Config.should_backup_chat."""
+        if self.whitelist_mode:
+            return chat_id in self.chat_ids
+
+        if chat_id in self.global_exclude_ids:
+            return False
+
+        if (is_user or is_bot) and chat_id in self.private_exclude_ids:
+            return False
+        if is_group and chat_id in self.groups_exclude_ids:
+            return False
+        if is_channel and chat_id in self.channels_exclude_ids:
+            return False
+
+        if self.global_include_ids:
+            return chat_id in self.global_include_ids
+
+        if (is_user or is_bot) and self.private_include_ids:
+            return chat_id in self.private_include_ids
+        if is_group and self.groups_include_ids:
+            return chat_id in self.groups_include_ids
+        if is_channel and self.channels_include_ids:
+            return chat_id in self.channels_include_ids
+
+        return self.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
+
+
+class AccountScopedConfig:
+    """The config view one account's capture workers hold (8.1, #313).
+
+    Everything delegates to the shared Config except the capture-filter
+    surface — the twelve filter attributes plus their decision methods —
+    which is overlaid from one account's resolved AccountFilters. Workers
+    keep reading ``config.chat_ids`` / ``config.should_backup_chat`` exactly
+    as they always have; the per-account semantics live here instead of at
+    every consumer call site. Constructed by ``Config.for_account``.
+    """
+
+    def __init__(self, base: Config, account_index: int, filters: AccountFilters):
+        self._base = base
+        self.account_index = account_index
+        self.filters = filters
+        # Same concrete types the global attributes carry (sets / list), so
+        # set algebra and truthiness behave identically downstream.
+        self.chat_ids = set(filters.chat_ids)
+        self.whitelist_mode = filters.whitelist_mode
+        self.chat_types = list(filters.chat_types)
+        self.global_include_ids = set(filters.global_include_ids)
+        self.global_exclude_ids = set(filters.global_exclude_ids)
+        self.private_include_ids = set(filters.private_include_ids)
+        self.private_exclude_ids = set(filters.private_exclude_ids)
+        self.groups_include_ids = set(filters.groups_include_ids)
+        self.groups_exclude_ids = set(filters.groups_exclude_ids)
+        self.channels_include_ids = set(filters.channels_include_ids)
+        self.channels_exclude_ids = set(filters.channels_exclude_ids)
+        self.priority_chat_ids = set(filters.priority_chat_ids)
+        self.skip_media_chat_ids = set(filters.skip_media_chat_ids)
+
+    def __getattr__(self, name: str):
+        # Only reached for names not set in __init__: everything that is not
+        # a capture filter resolves on the shared Config, methods included.
+        try:
+            base = object.__getattribute__(self, "_base")
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(base, name)
+
+    def should_backup_chat_type(self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False) -> bool:
+        return self.filters.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
+
+    def should_backup_chat(
+        self, chat_id: int, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False
+    ) -> bool:
+        return self.filters.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot)
+
+    def should_download_media_for_chat(self, chat_id: int) -> bool:
+        """Mirrors Config.should_download_media_for_chat against this account's list."""
+        if not self._base.download_media:
+            return False
+        return chat_id not in self.filters.skip_media_chat_ids
 
 
 class Config:
@@ -319,6 +476,7 @@ class Config:
         # deployment upgrades with zero env changes and zero re-login. When
         # TG_ACCOUNT_* variables are present, they win over the legacy triple.
         self.accounts, self._indexed_accounts = self._parse_accounts()
+        self.account_filters = self._resolve_account_filters()
 
         # Database path configuration
         # Default: inside backup_path
@@ -650,6 +808,7 @@ class Config:
         values are credentials and phone numbers (PII).
         """
         declared: dict[int, dict[str, str]] = {}
+        filter_overrides: dict[int, dict[str, str]] = {}
         for key, value in os.environ.items():
             if not key.startswith("TG_ACCOUNT_"):
                 continue
@@ -657,13 +816,21 @@ class Config:
             if match is None:
                 raise ValueError(
                     f"Unrecognized account variable '{key}'. Expected TG_ACCOUNT_<N>_API_ID / _API_HASH / "
-                    "_PHONE_NUMBER / _LABEL / _SESSION_NAME with N starting at 1 (no leading zeros)."
+                    "_PHONE_NUMBER / _LABEL / _SESSION_NAME, or a per-account filter override "
+                    "(_CHAT_IDS, _CHAT_TYPES, _INCLUDE/_EXCLUDE_CHAT_IDS, the PRIVATE_/GROUPS_/CHANNELS_ "
+                    "variants, _PRIORITY_CHAT_IDS, _SKIP_MEDIA_CHAT_IDS), with N starting at 1 (no leading zeros)."
                 )
             # docker-compose's ${VAR:-} idiom injects empty strings for unset
             # host variables; treat them exactly like absent variables.
             if not value.strip():
                 continue
-            declared.setdefault(int(match.group(1)), {})[match.group(2)] = value.strip()
+            suffix = match.group(2)
+            # Filter overrides never make an account "declared": a legacy
+            # zero-config install may override account 1's filters without
+            # being forced into indexed mode (and its credential triple).
+            target = filter_overrides if suffix in _TG_ACCOUNT_FILTER_SUFFIXES else declared
+            target.setdefault(int(match.group(1)), {})[suffix] = value.strip()
+        self._account_filter_overrides = filter_overrides
 
         if not declared:
             # Zero-config upgrade: byte-identical single-account behavior,
@@ -741,6 +908,75 @@ class Config:
             )
         return accounts, True
 
+    def _resolve_account_filters(self) -> dict[int, AccountFilters]:
+        """Effective capture filters per account (8.1, #313).
+
+        A TG_ACCOUNT_<N>_<FILTER> variable wins for that account; the global
+        variable is the fallback, mirroring how sessions resolve. An empty
+        indexed value inherits — the compose ${VAR:-} idiom injects empty
+        strings, and silently clearing a whitelist would widen capture — so
+        explicit-empty is spelled with the literal token ``none`` ("no
+        whitelist for this account" / "no entries in this list").
+        """
+        overrides = self._account_filter_overrides
+        known = {account.index for account in self.accounts}
+        orphaned = sorted(set(overrides) - known)
+        if orphaned:
+            raise ValueError(
+                f"TG_ACCOUNT_{orphaned[0]}_* filter variables are declared but no account {orphaned[0]} "
+                f"exists ({len(known)} account(s) configured)"
+            )
+
+        resolved: dict[int, AccountFilters] = {}
+        for account in self.accounts:
+            raw = overrides.get(account.index, {})
+
+            def ids(suffix: str, global_value: set, raw: dict = raw) -> frozenset:
+                value = raw.get(suffix)
+                if value is None:
+                    return frozenset(global_value)
+                if value.lower() == "none":
+                    return frozenset()
+                return frozenset(self._parse_id_list(value))
+
+            types_value = raw.get("CHAT_TYPES")
+            if types_value is None:
+                chat_types = tuple(self.chat_types)
+            elif types_value.lower() == "none":
+                chat_types = ()
+            else:
+                chat_types = tuple(ct.strip().lower() for ct in types_value.split(",") if ct.strip())
+                invalid = set(chat_types) - _VALID_CHAT_TYPES
+                if invalid:
+                    raise ValueError(
+                        f"TG_ACCOUNT_{account.index}_CHAT_TYPES has invalid chat types: {sorted(invalid)}. "
+                        f"Valid options are: {sorted(_VALID_CHAT_TYPES)}"
+                    )
+
+            resolved[account.index] = AccountFilters(
+                chat_ids=ids("CHAT_IDS", self.chat_ids),
+                chat_types=chat_types,
+                global_include_ids=ids("INCLUDE_CHAT_IDS", self.global_include_ids),
+                global_exclude_ids=ids("EXCLUDE_CHAT_IDS", self.global_exclude_ids),
+                private_include_ids=ids("PRIVATE_INCLUDE_CHAT_IDS", self.private_include_ids),
+                private_exclude_ids=ids("PRIVATE_EXCLUDE_CHAT_IDS", self.private_exclude_ids),
+                groups_include_ids=ids("GROUPS_INCLUDE_CHAT_IDS", self.groups_include_ids),
+                groups_exclude_ids=ids("GROUPS_EXCLUDE_CHAT_IDS", self.groups_exclude_ids),
+                channels_include_ids=ids("CHANNELS_INCLUDE_CHAT_IDS", self.channels_include_ids),
+                channels_exclude_ids=ids("CHANNELS_EXCLUDE_CHAT_IDS", self.channels_exclude_ids),
+                priority_chat_ids=ids("PRIORITY_CHAT_IDS", self.priority_chat_ids),
+                skip_media_chat_ids=ids("SKIP_MEDIA_CHAT_IDS", self.skip_media_chat_ids),
+            )
+        return resolved
+
+    def filters_for(self, index: int) -> AccountFilters:
+        """The effective capture filters of the account at env index ``index``."""
+        return self.account_filters[index]
+
+    def for_account(self, index: int) -> AccountScopedConfig:
+        """The config view the capture workers of account ``index`` receive."""
+        return AccountScopedConfig(self, index, self.filters_for(index))
+
     def should_skip_topic(self, chat_id: int, topic_id: int | None) -> bool:
         """Check if a specific topic in a chat should be skipped.
 
@@ -791,7 +1027,7 @@ class Config:
         Empty chat_types list is allowed - this enables "whitelist-only" mode
         where only explicitly included chat IDs are backed up.
         """
-        valid_types = {"private", "groups", "channels", "bots"}
+        valid_types = _VALID_CHAT_TYPES
         invalid_types = set(self.chat_types) - valid_types
 
         if invalid_types:

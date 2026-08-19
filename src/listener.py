@@ -37,6 +37,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
+from .db.models import account_metadata_key
 from .message_utils import (
     build_media_filename,
     compute_file_hash,
@@ -485,7 +486,7 @@ class TelegramListener:
         if not getattr(self.config, "follow_chat_migrations", False):
             return set()
         try:
-            raw = await self.db.get_metadata("followed_migrations")
+            raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
         except Exception as e:
             logger.warning(f"Could not load followed migrations: {type(e).__name__}")
             return set()
@@ -1558,7 +1559,9 @@ class TelegramListener:
 
         # Write listener status to database (for viewer to display)
         try:
-            await self.db.set_metadata("listener_active_since", datetime.now().isoformat())
+            await self.db.set_metadata(
+                account_metadata_key("listener_active_since", self.account_id), datetime.now().isoformat()
+            )
         except Exception as e:
             logger.warning(f"Could not write listener status to DB: {e}")
 
@@ -1577,7 +1580,7 @@ class TelegramListener:
             self._running = False
             # Clear listener status when stopped
             try:
-                await self.db.set_metadata("listener_active_since", "")
+                await self.db.set_metadata(account_metadata_key("listener_active_since", self.account_id), "")
             except Exception:
                 pass
 
