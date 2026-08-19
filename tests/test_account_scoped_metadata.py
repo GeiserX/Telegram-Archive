@@ -91,8 +91,6 @@ class TestListenerUsesScopedKeys(unittest.TestCase):
         self.assertEqual(listener.db.get_metadata.call_args[0][0], "followed_migrations")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestRemainingScopedKeys(unittest.TestCase):
@@ -113,3 +111,7 @@ class TestRemainingScopedKeys(unittest.TestCase):
     def test_listener_status_key_is_account_scoped(self):
         self.assertEqual(account_metadata_key("listener_active_since", 1), "listener_active_since")
         self.assertEqual(account_metadata_key("listener_active_since", 3), "listener_active_since_account_3")
+
+
+if __name__ == "__main__":
+    unittest.main()

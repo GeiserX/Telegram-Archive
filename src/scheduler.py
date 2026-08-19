@@ -549,9 +549,21 @@ async def main():
             if filters.whitelist_mode:
                 scope = f"whitelist, {len(filters.chat_ids)} chat(s)"
             else:
+                include_count = (
+                    len(filters.global_include_ids)
+                    + len(filters.private_include_ids)
+                    + len(filters.groups_include_ids)
+                    + len(filters.channels_include_ids)
+                )
+                exclude_count = (
+                    len(filters.global_exclude_ids)
+                    + len(filters.private_exclude_ids)
+                    + len(filters.groups_exclude_ids)
+                    + len(filters.channels_exclude_ids)
+                )
                 scope = (
                     f"type-based ({', '.join(filters.chat_types) or 'no types'}), "
-                    f"+{len(filters.global_include_ids)} include / -{len(filters.global_exclude_ids)} exclude"
+                    f"+{include_count} include / -{exclude_count} exclude"
                 )
             logger.info(f"Capture scope [account {account.index}]: {scope}")
         logger.info(f"Real-time listener: {'ENABLED' if config.enable_listener else 'disabled'}")
