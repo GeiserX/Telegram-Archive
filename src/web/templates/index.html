@@ -1871,10 +1871,11 @@
         <!-- Admin Panel (v7.0.0) -->
         <!-- Tag view: #hashtag / $cashtag click-through (official-app tab structure) -->
         <div v-if="tagView" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" @click.self="closeTagView()">
-            <div class="bg-tg-sidebar border border-gray-700 rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
+            <div role="dialog" aria-modal="true" aria-labelledby="tag-view-title"
+                class="bg-tg-sidebar border border-gray-700 rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
                 <div class="flex items-center justify-between p-3 border-b border-gray-700/50">
-                    <span class="font-semibold truncate">{{ tagView.tag }}</span>
-                    <button @click="closeTagView()" class="text-gray-400 hover:text-white px-2 text-lg leading-none">&times;</button>
+                    <span id="tag-view-title" class="font-semibold truncate">{{ tagView.tag }}</span>
+                    <button @click="closeTagView()" aria-label="Close tag search" class="text-gray-400 hover:text-white px-2 text-lg leading-none">&times;</button>
                 </div>
                 <div class="flex border-b border-gray-700/50 text-sm">
                     <button v-for="t in tagTabs" :key="t.key" @click="setTagTab(t.key)"
@@ -1899,6 +1900,9 @@
                     <div v-if="tagView.has_more" class="p-3 text-center">
                         <button @click="loadTagResults(false)" :disabled="tagView.loading"
                             class="text-blue-400 text-sm hover:underline disabled:opacity-40">Load more</button>
+                    </div>
+                    <div v-if="tagView.truncated" class="p-2 text-center text-xs text-gray-500">
+                        Search stopped early — older matches may exist
                     </div>
                 </div>
             </div>
@@ -3260,7 +3264,8 @@
                     tagView.value = {
                         tag,
                         tab: selectedChat.value ? 'chat' : 'all',
-                        results: [], loading: false, has_more: false, offset: 0, error: null,
+                        results: [], loading: false, has_more: false, truncated: false,
+                        offset: 0, error: null, gen: 0,
                     }
                     loadTagResults(true)
                 }
@@ -3269,12 +3274,19 @@
                     const view = tagView.value
                     if (!view || view.tab === tab) return
                     if (tab === 'chat' && !selectedChat.value) return
-                    Object.assign(view, { tab, results: [], offset: 0, has_more: false, error: null })
+                    Object.assign(view, { tab, results: [], offset: 0, has_more: false, truncated: false, error: null })
                     loadTagResults(true)
                 }
                 const loadTagResults = async (reset) => {
                     const view = tagView.value
-                    if (!view || view.loading) return
+                    if (!view) return
+                    // A reset (open or tab switch) supersedes whatever is in
+                    // flight: bump the generation so the old response, which
+                    // still holds the same view object, cannot land under the
+                    // new tab. Only a load-more yields to an active request.
+                    if (view.loading && !reset) return
+                    const gen = ++view.gen
+                    const current = () => tagView.value === view && view.gen === gen
                     view.loading = true
                     try {
                         const params = new URLSearchParams({
@@ -3286,14 +3298,15 @@
                         const resp = await fetch(`/api/tags/${encodeURIComponent(view.tag)}?${params}`)
                         if (!resp.ok) throw new Error(`tag search ${resp.status}`)
                         const data = await resp.json()
-                        if (tagView.value !== view) return
+                        if (!current()) return
                         view.results = reset ? data.results : view.results.concat(data.results)
                         view.offset = view.results.length
                         view.has_more = data.has_more
+                        view.truncated = Boolean(data.truncated)
                     } catch (e) {
-                        if (tagView.value === view) view.error = 'Could not load results'
+                        if (current()) view.error = 'Could not load results'
                     } finally {
-                        if (tagView.value === view) view.loading = false
+                        if (current()) view.loading = false
                     }
                 }
                 const openTagResult = async (row) => {
@@ -5751,7 +5764,7 @@
                 // per sub-segment here, exactly once, same contract as linkifyText.
                 const TAG_TOKEN_RE = /([#$])([\p{L}\p{N}_]{1,64})/gu
                 const isTagToken = (sigil, body) => (sigil === '#'
-                    ? !/^\d+$/.test(body)
+                    ? !/^\p{Nd}+$/u.test(body)
                     : /^[A-Z]{1,8}$/.test(body))
                 const tagifyText = (raw) => {
                     let html = ''
@@ -5759,8 +5772,12 @@
                     for (const match of raw.matchAll(TAG_TOKEN_RE)) {
                         const token = match[0]
                         const prev = match.index > 0 ? raw[match.index - 1] : ''
+                        const next = raw[match.index + token.length]
                         if (!isTagToken(match[1], match[2])) continue
                         if (prev && /[\p{L}\p{N}_#$]/u.test(prev)) continue
+                        // A 64-char match with more word chars after it is a
+                        // truncated slice of a longer run, not a tag.
+                        if (next && /[\p{L}\p{N}_]/u.test(next)) continue
                         html += escapeHtml(raw.slice(last, match.index))
                         const escaped = escapeHtml(token)
                         html += `<a href="#" class="tag-link" data-tag="${escaped}">${escaped}</a>`

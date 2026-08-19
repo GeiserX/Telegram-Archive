@@ -60,6 +60,7 @@ class TestTagBoundaries:
         await _seed_chat(real_adapter, 910002)
         await _seed_message(real_adapter, 910002, 1, "buy $TSLA now")
         await _seed_message(real_adapter, 910002, 2, "percent %TSLA is not a tag", minutes=1)
+        await _seed_message(real_adapter, 910002, 3, "lowercase $tsla is plain text, not an entity", minutes=2)
 
         payload = await real_adapter.search_messages_by_tag("$TSLA", scope=UNRESTRICTED)
         assert [row["id"] for row in payload["results"]] == [1]
@@ -133,3 +134,22 @@ class TestTagPaging:
         payload = await real_adapter.search_messages_by_tag("#tag", scope=UNRESTRICTED, limit=5)
         assert [row["id"] for row in payload["results"]] == [999]
         assert payload["has_more"] is False
+
+    async def test_scan_cap_reports_truncation_not_phantom_pages(self, real_adapter):
+        """At the cap: has_more must be False (offset paging cannot reach past it)."""
+        await _seed_chat(real_adapter, 910032)
+        # The match is the OLDEST row, behind 65 newer prefilter hits: one
+        # 60-row chunk exhausts the cap before the scan can reach it.
+        await _seed_message(real_adapter, 910032, 999, "beyond the cap #cap", minutes=0)
+        for i in range(65):
+            await _seed_message(real_adapter, 910032, i + 1, f"#capnoise{i} filler", minutes=i + 10)
+
+        payload = await real_adapter.search_messages_by_tag("#cap", scope=UNRESTRICTED, limit=5, scan_cap=10)
+        assert payload["results"] == []
+        assert payload["has_more"] is False
+        assert payload["truncated"] is True
+
+        # With the cap lifted the same search finds the match and is complete.
+        full = await real_adapter.search_messages_by_tag("#cap", scope=UNRESTRICTED, limit=5)
+        assert [row["id"] for row in full["results"]] == [999]
+        assert full["truncated"] is False

@@ -2326,7 +2326,9 @@ async def search_tag(
     try:
         payload = await db.search_messages_by_tag(tag, **kwargs)
     except Exception as e:
-        logger.error(f"Error searching tag: {describe_exception(e)}")
+        # Type name only: SQLAlchemy exception text can echo statement
+        # parameters — the tag and the viewer's scope ids.
+        logger.error(f"Error searching tag: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")

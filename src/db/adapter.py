@@ -2759,6 +2759,7 @@ class DatabaseAdapter:
         outgoing_only: bool = False,
         limit: int = 50,
         offset: int = 0,
+        scan_cap: int = 3000,
     ) -> dict[str, Any]:
         """Messages carrying ``tag`` (#hashtag / $CASHTAG) as a whole token, newest first.
 
@@ -2771,22 +2772,31 @@ class DatabaseAdapter:
         (the This Chat tab); ``outgoing_only`` is My Messages (the archive
         owner's side of every conversation). Offset paging re-scans from the
         top by design — tag result sets are small, and each request bounds its
-        own scan (3000 prefilter rows) so no single call can walk the table.
+        own scan (``scan_cap`` prefilter rows) so no single call can walk the
+        table. When the cap truncates the scan, ``has_more`` stays False —
+        pages past the cap are unreachable through an offset API, and
+        advertising them would loop the client forever — and ``truncated``
+        turns True so the UI can say the search was cut short.
 
-        Returns ``{"results": [...], "has_more": bool}``; rows carry message
-        id/date/text/is_outgoing/sender_name plus chat_ref/chat_title/chat_type
-        so the viewer addresses the jump by ref, never by id.
+        Returns ``{"results": [...], "has_more": bool, "truncated": bool}``;
+        rows carry message id/date/text/is_outgoing/sender_name plus
+        chat_ref/chat_title/chat_type so the viewer addresses the jump by
+        ref, never by id.
         """
-        boundary = re.compile(rf"(?<![\w#$]){re.escape(tag)}(?!\w)", re.IGNORECASE)
+        # Hashtags search case-insensitively (official behavior); cashtags are
+        # uppercase-only entities, so '$TSLA' must not match '$tsla' in text.
+        flags = re.IGNORECASE if tag.startswith("#") else 0
+        boundary = re.compile(rf"(?<![\w#$]){re.escape(tag)}(?!\w)", flags)
         escaped = tag.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
         needed = offset + limit + 1  # one extra row proves has_more
         matched: list[dict[str, Any]] = []
         scanned = 0
         cursor: tuple[Any, ...] | None = None
         chunk = max(limit * 3, 60)
+        exhausted = False
 
         async with self.db_manager.async_session_factory() as session:
-            while len(matched) < needed and scanned < 3000:
+            while len(matched) < needed and scanned < scan_cap:
                 stmt = (
                     select(
                         Message.id,
@@ -2844,11 +2854,16 @@ class DatabaseAdapter:
                     if len(matched) >= needed:
                         break
                 if len(rows) < chunk:
+                    exhausted = True
                     break
                 cursor = tuple(rows[-1][key] for key in ("date", "account_id", "chat_id", "id"))
 
-        has_more = len(matched) > offset + limit or (scanned >= 3000 and len(matched) < needed)
-        return {"results": matched[offset : offset + limit], "has_more": has_more}
+        truncated = not exhausted and scanned >= scan_cap and len(matched) < needed
+        return {
+            "results": matched[offset : offset + limit],
+            "has_more": len(matched) > offset + limit,
+            "truncated": truncated,
+        }
 
     async def get_messages_paginated(
         self,

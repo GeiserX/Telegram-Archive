@@ -356,6 +356,8 @@ def test_tags_become_anchors_without_breaking_escaping() -> None:
         "mid_word": "word#glued stays plain",
         "url_fragment": "see https://good.example/page#frag ok",
         "markup_around_tag": "<b>#x</b>",
+        "unicode_digit_hashtag": "arabic digits #\u0661\u0662\u0663 stay plain",
+        "overlong_hashtag": "#" + "a" * 70 + " no partial anchor",
     }
     program = "\n".join(
         [
@@ -384,6 +386,13 @@ def test_tags_become_anchors_without_breaking_escaping() -> None:
 
     assert '<a href="#" class="tag-link" data-tag="#news">#news</a>' in rendered["plain_hashtag"]
     assert 'data-tag="$TSLA"' in rendered["cashtag"]
-    for plain in ("digit_hashtag", "lowercase_cashtag", "mid_word", "url_fragment"):
+    for plain in (
+        "digit_hashtag",
+        "lowercase_cashtag",
+        "mid_word",
+        "url_fragment",
+        "unicode_digit_hashtag",
+        "overlong_hashtag",
+    ):
         assert "tag-link" not in rendered[plain], plain
     assert rendered["markup_around_tag"] == ('&lt;b&gt;<a href="#" class="tag-link" data-tag="#x">#x</a>&lt;/b&gt;')
