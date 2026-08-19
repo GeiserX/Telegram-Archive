@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.0.3] - 2026-08-19
+
+### Fixed
+
+- **Chats that two accounts share receive live updates again.** Since 8.0 a chat id can belong to two accounts, and the realtime path resolved each event by bare chat id: once a second account shared the chat, the lookup became ambiguous and the viewer dropped the frame. Dropping was the right refusal — a frame naming a chat a subscriber is not entitled to would leak it — but the consequence was that every shared chat went realtime-dead for everyone, steadily, until the next page load. Events now carry the account that captured them, the viewer resolves the (account, chat) pair — the primary key, which cannot be ambiguous — and the short-lived resolution cache keys on the same pair, so one account's ref is never served to the other account's subscribers. A payload without the account (an older backup container mid-upgrade) keeps the old drop-on-ambiguity guard, so a mixed-version deploy degrades to the previous behavior instead of ever leaking. ([#315](https://github.com/GeiserX/Telegram-Archive/issues/315), [#317](https://github.com/GeiserX/Telegram-Archive/pull/317))
+
+### Changed
+
+- **Dropped `idx_messages_chat_id`, an index no query plans against.** It shipped with the initial schema and is a strict prefix of two later composites — `(chat_id, id)` and `(chat_id, date DESC)` — either of which serves a bare chat-id predicate. Measured on two live archives, including a 1.78M-row production instance: zero steady-state scans; the only period it ever carried plans was while the composite indexes were accidentally absent, which is exactly the drift migration `024` now heals on its own. Migration `025` drops it where present, saving one index write per archived message plus its disk footprint, and `downgrade()` restores it. Contributed by [@jordanfelle](https://github.com/jordanfelle), with the `pg_stat_user_indexes` evidence to prove it. ([#316](https://github.com/GeiserX/Telegram-Archive/pull/316))
+
 ## [8.0.2] - 2026-08-18
 
 ### Fixed
