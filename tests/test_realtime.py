@@ -970,3 +970,29 @@ class TestListenPostgres:
 
         with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
             await listener._listen_postgres()
+
+
+class TestNotifierAccountIdPayload:
+    """#315: the payload names the capturing account so the viewer can scope its lookup."""
+
+    async def test_notify_includes_account_id(self):
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        notifier = RealtimeNotifier(db_manager=mock_db)
+        await notifier.init()
+
+        with patch.object(notifier, "_notify_postgres", new_callable=AsyncMock) as mock_pg:
+            await notifier.notify(NotificationType.NEW_MESSAGE, 123, {}, account_id=7)
+
+        assert mock_pg.call_args[0][0]["account_id"] == 7
+
+    async def test_notify_defaults_account_id_to_none(self):
+        """Legacy senders: the key is present and None, keeping the viewer ambiguity guard."""
+        notifier = RealtimeNotifier()
+        with patch.dict(os.environ, {"DB_TYPE": "sqlite"}, clear=True):
+            await notifier.init()
+
+        with patch.object(notifier, "_notify_http", new_callable=AsyncMock) as mock_http:
+            await notifier.notify(NotificationType.PIN, 789, {"msg_id": 5})
+
+        assert mock_http.call_args[0][0]["account_id"] is None
