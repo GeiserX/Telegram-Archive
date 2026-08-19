@@ -541,7 +541,7 @@ class TelegramListener:
                 return
 
             chat_id = data.get("chat_id", 0)
-            await self._notifier.notify(nt, chat_id, data)
+            await self._notifier.notify(nt, chat_id, data, account_id=self.account_id)
         except Exception as e:
             logger.debug(f"Failed to send notification: {e}")
 
@@ -1258,7 +1258,9 @@ class TelegramListener:
                         "username": sender_user["username"] if sender_user else None,
                         "media": ws_media,
                     }
-                    await self._notifier.notify(NotificationType.NEW_MESSAGE, chat_id, {"message": ws_message})
+                    await self._notifier.notify(
+                        NotificationType.NEW_MESSAGE, chat_id, {"message": ws_message}, account_id=self.account_id
+                    )
 
                 # Log the new message (no chat_id/msg_id/text — PII)
                 media_indicator = f" [{media_type}]" if media_type else ""
