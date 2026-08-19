@@ -224,7 +224,10 @@ class TestBackupSchedulerRunBackupJob:
         with patch("src.scheduler.run_backup", new_callable=AsyncMock) as mock_backup:
             await scheduler._run_backup_job()
 
-            mock_backup.assert_called_once_with(scheduler.config, client=mock_client, account_id=entry.row_id)
+            scheduler.config.for_account.assert_called_with(entry.account.index)
+            mock_backup.assert_called_once_with(
+                scheduler.config.for_account.return_value, client=mock_client, account_id=entry.row_id
+            )
 
     async def test_run_backup_job_sweeps_accounts_sequentially(self):
         """Two accounts are swept in config order, each under its own row id."""
@@ -491,8 +494,9 @@ class TestBackupSchedulerListener:
                     await scheduler._start_listener()
 
             assert entry.listener is mock_listener
+            scheduler.config.for_account.assert_called_with(entry.account.index)
             MockListener.create.assert_awaited_once_with(
-                scheduler.config, client=entry.connection.client, account_id=entry.row_id
+                scheduler.config.for_account.return_value, client=entry.connection.client, account_id=entry.row_id
             )
 
     async def test_start_listener_builds_real_listener_for_the_resolved_account(self):
@@ -515,6 +519,9 @@ class TestBackupSchedulerListener:
             config.mass_operation_threshold = 10
             config.mass_operation_window_seconds = 30
             config.mass_operation_buffer_delay = 2.0
+            # The scheduler hands workers a per-account view; for the real
+            # listener chain the plain mock config stands in for it.
+            config.for_account = MagicMock(return_value=config)
             scheduler = BackupScheduler(config)
             entry = _make_entry(row_id=7)
             scheduler._accounts = [entry]
@@ -699,7 +706,10 @@ class TestBackupSchedulerRunForever:
 
             scheduler._connect.assert_called_once()
             scheduler.start.assert_called_once()
-            mock_backup.assert_called_once_with(config, client=entry.connection.client, account_id=entry.row_id)
+            config.for_account.assert_called_with(entry.account.index)
+            mock_backup.assert_called_once_with(
+                config.for_account.return_value, client=entry.connection.client, account_id=entry.row_id
+            )
 
     async def test_run_forever_handles_initial_backup_failure(self):
         """run_forever catches exceptions from initial backup."""

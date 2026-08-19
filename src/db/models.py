@@ -49,6 +49,16 @@ from ..message_utils import utcnow_naive
 # somewhere real instead of failing the NOT NULL.
 DEFAULT_ACCOUNT_ID = 1
 
+
+def account_metadata_key(base: str, account_id: int) -> str:
+    """Metadata KV key for one account's slice of a per-account value (8.1, #313).
+
+    Account 1 keeps the bare legacy key, so single-account installs and the
+    first account's pre-8.1 history keep reading and writing unchanged; every
+    other account gets its own suffixed key.
+    """
+    return base if account_id == DEFAULT_ACCOUNT_ID else f"{base}_account_{account_id}"
+
 # secrets.token_urlsafe(16) is always exactly 22 characters of URL-safe base64
 # over 128 bits. Chat refs are minted once, on INSERT, and never re-rolled.
 CHAT_REF_BYTES = 16

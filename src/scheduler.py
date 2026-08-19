@@ -144,7 +144,7 @@ class BackupScheduler:
             raise RuntimeError(f"account {entry.account.index} row not resolved")
 
         # Run backup using this account's shared client
-        await run_backup(self.config, client=client, account_id=entry.row_id)
+        await run_backup(self.config.for_account(entry.account.index), client=client, account_id=entry.row_id)
 
         # Run gap-fill if enabled
         gap_fill_ok = True
@@ -153,7 +153,9 @@ class BackupScheduler:
                 from .telegram_backup import run_fill_gaps
 
                 logger.info(f"{entry.log_prefix}Running post-backup gap-fill...")
-                result = await run_fill_gaps(self.config, client=client, account_id=entry.row_id)
+                result = await run_fill_gaps(
+                    self.config.for_account(entry.account.index), client=client, account_id=entry.row_id
+                )
                 if result.get("errors", 0) > 0:
                     gap_fill_ok = False
                     logger.warning(
@@ -365,7 +367,7 @@ class BackupScheduler:
 
             # Create listener with this account's shared client.
             entry.listener = await TelegramListener.create(
-                self.config, client=entry.connection.client, account_id=entry.row_id
+                self.config.for_account(entry.account.index), client=entry.connection.client, account_id=entry.row_id
             )
             await entry.listener.connect()
 
@@ -429,7 +431,7 @@ class BackupScheduler:
         if entry.row_id is None:
             raise RuntimeError(f"account {entry.account.index} row not resolved")
 
-        await run_backup(self.config, client=client, account_id=entry.row_id)
+        await run_backup(self.config.for_account(entry.account.index), client=client, account_id=entry.row_id)
         logger.info(f"{entry.log_prefix}Initial backup completed")
 
         # Run gap-fill if enabled
@@ -438,7 +440,9 @@ class BackupScheduler:
                 from .telegram_backup import run_fill_gaps
 
                 logger.info(f"{entry.log_prefix}Running initial gap-fill...")
-                result = await run_fill_gaps(self.config, client=client, account_id=entry.row_id)
+                result = await run_fill_gaps(
+                    self.config.for_account(entry.account.index), client=client, account_id=entry.row_id
+                )
                 if result.get("errors", 0) > 0:
                     logger.warning(f"{entry.log_prefix}Initial gap-fill completed with {result['errors']} error(s)")
             except Exception as e:
@@ -539,6 +543,17 @@ async def main():
         logger.info(f"Backup path: {config.backup_path}")
         logger.info(f"Download media: {config.download_media}")
         logger.info(f"Chat types: {', '.join(config.chat_types) or '(whitelist-only mode)'}")
+        # Effective per-account capture scope (8.1, #313) — counts only, never ids.
+        for account in config.accounts:
+            filters = config.filters_for(account.index)
+            if filters.whitelist_mode:
+                scope = f"whitelist, {len(filters.chat_ids)} chat(s)"
+            else:
+                scope = (
+                    f"type-based ({', '.join(filters.chat_types) or 'no types'}), "
+                    f"+{len(filters.global_include_ids)} include / -{len(filters.global_exclude_ids)} exclude"
+                )
+            logger.info(f"Capture scope [account {account.index}]: {scope}")
         logger.info(f"Real-time listener: {'ENABLED' if config.enable_listener else 'disabled'}")
         if config.sync_deletions_edits:
             logger.warning("⚠️  SYNC_DELETIONS_EDITS: ENABLED")
