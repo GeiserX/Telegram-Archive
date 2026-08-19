@@ -1783,9 +1783,13 @@ class TelegramBackup:
         logger.info("=" * 60)
 
     @staticmethod
-    def _message_failure_key(chat_id: int) -> str:
-        """Metadata KV key holding one chat's message-failure record."""
-        return f"message_failures_{chat_id}"
+    def _message_failure_key(chat_id: int, account_id: int) -> str:
+        """Metadata KV key holding one (account, chat) message-failure record.
+
+        Chat ids collide across accounts since 8.0, so the key carries the
+        account; account 1 keeps the bare legacy key (#313 review).
+        """
+        return account_metadata_key(f"message_failures_{chat_id}", account_id)
 
     async def _load_message_failures(self, chat_id: int) -> dict:
         """Load the durable per-chat message-failure record from the metadata KV.
@@ -1811,7 +1815,7 @@ class TelegramBackup:
         """
         state: dict = {"frozen_id": 0, "runs": 0, "given_up_total": 0, "given_up_ids": set()}
         try:
-            raw = await self.db.get_metadata(self._message_failure_key(chat_id))
+            raw = await self.db.get_metadata(self._message_failure_key(chat_id, self.account_id))
         except Exception as e:
             logger.debug("Could not load the message-failure record (%s)", type(e).__name__)
             return state
@@ -1845,7 +1849,7 @@ class TelegramBackup:
         """
         try:
             await self.db.set_metadata(
-                self._message_failure_key(chat_id),
+                self._message_failure_key(chat_id, self.account_id),
                 json.dumps(
                     {
                         "frozen_id": state["frozen_id"],
@@ -2435,7 +2439,7 @@ class TelegramBackup:
         if self.config.reaction_resweep_days <= 0:
             return
         try:
-            raw = await self.db.get_metadata("reaction_resweep_cycle_done")
+            raw = await self.db.get_metadata(account_metadata_key("reaction_resweep_cycle_done", self.account_id))
             if not raw:
                 return
             state = json.loads(raw)
@@ -2471,7 +2475,9 @@ class TelegramBackup:
                     "done": sorted(self._resweep_cycle_done),
                     "partial": {str(c): n for c, n in self._resweep_partial.items()},
                 }
-                await self.db.set_metadata("reaction_resweep_cycle_done", json.dumps(state))
+                await self.db.set_metadata(
+                    account_metadata_key("reaction_resweep_cycle_done", self.account_id), json.dumps(state)
+                )
                 logger.warning(
                     "Reaction resweep deferred %d dialogs to the next run after FloodWaits; "
                     "%d dialogs are done this cycle",
@@ -2480,7 +2486,7 @@ class TelegramBackup:
                 )
             else:
                 # Clean run: the cycle is complete, next run starts fresh.
-                await self.db.set_metadata("reaction_resweep_cycle_done", "{}")
+                await self.db.set_metadata(account_metadata_key("reaction_resweep_cycle_done", self.account_id), "{}")
         except Exception as e:
             logger.warning("Could not persist reaction resweep cycle state: %s", type(e).__name__)
 

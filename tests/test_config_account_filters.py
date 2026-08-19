@@ -187,10 +187,6 @@ class TestImmutability(unittest.TestCase):
             config.filters_for(1).chat_ids = frozenset()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAccountScopedConfig(unittest.TestCase):
     """The config view capture workers hold: filters overlaid, everything else delegated."""
 
@@ -250,3 +246,7 @@ class TestAccountScopedConfig(unittest.TestCase):
         # Account 1 still whitelists.
         self.assertTrue(config.for_account(1).should_backup_chat(-100111, True, False, False))
         self.assertFalse(config.for_account(1).should_backup_chat(-100999, False, True, False))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -93,3 +93,23 @@ class TestListenerUsesScopedKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRemainingScopedKeys(unittest.TestCase):
+    """The other per-account caches flagged in review: resweep, failures, listener status."""
+
+    def test_message_failure_key_is_account_scoped(self):
+        self.assertEqual(TelegramBackup._message_failure_key(-100111, 1), "message_failures_-100111")
+        self.assertEqual(TelegramBackup._message_failure_key(-100111, 2), "message_failures_-100111_account_2")
+
+    def test_reaction_resweep_state_is_account_scoped(self):
+        import asyncio
+
+        backup = _backup(2)
+        backup.config.reaction_resweep_days = 7
+        asyncio.run(backup._load_resweep_cycle())
+        self.assertEqual(backup.db.get_metadata.call_args[0][0], "reaction_resweep_cycle_done_account_2")
+
+    def test_listener_status_key_is_account_scoped(self):
+        self.assertEqual(account_metadata_key("listener_active_since", 1), "listener_active_since")
+        self.assertEqual(account_metadata_key("listener_active_since", 3), "listener_active_since_account_3")

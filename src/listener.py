@@ -1559,7 +1559,9 @@ class TelegramListener:
 
         # Write listener status to database (for viewer to display)
         try:
-            await self.db.set_metadata("listener_active_since", datetime.now().isoformat())
+            await self.db.set_metadata(
+                account_metadata_key("listener_active_since", self.account_id), datetime.now().isoformat()
+            )
         except Exception as e:
             logger.warning(f"Could not write listener status to DB: {e}")
 
@@ -1578,7 +1580,7 @@ class TelegramListener:
             self._running = False
             # Clear listener status when stopped
             try:
-                await self.db.set_metadata("listener_active_since", "")
+                await self.db.set_metadata(account_metadata_key("listener_active_since", self.account_id), "")
             except Exception:
                 pass
 
