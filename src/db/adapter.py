@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 from collections.abc import Collection, Iterable, Mapping
@@ -31,6 +32,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    tuple_,
     union_all,
     update,
 )
@@ -2746,6 +2748,122 @@ class DatabaseAdapter:
             msg["reply_to_media_type"] = reply_row["media_type"] if reply_row else None
             if reply_row and not msg.get("reply_to_text") and reply_row["text"]:
                 msg["reply_to_text"] = reply_row["text"][:100]
+
+    async def search_messages_by_tag(
+        self,
+        tag: str,
+        *,
+        scope: ChatScope,
+        chat_id: int | None = None,
+        account_id: int | None = None,
+        outgoing_only: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        scan_cap: int = 3000,
+    ) -> dict[str, Any]:
+        """Messages carrying ``tag`` (#hashtag / $CASHTAG) as a whole token, newest first.
+
+        The tag view's data source: the SQL side prefilters with ILIKE — served
+        by ``idx_messages_text_trgm`` on PostgreSQL — and a word-boundary
+        post-filter drops substring hits ('#tag' inside '#taglonger').
+        Entitlements arrive as ``scope`` and apply in the WHERE clause exactly
+        like the chat list, so a restricted viewer's tag search can only ever
+        touch entitled chats. ``chat_id``+``account_id`` narrow to one chat
+        (the This Chat tab); ``outgoing_only`` is My Messages (the archive
+        owner's side of every conversation). Offset paging re-scans from the
+        top by design — tag result sets are small, and each request bounds its
+        own scan (``scan_cap`` prefilter rows) so no single call can walk the
+        table. When the cap truncates the scan, ``has_more`` stays False —
+        pages past the cap are unreachable through an offset API, and
+        advertising them would loop the client forever — and ``truncated``
+        turns True so the UI can say the search was cut short.
+
+        Returns ``{"results": [...], "has_more": bool, "truncated": bool}``;
+        rows carry message id/date/text/is_outgoing/sender_name plus
+        chat_ref/chat_title/chat_type so the viewer addresses the jump by
+        ref, never by id.
+        """
+        # Hashtags search case-insensitively (official behavior); cashtags are
+        # uppercase-only entities, so '$TSLA' must not match '$tsla' in text.
+        flags = re.IGNORECASE if tag.startswith("#") else 0
+        boundary = re.compile(rf"(?<![\w#$]){re.escape(tag)}(?!\w)", flags)
+        escaped = tag.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+        needed = offset + limit + 1  # one extra row proves has_more
+        matched: list[dict[str, Any]] = []
+        scanned = 0
+        cursor: tuple[Any, ...] | None = None
+        chunk = max(limit * 3, 60)
+        exhausted = False
+
+        async with self.db_manager.async_session_factory() as session:
+            while len(matched) < needed and scanned < scan_cap:
+                stmt = (
+                    select(
+                        Message.id,
+                        Message.date,
+                        Message.text,
+                        Message.is_outgoing,
+                        Message.sender_name,
+                        Message.account_id,
+                        Message.chat_id,
+                        Chat.ref.label("chat_ref"),
+                        Chat.title.label("chat_title"),
+                        Chat.first_name.label("chat_first_name"),
+                        Chat.last_name.label("chat_last_name"),
+                        Chat.type.label("chat_type"),
+                    )
+                    .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
+                    .where(Message.text.isnot(None))
+                    .where(Message.text.ilike(f"%{escaped}%", escape="\\"))
+                )
+                if chat_id is not None:
+                    stmt = stmt.where(Message.chat_id == chat_id)
+                if account_id is not None:
+                    stmt = stmt.where(Message.account_id == account_id)
+                if outgoing_only:
+                    stmt = stmt.where(Message.is_outgoing == 1)
+                for predicate in scope.sql_predicates():
+                    stmt = stmt.where(predicate)
+                order_cols = (Message.date, Message.account_id, Message.chat_id, Message.id)
+                if cursor is not None:
+                    stmt = stmt.where(tuple_(*order_cols) < cursor)
+                stmt = stmt.order_by(*(col.desc() for col in order_cols)).limit(chunk)
+
+                rows = (await session.execute(stmt)).mappings().all()
+                scanned += len(rows)
+                for row in rows:
+                    if not boundary.search(row["text"] or ""):
+                        continue
+                    title = (
+                        row["chat_title"]
+                        or " ".join(part for part in (row["chat_first_name"], row["chat_last_name"]) if part)
+                        or "Unknown"
+                    )
+                    matched.append(
+                        {
+                            "id": row["id"],
+                            "date": row["date"],
+                            "text": row["text"],
+                            "is_outgoing": row["is_outgoing"],
+                            "sender_name": row["sender_name"],
+                            "chat_ref": row["chat_ref"],
+                            "chat_title": title,
+                            "chat_type": row["chat_type"],
+                        }
+                    )
+                    if len(matched) >= needed:
+                        break
+                if len(rows) < chunk:
+                    exhausted = True
+                    break
+                cursor = tuple(rows[-1][key] for key in ("date", "account_id", "chat_id", "id"))
+
+        truncated = not exhausted and scanned >= scan_cap and len(matched) < needed
+        return {
+            "results": matched[offset : offset + limit],
+            "has_more": len(matched) > offset + limit,
+            "truncated": truncated,
+        }
 
     async def get_messages_paginated(
         self,

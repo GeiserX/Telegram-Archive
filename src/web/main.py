@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import traceback
@@ -19,7 +20,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -2287,6 +2288,52 @@ async def get_messages(
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# A tag is a #hashtag (word chars, at least one non-digit — Telegram excludes
+# pure numbers) or a $CASHTAG (1-8 latin letters, the official shape).
+_TAG_PATTERN = re.compile(r"^#(?!\d+$)\w{1,64}$|^\$[A-Z]{1,8}$")
+
+
+@app.get("/api/tags/{tag}")
+async def search_tag(
+    tag: str,
+    user: UserContext = Depends(require_auth),
+    scope: str = Query("all", pattern="^(chat|mine|all)$"),
+    chat_ref: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Messages using a #hashtag or $cashtag, newest first — the tag view.
+
+    Mirrors the official clients' tag tabs mapped onto an archive:
+    ``scope=chat`` is This Chat (requires ``chat_ref``, entitlement-enforced by
+    the same resolver as every chat route), ``scope=mine`` is My Messages (the
+    archive's outgoing side), ``scope=all`` is the whole entitled archive.
+    Restricted viewers are filtered in SQL via the same ChatScope as the chat
+    list, so this route can never widen what a viewer sees.
+    """
+    if not _TAG_PATTERN.match(tag):
+        raise HTTPException(status_code=400, detail="Not a recognizable #hashtag or $cashtag")
+    kwargs: dict[str, Any] = {"scope": _chat_scope(user), "limit": limit, "offset": offset}
+    if scope == "chat":
+        if not chat_ref:
+            raise HTTPException(status_code=400, detail="scope=chat requires chat_ref")
+        chat = await _resolve_chat_ref(chat_ref, user)
+        kwargs.update(chat_id=chat.chat_id, account_id=chat.account_id)
+    elif scope == "mine":
+        kwargs["outgoing_only"] = True
+    try:
+        payload = await db.search_messages_by_tag(tag, **kwargs)
+    except Exception as e:
+        # Type name only: SQLAlchemy exception text can echo statement
+        # parameters — the tag and the viewer's scope ids.
+        logger.error(f"Error searching tag: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    payload["tag"] = tag
+    return payload
 
 
 @app.get("/api/chats/{chat_ref}/messages/{message_id}/versions")
