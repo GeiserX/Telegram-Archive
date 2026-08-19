@@ -59,6 +59,7 @@ def account_metadata_key(base: str, account_id: int) -> str:
     """
     return base if account_id == DEFAULT_ACCOUNT_ID else f"{base}_account_{account_id}"
 
+
 # secrets.token_urlsafe(16) is always exactly 22 characters of URL-safe base64
 # over 128 bits. Chat refs are minted once, on INSERT, and never re-rolled.
 CHAT_REF_BYTES = 16
