@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.1.0] - 2026-08-19
+
+### Added
+
+- **Capture filters resolve per account.** 8.0 made credentials per-account but left every capture filter global, so an account added to a whitelisted install captured only the intersection of that whitelist with its own dialogs — observed shrinking a real second account from 2,057 chats to 312, silently. Every filter can now be overridden per account the way sessions already resolve: `TG_ACCOUNT_<N>_CHAT_IDS`, `TG_ACCOUNT_<N>_CHAT_TYPES`, the include/exclude lists (global and per-type), `TG_ACCOUNT_<N>_PRIORITY_CHAT_IDS` and `TG_ACCOUNT_<N>_SKIP_MEDIA_CHAT_IDS` — the indexed variable wins for that account, the global one is the fallback, so an install without overrides behaves exactly as before. An empty indexed value inherits (Compose's `${VAR:-}` idiom injects empty strings, and silently clearing a whitelist would widen capture); the literal token `none` is the explicit-empty override, so `TG_ACCOUNT_2_CHAT_IDS=none` runs account 2 type-based while account 1 keeps its whitelist. Startup logs each account's effective scope as counts, so an inherited filter is visible on day one. ([#313](https://github.com/GeiserX/Telegram-Archive/issues/313), [#319](https://github.com/GeiserX/Telegram-Archive/pull/319))
+
+### Fixed
+
+- **Per-account state no longer collides between accounts.** Five metadata caches were keyed globally while chat ids stopped being globally unique in 8.0: followed-migration ids leaked from one account's sweep into the other's live-accept set, two whitelisted accounts overwrote each other's unresolved-id suppression, reaction-resweep cursors and per-chat failure records crossed accounts, and one account's listener stopping cleared the "listener active" flag while the other still listened. All five are account-scoped now — account 1 keeps the bare legacy keys, so existing installs read their history unchanged — and the viewer reports listener status across accounts (active when any listener is up, since the earliest). ([#319](https://github.com/GeiserX/Telegram-Archive/pull/319))
+
 ## [8.0.3] - 2026-08-19
 
 ### Fixed
