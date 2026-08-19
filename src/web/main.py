@@ -283,31 +283,34 @@ push_manager: PushNotificationManager | None = None
 
 # The realtime/push side resolves a writer-side chat id to its row (ref, account,
 # title) once per event; a short TTL keeps a busy chat from re-querying per event.
-_broadcast_chat_cache: dict[int, tuple[float, dict | None]] = {}
+_broadcast_chat_cache: dict[tuple[int | None, int], tuple[float, dict | None]] = {}
 _BROADCAST_CHAT_CACHE_TTL_SECONDS = 60
 
 
-async def _broadcast_chat_row(chat_id: int) -> dict | None:
+async def _broadcast_chat_row(chat_id: int, account_id: int | None = None) -> dict | None:
     """Chat row for a realtime event's chat id, or None when it cannot be addressed.
 
     The writer side (listener/backup) speaks chat ids; every outward frame and
-    push payload speaks refs. An id that resolves to no row — or ambiguously,
-    once a second account shares it (phase 5) — drops the event rather than
-    emit a frame that names a chat id.
+    push payload speaks refs. Since 8.0 two accounts can share a chat id, so
+    the payload's capturing account (#315) scopes the lookup to the row that
+    was actually written. A legacy payload without account_id keeps the old
+    guard: an id that resolves to no row — or ambiguously — drops the event
+    rather than emit a frame that names a chat id.
     """
     if not db:
         return None
-    cached = _broadcast_chat_cache.get(chat_id)
+    cache_key = (account_id, chat_id)
+    cached = _broadcast_chat_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] <= _BROADCAST_CHAT_CACHE_TTL_SECONDS:
         return cached[1]
     try:
-        chat = await db.get_chat_by_id(chat_id)
+        chat = await db.get_chat_by_id(chat_id, account_id=account_id)
     except Exception as e:
         logger.warning(f"Realtime chat resolution failed ({type(e).__name__}); dropping event")
         return None
     if chat is not None and not chat.get("ref"):
         chat = None
-    _broadcast_chat_cache[chat_id] = (time.monotonic(), chat)
+    _broadcast_chat_cache[cache_key] = (time.monotonic(), chat)
     return chat
 
 
@@ -315,6 +318,12 @@ async def handle_realtime_notification(payload: dict):
     """Handle real-time notifications and broadcast to WebSocket clients + push notifications."""
     notification_type = payload.get("type")
     chat_id = payload.get("chat_id")
+    # The capturing account (in the payload since #315). bool is an int
+    # subclass, so exclude it explicitly; any non-int falls back to the
+    # legacy unscoped lookup and its drop-on-ambiguity guard.
+    account_id = payload.get("account_id")
+    if not isinstance(account_id, int) or isinstance(account_id, bool):
+        account_id = None
     data = payload.get("data", {})
 
     # Check if this chat is allowed (respects DISPLAY_CHAT_IDS restriction)
@@ -322,7 +331,7 @@ async def handle_realtime_notification(payload: dict):
         # This viewer is restricted to specific chats, ignore notifications for other chats
         return
 
-    chat = await _broadcast_chat_row(chat_id)
+    chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
     chat_ref = chat["ref"]
@@ -3505,17 +3514,19 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============================================================================
 
 
-async def broadcast_new_message(chat_id: int, message: dict):
+async def broadcast_new_message(chat_id: int, message: dict, account_id: int | None = None) -> None:
     """Broadcast a new message to subscribed clients (frames are ref-addressed)."""
-    chat = await _broadcast_chat_row(chat_id)
+    chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
     await ws_manager.broadcast_to_chat(chat, {"type": "new_message", "chat_ref": chat["ref"], "message": message})
 
 
-async def broadcast_message_edit(chat_id: int, message_id: int, new_text: str, edit_date: str):
+async def broadcast_message_edit(
+    chat_id: int, message_id: int, new_text: str, edit_date: str, account_id: int | None = None
+) -> None:
     """Broadcast a message edit to subscribed clients (frames are ref-addressed)."""
-    chat = await _broadcast_chat_row(chat_id)
+    chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
     await ws_manager.broadcast_to_chat(
@@ -3531,10 +3542,14 @@ async def broadcast_message_edit(chat_id: int, message_id: int, new_text: str, e
 
 
 async def broadcast_message_delete(
-    chat_id: int, message_id: int, deletion_mode: str = "hard", deleted_at: str | None = None
+    chat_id: int,
+    message_id: int,
+    deletion_mode: str = "hard",
+    deleted_at: str | None = None,
+    account_id: int | None = None,
 ) -> None:
     """Broadcast a message deletion to subscribed clients (frames are ref-addressed)."""
-    chat = await _broadcast_chat_row(chat_id)
+    chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
         return
     await ws_manager.broadcast_to_chat(

@@ -971,7 +971,7 @@ class TestNotifyUpdate:
         listener._notifier = notifier
 
         await listener._notify_update("edit", {"chat_id": 123})
-        notifier.notify.assert_called_once_with(NotificationType.EDIT, 123, {"chat_id": 123})
+        notifier.notify.assert_called_once_with(NotificationType.EDIT, 123, {"chat_id": 123}, account_id=1)
 
     async def test_sends_delete_notification(self):
         """Sends delete notification with correct type mapping."""
@@ -982,7 +982,7 @@ class TestNotifyUpdate:
         listener._notifier = notifier
 
         await listener._notify_update("delete", {"chat_id": 456})
-        notifier.notify.assert_called_once_with(NotificationType.DELETE, 456, {"chat_id": 456})
+        notifier.notify.assert_called_once_with(NotificationType.DELETE, 456, {"chat_id": 456}, account_id=1)
 
     async def test_sends_new_message_notification(self):
         """Sends new_message notification with correct type mapping."""
@@ -993,7 +993,7 @@ class TestNotifyUpdate:
         listener._notifier = notifier
 
         await listener._notify_update("new_message", {"chat_id": 789})
-        notifier.notify.assert_called_once_with(NotificationType.NEW_MESSAGE, 789, {"chat_id": 789})
+        notifier.notify.assert_called_once_with(NotificationType.NEW_MESSAGE, 789, {"chat_id": 789}, account_id=1)
 
     async def test_sends_pin_notification(self):
         """Sends pin notification with correct type mapping."""
@@ -1004,7 +1004,7 @@ class TestNotifyUpdate:
         listener._notifier = notifier
 
         await listener._notify_update("pin", {"chat_id": 111})
-        notifier.notify.assert_called_once_with(NotificationType.PIN, 111, {"chat_id": 111})
+        notifier.notify.assert_called_once_with(NotificationType.PIN, 111, {"chat_id": 111}, account_id=1)
 
     async def test_unknown_type_returns_without_sending(self):
         """Unknown notification type logs warning and returns without sending."""
@@ -1034,7 +1034,7 @@ class TestNotifyUpdate:
         listener._notifier = notifier
 
         await listener._notify_update("edit", {})
-        notifier.notify.assert_called_once_with(NotificationType.EDIT, 0, {})
+        notifier.notify.assert_called_once_with(NotificationType.EDIT, 0, {}, account_id=1)
 
 
 # ===========================================================================
@@ -2557,3 +2557,17 @@ class TestRealtimeMediaAttributes:
         media_data = db.insert_media.call_args[0][0]
         assert media_data["file_size"] == 17
         assert media_data["duration"] == 3
+
+
+class TestNotifyUpdateCapturingAccount:
+    """#315: _notify_update forwards the account whose rows were just written."""
+
+    async def test_notify_update_passes_capturing_account(self) -> None:
+        from src.realtime import NotificationType
+
+        listener = TelegramListener(_make_config(), _make_db(), account_id=7)
+        notifier = AsyncMock()
+        listener._notifier = notifier
+
+        await listener._notify_update("edit", {"chat_id": 123})
+        notifier.notify.assert_called_once_with(NotificationType.EDIT, 123, {"chat_id": 123}, account_id=7)

@@ -1096,3 +1096,85 @@ class TestSecurityHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ============================================================================
+# handle_realtime_notification — shared chat id across accounts (#315)
+# ============================================================================
+
+
+@_skip_unless_web_main
+class TestSharedChatRealtimeResolution(unittest.IsolatedAsyncioTestCase):
+    """#315: a chat id two accounts share resolves per capturing account.
+
+    Before the fix the unscoped lookup raised MultipleResultsFound and every
+    event for the shared chat was dropped for everyone. The payload now names
+    the capturing account, the lookup is scoped to it, and only a legacy
+    payload without account_id keeps the drop-on-ambiguity guard.
+    """
+
+    class _Ambiguous(Exception):
+        """Stands in for sqlalchemy MultipleResultsFound (handler catches Exception)."""
+
+    def setUp(self) -> None:
+        self._saved_display = web_main.config.display_chat_ids
+        self._saved_push = web_main.push_manager
+        self._saved_db = web_main.db
+        web_main.config.display_chat_ids = set()
+        web_main.push_manager = None
+        web_main.db = AsyncMock()
+        rows = {
+            (1, 42): _chat_row(42, "refShared1000000000042", account_id=1),
+            (2, 42): _chat_row(42, "refShared2000000000042", account_id=2),
+        }
+
+        async def scoped_lookup(chat_id: int, *, account_id: int | None = None, **kwargs: object) -> dict | None:
+            if account_id is None:
+                raise self._Ambiguous("chat id is shared by two accounts")
+            return rows.get((account_id, chat_id))
+
+        web_main.db.get_chat_by_id = AsyncMock(side_effect=scoped_lookup)
+        web_main._broadcast_chat_cache.clear()
+
+    def tearDown(self) -> None:
+        web_main.config.display_chat_ids = self._saved_display
+        web_main.push_manager = self._saved_push
+        web_main.db = self._saved_db
+        web_main._broadcast_chat_cache.clear()
+
+    async def test_scoped_payload_resolves_the_capturing_accounts_row(self) -> None:
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "account_id": 1, "data": {"message": {"id": 1}}}
+            )
+        mock_bc.assert_awaited_once()
+        chat, frame = mock_bc.call_args[0]
+        self.assertEqual(chat["account_id"], 1)
+        self.assertEqual(frame["chat_ref"], "refShared1000000000042")
+
+    async def test_each_account_gets_its_own_ref_not_the_cached_other(self) -> None:
+        """The cache must key on (account_id, chat_id), or account 2 gets account 1 refs."""
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "account_id": 1, "data": {"message": {"id": 1}}}
+            )
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "account_id": 2, "data": {"message": {"id": 1}}}
+            )
+        refs = [call.args[1]["chat_ref"] for call in mock_bc.await_args_list]
+        self.assertEqual(refs, ["refShared1000000000042", "refShared2000000000042"])
+
+    async def test_legacy_payload_without_account_still_drops_ambiguous_ids(self) -> None:
+        with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+            await web_main.handle_realtime_notification(
+                {"type": "new_message", "chat_id": 42, "data": {"message": {"id": 1}}}
+            )
+        mock_bc.assert_not_awaited()
+
+    async def test_non_integer_account_id_is_treated_as_legacy(self) -> None:
+        for garbage in ("1", True, 1.5, [1]):
+            with patch.object(web_main.ws_manager, "broadcast_to_chat", new_callable=AsyncMock) as mock_bc:
+                await web_main.handle_realtime_notification(
+                    {"type": "new_message", "chat_id": 42, "account_id": garbage, "data": {"message": {"id": 1}}}
+                )
+            mock_bc.assert_not_awaited()

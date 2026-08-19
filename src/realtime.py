@@ -120,7 +120,9 @@ class RealtimeNotifier:
 
         self._initialized = True
 
-    async def notify(self, notification_type: NotificationType, chat_id: int, data: dict):
+    async def notify(
+        self, notification_type: NotificationType, chat_id: int, data: dict, *, account_id: int | None = None
+    ) -> None:
         """
         Send a notification.
 
@@ -128,6 +130,10 @@ class RealtimeNotifier:
             notification_type: Type of notification (new_message, edit, delete, etc.)
             chat_id: The chat ID associated with the notification
             data: Additional data (message content, etc.)
+            account_id: accounts.id of the capturing account. Since 8.0 a chat id
+                alone is ambiguous once two accounts share the chat (#315), so the
+                viewer scopes its lookup to (account_id, chat_id); None (legacy
+                senders) keeps the viewer's drop-on-ambiguity guard.
         """
         if not self._initialized:
             await self.init()
@@ -137,7 +143,7 @@ class RealtimeNotifier:
         _MAX_NOTIFY_TEXT = 500
         data = _truncate_notify_data(data, _MAX_NOTIFY_TEXT)
 
-        payload = {"type": notification_type.value, "chat_id": chat_id, "data": data}
+        payload = {"type": notification_type.value, "chat_id": chat_id, "account_id": account_id, "data": data}
 
         try:
             if self._is_postgresql:
