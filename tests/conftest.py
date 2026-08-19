@@ -29,9 +29,17 @@ database, whose ``public`` schema is dropped and rebuilt once per session.
 """
 
 import os
+import tempfile
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
+
+# Config() creates BACKUP_PATH (default /data/backups) at construction, and /
+# is read-only here — so every test module that builds a real Config without
+# its own tmp path only passed when an alphabetically earlier module had
+# already set the variable. Set a safe default before any test imports Config;
+# tests that patch.dict(os.environ, ..., clear=True) are unaffected.
+os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="telegram-archive-tests-"))
 import sqlalchemy as sa
 from sqlalchemy import text
 

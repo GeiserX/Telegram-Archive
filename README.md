@@ -663,6 +663,12 @@ docker compose exec telegram-backup python -m src backup
 
 # Re-authenticate (if session expires)
 docker compose exec -it telegram-backup python -m src auth
+
+# Import a Telegram Desktop export (JSON or HTML) into the archive
+docker compose exec telegram-backup python -m src import /data/export
+
+# Detect and fill message gaps left by failed backups
+docker compose exec telegram-backup python -m src fill-gaps
 ```
 
 ## Data Storage

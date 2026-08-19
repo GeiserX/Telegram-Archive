@@ -2222,7 +2222,7 @@ async def get_chats(
             "has_more": offset + len(chats) < total,
         }
     except Exception as e:
-        logger.error(f"Error fetching chats: {e}", exc_info=True)
+        logger.error(f"Error fetching chats: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2284,7 +2284,7 @@ async def get_messages(
             _strip_original_media_paths(messages)
         return messages
     except Exception as e:
-        logger.error(f"Error fetching messages: {e}", exc_info=True)
+        logger.error(f"Error fetching messages: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2348,7 +2348,7 @@ async def get_message_versions(
             chat_id=chat.chat_id, message_id=message_id, limit=limit, account_id=chat.account_id
         )
     except Exception as e:
-        logger.error(f"Error fetching message versions: {e}", exc_info=True)
+        logger.error(f"Error fetching message versions: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2366,7 +2366,7 @@ async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: U
             _strip_original_media_paths(pinned_messages)
         return pinned_messages  # Returns empty list if no pinned messages
     except Exception as e:
-        logger.error(f"Error fetching pinned messages: {e}", exc_info=True)
+        logger.error(f"Error fetching pinned messages: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2443,7 +2443,7 @@ async def get_chat_media(
 
         return result
     except Exception as e:
-        logger.error(f"Error fetching chat media: {e}", exc_info=True)
+        logger.error(f"Error fetching chat media: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2459,7 +2459,7 @@ async def get_chat_media_counts(chat: ChatContext = Depends(require_chat)):
         counts = await db.get_media_counts(chat.chat_id, account_id=chat.account_id)
         return counts
     except Exception as e:
-        logger.error(f"Error fetching media counts: {e}", exc_info=True)
+        logger.error(f"Error fetching media counts: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2476,7 +2476,7 @@ async def get_folders(user: UserContext = Depends(require_auth)):
         folders = await db.get_all_folders(allowed_chat_ids=visible_chat_ids)
         return {"folders": folders}
     except Exception as e:
-        logger.error(f"Error fetching folders: {e}", exc_info=True)
+        logger.error(f"Error fetching folders: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2492,7 +2492,7 @@ async def get_chat_topics(chat: ChatContext = Depends(require_chat)):
         topics = await db.get_forum_topics(chat.chat_id, account_id=chat.account_id)
         return {"topics": topics}
     except Exception as e:
-        logger.error(f"Error fetching topics: {e}", exc_info=True)
+        logger.error(f"Error fetching topics: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2515,7 +2515,7 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
             count = await db.get_chat_count(archived=True, scope=scope)
         return {"count": count}
     except Exception as e:
-        logger.error(f"Error fetching archived count: {e}", exc_info=True)
+        logger.error(f"Error fetching archived count: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2574,7 +2574,7 @@ async def get_stats(user: UserContext = Depends(require_auth)):
 
         return stats
     except Exception as e:
-        logger.error(f"Error fetching stats: {e}", exc_info=True)
+        logger.error(f"Error fetching stats: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2588,7 +2588,7 @@ async def refresh_stats(user: UserContext = Depends(require_master)):
         stats["timezone"] = config.viewer_timezone
         return stats
     except Exception as e:
-        logger.error(f"Error calculating stats: {e}", exc_info=True)
+        logger.error(f"Error calculating stats: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2828,7 +2828,7 @@ async def get_chat_stats(chat: ChatContext = Depends(require_chat)):
         _set_cached_chat_stats(cache_key, stats)
         return stats
     except Exception as e:
-        logger.error(f"Error getting chat stats: {e}", exc_info=True)
+        logger.error(f"Error getting chat stats: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2890,7 +2890,7 @@ async def get_message_by_date(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error finding message by date: {e}", exc_info=True)
+        logger.error(f"Error finding message by date: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -3021,7 +3021,7 @@ async def export_chat(chat: ChatContext = Depends(require_chat), user: UserConte
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting chat: {e}", exc_info=True)
+        logger.error(f"Error exporting chat: {type(e).__name__}")
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")

@@ -15,10 +15,8 @@ Thank you for considering contributing to Telegram-Archive!
 3. Install dependencies:
 
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   pip install -e ".[dev]"
+   # uv creates .venv and installs the locked dependency set (Python 3.14)
+   uv sync --locked --extra dev
    ```
 
 4. Set up pre-commit hooks:
