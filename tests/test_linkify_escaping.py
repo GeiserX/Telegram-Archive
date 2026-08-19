@@ -114,6 +114,9 @@ def _rendered() -> dict[str, str]:
             _DOCUMENT_STUB,
             _setup_slice(html, "const escapeHtml = (text) =>"),
             _setup_slice(html, "const escapeUrlForAttr = (url) =>"),
+            _setup_slice(html, "const TAG_TOKEN_RE = "),
+            _setup_slice(html, "const isTagToken = (sigil, body) =>"),
+            _setup_slice(html, "const tagifyText = (raw) =>"),
             _setup_slice(html, "const linkifyText = (text) =>"),
             f"const payloads = {json.dumps(PAYLOADS)};",
             "const rendered = {};",
@@ -289,6 +292,9 @@ def test_message_without_a_url_is_plain_escaped_text() -> None:
             _DOCUMENT_STUB,
             _setup_slice(html, "const escapeHtml = (text) =>"),
             _setup_slice(html, "const escapeUrlForAttr = (url) =>"),
+            _setup_slice(html, "const TAG_TOKEN_RE = "),
+            _setup_slice(html, "const isTagToken = (sigil, body) =>"),
+            _setup_slice(html, "const tagifyText = (raw) =>"),
             _setup_slice(html, "const linkifyText = (text) =>"),
             "console.log(JSON.stringify(["
             "linkifyText('a <b>bold</b> & \"quoted\" claim'),"
@@ -325,3 +331,59 @@ def test_linkifier_never_decodes_what_it_escaped() -> None:
         assert "&gt;/g" not in source
     assert "escapeUrlForAttr(part)" in linkify
     assert "escapeHtml(part)" in linkify
+    # Plain-text segments route through the tag tokenizer, which escapes
+    # per sub-segment with the same escaper.
+    assert "tagifyText(part)" in linkify
+
+
+def test_tags_become_anchors_without_breaking_escaping() -> None:
+    """#hashtags and $cashtags render as tag anchors; escaping stays intact.
+
+    Executes the shipped tokenizer: official shapes only (a hashtag needs a
+    non-digit, a cashtag is 1-8 uppercase letters), never inside a URL (the
+    linkifier's URL branch wins), and markup around a tag is still escaped.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node executable is not installed")
+
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    cases = {
+        "plain_hashtag": "launch day #news arrived",
+        "cashtag": "buy $TSLA now",
+        "digit_hashtag": "issue #123 stays plain",
+        "lowercase_cashtag": "$usd stays plain",
+        "mid_word": "word#glued stays plain",
+        "url_fragment": "see https://good.example/page#frag ok",
+        "markup_around_tag": "<b>#x</b>",
+    }
+    program = "\n".join(
+        [
+            '"use strict";',
+            _DOCUMENT_STUB,
+            _setup_slice(html, "const escapeHtml = (text) =>"),
+            _setup_slice(html, "const escapeUrlForAttr = (url) =>"),
+            _setup_slice(html, "const TAG_TOKEN_RE = "),
+            _setup_slice(html, "const isTagToken = (sigil, body) =>"),
+            _setup_slice(html, "const tagifyText = (raw) =>"),
+            _setup_slice(html, "const linkifyText = (text) =>"),
+            f"const cases = {json.dumps(cases)};",
+            "const rendered = {};",
+            "for (const name of Object.keys(cases)) rendered[name] = linkifyText(cases[name]);",
+            "console.log(JSON.stringify(rendered));",
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "tagify.js"
+        script.write_text(program, encoding="utf-8")
+        # SECURITY-REVIEW: the executable path is resolved locally and no
+        # untrusted input is ever passed to a shell.
+        result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    rendered = json.loads(result.stdout)
+
+    assert '<a href="#" class="tag-link" data-tag="#news">#news</a>' in rendered["plain_hashtag"]
+    assert 'data-tag="$TSLA"' in rendered["cashtag"]
+    for plain in ("digit_hashtag", "lowercase_cashtag", "mid_word", "url_fragment"):
+        assert "tag-link" not in rendered[plain], plain
+    assert rendered["markup_around_tag"] == ('&lt;b&gt;<a href="#" class="tag-link" data-tag="#x">#x</a>&lt;/b&gt;')
