@@ -91,8 +91,6 @@ class TestListenerUsesScopedKeys(unittest.TestCase):
         self.assertEqual(listener.db.get_metadata.call_args[0][0], "followed_migrations")
 
 
-
-
 class TestRemainingScopedKeys(unittest.TestCase):
     """The other per-account caches flagged in review: resweep, failures, listener status."""
 
