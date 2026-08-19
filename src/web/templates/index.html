@@ -1869,6 +1869,45 @@
         </div>
 
         <!-- Admin Panel (v7.0.0) -->
+        <!-- Tag view: #hashtag / $cashtag click-through (official-app tab structure) -->
+        <div v-if="tagView" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" @click.self="closeTagView()">
+            <div role="dialog" aria-modal="true" aria-labelledby="tag-view-title"
+                class="bg-tg-sidebar border border-gray-700 rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between p-3 border-b border-gray-700/50">
+                    <span id="tag-view-title" class="font-semibold truncate">{{ tagView.tag }}</span>
+                    <button @click="closeTagView()" aria-label="Close tag search" class="text-gray-400 hover:text-white px-2 text-lg leading-none">&times;</button>
+                </div>
+                <div class="flex border-b border-gray-700/50 text-sm">
+                    <button v-for="t in tagTabs" :key="t.key" @click="setTagTab(t.key)"
+                        :disabled="t.key === 'chat' && !selectedChat"
+                        :class="['flex-1 py-2 disabled:opacity-40',
+                                 tagView.tab === t.key ? 'text-white border-b-2 border-blue-500' : 'text-gray-400 hover:text-white']">
+                        {{ t.label }}
+                    </button>
+                </div>
+                <div class="overflow-y-auto flex-1 min-h-[8rem]">
+                    <div v-if="tagView.loading && !tagView.results.length" class="p-4 text-center text-gray-400 text-sm">Loading…</div>
+                    <div v-else-if="tagView.error" class="p-4 text-center text-red-400 text-sm">{{ tagView.error }}</div>
+                    <div v-else-if="!tagView.results.length" class="p-4 text-center text-gray-400 text-sm">No messages with {{ tagView.tag }}</div>
+                    <button v-for="r in tagView.results" :key="r.chat_ref + ':' + r.id" @click="openTagResult(r)"
+                        class="block w-full text-left p-3 border-b border-gray-700/30 hover:bg-gray-700/30">
+                        <div class="flex justify-between text-xs text-gray-400 mb-1">
+                            <span class="truncate">{{ tagView.tab === 'chat' ? (r.sender_name || '') : r.chat_title }}</span>
+                            <span class="ml-2 shrink-0">{{ formatDate(r.date) }}</span>
+                        </div>
+                        <div class="text-sm line-clamp-2 break-words">{{ r.text }}</div>
+                    </button>
+                    <div v-if="tagView.has_more" class="p-3 text-center">
+                        <button @click="loadTagResults(false)" :disabled="tagView.loading"
+                            class="text-blue-400 text-sm hover:underline disabled:opacity-40">Load more</button>
+                    </div>
+                    <div v-if="tagView.truncated" class="p-2 text-center text-xs text-gray-500">
+                        Search stopped early — older matches may exist
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div v-if="showAdminPanel" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4">
             <div class="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
                 <!-- Header -->
@@ -3211,6 +3250,78 @@
                 // chat list (the listener is registered before the first await below,
                 // so it hears clicks from the very start). Until the app can act on a
                 // click it is parked here, then replayed exactly once — never dropped.
+                // ---- Tag view: #hashtag / $cashtag click-through ----
+                // Official-app tab structure mapped onto an archive: This Chat /
+                // My Messages (the archive's outgoing side) / All Chats.
+                const tagTabs = [
+                    { key: 'chat', label: 'This Chat' },
+                    { key: 'mine', label: 'My Messages' },
+                    { key: 'all', label: 'All Chats' },
+                ]
+                const tagView = ref(null)
+                const openTagView = (tag) => {
+                    if (!tag) return
+                    tagView.value = {
+                        tag,
+                        tab: selectedChat.value ? 'chat' : 'all',
+                        results: [], loading: false, has_more: false, truncated: false,
+                        offset: 0, error: null, gen: 0,
+                    }
+                    loadTagResults(true)
+                }
+                const closeTagView = () => { tagView.value = null }
+                const setTagTab = (tab) => {
+                    const view = tagView.value
+                    if (!view || view.tab === tab) return
+                    if (tab === 'chat' && !selectedChat.value) return
+                    Object.assign(view, { tab, results: [], offset: 0, has_more: false, truncated: false, error: null })
+                    loadTagResults(true)
+                }
+                const loadTagResults = async (reset) => {
+                    const view = tagView.value
+                    if (!view) return
+                    // A reset (open or tab switch) supersedes whatever is in
+                    // flight: bump the generation so the old response, which
+                    // still holds the same view object, cannot land under the
+                    // new tab. Only a load-more yields to an active request.
+                    if (view.loading && !reset) return
+                    const gen = ++view.gen
+                    const current = () => tagView.value === view && view.gen === gen
+                    view.loading = true
+                    try {
+                        const params = new URLSearchParams({
+                            scope: view.tab,
+                            limit: '50',
+                            offset: String(reset ? 0 : view.offset),
+                        })
+                        if (view.tab === 'chat' && selectedChat.value) params.set('chat_ref', selectedChat.value.ref)
+                        const resp = await fetch(`/api/tags/${encodeURIComponent(view.tag)}?${params}`)
+                        if (!resp.ok) throw new Error(`tag search ${resp.status}`)
+                        const data = await resp.json()
+                        if (!current()) return
+                        view.results = reset ? data.results : view.results.concat(data.results)
+                        view.offset = view.results.length
+                        view.has_more = data.has_more
+                        view.truncated = Boolean(data.truncated)
+                    } catch (e) {
+                        if (current()) view.error = 'Could not load results'
+                    } finally {
+                        if (current()) view.loading = false
+                    }
+                }
+                const openTagResult = async (row) => {
+                    closeTagView()
+                    await openNotificationTarget(row.chat_ref, row.id)
+                }
+                // One delegated listener: tag anchors are injected via v-html, so
+                // they cannot carry Vue handlers themselves.
+                document.addEventListener('click', (event) => {
+                    const link = event.target.closest ? event.target.closest('a.tag-link') : null
+                    if (!link) return
+                    event.preventDefault()
+                    openTagView(link.dataset.tag)
+                })
+
                 let pendingNotificationClick = null
                 let notificationClickReady = false
                 const flushPendingNotificationClick = async () => {
@@ -5646,6 +5757,35 @@
                     return [...url].map((char) => replacements[char] || char).join('')
                 }
 
+                // Telegram-style tag entities: #hashtags and $cashtags become
+                // clickable, mirroring the official apps (tap opens the tag view).
+                // Hashtags are word chars with at least one non-digit; cashtags are
+                // 1-8 uppercase latin letters — the official shapes. Escaping happens
+                // per sub-segment here, exactly once, same contract as linkifyText.
+                const TAG_TOKEN_RE = /([#$])([\p{L}\p{N}_]{1,64})/gu
+                const isTagToken = (sigil, body) => (sigil === '#'
+                    ? !/^\p{Nd}+$/u.test(body)
+                    : /^[A-Z]{1,8}$/.test(body))
+                const tagifyText = (raw) => {
+                    let html = ''
+                    let last = 0
+                    for (const match of raw.matchAll(TAG_TOKEN_RE)) {
+                        const token = match[0]
+                        const prev = match.index > 0 ? raw[match.index - 1] : ''
+                        const next = raw[match.index + token.length]
+                        if (!isTagToken(match[1], match[2])) continue
+                        if (prev && /[\p{L}\p{N}_#$]/u.test(prev)) continue
+                        // A 64-char match with more word chars after it is a
+                        // truncated slice of a longer run, not a tag.
+                        if (next && /[\p{L}\p{N}_]/u.test(next)) continue
+                        html += escapeHtml(raw.slice(last, match.index))
+                        const escaped = escapeHtml(token)
+                        html += `<a href="#" class="tag-link" data-tag="${escaped}">${escaped}</a>`
+                        last = match.index + token.length
+                    }
+                    return html + escapeHtml(raw.slice(last))
+                }
+
                 const linkifyText = (text) => {
                     if (!text) return ''
                     // Split the RAW text on the url pattern. The capture group keeps the
@@ -5657,7 +5797,7 @@
                     return String(text)
                         .split(/(https?:\/\/\S+)/)
                         .map((part, index) => (index % 2 === 0
-                            ? escapeHtml(part)
+                            ? tagifyText(part)
                             : `<a href="${escapeUrlForAttr(part)}" target="_blank" rel="noopener noreferrer">${escapeHtml(part)}</a>`))
                         .join('')
                 }
@@ -7187,6 +7327,14 @@
                     isLightboxImage,
                     isLightboxVideo,
                     linkifyText,
+                    // Tag view
+                    tagView,
+                    tagTabs,
+                    openTagView,
+                    closeTagView,
+                    setTagTab,
+                    loadTagResults,
+                    openTagResult,
                     // Global audio player (#250)
                     audioTrack,
                     audioIsPlaying,

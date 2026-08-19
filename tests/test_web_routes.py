@@ -2051,3 +2051,62 @@ class TestRealtimeNotificationWithPush(_WebTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ============================================================================
+# /api/tags/{tag} — the tag view endpoint (q00)
+# ============================================================================
+
+
+@_skip_unless_web
+class TestTagSearchEndpoint(_WebTestBase):
+    """Validation, tab routing and scope passthrough for the tag view."""
+
+    def setUp(self):
+        super().setUp()
+        self.mock_db.search_messages_by_tag = AsyncMock(return_value={"results": [], "has_more": False})
+
+    async def test_rejects_things_that_are_not_tags(self):
+        async with self._client() as client:
+            for bad in ("plainword", "%23123", "%24usd", "%24TOOLONGXX", "%23"):
+                resp = await client.get(f"/api/tags/{bad}")
+                self.assertEqual(resp.status_code, 400, bad)
+        self.mock_db.search_messages_by_tag.assert_not_awaited()
+
+    async def test_accepts_hashtag_and_cashtag_and_echoes_the_tag(self):
+        async with self._client() as client:
+            resp = await client.get("/api/tags/%23news")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"results": [], "has_more": False, "tag": "#news"})
+
+            resp = await client.get("/api/tags/%24TSLA")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["tag"], "$TSLA")
+
+    async def test_scope_chat_requires_a_ref(self):
+        async with self._client() as client:
+            resp = await client.get("/api/tags/%23news?scope=chat")
+        self.assertEqual(resp.status_code, 400)
+        self.mock_db.search_messages_by_tag.assert_not_awaited()
+
+    async def test_scope_chat_rides_the_entitlement_resolver(self):
+        """An unknown or forbidden ref answers 404 before any search runs."""
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
+        async with self._client() as client:
+            resp = await client.get("/api/tags/%23news?scope=chat&chat_ref=ref00000000000000000042")
+        self.assertEqual(resp.status_code, 404)
+        self.mock_db.search_messages_by_tag.assert_not_awaited()
+
+    async def test_mine_maps_to_outgoing_only_and_all_does_not(self):
+        async with self._client() as client:
+            await client.get("/api/tags/%23news?scope=mine")
+            kwargs = self.mock_db.search_messages_by_tag.await_args.kwargs
+            self.assertTrue(kwargs["outgoing_only"])
+
+            await client.get("/api/tags/%23news?scope=all&limit=25&offset=50")
+            kwargs = self.mock_db.search_messages_by_tag.await_args.kwargs
+            self.assertNotIn("outgoing_only", kwargs)
+            self.assertEqual(kwargs["limit"], 25)
+            self.assertEqual(kwargs["offset"], 50)
+            # The viewer's entitlement rides in as a ChatScope, never recomputed downstream.
+            self.assertIsInstance(kwargs["scope"], web_main.ChatScope)
