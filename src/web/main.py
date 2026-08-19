@@ -3514,7 +3514,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============================================================================
 
 
-async def broadcast_new_message(chat_id: int, message: dict, account_id: int | None = None):
+async def broadcast_new_message(chat_id: int, message: dict, account_id: int | None = None) -> None:
     """Broadcast a new message to subscribed clients (frames are ref-addressed)."""
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:
@@ -3524,7 +3524,7 @@ async def broadcast_new_message(chat_id: int, message: dict, account_id: int | N
 
 async def broadcast_message_edit(
     chat_id: int, message_id: int, new_text: str, edit_date: str, account_id: int | None = None
-):
+) -> None:
     """Broadcast a message edit to subscribed clients (frames are ref-addressed)."""
     chat = await _broadcast_chat_row(chat_id, account_id)
     if chat is None:

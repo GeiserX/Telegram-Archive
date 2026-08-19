@@ -122,7 +122,7 @@ class RealtimeNotifier:
 
     async def notify(
         self, notification_type: NotificationType, chat_id: int, data: dict, *, account_id: int | None = None
-    ):
+    ) -> None:
         """
         Send a notification.
 

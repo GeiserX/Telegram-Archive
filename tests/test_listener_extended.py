@@ -2562,7 +2562,7 @@ class TestRealtimeMediaAttributes:
 class TestNotifyUpdateCapturingAccount:
     """#315: _notify_update forwards the account whose rows were just written."""
 
-    async def test_notify_update_passes_capturing_account(self):
+    async def test_notify_update_passes_capturing_account(self) -> None:
         from src.realtime import NotificationType
 
         listener = TelegramListener(_make_config(), _make_db(), account_id=7)

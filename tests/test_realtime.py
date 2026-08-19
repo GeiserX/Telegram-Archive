@@ -975,7 +975,7 @@ class TestListenPostgres:
 class TestNotifierAccountIdPayload:
     """#315: the payload names the capturing account so the viewer can scope its lookup."""
 
-    async def test_notify_includes_account_id(self):
+    async def test_notify_includes_account_id(self) -> None:
         mock_db = MagicMock()
         mock_db._is_sqlite = False
         notifier = RealtimeNotifier(db_manager=mock_db)
@@ -986,7 +986,7 @@ class TestNotifierAccountIdPayload:
 
         assert mock_pg.call_args[0][0]["account_id"] == 7
 
-    async def test_notify_defaults_account_id_to_none(self):
+    async def test_notify_defaults_account_id_to_none(self) -> None:
         """Legacy senders: the key is present and None, keeping the viewer ambiguity guard."""
         notifier = RealtimeNotifier()
         with patch.dict(os.environ, {"DB_TYPE": "sqlite"}, clear=True):
