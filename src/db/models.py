@@ -178,7 +178,6 @@ class Message(Base):
     __table_args__ = (
         PrimaryKeyConstraint("account_id", "chat_id", "id"),
         ForeignKeyConstraint(["account_id", "chat_id"], ["chats.account_id", "chats.id"], name="fk_messages_chat"),
-        Index("idx_messages_chat_id", "chat_id"),
         Index("idx_messages_date", "date"),
         Index("idx_messages_sender_id", "sender_id"),
         # Composite index for fast pagination: WHERE chat_id = ? ORDER BY date DESC
