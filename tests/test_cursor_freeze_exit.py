@@ -91,7 +91,7 @@ class _FakeDb:
         self.metadata[key] = value
 
     def failure_record(self, chat_id=CHAT_ID):
-        raw = self.metadata.get(TelegramBackup._message_failure_key(chat_id))
+        raw = self.metadata.get(TelegramBackup._message_failure_key(chat_id, 1))
         return json.loads(raw) if raw else {}
 
 
@@ -245,7 +245,7 @@ class TestPermanentFailureStopsCostingTheWholeTail(CursorFreezeExitTestCase):
         precisely the ordering the record is written in.
         """
         self.db.cursor = 2
-        self.db.metadata[TelegramBackup._message_failure_key(CHAT_ID)] = json.dumps(
+        self.db.metadata[TelegramBackup._message_failure_key(CHAT_ID, 1)] = json.dumps(
             {"frozen_id": 0, "runs": 0, "given_up_total": 1, "given_up_ids": [7]}
         )
         self.available = [3, 4, 5, 6, 7]
@@ -419,7 +419,7 @@ class TestTheRetryTheExitMustNotCost(CursorFreezeExitTestCase):
         """Unreadable state must never be read as 'this already failed once'."""
         self.available = list(range(1, 11))
         self.poison_ids = {5}
-        self.db.metadata[TelegramBackup._message_failure_key(CHAT_ID)] = "{not json"
+        self.db.metadata[TelegramBackup._message_failure_key(CHAT_ID, 1)] = "{not json"
 
         self._run_backup()
 

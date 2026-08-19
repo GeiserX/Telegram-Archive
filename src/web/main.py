@@ -33,6 +33,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import ChatScope, parse_entitlement_column
+from ..db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename
 from ..realtime import RealtimeListener
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
@@ -2498,9 +2499,20 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         stats["show_stats"] = config.show_stats  # Whether to show stats UI
 
         # Check if real-time listener is active (written by backup container)
-        listener_active_since = await db.get_metadata("listener_active_since")
-        stats["listener_active"] = bool(listener_active_since)
-        stats["listener_active_since"] = listener_active_since if listener_active_since else None
+        # Per-account keys since 8.1 (#313): active = any account's listener is
+        # up; "since" = the earliest active one. Account 1 uses the legacy key.
+        active_times = []
+        try:
+            account_ids = list(await db.get_account_ids())
+        except Exception:
+            # Advisory UI status only — degrade to the legacy single-account key.
+            account_ids = [DEFAULT_ACCOUNT_ID]
+        for account_id in account_ids:
+            value = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
+            if value:
+                active_times.append(value)
+        stats["listener_active"] = bool(active_times)
+        stats["listener_active_since"] = min(active_times) if active_times else None
 
         # Check if a backup is currently in progress (written by backup engine)
         backup_in_progress = await db.get_metadata("backup_in_progress")

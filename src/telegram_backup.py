@@ -51,6 +51,7 @@ from telethon.utils import get_peer_id
 from .avatar_utils import get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
+from .db.models import account_metadata_key
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
@@ -673,7 +674,7 @@ class TelegramBackup:
         if not self.config.follow_chat_migrations:
             return
         try:
-            raw = await self.db.get_metadata("followed_migrations")
+            raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
         except Exception as e:
             logger.warning("Could not load followed migrations: %s", type(e).__name__)
             return
@@ -706,7 +707,7 @@ class TelegramBackup:
         and a zero proof-limit always invalidates.
         """
         try:
-            raw = await self.db.get_metadata("whitelist_unresolved_ids")
+            raw = await self.db.get_metadata(account_metadata_key("whitelist_unresolved_ids", self.account_id))
         except Exception as e:
             logger.debug("Could not load unresolved whitelist ids (%s)", type(e).__name__)
             return 0, set()
@@ -735,7 +736,7 @@ class TelegramBackup:
         """
         try:
             await self.db.set_metadata(
-                "whitelist_unresolved_ids",
+                account_metadata_key("whitelist_unresolved_ids", self.account_id),
                 json.dumps({"limit": limit, "ids": sorted(ids)}),
             )
         except Exception as e:
@@ -819,7 +820,10 @@ class TelegramBackup:
                 # Adopt: persist first (durable), then capture this run.
                 self._followed_migration_ids |= out_of_scope
                 try:
-                    await self.db.set_metadata("followed_migrations", json.dumps(sorted(self._followed_migration_ids)))
+                    await self.db.set_metadata(
+                        account_metadata_key("followed_migrations", self.account_id),
+                        json.dumps(sorted(self._followed_migration_ids)),
+                    )
                 except Exception as e:
                     logger.warning("Could not persist followed migrations: %s", type(e).__name__)
                 captured = 0
@@ -1779,9 +1783,13 @@ class TelegramBackup:
         logger.info("=" * 60)
 
     @staticmethod
-    def _message_failure_key(chat_id: int) -> str:
-        """Metadata KV key holding one chat's message-failure record."""
-        return f"message_failures_{chat_id}"
+    def _message_failure_key(chat_id: int, account_id: int) -> str:
+        """Metadata KV key holding one (account, chat) message-failure record.
+
+        Chat ids collide across accounts since 8.0, so the key carries the
+        account; account 1 keeps the bare legacy key (#313 review).
+        """
+        return account_metadata_key(f"message_failures_{chat_id}", account_id)
 
     async def _load_message_failures(self, chat_id: int) -> dict:
         """Load the durable per-chat message-failure record from the metadata KV.
@@ -1807,7 +1815,7 @@ class TelegramBackup:
         """
         state: dict = {"frozen_id": 0, "runs": 0, "given_up_total": 0, "given_up_ids": set()}
         try:
-            raw = await self.db.get_metadata(self._message_failure_key(chat_id))
+            raw = await self.db.get_metadata(self._message_failure_key(chat_id, self.account_id))
         except Exception as e:
             logger.debug("Could not load the message-failure record (%s)", type(e).__name__)
             return state
@@ -1841,7 +1849,7 @@ class TelegramBackup:
         """
         try:
             await self.db.set_metadata(
-                self._message_failure_key(chat_id),
+                self._message_failure_key(chat_id, self.account_id),
                 json.dumps(
                     {
                         "frozen_id": state["frozen_id"],
@@ -2431,7 +2439,7 @@ class TelegramBackup:
         if self.config.reaction_resweep_days <= 0:
             return
         try:
-            raw = await self.db.get_metadata("reaction_resweep_cycle_done")
+            raw = await self.db.get_metadata(account_metadata_key("reaction_resweep_cycle_done", self.account_id))
             if not raw:
                 return
             state = json.loads(raw)
@@ -2467,7 +2475,9 @@ class TelegramBackup:
                     "done": sorted(self._resweep_cycle_done),
                     "partial": {str(c): n for c, n in self._resweep_partial.items()},
                 }
-                await self.db.set_metadata("reaction_resweep_cycle_done", json.dumps(state))
+                await self.db.set_metadata(
+                    account_metadata_key("reaction_resweep_cycle_done", self.account_id), json.dumps(state)
+                )
                 logger.warning(
                     "Reaction resweep deferred %d dialogs to the next run after FloodWaits; "
                     "%d dialogs are done this cycle",
@@ -2476,7 +2486,7 @@ class TelegramBackup:
                 )
             else:
                 # Clean run: the cycle is complete, next run starts fresh.
-                await self.db.set_metadata("reaction_resweep_cycle_done", "{}")
+                await self.db.set_metadata(account_metadata_key("reaction_resweep_cycle_done", self.account_id), "{}")
         except Exception as e:
             logger.warning("Could not persist reaction resweep cycle state: %s", type(e).__name__)
 
@@ -4000,7 +4010,7 @@ async def run_backup(config: Config, client: TelegramClient | None = None, *, ac
     for account in config.accounts:
         try:
             backup = await TelegramBackup.create(
-                config, account=account, account_resolver=_account_row_resolver(account)
+                config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
             )
             await _execute_backup(backup, config)
         except Exception as e:
@@ -4070,7 +4080,7 @@ async def run_fill_gaps(
     for account in config.accounts:
         try:
             backup = await TelegramBackup.create(
-                config, account=account, account_resolver=_account_row_resolver(account)
+                config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
             )
             summaries.append(await _execute_fill_gaps(backup, config, chat_id))
         except Exception as e:

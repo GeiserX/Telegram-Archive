@@ -708,6 +708,12 @@ class DatabaseAdapter:
             await session.commit()
 
     @retry_on_locked()
+    async def get_account_ids(self) -> list[int]:
+        """All accounts.id values, ascending (viewer status aggregation, 8.1)."""
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(Account.id).order_by(Account.id))
+            return [row[0] for row in result]
+
     async def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key."""
         async with self.db_manager.async_session_factory() as session:
