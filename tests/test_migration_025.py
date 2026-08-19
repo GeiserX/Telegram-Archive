@@ -21,6 +21,8 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy.engine import Connection
 
+from src.db.models import Message
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parent.parent / "alembic" / "versions" / "20260819_025_drop_redundant_chat_id_index.py"
 )
@@ -68,6 +70,11 @@ class TestMigration025(unittest.TestCase):
         self.assertEqual(migration.revision, "025")
         self.assertEqual(migration.down_revision, "024")
 
+    def test_model_no_longer_declares_the_index(self) -> None:
+        """The other half of this change: models.py must agree with 025."""
+        declared = {ix.name for ix in Message.__table__.indexes}
+        self.assertNotIn(DROPPED, declared)
+
     def test_drops_the_redundant_index(self) -> None:
         migration = _load_migration()
         engine = sa.create_engine("sqlite://")
@@ -106,6 +113,8 @@ class TestMigration025(unittest.TestCase):
             _run(conn, migration.downgrade)
 
             self.assertIn(DROPPED, _indexes(conn))
+            recreated = next(ix for ix in sa.inspect(conn).get_indexes("messages") if ix["name"] == DROPPED)
+            self.assertEqual(recreated["column_names"], ["chat_id"])
 
     def test_no_messages_table_is_survivable(self) -> None:
         migration = _load_migration()
