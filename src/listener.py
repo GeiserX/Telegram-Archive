@@ -46,6 +46,7 @@ from .message_utils import (
     extract_media_attributes,
     extract_reactions,
     extract_topic_id,
+    extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
     sanitize_media_filename,
@@ -1177,6 +1178,11 @@ class TelegramListener:
                 # Capture grouped_id for album detection (multiple photos/videos sent together)
                 if message.grouped_id:
                     message_data["raw_data"]["grouped_id"] = str(message.grouped_id)
+
+                # Capture-time web preview (mf7) — same shape as the sweep writes.
+                webpage_preview = extract_webpage_preview(message.media)
+                if webpage_preview is not None:
+                    message_data["raw_data"]["webpage"] = webpage_preview
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None

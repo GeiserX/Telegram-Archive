@@ -636,6 +636,31 @@ def media_display_filename(stored_name: str) -> str:
     return name or stored_name
 
 
+def extract_webpage_preview(media: object) -> dict | None:
+    """The capture-time web preview of a message, or None (link previews, mf7).
+
+    Telegram attaches at most one webpage per message (``MessageMediaWebPage``).
+    Only a full ``WebPage`` carries preview fields — ``WebPageEmpty`` (no
+    preview or dead link), ``WebPagePending`` (still resolving at send time)
+    and ``WebPageNotModified`` never do. The fields are whatever Telegram had
+    resolved when the message was archived, which is the point: the card keeps
+    meaning what it meant then, even after the link dies. Type-name checks
+    (not isinstance) follow the attribute-classification precedent in the
+    media type detectors and keep the helper trivially testable with stubs.
+    """
+    if type(media).__name__ != "MessageMediaWebPage":
+        return None
+    webpage = getattr(media, "webpage", None)
+    if webpage is None or type(webpage).__name__ != "WebPage":
+        return None
+    preview: dict[str, str] = {}
+    for field in ("url", "display_url", "site_name", "title", "description"):
+        value = getattr(webpage, field, None)
+        if isinstance(value, str) and value:
+            preview[field] = value
+    return preview or None
+
+
 def describe_exception(exc: BaseException) -> str:
     """Exception detail that cannot smuggle a filesystem path into the logs.
 

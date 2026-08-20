@@ -62,6 +62,7 @@ from .message_utils import (
     extract_media_attributes,
     extract_reactions,
     extract_topic_id,
+    extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
     resolve_shared_file_path,
@@ -2792,6 +2793,12 @@ class TelegramBackup:
             "is_outgoing": 1 if message.out else 0,
             "is_pinned": 1 if getattr(message, "pinned", False) else 0,
         }
+
+        # Capture-time web preview (mf7): Telegram resolved it when the
+        # message was archived, so the card survives the link dying later.
+        webpage_preview = extract_webpage_preview(message.media)
+        if webpage_preview is not None:
+            message_data["raw_data"]["webpage"] = webpage_preview
 
         # Preserve service-action metadata (e.g. forum topic creations and
         # renames) so historical backfills carry the same raw_data *shape* AND
