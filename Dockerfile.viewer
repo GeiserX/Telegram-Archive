@@ -25,6 +25,7 @@ COPY src/realtime.py ./src/
 COPY src/message_utils.py ./src/
 COPY src/db/ ./src/db/
 COPY src/web/ ./src/web/
+COPY scripts/healthcheck_viewer.py ./scripts/healthcheck_viewer.py
 
 # Create non-root user for security
 RUN useradd -m -u 1000 telegram && \
@@ -42,6 +43,11 @@ ENV BACKUP_PATH=/data/backups \
 
 # Volume for persistent data (read-only access to backups)
 VOLUME ["/data"]
+
+# Healthy means /api/health answers "ok" — "degraded" (database unreachable)
+# is unhealthy, because a viewer that cannot read the archive is not serving.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD ["python3", "/app/scripts/healthcheck_viewer.py"]
 
 # Expose web viewer port
 EXPOSE 8000
