@@ -14,9 +14,12 @@ not N concurrent full sweeps from one box.
 """
 
 import asyncio
+import contextlib
 import logging
+import os
 import signal
 import sys
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -452,6 +455,26 @@ class BackupScheduler:
         if entry.listener:
             await entry.listener._load_tracked_chats()
 
+    async def _heartbeat_loop(self) -> None:
+        """Touch the liveness file while the event loop is responsive.
+
+        The Docker HEALTHCHECK (scripts/healthcheck_backup.py) compares this
+        file's mtime against a threshold: a dead process, a wedged event loop,
+        or an asyncio deadlock all stop the touches — the "dead archiver looks
+        healthy" failure 9t6.8.10 exists to expose. Started at the very top of
+        run_forever, so hour-long initial sweeps keep a fresh heartbeat: they
+        await the network constantly, and a responsive loop keeps scheduling
+        this task.
+        """
+        path = os.getenv("HEARTBEAT_FILE", "/tmp/telegram-archive.heartbeat")
+        while True:
+            try:
+                with open(path, "w") as fh:
+                    fh.write(str(int(time.time())))
+            except OSError as e:
+                logger.warning(f"Could not write heartbeat: {type(e).__name__}")
+            await asyncio.sleep(30)
+
     async def run_forever(self):
         """
         Keep the scheduler running with optional listeners.
@@ -463,6 +486,10 @@ class BackupScheduler:
         4. Run initial backup, account by account (shared connections)
         5. Keep running until stopped
         """
+        # Liveness heartbeat for the Docker healthcheck — first, so a slow
+        # connect or an hours-long initial sweep never reads as dead.
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="health_heartbeat")
+
         # Establish shared connections
         await self._connect()
 
@@ -522,6 +549,9 @@ class BackupScheduler:
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
         finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
             await self._stop_listener()
             self.stop()
             await self._disconnect()
