@@ -1,0 +1,26 @@
+# Vendored third-party assets: origin URL -> sha256 of the local copy.
+# Re-vendor by fetching the URL and replacing the file; keep versions pinned.
+https://cdn.tailwindcss.com/3.4.17 -> 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15  tailwindcss-play-3.4.17.js
+https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js -> 45c5186437878319a4b86339f475e8e2f0b27e1752f9e6387ebb15854425847f  vue-3.5.41.global.prod.js
+https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js -> 081737985335af4be15fc676ed4ccc0703c7446c6b5cbc9317e40bcdc6428e5d  moment-2.29.4.min.js
+https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js -> d92825b456bb1537593c4c3e68eb08bad49cbd352846faf660afcf17cfe7e98b  moment-timezone-with-data-1970-2030-0.5.43.min.js
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css -> 1edb1725a9ea8ca4dcf2f5508cee183218aa1685e47c1b23056717f754f58ebf  fontawesome/css/all.min.css
+https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css -> 1b34a42552c96f10e4dfaaa4a367276b03868aacff63c1ac42ffe331352bc754  flatpickr-4.6.13.min.css
+https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js -> 1eeab1cb779471a0b0aaa93dd91c2eb1aa537d696f01ab05ea9dabc55e8525a1  flatpickr-4.6.13.min.js
+https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap -> 41d20bdccd3bfbd1935066f356c4cef22e3fd05a8f6b33f0dfad07121dad4f42  inter.css (URLs rewritten to /static/vendor/fonts/)
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-brands-400.ttf -> 20c4a58bc9d1d69e935d06f1528923646a715be5e218665655cade8f5f1b8c00  fontawesome/webfonts/fa-brands-400.ttf
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-brands-400.woff2 -> 748332090c4b8e20f95d0ff59f0be20fa9c889359d3b36d4b886d73376054207  fontawesome/webfonts/fa-brands-400.woff2
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-regular-400.ttf -> 528d022dce6725f8a0811fd91d8e6513445c81ef33353a5c3234eab932551abf  fontawesome/webfonts/fa-regular-400.ttf
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-regular-400.woff2 -> 8e7e5ea1b15f62ab14dbd41768e8fbcd21cc859a4ea5da812457ee714299fb35  fontawesome/webfonts/fa-regular-400.woff2
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.ttf -> 67a65763c7f80903d81603bbeb9049fc2bf28508479b83ed011fe24c71fa950a  fontawesome/webfonts/fa-solid-900.ttf
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2 -> 7152a6933ee3d690ec2af3d09da9d701723d16aa3410a6d80f28ff8866f3b880  fontawesome/webfonts/fa-solid-900.woff2
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-v4compatibility.ttf -> 0515a423f828ce4e6accf92a2ea0b03d19d31cc86d9af0373291e1fd4db5f348  fontawesome/webfonts/fa-v4compatibility.ttf
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-v4compatibility.woff2 -> 694a17c3d9d6c05f8aac63c544615552a4b220e9a4de863d87341a6bcfc1bc8d  fontawesome/webfonts/fa-v4compatibility.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa0ZL7W0Q5n-wU.woff2 -> aebf2ab4a4ce6810d73c1ac7be7cafb4e5ec4cee2d6db5fb3e09691747ec4bd6  fonts/inter-1-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa0ZL7W0Q5n-wU.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2 -> c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4  fonts/inter-2-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1pL7W0Q5n-wU.woff2 -> 46dd4cdca58c26ae87cc6927657bf83b2e8abfc39ffd0ab176e301a8d28d22bf  fonts/inter-3-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1pL7W0Q5n-wU.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7W0Q5n-wU.woff2 -> a28eb6d3ccb534ae0c94ca999371df024aab60b08c3c8a5720ee9e32fa0faaa2  fonts/inter-4-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7W0Q5n-wU.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2JL7W0Q5n-wU.woff2 -> fccca918fea40089dacadc7045861314d1a6bc91f1f323cc1eeb22ebcdb321b5  fonts/inter-5-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2JL7W0Q5n-wU.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2ZL7W0Q5n-wU.woff2 -> a2e2c783ca6f9c20486e81e72a279203e86730bbf8f01ff6a5ee9dbd09e1c271  fonts/inter-6-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2ZL7W0Q5n-wU.woff2
+https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2pL7W0Q5n-wU.woff2 -> 8db00ff46c67b22cda8bed865acf7077651cac8d2841d5b40980556b48961931  fonts/inter-7-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2pL7W0Q5n-wU.woff2
+# Inter is licensed under the SIL Open Font License 1.1.
