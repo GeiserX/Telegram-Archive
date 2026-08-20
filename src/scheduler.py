@@ -113,7 +113,12 @@ class BackupScheduler:
         and docker's grace period still ends in SIGKILL.
         """
         logger.info(f"Received signal {signum}, shutting down gracefully...")
-        self.stop()
+        try:
+            self.stop()
+        except Exception as e:
+            # A wedged scheduler must not prevent the cancel below — the
+            # cancel IS the shutdown; stop() is retried in the teardown.
+            logger.warning(f"Scheduler stop failed during shutdown request: {type(e).__name__}")
         if not main_task.done() and not self._shutdown_requested:
             self._shutdown_requested = True
             main_task.cancel()
