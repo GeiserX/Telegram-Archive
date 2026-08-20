@@ -72,6 +72,18 @@ class TestOpsWiring:
         assert compose.count("stop_grace_period: 90s") == 2
         assert compose.count('max-size: "10m"') == 2
 
+    def test_compose_loads_dotenv_into_both_containers(self):
+        """The README path is `cp .env.example .env; docker compose up -d` —
+        but compose uses .env only to interpolate ${VAR} references in the
+        file. Without env_file, every documented variable missing from an
+        environment: block is silently inert inside the container; worst is
+        DISPLAY_CHAT_IDS, where a viewer shared assuming restriction
+        restricts nothing."""
+        compose = (REPO / "docker-compose.yml").read_text()
+        assert compose.count("env_file:") == 2
+        assert compose.count("- path: .env") == 2
+        assert compose.count("required: false") == 2
+
     def test_run_forever_registers_loop_signal_handlers(self):
         src = (REPO / "src" / "scheduler.py").read_text()
         assert "loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)" in src

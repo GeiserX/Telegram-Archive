@@ -14,6 +14,16 @@ services:
         max-file: "3"
     command: ["python", "-m", "src", "schedule"]
 
+    # Every variable documented in .env.example reaches the container. The
+    # environment: block below interpolates ${VAR} references for readable
+    # defaults, but compose injects nothing from .env into a container by
+    # itself — without this, a documented variable missing from that block
+    # (FILL_GAPS, PARALLEL_DOWNLOAD_*, LISTEN_* sub-toggles, …) was silently
+    # inert. Explicit environment: entries below still win on conflict.
+    env_file:
+      - path: .env
+        required: false
+
     environment:
       # Telegram Credentials (required)
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
@@ -178,6 +188,15 @@ services:
       # Bind to localhost by default. Put this behind a reverse proxy with auth
       # configured before exposing it publicly.
       - "127.0.0.1:8000:8000"
+
+    # Same contract as telegram-backup: .env reaches the container wholesale,
+    # so documented viewer settings (DISPLAY_CHAT_IDS, VAPID_*, AUTH_PROXY_*,
+    # CORS_ORIGINS, …) take effect without needing an entry below. Explicit
+    # environment: entries below still win on conflict.
+    env_file:
+      - path: .env
+        required: false
+
     environment:
       BACKUP_PATH: /data/backups
 
