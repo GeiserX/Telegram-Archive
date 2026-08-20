@@ -144,3 +144,22 @@ class TestImageWiring:
         start = src.index("health_heartbeat")
         connect = src.index("await self._connect()")
         assert start < connect, "heartbeat must start before the (possibly slow) connect"
+
+
+class TestHeartbeatLifetime:
+    async def test_startup_failure_cancels_the_heartbeat(self, tmp_path, monkeypatch):
+        """Review edge: a failed connect must not leave the heartbeat ticking
+        a healthy file behind on a still-alive event loop."""
+        from src.scheduler import BackupScheduler
+
+        monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "beat"))
+        scheduler = BackupScheduler.__new__(BackupScheduler)
+        scheduler._connect = unittest.mock.AsyncMock(side_effect=RuntimeError("no network"))
+
+        try:
+            await scheduler.run_forever()
+        except RuntimeError:
+            pass
+
+        lingering = [t for t in asyncio.all_tasks() if t.get_name() == "health_heartbeat" and not t.done()]
+        assert lingering == [], "heartbeat task must be cancelled on startup failure"

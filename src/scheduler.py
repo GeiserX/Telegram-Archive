@@ -489,72 +489,76 @@ class BackupScheduler:
         # Liveness heartbeat for the Docker healthcheck — first, so a slow
         # connect or an hours-long initial sweep never reads as dead.
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="health_heartbeat")
-
-        # Establish shared connections
-        await self._connect()
-
-        # Start scheduler
-        self.start()
-
-        # Start real-time listeners if enabled (each uses its shared connection).
-        self._listener_enabled = self.config.enable_listener
-        await self._start_listener()
-
-        # Run initial backup immediately on startup (uses shared connections)
-        logger.info("Running initial backup on startup...")
-        async with self._backup_lock:
-            try:
-                for entry in self._accounts:
-                    try:
-                        await self._initial_backup_account(entry)
-                    except Exception as e:
-                        # Same continuation rule as the scheduled sweep: only a
-                        # single-account deployment lets the failure reach the
-                        # pre-8.0 catch below.
-                        if len(self._accounts) == 1:
-                            raise
-                        logger.error(f"account {entry.account.index} failed: {type(e).__name__}")
-            except Exception as e:
-                logger.error(f"Initial backup failed: {e}", exc_info=True)
-
-        # Keep running until stopped
+        # The outer finally owns the heartbeat's lifetime: startup failures in
+        # connect/start must not leave it ticking a "healthy" file behind.
         try:
-            while self.running:
-                await asyncio.sleep(1)
 
-                # Check if any listener task died, or never came up at all (a failed
-                # restart leaves listener_task as None -- see _start_account_listener),
-                # and restart it either way. Retrying on None (not just "died") is what
-                # keeps a flapping listener from being permanently disabled after a
-                # single failed restart attempt. Only dead entries are restarted --
-                # healthy accounts' listeners keep running untouched.
-                if self._listener_enabled and any(
-                    entry.listener_task is None or entry.listener_task.done() for entry in self._accounts
-                ):
+            # Establish shared connections
+            await self._connect()
+
+            # Start scheduler
+            self.start()
+
+            # Start real-time listeners if enabled (each uses its shared connection).
+            self._listener_enabled = self.config.enable_listener
+            await self._start_listener()
+
+            # Run initial backup immediately on startup (uses shared connections)
+            logger.info("Running initial backup on startup...")
+            async with self._backup_lock:
+                try:
                     for entry in self._accounts:
-                        if entry.listener_task is not None and entry.listener_task.done():
-                            # Check if there was an exception
-                            try:
-                                exc = entry.listener_task.exception()
-                                if exc:
-                                    logger.error(f"{entry.log_prefix}Listener task died with error: {exc}")
-                            except asyncio.CancelledError:
-                                pass
+                        try:
+                            await self._initial_backup_account(entry)
+                        except Exception as e:
+                            # Same continuation rule as the scheduled sweep: only a
+                            # single-account deployment lets the failure reach the
+                            # pre-8.0 catch below.
+                            if len(self._accounts) == 1:
+                                raise
+                            logger.error(f"account {entry.account.index} failed: {type(e).__name__}")
+                except Exception as e:
+                    logger.error(f"Initial backup failed: {e}", exc_info=True)
 
-                    logger.warning("Listener task not running, attempting restart...")
-                    await self._stop_listener(only_dead=True)
-                    await asyncio.sleep(5)  # Brief pause before restart
-                    await self._start_listener()
+            # Keep running until stopped
+            try:
+                while self.running:
+                    await asyncio.sleep(1)
 
-        except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received")
+                    # Check if any listener task died, or never came up at all (a failed
+                    # restart leaves listener_task as None -- see _start_account_listener),
+                    # and restart it either way. Retrying on None (not just "died") is what
+                    # keeps a flapping listener from being permanently disabled after a
+                    # single failed restart attempt. Only dead entries are restarted --
+                    # healthy accounts' listeners keep running untouched.
+                    if self._listener_enabled and any(
+                        entry.listener_task is None or entry.listener_task.done() for entry in self._accounts
+                    ):
+                        for entry in self._accounts:
+                            if entry.listener_task is not None and entry.listener_task.done():
+                                # Check if there was an exception
+                                try:
+                                    exc = entry.listener_task.exception()
+                                    if exc:
+                                        logger.error(f"{entry.log_prefix}Listener task died with error: {exc}")
+                                except asyncio.CancelledError:
+                                    pass
+
+                        logger.warning("Listener task not running, attempting restart...")
+                        await self._stop_listener(only_dead=True)
+                        await asyncio.sleep(5)  # Brief pause before restart
+                        await self._start_listener()
+
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received")
+            finally:
+                await self._stop_listener()
+                self.stop()
+                await self._disconnect()
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
-            await self._stop_listener()
-            self.stop()
-            await self._disconnect()
 
 
 async def main():
