@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Optional tag to use (e.g., v3.0.6). If not provided, uses latest from main.'
+        description: 'Republish an existing release tag (e.g., v3.0.6): rebuilds THAT tagged commit. Leave empty to build main.'
         required: false
         type: string
 
@@ -60,7 +60,24 @@ jobs:
       # create their own telegram_archive_pytest / _parity_* databases on it.
       TEST_POSTGRES_URL: postgresql://telegram:ci-not-a-secret@localhost:5432/telegram_archive_ci
     steps:
+      # A dispatch republish must rebuild the TAGGED commit, never re-stamp a
+      # version onto whatever ref the run happened to use. Refuse inputs that
+      # are not existing git tags before anything builds. The input reaches the
+      # shell via env, never inline interpolation.
+      - name: Refuse a dispatch tag that is not a real git tag
+        if: github.event.inputs.tag != ''
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          git ls-remote --exit-code --tags "https://github.com/${{ github.repository }}" "refs/tags/$DISPATCH_TAG" >/dev/null || {
+            echo "::error::'$DISPATCH_TAG' is not an existing git tag - the image tag and the git tag may never disagree"
+            exit 1
+          }
       - uses: actions/checkout@v7
+        with:
+          # Dispatch with a tag input builds that tag's commit; everything else
+          # keeps building the triggering ref exactly as before.
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -103,6 +120,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          # Same source rule as the test job: the dispatch tag input is
+          # authoritative for the content, not just the image label.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
