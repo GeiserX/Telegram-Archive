@@ -20,7 +20,7 @@ def _token_material(plaintext: str) -> tuple[str, str]:
     return token_hash, salt
 
 
-async def _seed_token(adapter, plaintext: str, *, revoked: int = 0) -> None:
+async def _seed_token(adapter, plaintext: str, *, revoked: int = 0) -> dict:
     token_hash, salt = _token_material(plaintext)
     created = await adapter.create_viewer_token(
         label="fixture",
@@ -31,6 +31,7 @@ async def _seed_token(adapter, plaintext: str, *, revoked: int = 0) -> None:
     )
     if revoked:
         await adapter.update_viewer_token(created["id"], is_revoked=1)
+    return created
 
 
 class TestVerifyBehavior:
@@ -71,3 +72,18 @@ class TestOffLoopContract:
         assert match is not None
         assert miss is None
         assert calls == ["derive_match", "derive_match"]
+
+
+class TestMidScanRevocation:
+    async def test_a_token_revoked_during_the_scan_never_authenticates(self, real_adapter):
+        """The worker-thread yield must not let a stale match through (review finding)."""
+        created = await _seed_token(real_adapter, "token/race")
+        real_to_thread = asyncio.to_thread
+
+        async def revoke_then_derive(fn, *args, **kwargs):
+            # A concurrent admin revokes the token while the derivation runs.
+            await real_adapter.update_viewer_token(created["id"], is_revoked=1)
+            return await real_to_thread(fn, *args, **kwargs)
+
+        with unittest.mock.patch.object(adapter_module.asyncio, "to_thread", revoke_then_derive):
+            assert await real_adapter.verify_viewer_token("token/race") is None

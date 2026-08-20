@@ -4189,10 +4189,27 @@ class DatabaseAdapter:
             match_index = await asyncio.to_thread(derive_match)
             if match_index is None:
                 return None
+            # The worker-thread yield is wide (~50ms per stored token), so the
+            # matched row may have been revoked or expired meanwhile. The
+            # update re-checks both conditions in SQL and increments use_count
+            # atomically; zero rows updated means the token died mid-scan and
+            # must not authenticate.
             record = candidates[match_index]
-            record.last_used_at = utcnow_naive()
-            record.use_count = (record.use_count or 0) + 1
+            now = utcnow_naive()
+            result = await session.execute(
+                update(ViewerToken)
+                .where(
+                    ViewerToken.id == record.id,
+                    ViewerToken.is_revoked == 0,
+                    or_(ViewerToken.expires_at.is_(None), ViewerToken.expires_at >= now),
+                )
+                .values(last_used_at=now, use_count=func.coalesce(ViewerToken.use_count, 0) + 1)
+            )
+            if result.rowcount == 0:
+                await session.rollback()
+                return None
             await session.commit()
+            await session.refresh(record)
             return self._viewer_token_to_dict(record)
 
     @retry_on_locked()
