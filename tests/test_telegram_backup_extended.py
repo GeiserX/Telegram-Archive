@@ -382,6 +382,90 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
         # No redownload attempted
         self.backup.client.get_messages.assert_not_awaited()
 
+    def test_failed_redownload_restores_the_corrupted_original(self):
+        """9t6.5.12: the replacement must be in hand before the original goes."""
+        corrupted = os.path.join(self.temp_dir, "corrupt.jpg")
+        with open(corrupted, "wb") as f:
+            f.write(b"original-bytes")
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {"id": "m1", "file_path": corrupted, "file_size": 999, "chat_id": 1, "message_id": 10}
+        ]
+        mock_msg = MagicMock()
+        mock_msg.id = 10
+        mock_msg.media = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
+        self.backup._process_media = AsyncMock(return_value=None)  # re-download fails
+
+        _run(self.backup._verify_and_redownload_media())
+
+        with open(corrupted, "rb") as f:
+            assert f.read() == b"original-bytes", "original must be restored on failure"
+        assert not os.path.lexists(corrupted + ".verify-bak")
+        self.backup.db.insert_media.assert_not_awaited()
+        self.backup.db.mark_media_for_redownload.assert_not_awaited()
+
+    def test_exception_during_redownload_restores_the_original_too(self):
+        corrupted = os.path.join(self.temp_dir, "corrupt2.jpg")
+        with open(corrupted, "wb") as f:
+            f.write(b"original-bytes")
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {"id": "m2", "file_path": corrupted, "file_size": 999, "chat_id": 1, "message_id": 11}
+        ]
+        mock_msg = MagicMock()
+        mock_msg.id = 11
+        mock_msg.media = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
+        self.backup._process_media = AsyncMock(side_effect=RuntimeError("boom"))
+
+        _run(self.backup._verify_and_redownload_media())
+
+        with open(corrupted, "rb") as f:
+            assert f.read() == b"original-bytes"
+
+    def test_failed_redownload_of_missing_file_flips_the_row(self):
+        """No file to preserve: the row must stop claiming downloaded=1."""
+        self.backup.db.get_media_for_verification.return_value = [
+            {"id": "m3", "file_path": "/nonexistent/gone.jpg", "file_size": 100, "chat_id": 1, "message_id": 12}
+        ]
+        mock_msg = MagicMock()
+        mock_msg.id = 12
+        mock_msg.media = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
+        self.backup._process_media = AsyncMock(return_value=None)
+
+        _run(self.backup._verify_and_redownload_media())
+
+        self.backup.db.mark_media_for_redownload.assert_awaited_once_with("m3", account_id=self.backup.account_id)
+
+    def test_successful_redownload_discards_the_sidestepped_backup(self):
+        corrupted = os.path.join(self.temp_dir, "corrupt3.jpg")
+        with open(corrupted, "wb") as f:
+            f.write(b"old-bytes")
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {"id": "m4", "file_path": corrupted, "file_size": 999, "chat_id": 1, "message_id": 13}
+        ]
+        mock_msg = MagicMock()
+        mock_msg.id = 13
+        mock_msg.media = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
+
+        async def fake_process(msg, chat_id):
+            with open(corrupted, "wb") as f:
+                f.write(b"fresh-bytes")
+            return {"downloaded": True}
+
+        self.backup._process_media = AsyncMock(side_effect=fake_process)
+
+        _run(self.backup._verify_and_redownload_media())
+
+        assert not os.path.lexists(corrupted + ".verify-bak")
+        with open(corrupted, "rb") as f:
+            assert f.read() == b"fresh-bytes"
+        self.backup.db.insert_media.assert_awaited_once()
+
     def test_missing_file_triggers_redownload(self):
         """Missing file on disk triggers re-download attempt."""
         self.backup.db.get_media_for_verification.return_value = [
