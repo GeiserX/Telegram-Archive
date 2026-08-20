@@ -136,6 +136,9 @@ class TestBackupSchedulerStart:
             scheduler.start()
 
             scheduler.scheduler.add_job.assert_called_once()
+            job_kwargs = scheduler.scheduler.add_job.call_args.kwargs
+            assert job_kwargs["misfire_grace_time"] == 3600
+            assert job_kwargs["coalesce"] is True
             scheduler.scheduler.start.assert_called_once()
             assert scheduler.running is True
 
