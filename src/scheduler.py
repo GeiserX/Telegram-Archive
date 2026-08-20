@@ -492,7 +492,6 @@ class BackupScheduler:
         # The outer finally owns the heartbeat's lifetime: startup failures in
         # connect/start must not leave it ticking a "healthy" file behind.
         try:
-
             # Establish shared connections
             await self._connect()
 
