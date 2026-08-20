@@ -97,6 +97,40 @@ class TestTeardownRobustness:
 
         scheduler._disconnect.assert_awaited()
 
+    async def test_failing_scheduler_stop_never_skips_disconnect(self, monkeypatch, tmp_path):
+        scheduler = _bare_scheduler(monkeypatch, tmp_path)
+        scheduler.stop = unittest.mock.MagicMock(side_effect=RuntimeError("apscheduler wedged"))
+        connect_started = asyncio.Event()
+
+        async def hanging_connect():
+            connect_started.set()
+            await asyncio.sleep(3600)
+
+        scheduler._connect = hanging_connect
+        task = asyncio.create_task(scheduler.run_forever())
+        await connect_started.wait()
+        scheduler._request_shutdown(task, 15)
+        await task
+
+        scheduler._disconnect.assert_awaited()
+
+    async def test_failing_disconnect_still_completes_cleanly(self, monkeypatch, tmp_path):
+        scheduler = _bare_scheduler(monkeypatch, tmp_path)
+        scheduler._disconnect = unittest.mock.AsyncMock(side_effect=RuntimeError("transport gone"))
+        connect_started = asyncio.Event()
+
+        async def hanging_connect():
+            connect_started.set()
+            await asyncio.sleep(3600)
+
+        scheduler._connect = hanging_connect
+        task = asyncio.create_task(scheduler.run_forever())
+        await connect_started.wait()
+        scheduler._request_shutdown(task, 15)
+        await task  # must not raise despite the failing disconnect
+
+        assert task.done() and not task.cancelled()
+
     def test_signal_handlers_are_removed_after_teardown(self):
         """Review finding: removal restores SIG_DFL, so it must run last."""
         src = (REPO / "src" / "scheduler.py").read_text()
