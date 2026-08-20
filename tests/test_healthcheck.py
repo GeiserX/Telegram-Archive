@@ -155,6 +155,10 @@ class TestHeartbeatLifetime:
         monkeypatch.setenv("HEARTBEAT_FILE", str(tmp_path / "beat"))
         scheduler = BackupScheduler.__new__(BackupScheduler)
         scheduler._connect = unittest.mock.AsyncMock(side_effect=RuntimeError("no network"))
+        # The consolidated finally now always runs full teardown.
+        scheduler._stop_listener = unittest.mock.AsyncMock()
+        scheduler._disconnect = unittest.mock.AsyncMock()
+        scheduler.stop = unittest.mock.MagicMock()
 
         try:
             await scheduler.run_forever()

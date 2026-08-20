@@ -96,9 +96,32 @@ class BackupScheduler:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
+        """Sync fallback for shutdown signals (non-asyncio contexts).
+
+        Only flips ``running`` via stop(); while run_forever is active the
+        asyncio-native handler below supersedes this and actually interrupts
+        the in-flight await (9t6.8.9).
+        """
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.stop()
+
+    def _request_shutdown(self, main_task: asyncio.Task, signum: int) -> None:
+        """Asyncio-native shutdown: cancel run_forever so teardown runs.
+
+        Idempotent — a second signal must not re-cancel the task while its
+        finally-teardown is awaiting, or the teardown itself gets truncated
+        and docker's grace period still ends in SIGKILL.
+        """
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        try:
+            self.stop()
+        except Exception as e:
+            # A wedged scheduler must not prevent the cancel below — the
+            # cancel IS the shutdown; stop() is retried in the teardown.
+            logger.warning(f"Scheduler stop failed during shutdown request: {type(e).__name__}")
+        if not main_task.done() and not self._shutdown_requested:
+            self._shutdown_requested = True
+            main_task.cancel()
 
     async def _resolve_account_rows(self) -> None:
         """Resolve each connected account's ``accounts`` row id, once.
@@ -489,6 +512,24 @@ class BackupScheduler:
         # Liveness heartbeat for the Docker healthcheck — first, so a slow
         # connect or an hours-long initial sweep never reads as dead.
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="health_heartbeat")
+        # asyncio-native shutdown (9t6.8.9): SIGTERM/SIGINT cancel THIS task,
+        # so a docker stop during connect or an hours-long initial sweep
+        # interrupts the in-flight await and the teardown in finally actually
+        # runs. The sync handlers from __init__ only flip `running`, which
+        # nothing checks until the keep-alive loop — during startup the grace
+        # period just expired into SIGKILL.
+        self._shutdown_requested = False
+        main_task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        registered_signals: list[int] = []
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)
+                registered_signals.append(signum)
+            except NotImplementedError, RuntimeError:
+                # Platforms/threads without loop signal support keep the
+                # sync fallback from __init__.
+                break
         # The outer finally owns the heartbeat's lifetime: startup failures in
         # connect/start must not leave it ticking a "healthy" file behind.
         try:
@@ -550,14 +591,34 @@ class BackupScheduler:
 
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received")
-            finally:
-                await self._stop_listener()
-                self.stop()
-                await self._disconnect()
+        except asyncio.CancelledError:
+            # A signal (or the embedder) cancelled us mid-await: the graceful
+            # path, not an error — teardown runs in finally either way.
+            logger.info("Shutdown requested; tearing down gracefully...")
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
+            # Teardown steps are independent: one failing must not skip the
+            # rest, or a raised listener close leaves connections open.
+            try:
+                await self._stop_listener()
+            except Exception as e:
+                logger.warning(f"Listener teardown failed: {type(e).__name__}")
+            try:
+                self.stop()
+            except Exception as e:
+                logger.warning(f"Scheduler stop failed: {type(e).__name__}")
+            try:
+                await self._disconnect()
+            except Exception as e:
+                logger.warning(f"Disconnect failed: {type(e).__name__}")
+            # Removing a loop handler restores SIG_DFL, so this runs LAST:
+            # a second signal during the steps above stays a logged no-op
+            # (idempotent _request_shutdown) instead of an instant kill.
+            for signum in registered_signals:
+                with contextlib.suppress(Exception):
+                    loop.remove_signal_handler(signum)
 
 
 async def main():
