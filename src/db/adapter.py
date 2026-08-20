@@ -2022,34 +2022,60 @@ class DatabaseAdapter:
             await session.commit()
             return result.rowcount
 
-    async def get_media_for_verification(self, *, account_id: int) -> list[dict[str, Any]]:
-        """
-        Get one account's media records that should have files on disk.
-        Used by VERIFY_MEDIA to check for missing/corrupted files — the caller
-        re-downloads what is missing, and only this account's session can.
+    async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
+        """Yield batches of one account's media records that should have files
+        on disk (``downloaded=1`` OR ``file_path`` set). Used by VERIFY_MEDIA —
+        the caller re-downloads what is missing, and only this account's
+        session can.
 
-        Returns media where downloaded=1 OR file_path is not null.
+        Keyset-paginated on ``id`` (a string, unique within one account),
+        projecting only the columns verification consumes, so memory stays
+        bounded by ``batch_size`` regardless of archive size — materializing
+        this set as ORM rows OOM-killed the 256m backup container on large
+        archives, the same failure ``iter_media_paths_for_repair`` streams
+        around.
         """
-        async with self.db_manager.async_session_factory() as session:
-            stmt = (
-                select(Media)
-                .where(and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None))))
-                .order_by(Media.chat_id, Media.message_id)
-            )
-            result = await session.execute(stmt)
-            return [
+        last_id: str | None = None
+        while True:
+            async with self.db_manager.async_session_factory() as session:
+                stmt = (
+                    select(
+                        Media.id,
+                        Media.message_id,
+                        Media.chat_id,
+                        Media.type,
+                        Media.file_path,
+                        Media.file_name,
+                        Media.file_size,
+                        Media.downloaded,
+                    )
+                    .where(
+                        and_(Media.account_id == account_id, or_(Media.downloaded == 1, Media.file_path.isnot(None)))
+                    )
+                    .order_by(Media.id)
+                    .limit(batch_size)
+                )
+                if last_id is not None:
+                    stmt = stmt.where(Media.id > last_id)
+                rows = (await session.execute(stmt)).all()
+            if not rows:
+                return
+            yield [
                 {
-                    "id": m.id,
-                    "message_id": m.message_id,
-                    "chat_id": m.chat_id,
-                    "type": m.type,
-                    "file_path": m.file_path,
-                    "file_name": m.file_name,
-                    "file_size": m.file_size,
-                    "downloaded": m.downloaded,
+                    "id": r[0],
+                    "message_id": r[1],
+                    "chat_id": r[2],
+                    "type": r[3],
+                    "file_path": r[4],
+                    "file_name": r[5],
+                    "file_size": r[6],
+                    "downloaded": r[7],
                 }
-                for m in result.scalars()
+                for r in rows
             ]
+            last_id = rows[-1][0]
+            if len(rows) < batch_size:
+                return
 
     async def iter_media_paths_for_repair(self, batch_size: int = 500):
         """Yield ``(account_id, id, file_path, file_name)`` batches for the #175 repair pass.
@@ -2060,9 +2086,9 @@ class DatabaseAdapter:
         — ``id`` alone stopped being unique in v8.0.0, and a strict ``>`` on a
         non-unique key silently skips the second account's copy of an id.
         Projects only the columns the repair needs, so memory stays bounded
-        regardless of table size. The full-table materialization in
-        ``get_media_for_verification`` OOM-killed the 256m backup container on
-        large archives; this streams instead.
+        regardless of table size. A full-table materialization of this table
+        once OOM-killed the 256m backup container on large archives; both this
+        repair pass and ``iter_media_for_verification`` stream instead.
         """
         last_key: tuple[int, str] | None = None
         while True:

@@ -48,6 +48,25 @@ def _run(coro):
         loop.close()
 
 
+def _stream_verification_batches(db):
+    """Bridge the streaming verification API onto legacy list seeding.
+
+    Production consumes ``iter_media_for_verification`` (async batches); these
+    tests seed a flat list on ``db.get_media_for_verification.return_value``.
+    Read the seeded list at call time and yield it as a single batch.
+    """
+
+    def _iter(**_kwargs):
+        async def _gen():
+            records = db.get_media_for_verification.return_value
+            if isinstance(records, list) and records:
+                yield records
+
+        return _gen()
+
+    db.iter_media_for_verification = _iter
+
+
 def _make_backup(**overrides):
     """Create a TelegramBackup instance via __new__ with sensible mock defaults."""
     backup = TelegramBackup.__new__(TelegramBackup)
@@ -60,6 +79,7 @@ def _make_backup(**overrides):
     backup.config.reaction_resweep_max_per_chat = 500
     backup.config.reaction_resweep_batch_delay_seconds = 0.0
     backup.db = overrides.get("db", AsyncMock())
+    _stream_verification_batches(backup.db)
     # Folder resolution reads the archived-chat snapshot; default to empty so
     # tests that exercise _backup_folders get an iterable, not a bare AsyncMock.
     backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
