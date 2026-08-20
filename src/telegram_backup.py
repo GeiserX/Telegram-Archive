@@ -1653,11 +1653,19 @@ class TelegramBackup:
                         failed += 1
                         continue
 
+                    backup_path = None
                     try:
-                        # Delete corrupted file if exists (lexists catches dangling symlinks)
+                        # A corrupted file is sidestepped, never pre-deleted: the
+                        # replacement must be in hand before the original goes.
+                        # Pre-deleting meant a failed re-download left the file
+                        # destroyed while the row kept claiming downloaded=1
+                        # (9t6.5.12) — and for media that cannot be re-fetched at
+                        # all (HTML-imported, #310) it was guaranteed loss.
+                        # lexists catches dangling symlinks.
                         file_path = record.get("file_path")
                         if file_path and os.path.lexists(file_path):
-                            os.remove(file_path)
+                            backup_path = file_path + ".verify-bak"
+                            os.replace(file_path, backup_path)
 
                         # Re-download using existing method
                         result = await self._process_media(msg, chat_id)
@@ -1665,12 +1673,23 @@ class TelegramBackup:
                             # Insert media record (message already exists for re-downloads)
                             await self.db.insert_media(result, account_id=self.account_id)
                             redownloaded += 1
+                            # Best-effort only: once the replacement is inserted,
+                            # nothing may fall into the recovery path — restoring
+                            # the sidestepped file NOW would put corrupted bytes
+                            # over the fresh ones while the row names the new file.
+                            if backup_path and os.path.lexists(backup_path):
+                                try:
+                                    os.remove(backup_path)
+                                except OSError as e:
+                                    logger.debug(f"Could not remove sidestep backup: {type(e).__name__}")
                             logger.debug("Re-downloaded media for message")
                         else:
                             failed += 1
+                            await self._recover_failed_verification(record, backup_path)
                             logger.warning("Failed to re-download media for message")
                     except Exception as e:
                         failed += 1
+                        await self._recover_failed_verification(record, backup_path)
                         logger.error(f"Error re-downloading media for message: {describe_exception(e)}")
 
             except Exception as e:
@@ -1682,6 +1701,31 @@ class TelegramBackup:
         logger.info(f"Re-downloaded: {redownloaded} files")
         logger.info(f"Failed/Unrecoverable: {failed} files")
         logger.info("=" * 60)
+
+    async def _recover_failed_verification(self, record: dict, backup_path: str | None) -> None:
+        """Best-effort recovery when a verification re-download failed.
+
+        A sidestepped original goes back where it was — a corrupted file beats
+        a missing one, and for media Telegram can no longer serve it is the
+        only copy in existence. A genuinely missing file flips its row to
+        downloaded=0 via mark_media_for_redownload, so the pending-download
+        retry owns it instead of the row lying about a file that is not there.
+        Never raises: recovery failing must not abort the verification sweep.
+        """
+        file_path = record.get("file_path")
+        if backup_path and file_path and os.path.lexists(backup_path):
+            try:
+                os.replace(backup_path, file_path)
+                return  # original preserved; the row stays truthful
+            except OSError as e:
+                logger.warning(f"Could not restore sidestepped media file: {type(e).__name__}")
+        media_id = record.get("id")
+        if media_id is None:
+            return
+        try:
+            await self.db.mark_media_for_redownload(media_id, account_id=self.account_id)
+        except Exception as e:
+            logger.warning(f"Could not mark media for re-download: {type(e).__name__}")
 
     async def _retry_pending_media_downloads(self) -> None:
         """Retry downloading media that previously failed.
