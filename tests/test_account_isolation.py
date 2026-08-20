@@ -212,17 +212,29 @@ class TestMessagesAreAccountIsolated:
         account 1.
         """
         await _seed_accounts(real_adapter)
-        await _seed_chat(real_adapter, -100706, accounts=(DEFAULT_ACCOUNT_ID,))
-        await _seed_chat(real_adapter, -100716, accounts=(OTHER_ACCOUNT,))
-        await _seed_chat(real_adapter, -100726, accounts=(OTHER_ACCOUNT,))
-        await real_adapter.insert_message(_message(-100706, 777), account_id=DEFAULT_ACCOUNT_ID)
-        await real_adapter.insert_message(_message(-100716, 777), account_id=OTHER_ACCOUNT)
-        await real_adapter.insert_message(_message(-100726, 777), account_id=OTHER_ACCOUNT)
-        await real_adapter.insert_message(_message(-100716, 888), account_id=OTHER_ACCOUNT)
+        await _seed_chat(real_adapter, -1001000000706, accounts=(DEFAULT_ACCOUNT_ID,))
+        await _seed_chat(real_adapter, -1001000000716, accounts=(OTHER_ACCOUNT,))
+        await _seed_chat(real_adapter, -1001000000726, accounts=(OTHER_ACCOUNT,))
+        # Common-box chats (basic groups): the peerless resolver only ever
+        # searches this id space — bare deletions cannot name a -100… chat.
+        await _seed_chat(real_adapter, -706, accounts=(DEFAULT_ACCOUNT_ID,))
+        await _seed_chat(real_adapter, -716, accounts=(OTHER_ACCOUNT,))
+        await _seed_chat(real_adapter, -726, accounts=(OTHER_ACCOUNT,))
+        await real_adapter.insert_message(_message(-1001000000706, 777), account_id=DEFAULT_ACCOUNT_ID)
+        await real_adapter.insert_message(_message(-1001000000716, 777), account_id=OTHER_ACCOUNT)
+        await real_adapter.insert_message(_message(-1001000000726, 777), account_id=OTHER_ACCOUNT)
+        await real_adapter.insert_message(_message(-1001000000716, 888), account_id=OTHER_ACCOUNT)
+        await real_adapter.insert_message(_message(-706, 779), account_id=DEFAULT_ACCOUNT_ID)
+        await real_adapter.insert_message(_message(-716, 779), account_id=OTHER_ACCOUNT)
+        await real_adapter.insert_message(_message(-726, 779), account_id=OTHER_ACCOUNT)
 
-        assert await real_adapter.resolve_message_chat_id(777, account_id=DEFAULT_ACCOUNT_ID) == -100706
-        assert await real_adapter.resolve_message_chat_id(777, account_id=OTHER_ACCOUNT) is None  # ambiguous for 2
-        assert await real_adapter.get_chat_id_for_message(777, account_id=DEFAULT_ACCOUNT_ID) == -100706
+        # Account isolation, in the id space the resolver actually serves:
+        assert await real_adapter.resolve_message_chat_id(779, account_id=DEFAULT_ACCOUNT_ID) == -706
+        assert await real_adapter.resolve_message_chat_id(779, account_id=OTHER_ACCOUNT) is None  # ambiguous for 2
+        # 9t6.5.4: an id that exists ONLY in channel space resolves to nothing —
+        # matching it there tombstoned a message that was never deleted.
+        assert await real_adapter.resolve_message_chat_id(777, account_id=DEFAULT_ACCOUNT_ID) is None
+        assert await real_adapter.get_chat_id_for_message(777, account_id=DEFAULT_ACCOUNT_ID) == -1001000000706
         assert await real_adapter.get_chat_id_for_message(888, account_id=DEFAULT_ACCOUNT_ID) is None
 
     async def test_sync_reads_return_only_their_accounts_ids(self, real_adapter):
@@ -593,3 +605,21 @@ class TestGapDetectionIsAccountScoped:
 
         assert await real_adapter.detect_message_gaps(-100723, account_id=DEFAULT_ACCOUNT_ID) == [(100, 400, 300)]
         assert await real_adapter.detect_message_gaps(-100723, account_id=OTHER_ACCOUNT) == []
+
+
+class TestPeerlessDeletionScope:
+    """9t6.5.4: bare deletions live in the common message box, never in -100… space."""
+
+    async def test_collision_resolves_to_the_common_box_row(self, real_adapter):
+        """A supergroup sharing the bare id must not shadow (or tombstone for) a private chat."""
+        await _seed_accounts(real_adapter)
+        await _seed_chat(real_adapter, -1001000000800, accounts=(DEFAULT_ACCOUNT_ID,))
+        await _seed_chat(real_adapter, 800555, accounts=(DEFAULT_ACCOUNT_ID,))
+        await real_adapter.insert_message(_message(-1001000000800, 4242), account_id=DEFAULT_ACCOUNT_ID)
+
+        # Channel-space only: excluded outright.
+        assert await real_adapter.resolve_message_chat_id(4242, account_id=DEFAULT_ACCOUNT_ID) is None
+
+        # The same bare id also exists in a private chat: unambiguous there.
+        await real_adapter.insert_message(_message(800555, 4242), account_id=DEFAULT_ACCOUNT_ID)
+        assert await real_adapter.resolve_message_chat_id(4242, account_id=DEFAULT_ACCOUNT_ID) == 800555
