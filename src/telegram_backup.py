@@ -134,6 +134,9 @@ MESSAGE_MAX_PROCESS_ATTEMPTS = 2
 # Cap on the ids kept in a chat's give-up record so it cannot grow without bound.
 # The running total is stored separately and stays exact.
 MESSAGE_GIVE_UP_RECORD_LIMIT = 500
+# Bound on the instance-lifetime sender-fingerprint memo (~200 bytes/entry);
+# cleared wholesale when exceeded rather than LRU-tracked.
+SENDER_CACHE_MAX_ENTRIES = 50_000
 
 
 def _media_retry_backoff_seconds(attempt: int) -> float:
@@ -2141,18 +2144,30 @@ class TelegramBackup:
             if msg.get("_media_data"):
                 await self.db.insert_media(msg["_media_data"], account_id=self.account_id)
 
+        # Reconcile reactions for every processed message, including those whose
+        # snapshot is empty ([]), so removals-to-zero on re-fetched messages
+        # persist instead of leaving stale rows (#219). reconcile_reactions is
+        # idempotent (a stable message re-scans to a no-op) and preserves
+        # created_at. A None snapshot means extraction FAILED (shape drift) —
+        # skip rather than tombstone valid rows. An empty snapshot can only
+        # tombstone when stored rows exist, so one batched probe replaces the
+        # per-message lock+scan for the reaction-free majority, where the
+        # reconcile was a guaranteed no-op.
+        empty_ids = [msg["id"] for msg in batch_data if msg.get("reactions") == []]
+        stored_ids: set[int] = set()
+        if empty_ids:
+            stored_ids = await self.db.get_message_ids_with_reaction_rows(
+                chat_id, empty_ids, account_id=self.account_id
+            )
         for msg in batch_data:
-            # Reconcile reactions for every processed message, including those whose
-            # snapshot is empty ([]), so removals-to-zero on re-fetched messages
-            # persist instead of leaving stale rows (#219). reconcile_reactions is
-            # idempotent (a stable message re-scans to a no-op) and preserves
-            # created_at. A None snapshot means extraction FAILED (shape drift) —
-            # skip rather than tombstone valid rows.
             observed = msg.get("reactions")
-            if observed is not None:
-                await self.db.reconcile_reactions(
-                    msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
-                )
+            if observed is None:
+                continue
+            if not observed and msg["id"] not in stored_ids:
+                continue
+            await self.db.reconcile_reactions(
+                msg["id"], chat_id, observed, mark_removed=True, account_id=self.account_id
+            )
 
     async def _fill_gap_range(self, entity, chat_id: int, gap_start: int, gap_end: int) -> int:
         """
@@ -2812,9 +2827,7 @@ class TelegramBackup:
 
         # Save sender information if available
         if sender:
-            sender_data = self._extract_user_data(sender)
-            if sender_data:
-                await self.db.upsert_user(sender_data)
+            await self._save_sender(sender)
 
         # Extract message data
         # v6.0.0: media_type, media_id, media_path removed - media stored in separate table
@@ -3630,6 +3643,35 @@ class TelegramBackup:
         chat_data["is_archived"] = 1 if is_archived else 0
 
         return chat_data
+
+    async def _save_sender(self, sender) -> None:
+        """Upsert the sender row unless an identical one was already written.
+
+        Senders repeat heavily within a chat, so an instance-lifetime
+        fingerprint memo skips the re-upsert once a byte-identical row is
+        stored; any profile change writes again. The fingerprint is recorded
+        only after a successful upsert so a failed write retries on the next
+        sighting.
+        """
+        sender_data = self._extract_user_data(sender)
+        if not sender_data:
+            return
+        fingerprint = (
+            sender_data["username"],
+            sender_data["first_name"],
+            sender_data["last_name"],
+            sender_data["phone"],
+            sender_data["is_bot"],
+        )
+        cache = getattr(self, "_sender_cache", None)
+        if cache is None:
+            cache = self._sender_cache = {}
+        if cache.get(sender_data["id"]) == fingerprint:
+            return
+        await self.db.upsert_user(sender_data)
+        if len(cache) >= SENDER_CACHE_MAX_ENTRIES:
+            cache.clear()
+        cache[sender_data["id"]] = fingerprint
 
     def _extract_user_data(self, user) -> dict | None:
         """Extract user data from user entity."""
