@@ -3,6 +3,15 @@ services:
     image: drumsergio/telegram-archive:8.1.0
     container_name: telegram-backup
     restart: unless-stopped
+    # A stop during a long sweep needs time to finish in-flight writes and
+    # disconnect cleanly; without this docker waits 10s then SIGKILLs.
+    stop_grace_period: 90s
+    # Unattended deployments must not fill the host disk with container logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command: ["python", "-m", "src", "schedule"]
 
     environment:
@@ -156,6 +165,15 @@ services:
     image: drumsergio/telegram-archive-viewer:8.1.0
     container_name: telegram-viewer
     restart: unless-stopped
+    # A stop during a long sweep needs time to finish in-flight writes and
+    # disconnect cleanly; without this docker waits 10s then SIGKILLs.
+    stop_grace_period: 90s
+    # Unattended deployments must not fill the host disk with container logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       # Bind to localhost by default. Put this behind a reverse proxy with auth
       # configured before exposing it publicly.
