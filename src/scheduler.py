@@ -591,15 +591,29 @@ class BackupScheduler:
             # path, not an error — teardown runs in finally either way.
             logger.info("Shutdown requested; tearing down gracefully...")
         finally:
-            for signum in registered_signals:
-                with contextlib.suppress(Exception):
-                    loop.remove_signal_handler(signum)
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
-            await self._stop_listener()
-            self.stop()
-            await self._disconnect()
+            # Teardown steps are independent: one failing must not skip the
+            # rest, or a raised listener close leaves connections open.
+            try:
+                await self._stop_listener()
+            except Exception as e:
+                logger.warning(f"Listener teardown failed: {type(e).__name__}")
+            try:
+                self.stop()
+            except Exception as e:
+                logger.warning(f"Scheduler stop failed: {type(e).__name__}")
+            try:
+                await self._disconnect()
+            except Exception as e:
+                logger.warning(f"Disconnect failed: {type(e).__name__}")
+            # Removing a loop handler restores SIG_DFL, so this runs LAST:
+            # a second signal during the steps above stays a logged no-op
+            # (idempotent _request_shutdown) instead of an instant kill.
+            for signum in registered_signals:
+                with contextlib.suppress(Exception):
+                    loop.remove_signal_handler(signum)
 
 
 async def main():

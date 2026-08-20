@@ -76,3 +76,31 @@ class TestOpsWiring:
         src = (REPO / "src" / "scheduler.py").read_text()
         assert "loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)" in src
         assert "except asyncio.CancelledError:" in src.split("async def run_forever", 1)[1]
+
+
+class TestTeardownRobustness:
+    async def test_failing_listener_stop_never_skips_disconnect(self, monkeypatch, tmp_path):
+        """Review finding: teardown steps must be independent."""
+        scheduler = _bare_scheduler(monkeypatch, tmp_path)
+        scheduler._stop_listener = unittest.mock.AsyncMock(side_effect=RuntimeError("close failed"))
+        connect_started = asyncio.Event()
+
+        async def hanging_connect():
+            connect_started.set()
+            await asyncio.sleep(3600)
+
+        scheduler._connect = hanging_connect
+        task = asyncio.create_task(scheduler.run_forever())
+        await connect_started.wait()
+        scheduler._request_shutdown(task, 15)
+        await task
+
+        scheduler._disconnect.assert_awaited()
+
+    def test_signal_handlers_are_removed_after_teardown(self):
+        """Review finding: removal restores SIG_DFL, so it must run last."""
+        src = (REPO / "src" / "scheduler.py").read_text()
+        finally_block = src.split("async def run_forever", 1)[1]
+        assert finally_block.index("await self._disconnect()") < finally_block.index(
+            "loop.remove_signal_handler(signum)"
+        )
