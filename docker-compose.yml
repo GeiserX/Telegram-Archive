@@ -130,6 +130,12 @@ services:
       SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
       VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
       INTERNAL_PUSH_SECRET: ${INTERNAL_PUSH_SECRET:-}
+      # Split containers: realtime pushes must target the viewer SERVICE, not
+      # the in-container localhost the bare-metal default assumes — otherwise
+      # every push is refused and "real-time updates" silently degrades to
+      # refresh-to-see on the stock SQLite stack.
+      VIEWER_HOST: ${VIEWER_HOST:-telegram-viewer}
+      VIEWER_PORT: ${VIEWER_PORT:-8000}
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

@@ -72,6 +72,14 @@ class TestOpsWiring:
         assert compose.count("stop_grace_period: 90s") == 2
         assert compose.count('max-size: "10m"') == 2
 
+    def test_compose_points_realtime_pushes_at_the_viewer_service(self):
+        """The in-container localhost:8080 default only fits bare metal; on
+        the shipped split-container stack every push would be refused and
+        real-time updates silently degrade to refresh-to-see."""
+        compose = (REPO / "docker-compose.yml").read_text()
+        assert "VIEWER_HOST: ${VIEWER_HOST:-telegram-viewer}" in compose
+        assert "VIEWER_PORT: ${VIEWER_PORT:-8000}" in compose
+
     def test_run_forever_registers_loop_signal_handlers(self):
         src = (REPO / "src" / "scheduler.py").read_text()
         assert "loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)" in src
