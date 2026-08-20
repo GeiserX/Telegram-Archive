@@ -1562,6 +1562,16 @@
                                         :class="{ 'opacity-50': msg.is_deleted }"
                                         v-html="linkifyText(getAlbumCaption(msg) || msg.text)"></div>
 
+                                    <!-- Capture-time link preview (mf7): Telegram's own webpage card
+                                         as it existed when the message was archived -->
+                                    <div v-if="msg.raw_data?.webpage" class="mt-2 border-l-2 border-blue-400/60 pl-2 pr-1 py-1 bg-black/10 rounded-r max-w-full">
+                                        <div v-if="msg.raw_data.webpage.site_name" class="text-xs font-medium text-blue-400">{{ msg.raw_data.webpage.site_name }}</div>
+                                        <a v-if="isHttpUrl(msg.raw_data.webpage.url)" :href="msg.raw_data.webpage.url" target="_blank" rel="noopener noreferrer"
+                                            class="text-sm font-medium hover:underline break-words block">{{ msg.raw_data.webpage.title || msg.raw_data.webpage.display_url || msg.raw_data.webpage.url }}</a>
+                                        <div v-else-if="msg.raw_data.webpage.title" class="text-sm font-medium break-words">{{ msg.raw_data.webpage.title }}</div>
+                                        <div v-if="msg.raw_data.webpage.description" class="text-xs opacity-70 line-clamp-3 break-words whitespace-pre-wrap">{{ msg.raw_data.webpage.description }}</div>
+                                    </div>
+
                                     <!-- Reactions -->
                                     <div v-if="msg.reactions && msg.reactions.length > 0" class="mt-2 flex flex-wrap gap-1.5">
                                         <div v-for="reaction in msg.reactions" :key="reaction.emoji"
@@ -5752,6 +5762,9 @@
                 // second decode: `https://good.example&#x40;evil.example/` displayed
                 // good.example but the parser turned &#x40; into @ and the link navigated
                 // to evil.example.
+                // Scheme guard for attribute-bound hrefs built from archived
+                // data (a javascript: URL must never become a clickable card).
+                const isHttpUrl = (url) => /^https?:\/\//i.test(url || '')
                 const escapeUrlForAttr = (url) => {
                     const replacements = { '&': '&amp;', '<': '%3C', '>': '%3E', '"': '%22', "'": '%27' }
                     return [...url].map((char) => replacements[char] || char).join('')
@@ -7335,6 +7348,7 @@
                     setTagTab,
                     loadTagResults,
                     openTagResult,
+                    isHttpUrl,
                     // Global audio player (#250)
                     audioTrack,
                     audioIsPlaying,
