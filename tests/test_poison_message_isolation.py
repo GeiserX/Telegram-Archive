@@ -62,6 +62,25 @@ def _poison_media():
     return MessageMediaDocument(document=DocumentEmpty(id=99887766))
 
 
+def _stream_verification_batches(db):
+    """Bridge the streaming verification API onto legacy list seeding.
+
+    Production consumes ``iter_media_for_verification`` (async batches); these
+    tests seed a flat list on ``db.get_media_for_verification.return_value``.
+    Read the seeded list at call time and yield it as a single batch.
+    """
+
+    def _iter(**_kwargs):
+        async def _gen():
+            records = db.get_media_for_verification.return_value
+            if isinstance(records, list) and records:
+                yield records
+
+        return _gen()
+
+    db.iter_media_for_verification = _iter
+
+
 class TestDocumentEmptyIsNotFatal(unittest.TestCase):
     """Both capture paths classify an expired document instead of raising."""
 
@@ -273,6 +292,7 @@ class TestPeerResolutionErrorsNeverReachTheLogs(unittest.TestCase):
         self.config.max_media_download_attempts = 3
 
         self.db = AsyncMock()
+        _stream_verification_batches(self.db)
         self.backup = TelegramBackup.__new__(TelegramBackup)
         self.backup.account_id = 1
         self.backup.config = self.config

@@ -1548,47 +1548,52 @@ class TelegramBackup:
         logger.info("=" * 60)
         logger.info("Starting media verification...")
 
-        media_records = await self.db.get_media_for_verification(account_id=self.account_id)
-        logger.info(f"Found {len(media_records)} media records to verify")
-
         missing_files = []
         corrupted_files = []
         skipped_symlinks = 0
+        checked = 0
 
-        # Phase 1: Check which files need re-downloading
-        for record in media_records:
-            file_path = record.get("file_path")
-            if not file_path:
-                continue
+        # Phase 1: stream batches and keep only the records needing a
+        # re-download. The full-table materialization this replaces held every
+        # row in memory at once and OOM-killed the 256m backup container on
+        # large archives; the issue lists stay bounded by actual damage.
+        async for batch in self.db.iter_media_for_verification(account_id=self.account_id):
+            for record in batch:
+                checked += 1
+                file_path = record.get("file_path")
+                if not file_path:
+                    continue
 
-            # Detect "truly missing" via lexists so an existing symlink
-            # whose ultimate target is unreachable (e.g. git-annex object
-            # outside the bind mount) is not flagged for re-download.
-            # Re-downloading it would atomic-rename a regular file on top
-            # of the symlink, mutating an archived working tree (issue #143).
-            if not os.path.lexists(file_path):
-                missing_files.append(record)
-                continue
+                # Detect "truly missing" via lexists so an existing symlink
+                # whose ultimate target is unreachable (e.g. git-annex object
+                # outside the bind mount) is not flagged for re-download.
+                # Re-downloading it would atomic-rename a regular file on top
+                # of the symlink, mutating an archived working tree (issue #143).
+                if not os.path.lexists(file_path):
+                    missing_files.append(record)
+                    continue
 
-            # Trust symlinks: their content is managed externally and may
-            # be unreachable from this process. We cannot meaningfully
-            # check size or emptiness without following the link.
-            if os.path.islink(file_path):
-                skipped_symlinks += 1
-                continue
+                # Trust symlinks: their content is managed externally and may
+                # be unreachable from this process. We cannot meaningfully
+                # check size or emptiness without following the link.
+                if os.path.islink(file_path):
+                    skipped_symlinks += 1
+                    continue
 
-            # Check if file is empty (interrupted download)
-            if os.path.getsize(file_path) == 0:
-                corrupted_files.append(record)
-                continue
-
-            # Check file size matches (if we have the expected size)
-            expected_size = record.get("file_size")
-            if expected_size and expected_size > 0:
-                actual_size = os.path.getsize(file_path)
-                # Allow 1% tolerance for size differences (encoding variations)
-                if abs(actual_size - expected_size) > expected_size * 0.01:
+                # Check if file is empty (interrupted download)
+                if os.path.getsize(file_path) == 0:
                     corrupted_files.append(record)
+                    continue
+
+                # Check file size matches (if we have the expected size)
+                expected_size = record.get("file_size")
+                if expected_size and expected_size > 0:
+                    actual_size = os.path.getsize(file_path)
+                    # Allow 1% tolerance for size differences (encoding variations)
+                    if abs(actual_size - expected_size) > expected_size * 0.01:
+                        corrupted_files.append(record)
+
+        logger.info(f"Checked {checked} media records to verify")
 
         total_issues = len(missing_files) + len(corrupted_files)
         if total_issues == 0:

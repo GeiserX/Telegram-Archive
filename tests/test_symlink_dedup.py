@@ -24,6 +24,25 @@ from src.telegram_backup import TelegramBackup
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Symlinks require administrator privileges on Windows")
 
 
+def _stream_verification_batches(db):
+    """Bridge the streaming verification API onto legacy list seeding.
+
+    Production consumes ``iter_media_for_verification`` (async batches); these
+    tests seed a flat list on ``db.get_media_for_verification.return_value``.
+    Read the seeded list at call time and yield it as a single batch.
+    """
+
+    def _iter(**_kwargs):
+        async def _gen():
+            records = db.get_media_for_verification.return_value
+            if isinstance(records, list) and records:
+                yield records
+
+        return _gen()
+
+    db.iter_media_for_verification = _iter
+
+
 class TestDanglingSymlinkDetection(unittest.TestCase):
     """Verify os.path.exists vs os.path.lexists behavior with dangling symlinks."""
 
@@ -325,6 +344,7 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.db = AsyncMock()
+        _stream_verification_batches(self.backup.db)
         self.backup.client = AsyncMock()
 
     def tearDown(self):
