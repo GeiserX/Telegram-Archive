@@ -4160,21 +4160,57 @@ class DatabaseAdapter:
             return [self._viewer_token_to_dict(t) for t in result.scalars().all()]
 
     async def verify_viewer_token(self, plaintext_token: str) -> dict[str, Any] | None:
-        """Verify a plaintext token against stored hashes. Returns token dict or None."""
+        """Verify a plaintext token against stored hashes. Returns token dict or None.
+
+        The PBKDF2 derivations (600k rounds, ~50ms per stored token) run in ONE
+        worker thread: derived inline they stalled the shared event loop for
+        the whole scan on every auth attempt, freezing every concurrent viewer
+        request — the same rule _hash_token's docstring states for its callers.
+        Only the pure-CPU scan moves off the loop; the material is snapshotted
+        first, so no ORM object is ever touched from the thread, and the
+        session (row update + commit) stays on the loop.
+        """
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(select(ViewerToken).where(ViewerToken.is_revoked == 0))
-            for record in result.scalars().all():
-                if record.expires_at and record.expires_at < utcnow_naive():
-                    continue
-                computed = hashlib.pbkdf2_hmac(
-                    "sha256", plaintext_token.encode(), bytes.fromhex(record.token_salt), 600_000
-                ).hex()
-                if secrets.compare_digest(computed, record.token_hash):
-                    record.last_used_at = utcnow_naive()
-                    record.use_count = (record.use_count or 0) + 1
-                    await session.commit()
-                    return self._viewer_token_to_dict(record)
-            return None
+            now = utcnow_naive()
+            candidates = [
+                record for record in result.scalars().all() if not (record.expires_at and record.expires_at < now)
+            ]
+            material = [(bytes.fromhex(r.token_salt), r.token_hash) for r in candidates]
+
+            def derive_match() -> int | None:
+                encoded = plaintext_token.encode()
+                for index, (salt, expected) in enumerate(material):
+                    computed = hashlib.pbkdf2_hmac("sha256", encoded, salt, 600_000).hex()
+                    if secrets.compare_digest(computed, expected):
+                        return index
+                return None
+
+            match_index = await asyncio.to_thread(derive_match)
+            if match_index is None:
+                return None
+            # The worker-thread yield is wide (~50ms per stored token), so the
+            # matched row may have been revoked or expired meanwhile. The
+            # update re-checks both conditions in SQL and increments use_count
+            # atomically; zero rows updated means the token died mid-scan and
+            # must not authenticate.
+            record = candidates[match_index]
+            now = utcnow_naive()
+            result = await session.execute(
+                update(ViewerToken)
+                .where(
+                    ViewerToken.id == record.id,
+                    ViewerToken.is_revoked == 0,
+                    or_(ViewerToken.expires_at.is_(None), ViewerToken.expires_at >= now),
+                )
+                .values(last_used_at=now, use_count=func.coalesce(ViewerToken.use_count, 0) + 1)
+            )
+            if result.rowcount == 0:
+                await session.rollback()
+                return None
+            await session.commit()
+            await session.refresh(record)
+            return self._viewer_token_to_dict(record)
 
     @retry_on_locked()
     async def update_viewer_token(self, token_id: int, **kwargs) -> dict[str, Any] | None:
