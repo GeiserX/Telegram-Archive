@@ -476,12 +476,14 @@ class TestBackupCheckpointing(unittest.TestCase):
     def test_commit_batch_called_correctly(self):
         """_commit_batch persists messages, media and reconciles reactions.
 
-        #219: an empty snapshot ([]) is reconciled (zero-clear); a None snapshot
-        (extraction failure) is skipped so it can't tombstone valid reactions.
+        #219: an empty snapshot ([]) is reconciled (zero-clear) when stored rows
+        exist for the message; a None snapshot (extraction failure) is skipped so
+        it can't tombstone valid reactions.
         """
         backup = TelegramBackup.__new__(TelegramBackup)
         backup.account_id = 1
         backup.db = AsyncMock()
+        backup.db.get_message_ids_with_reaction_rows.return_value = {1}
 
         batch = [
             {"id": 1, "chat_id": 100, "_media_data": {"file_path": "/a.jpg"}, "reactions": []},
@@ -1972,12 +1974,15 @@ class TestCommitBatchReactions(unittest.TestCase):
         )
 
     def test_empty_reactions_still_reconciled(self):
-        """#219 (F2): reconcile runs for an empty snapshot ([]) so removals-to-zero
-        on re-fetched messages persist — the opposite of the old skip-on-empty."""
+        """#219 (F2): reconcile runs for an empty snapshot ([]) when the message
+        holds stored rows, so removals-to-zero on re-fetched messages persist.
+        The batched probe decides which empty snapshots can skip."""
+        self.backup.db.get_message_ids_with_reaction_rows.return_value = {3}
         batch = [{"id": 3, "chat_id": 100, "reactions": []}]
 
         self._run(self.backup._commit_batch(batch, 100))
 
+        self.backup.db.get_message_ids_with_reaction_rows.assert_awaited_once_with(100, [3], account_id=1)
         self.backup.db.reconcile_reactions.assert_awaited_once_with(3, 100, [], mark_removed=True, account_id=1)
 
     def test_extraction_failure_skips_reconcile(self):

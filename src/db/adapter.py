@@ -2248,6 +2248,40 @@ class DatabaseAdapter:
             return [{"emoji": r.emoji, "user_id": r.user_id, "count": r.count} for r in result.scalars()]
 
     @retry_on_locked()
+    async def get_message_ids_with_reaction_rows(
+        self, chat_id: int, message_ids: list[int], *, account_id: int
+    ) -> set[int]:
+        """Return the subset of ``message_ids`` holding ANY reaction row (live
+        or tombstoned) in this chat.
+
+        One indexed probe per commit batch (idx_reactions_chat_message) lets the
+        sweep skip empty-snapshot reconciles for messages with no stored rows —
+        the overwhelming majority — where reconcile_reactions would take the
+        per-message row lock only to no-op. Messages that DO hold rows still
+        reconcile, so removals-to-zero keep tombstoning (#219).
+        """
+        if not message_ids:
+            return set()
+        found: set[int] = set()
+        async with self.db_manager.async_session_factory() as session:
+            # 500-id chunks keep the IN list under every backend's bind-parameter
+            # ceiling regardless of the caller's configured batch size.
+            for i in range(0, len(message_ids), 500):
+                result = await session.execute(
+                    select(Reaction.message_id)
+                    .where(
+                        and_(
+                            Reaction.account_id == account_id,
+                            Reaction.chat_id == chat_id,
+                            Reaction.message_id.in_(message_ids[i : i + 500]),
+                        )
+                    )
+                    .distinct()
+                )
+                found.update(result.scalars().all())
+        return found
+
+    @retry_on_locked()
     async def reconcile_reactions(
         self,
         message_id: int,
