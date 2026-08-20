@@ -434,8 +434,10 @@ class TestMediaAreAccountIsolated:
         assert [m["id"] for m in await real_adapter.get_media_for_chat(-100717, account_id=DEFAULT_ACCOUNT_ID)] == [
             "-100717_517_photo"
         ]
-        assert await real_adapter.get_media_for_verification(account_id=OTHER_ACCOUNT) == []
-        verify_one = await real_adapter.get_media_for_verification(account_id=DEFAULT_ACCOUNT_ID)
+        assert [b async for b in real_adapter.iter_media_for_verification(account_id=OTHER_ACCOUNT)] == []
+        verify_one = [
+            m async for b in real_adapter.iter_media_for_verification(account_id=DEFAULT_ACCOUNT_ID) for m in b
+        ]
         assert [m["file_path"] for m in verify_one] == ["media/account1.jpg"]
 
 
