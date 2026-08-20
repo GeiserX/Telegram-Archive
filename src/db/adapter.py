@@ -65,6 +65,11 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Marked ids for channels and supergroups live below this ceiling (-100…).
+# Bare (peerless) events can only ever refer to the common message box, whose
+# ids sit above it — the same constant migration 022 types placeholders with.
+SUPERGROUP_ID_CEILING = -(10**12)
+
 
 def _strip_tz(dt: datetime | None) -> datetime | None:
     """Strip timezone info from datetime for PostgreSQL compatibility."""
@@ -1324,17 +1329,31 @@ class DatabaseAdapter:
 
     async def resolve_message_chat_id(self, message_id: int, *, account_id: int) -> int | None:
         """
-        Find which chat a message belongs to, within one account.
+        Find which chat a peerless event's message belongs to, within one account.
 
         Returns the chat_id if found in exactly one of the account's chats.
         Returns None if not found or ambiguous (same ID in multiple chats).
         Telegram message IDs are only unique within a chat — and another
         account's rows must never make this account's lookup ambiguous, nor
         resolve a deletion onto a chat this account never archived.
+
+        Channels and supergroups are excluded outright: Telegram omits the
+        peer exactly and only for the common message box (private chats and
+        basic groups); channel deletions always arrive with the channel id.
+        The two id spaces are disjoint, so a peerless event can never
+        legitimately name a -100… chat — and matching one there tombstoned a
+        message that was never deleted (9t6.5.4).
         """
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(
-                select(Message.chat_id).where(and_(Message.account_id == account_id, Message.id == message_id))
+                select(Message.chat_id).where(
+                    and_(
+                        Message.account_id == account_id,
+                        Message.id == message_id,
+                        # Marked channel/supergroup ids live below this ceiling.
+                        Message.chat_id > SUPERGROUP_ID_CEILING,
+                    )
+                )
             )
             chat_ids = [row[0] for row in result.fetchall()]
 
