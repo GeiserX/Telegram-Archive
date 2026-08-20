@@ -56,7 +56,7 @@ from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
     build_media_filename,
-    compute_file_hash,
+    compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
     extract_media_attributes,
@@ -3379,7 +3379,7 @@ class TelegramBackup:
                 if os.path.exists(actual_path):
                     file_size = os.path.getsize(actual_path)
                     if not content_hash:
-                        content_hash = compute_file_hash(actual_path)
+                        content_hash = await compute_file_hash_async(actual_path)
             else:
                 # No deduplication - download directly to chat directory.
                 # lexists short-circuits the download when a symlink is
@@ -3401,7 +3401,7 @@ class TelegramBackup:
                 # Update file_size and compute hash from disk
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
-                    content_hash = compute_file_hash(file_path)
+                    content_hash = await compute_file_hash_async(file_path)
 
             # Extract media metadata via the SHARED extractor (#263). The listener
             # writes the same columns from the same helper, so this sweep's upsert
@@ -3424,7 +3424,9 @@ class TelegramBackup:
 
             # Pre-generate thumbnail for instant gallery loading
             try:
-                _pre_generate_thumbnail(file_path, self.config.media_path)
+                # PIL decode+resize is CPU work; inline it stalls the shared loop
+                # (same invariant as the hashing above).
+                await asyncio.to_thread(_pre_generate_thumbnail, file_path, self.config.media_path)
             except Exception:
                 pass  # Non-critical, viewer generates on-demand as fallback
 
