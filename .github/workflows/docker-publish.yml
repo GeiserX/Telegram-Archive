@@ -19,7 +19,6 @@ on:
       # Exclude viewer-only changes
       - '!src/web/**'
       - '!Dockerfile.viewer'
-      - '!requirements-viewer.txt'
       - '!.github/workflows/docker-publish-viewer.yml'
   workflow_dispatch:
     inputs:
