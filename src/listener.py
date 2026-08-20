@@ -40,7 +40,7 @@ from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .message_utils import (
     build_media_filename,
-    compute_file_hash,
+    compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
     extract_media_attributes,
@@ -919,7 +919,7 @@ class TelegramListener:
                 resolved = file_path
                 if os.path.islink(file_path):
                     resolved = os.path.realpath(file_path)
-                content_hash = compute_file_hash(resolved) if os.path.exists(resolved) else None
+                content_hash = await compute_file_hash_async(resolved) if os.path.exists(resolved) else None
 
             # Return the path as stored in DB (relative to media root)
             return f"{self.config.media_path}/{chat_id}/{file_name}", file_name, content_hash

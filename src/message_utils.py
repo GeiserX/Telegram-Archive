@@ -298,7 +298,7 @@ async def deduplicate_shared_file(
     element is True when the path points to a pre-existing canonical blob
     that must NOT be moved/deleted by the caller.
     """
-    content_hash = compute_file_hash(shared_file_path)
+    content_hash = await compute_file_hash_async(shared_file_path)
     if not content_hash:
         return shared_file_path, content_hash, False
 
@@ -328,6 +328,45 @@ async def deduplicate_shared_file(
 
     logger.debug("Content-hash dedup: matched existing file")
     return existing_shared, content_hash, True
+
+
+_HASH_CACHE_MAX_ENTRIES = 4096
+# path -> (mtime, size, sha256). The shared store re-hashes the same canonical
+# blob for every new duplicate reference; (mtime, size) validation keeps a hit
+# exactly as trustworthy as re-reading the file.
+_hash_cache: dict[str, tuple[float, int, str]] = {}
+
+
+def compute_file_hash_cached(filepath: str) -> str | None:
+    """compute_file_hash with an (mtime, size)-validated memo (9t6.6.7).
+
+    A changed file misses (stat differs); a failed hash is never stored, so a
+    patched-or-flaky read cannot poison the cache. The bound is a simple
+    clear-and-refill — refilling is cheap next to the hashing it avoids.
+    """
+    try:
+        st = os.stat(filepath)
+    except OSError:
+        return None
+    hit = _hash_cache.get(filepath)
+    if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        return hit[2]
+    digest = compute_file_hash(filepath)
+    if digest:
+        if len(_hash_cache) >= _HASH_CACHE_MAX_ENTRIES:
+            _hash_cache.clear()
+        _hash_cache[filepath] = (st.st_mtime, st.st_size, digest)
+    return digest
+
+
+async def compute_file_hash_async(filepath: str) -> str | None:
+    """The awaitable form every async capture path must use (9t6.5.28/9t6.6.6).
+
+    Whole-file SHA-256 of a large video takes seconds; computed inline it
+    stalls the event loop the realtime listener and the Telethon transport
+    share. One worker-thread hop, memoized via compute_file_hash_cached.
+    """
+    return await asyncio.to_thread(compute_file_hash_cached, filepath)
 
 
 def compute_file_hash(filepath: str, chunk_size: int = 65536) -> str | None:
@@ -406,12 +445,12 @@ async def download_and_shard_media(
         # Chat symlink already exists — resolve hash if possible
         content_hash = None
         if shared_file_path and os.path.exists(shared_file_path):
-            content_hash = compute_file_hash(shared_file_path)
+            content_hash = await compute_file_hash_async(shared_file_path)
         return shared_file_path, content_hash
 
     if shared_file_path:
         # File exists in shared — create symlink. Hash only when target resolves.
-        content_hash = compute_file_hash(shared_file_path) if os.path.exists(shared_file_path) else None
+        content_hash = await compute_file_hash_async(shared_file_path) if os.path.exists(shared_file_path) else None
         try:
             rel_path = os.path.relpath(shared_file_path, chat_media_dir)
             try:
