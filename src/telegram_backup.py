@@ -1673,8 +1673,15 @@ class TelegramBackup:
                             # Insert media record (message already exists for re-downloads)
                             await self.db.insert_media(result, account_id=self.account_id)
                             redownloaded += 1
+                            # Best-effort only: once the replacement is inserted,
+                            # nothing may fall into the recovery path — restoring
+                            # the sidestepped file NOW would put corrupted bytes
+                            # over the fresh ones while the row names the new file.
                             if backup_path and os.path.lexists(backup_path):
-                                os.remove(backup_path)
+                                try:
+                                    os.remove(backup_path)
+                                except OSError as e:
+                                    logger.debug(f"Could not remove sidestep backup: {type(e).__name__}")
                             logger.debug("Re-downloaded media for message")
                         else:
                             failed += 1

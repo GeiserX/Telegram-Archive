@@ -466,6 +466,43 @@ class TestVerifyAndRedownloadMedia(unittest.TestCase):
             assert f.read() == b"fresh-bytes"
         self.backup.db.insert_media.assert_awaited_once()
 
+    def test_backup_deletion_failure_never_restores_over_the_fresh_file(self):
+        """Review edge: os.remove of the sidestep backup raising after a
+        successful insert must not clobber the replacement with old bytes."""
+        corrupted = os.path.join(self.temp_dir, "corrupt4.jpg")
+        with open(corrupted, "wb") as f:
+            f.write(b"old-bytes")
+
+        self.backup.db.get_media_for_verification.return_value = [
+            {"id": "m5", "file_path": corrupted, "file_size": 999, "chat_id": 1, "message_id": 14}
+        ]
+        mock_msg = MagicMock()
+        mock_msg.id = 14
+        mock_msg.media = MagicMock()
+        self.backup.client.get_messages = AsyncMock(return_value=[mock_msg])
+
+        async def fake_process(msg, chat_id):
+            with open(corrupted, "wb") as f:
+                f.write(b"fresh-bytes")
+            return {"downloaded": True}
+
+        self.backup._process_media = AsyncMock(side_effect=fake_process)
+
+        real_remove = os.remove
+
+        def failing_remove(path):
+            if path.endswith(".verify-bak"):
+                raise OSError("unlink denied")
+            return real_remove(path)
+
+        with patch("src.telegram_backup.os.remove", side_effect=failing_remove):
+            _run(self.backup._verify_and_redownload_media())
+
+        with open(corrupted, "rb") as f:
+            assert f.read() == b"fresh-bytes", "replacement must survive a failed backup unlink"
+        self.backup.db.insert_media.assert_awaited_once()
+        self.backup.db.mark_media_for_redownload.assert_not_awaited()
+
     def test_missing_file_triggers_redownload(self):
         """Missing file on disk triggers re-download attempt."""
         self.backup.db.get_media_for_verification.return_value = [
