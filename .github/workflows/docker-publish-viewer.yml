@@ -133,6 +133,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.viewer
+          # QEMU/buildx are set up above precisely for this: release manifests
+          # ship amd64 + arm64 (Raspberry Pi, ARM NAS, Apple Silicon, Ampere).
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

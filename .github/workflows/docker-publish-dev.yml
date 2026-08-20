@@ -50,9 +50,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-
+      # Dev images build on every PR: amd64-only keeps that loop fast. The
+      # release workflows (docker-publish, docker-publish-viewer) publish the
+      # multi-arch manifests; QEMU is set up there, not here.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
