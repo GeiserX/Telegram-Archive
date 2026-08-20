@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# DB_TYPE is lowercased everywhere in Python (src/db/base.py, alembic/env.py)
+# but compared literally below — DB_TYPE=PostgreSQL used to match NEITHER
+# branch, silently skipping migrations and starting the app against a
+# zero-table database. Normalise once so both worlds agree.
+DB_TYPE=$(printf '%s' "${DB_TYPE:-}" | tr '[:upper:]' '[:lower:]')
+
 # Determine if we should run migrations
 # Skip migrations for 'auth' command (no database needed yet)
 # For other commands, check if database exists and run migrations if needed
@@ -574,6 +580,10 @@ config = Config('/app/alembic.ini')
 command.upgrade(config, 'head')
 print('SQLite migrations complete.')
 "
+  else
+    echo "ERROR: unrecognised database configuration (DB_TYPE='${DB_TYPE}', DATABASE_URL scheme unsupported)." >&2
+    echo "ERROR: refusing to start with migrations skipped - the app would face a schema Alembic never built." >&2
+    exit 1
   fi
 fi
 
