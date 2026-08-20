@@ -189,13 +189,12 @@ services:
       # configured before exposing it publicly.
       - "127.0.0.1:8000:8000"
 
-    # Same contract as telegram-backup: .env reaches the container wholesale,
-    # so documented viewer settings (DISPLAY_CHAT_IDS, VAPID_*, AUTH_PROXY_*,
-    # CORS_ORIGINS, …) take effect without needing an entry below. Explicit
-    # environment: entries below still win on conflict.
-    env_file:
-      - path: .env
-        required: false
+    # DELIBERATE ASYMMETRY with telegram-backup: no env_file here. This is the
+    # internet-facing container, so it receives an explicit allowlist instead
+    # of the whole .env — capture credentials (TELEGRAM_API_HASH, proxy
+    # passwords) must never enter its environment. Every viewer-documented
+    # variable therefore needs an entry below; the ${VAR:-default} references
+    # are interpolated from the same .env.
 
     environment:
       BACKUP_PATH: /data/backups
@@ -211,21 +210,25 @@ services:
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
       SHOW_STATS: ${SHOW_STATS:-true}
       # Restrict viewer to specific chats (optional)
-      # DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}
+      DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}
 
       # Security
       # CORS_ORIGINS: comma-separated allowed origins (default: * = allow all)
-      # CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       # SECURE_COOKIES: auto-detect from protocol; override with true/false
-      # SECURE_COOKIES: ${SECURE_COOKIES:-}
+      SECURE_COOKIES: ${SECURE_COOKIES:-}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       INTERNAL_PUSH_SECRET: ${INTERNAL_PUSH_SECRET:-}
+      # Reverse-proxy (Authelia/Authentik) identity integration
+      AUTH_PROXY_HEADER: ${AUTH_PROXY_HEADER:-}
+      AUTH_PROXY_ADMIN_USERS: ${AUTH_PROXY_ADMIN_USERS:-}
+      AUTH_PROXY_DEFAULT_ACCESS: ${AUTH_PROXY_DEFAULT_ACCESS:-none}
 
       # Notifications
-      # PUSH_NOTIFICATIONS: ${PUSH_NOTIFICATIONS:-basic}
-      # VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      # VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-      # VAPID_CONTACT: ${VAPID_CONTACT:-mailto:admin@example.com}
+      PUSH_NOTIFICATIONS: ${PUSH_NOTIFICATIONS:-basic}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_CONTACT: ${VAPID_CONTACT:-mailto:admin@example.com}
 
       # Database Configuration — MUST MATCH telegram-backup service!
       # If viewer shows no data, ensure these match the backup container
