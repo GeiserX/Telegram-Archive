@@ -112,10 +112,18 @@ class ConnectionManager:
             await websocket.close(code=1013, reason="Too many connections")
             logger.warning(f"WebSocket refused: connection cap reached ({MAX_WS_CONNECTIONS})")
             return False
-        await websocket.accept()
+        # Reserve the slot BEFORE the first await: between the cap check above
+        # and these registrations there is no suspension point, so concurrent
+        # connection tasks cannot all pass the check and register after
+        # accept() suspends — the cap would be advisory otherwise.
         self.active_connections[websocket] = set()
         self._contexts[websocket] = user
         self._identities[websocket] = identity or ConnectionIdentity(username=user.username)
+        try:
+            await websocket.accept()
+        except BaseException:
+            self.disconnect(websocket)
+            raise
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
         return True
 

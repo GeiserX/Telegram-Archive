@@ -80,3 +80,51 @@ class TestSubscriptionCap:
     async def test_unknown_socket_still_refused(self):
         manager = ConnectionManager()
         assert manager.subscribe(_socket(), "ref-a") is False
+
+
+class TestConcurrentConnectRace:
+    async def test_concurrent_connects_cannot_overshoot_the_cap(self):
+        """The cap check and the slot registration must share no suspension
+        point: with registration after accept(), N concurrent handshakes all
+        passed the check first and the cap was advisory (review finding)."""
+        import asyncio
+
+        from src.web import main as web_main
+
+        manager = ConnectionManager()
+
+        def _yielding_socket():
+            ws = MagicMock()
+
+            async def slow_accept():
+                await asyncio.sleep(0)  # a real suspension point, like a handshake
+
+            ws.accept = MagicMock(side_effect=slow_accept)
+            ws.close = AsyncMock()
+            ws.send_json = AsyncMock()
+            return ws
+
+        with patch.object(web_main, "MAX_WS_CONNECTIONS", 5):
+            sockets = [_yielding_socket() for _ in range(9)]
+            results = await asyncio.gather(*(manager.connect(ws, _user()) for ws in sockets))
+
+        assert len(manager.active_connections) == 5
+        assert results.count(True) == 5
+        assert results.count(False) == 4
+        refused = [ws for ws, ok in zip(sockets, results, strict=True) if not ok]
+        for ws in refused:
+            ws.close.assert_awaited_once()
+            assert ws.close.await_args.kwargs.get("code") == 1013
+
+    async def test_accept_failure_releases_the_reserved_slot(self):
+        """A handshake that blows up must not leak its reserved slot."""
+        manager = ConnectionManager()
+        ws = _socket()
+        ws.accept = AsyncMock(side_effect=RuntimeError("handshake died"))
+
+        import pytest as _pytest
+
+        with _pytest.raises(RuntimeError):
+            await manager.connect(ws, _user())
+
+        assert len(manager.active_connections) == 0
