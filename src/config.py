@@ -16,7 +16,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def _parse_bool(value: str | None, default: bool = False) -> bool:
+def _parse_bool(value: str | None, default: bool = False, *, name: str | None = None) -> bool:
     """Parse a boolean-like environment variable value."""
     if value is None or value == "":
         return default
@@ -27,7 +27,19 @@ def _parse_bool(value: str | None, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
 
-    raise ValueError(f"Invalid boolean value: {value}")
+    label = f" for {name}" if name else ""
+    raise ValueError(f"Invalid boolean value{label}: {value}")
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    """One boolean vocabulary for EVERY flag: 1/true/yes/on and 0/false/no/off.
+
+    The alternative this replaces — ``.lower() == "true"`` — silently read
+    DOWNLOAD_MEDIA=1 or ENABLE_LISTENER=yes as False, degrading capture with
+    nothing in the log; and a typo now names the variable instead of making
+    the user guess which of the flags carried it.
+    """
+    return _parse_bool(os.getenv(name), default, name=name)
 
 
 def build_telegram_proxy_from_env() -> dict | None:
@@ -72,7 +84,7 @@ def build_telegram_proxy_from_env() -> dict | None:
         raise ValueError(f"TELEGRAM_PROXY_PORT must be between 1 and 65535, got {parsed_port}")
 
     try:
-        parsed_rdns = _parse_bool(proxy_rdns, default=False)
+        parsed_rdns = _parse_bool(proxy_rdns, default=False, name="TELEGRAM_PROXY_RDNS")
     except ValueError as e:
         raise ValueError(f"TELEGRAM_PROXY_RDNS must be a boolean value: {e}") from e
 
@@ -320,7 +332,7 @@ class Config:
 
         # Backup options
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
-        self.download_media = os.getenv("DOWNLOAD_MEDIA", "true").lower() == "true"
+        self.download_media = _parse_bool_env("DOWNLOAD_MEDIA", True)
         self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
@@ -358,7 +370,7 @@ class Config:
         # Default OFF: opening N senders looks aggressive to Telegram and
         # multiplies FloodWait exposure, so this is opt-in and only kicks in
         # above a size threshold. Small files and photos stay single-stream.
-        self.parallel_download_enabled = _parse_bool(os.getenv("PARALLEL_DOWNLOAD_ENABLED"), default=False)
+        self.parallel_download_enabled = _parse_bool_env("PARALLEL_DOWNLOAD_ENABLED", False)
         # Only files at/above this size use the parallel path (smaller files
         # gain nothing and pay pure overhead). Clamped to a sane floor.
         self.parallel_download_min_size_mb = max(1, int(os.getenv("PARALLEL_DOWNLOAD_MIN_SIZE_MB", "20")))
@@ -444,7 +456,7 @@ class Config:
         # Skip media downloads for specific chats (but still backup message text)
         self.skip_media_chat_ids = self._parse_id_list(os.getenv("SKIP_MEDIA_CHAT_IDS", ""))
         # Delete existing media files and records for chats in skip list (reclaim storage)
-        self.skip_media_delete_existing = os.getenv("SKIP_MEDIA_DELETE_EXISTING", "true").lower() == "true"
+        self.skip_media_delete_existing = _parse_bool_env("SKIP_MEDIA_DELETE_EXISTING", True)
 
         # Skip specific topics inside forum supergroups
         # Format: SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337
@@ -502,31 +514,31 @@ class Config:
 
         # Sync options for exact Telegram mirroring (WARNING: expensive operation)
         # When enabled, checks all backed up messages for deletions/edits on Telegram
-        self.sync_deletions_edits = os.getenv("SYNC_DELETIONS_EDITS", "false").lower() == "true"
+        self.sync_deletions_edits = _parse_bool_env("SYNC_DELETIONS_EDITS", False)
 
         # Media verification mode
         # When enabled, checks all media files on disk and re-downloads missing/corrupted ones
         # Useful for recovering from interrupted backups or deleted media files
-        self.verify_media = os.getenv("VERIFY_MEDIA", "false").lower() == "true"
+        self.verify_media = _parse_bool_env("VERIFY_MEDIA", False)
 
         # Gap-fill mode: detect and recover skipped messages
         # When enabled, runs after each scheduled backup to find and fill gaps
         # in message ID sequences caused by API errors or interruptions
-        self.fill_gaps = os.getenv("FILL_GAPS", "false").lower() == "true"
+        self.fill_gaps = _parse_bool_env("FILL_GAPS", False)
         self.gap_threshold = int(os.getenv("GAP_THRESHOLD", "50"))
 
         # Real-time listener mode
         # When enabled, runs a background listener that catches message edits and deletions
         # in real-time instead of batch-checking on each backup run
-        self.enable_listener = os.getenv("ENABLE_LISTENER", "false").lower() == "true"
+        self.enable_listener = _parse_bool_env("ENABLE_LISTENER", False)
 
         # Listener granular controls (only apply when ENABLE_LISTENER=true)
         # LISTEN_EDITS: Apply text edits to backed up messages (safe, just updates text)
-        self.listen_edits = os.getenv("LISTEN_EDITS", "true").lower() == "true"
+        self.listen_edits = _parse_bool_env("LISTEN_EDITS", True)
 
         # LISTEN_DELETIONS: Handle deletion events from Telegram.
         # DEFAULT FALSE preserves archive data by ignoring deletion events.
-        self.listen_deletions = _parse_bool(os.getenv("LISTEN_DELETIONS"), default=False)
+        self.listen_deletions = _parse_bool_env("LISTEN_DELETIONS", False)
         # DELETION_MODE controls what happens when deletion handling is enabled:
         # - hard: legacy mirror behavior; remove archived message records
         # - soft: keep archived messages and mark them deleted
@@ -537,23 +549,23 @@ class Config:
         # LISTEN_NEW_MESSAGES: Save new messages to backup in real-time
         # When enabled, new messages are saved immediately instead of waiting for scheduled backup
         # This provides true real-time backup but may increase API usage
-        self.listen_new_messages = os.getenv("LISTEN_NEW_MESSAGES", "true").lower() == "true"
+        self.listen_new_messages = _parse_bool_env("LISTEN_NEW_MESSAGES", True)
 
         # LISTEN_NEW_MESSAGES_MEDIA: Also download media in real-time (not just text)
         # When disabled (default), media is marked for download on next scheduled backup
         # When enabled, media is downloaded immediately - more API usage but instant availability
-        self.listen_new_messages_media = os.getenv("LISTEN_NEW_MESSAGES_MEDIA", "false").lower() == "true"
+        self.listen_new_messages_media = _parse_bool_env("LISTEN_NEW_MESSAGES_MEDIA", False)
 
         # LISTEN_CHAT_ACTIONS: Track chat photo changes, member joins/leaves, title changes
         # When enabled, updates to chat metadata are captured in real-time
-        self.listen_chat_actions = os.getenv("LISTEN_CHAT_ACTIONS", "true").lower() == "true"
+        self.listen_chat_actions = _parse_bool_env("LISTEN_CHAT_ACTIONS", True)
 
         # LISTEN_REACTIONS: Capture message reactions in real-time (#219).
         # DEFAULT FALSE (opt-in): reaction push is best-effort on a user client
         # (Telegram gives no gap recovery and recommends polling), it is storm-prone
         # on popular messages, and it captures aggregate per-emoji counts only.
         # When off, reactions are still reconciled by the scheduled backup sweep.
-        self.listen_reactions = _parse_bool(os.getenv("LISTEN_REACTIONS"), default=False)
+        self.listen_reactions = _parse_bool_env("LISTEN_REACTIONS", False)
 
         # REACTION_DEBOUNCE_SECONDS: coalesce a burst of reaction updates for the same
         # message into one reconcile/broadcast. Each update carries the full current
@@ -596,7 +608,7 @@ class Config:
         # adopt the new supergroup id automatically: it is persisted to the
         # metadata KV and merged into the effective backup + listener scope so
         # capture continues seamlessly without editing GROUPS_INCLUDE_CHAT_IDS.
-        self.follow_chat_migrations = _parse_bool(os.getenv("FOLLOW_CHAT_MIGRATIONS"), default=False)
+        self.follow_chat_migrations = _parse_bool_env("FOLLOW_CHAT_MIGRATIONS", False)
 
         # Note: LISTEN_ALBUMS removed - albums are automatically handled via grouped_id
         # in the NewMessage handler. The viewer groups messages by grouped_id.
@@ -608,7 +620,7 @@ class Config:
         # When enabled (default), files shared across multiple chats are stored once
         # in a _shared directory and symlinked from chat directories.
         # Saves significant disk space when same media is shared across chats.
-        self.deduplicate_media = os.getenv("DEDUPLICATE_MEDIA", "true").lower() == "true"
+        self.deduplicate_media = _parse_bool_env("DEDUPLICATE_MEDIA", True)
 
         # =====================================================================
         # ZERO-FOOTPRINT MASS OPERATION PROTECTION
@@ -634,7 +646,7 @@ class Config:
         self.viewer_timezone = os.getenv("VIEWER_TIMEZONE", "Europe/Madrid")
 
         # Viewer notifications (internal use, prefer PUSH_NOTIFICATIONS)
-        self.enable_notifications = os.getenv("ENABLE_NOTIFICATIONS", "false").lower() == "true"
+        self.enable_notifications = _parse_bool_env("ENABLE_NOTIFICATIONS", False)
 
         # Push notifications mode: 'off', 'basic', 'full'
         # - off: No notifications
@@ -657,7 +669,7 @@ class Config:
         # Show stats in viewer UI
         # When disabled, hides the stats dropdown next to "Telegram Archive" title
         # Useful for restricted viewers where you don't want to expose total counts
-        self.show_stats = os.getenv("SHOW_STATS", "true").lower() == "true"
+        self.show_stats = _parse_bool_env("SHOW_STATS", True)
 
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
