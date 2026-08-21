@@ -185,7 +185,9 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         from src.web.thumbnails import (
             _IMAGE_EXTENSIONS,
             _MAX_SOURCE_BYTES,
+            _VIDEO_EXTENSIONS,
             WEBP_QUALITY,
+            _generate_video_sync,
             _thumb_path,
         )
 
@@ -195,10 +197,14 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         if not source.exists():
             return
 
-        if source.suffix.lower() not in _IMAGE_EXTENSIONS:
+        suffix = source.suffix.lower()
+        is_image = suffix in _IMAGE_EXTENSIONS
+        is_video = suffix in _VIDEO_EXTENSIONS
+        if not is_image and not is_video:
             return
 
-        if source.stat().st_size > _MAX_SOURCE_BYTES:
+        # Videos gate bytes inside _generate_video_sync (at 4x this limit).
+        if is_image and source.stat().st_size > _MAX_SOURCE_BYTES:
             return
 
         media_root_path = Path(media_root)
@@ -210,6 +216,16 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         dest = _thumb_path(media_root_path, 200, folder, source.name)
 
         if dest.exists():
+            return
+
+        if is_video:
+            # The whole guard stack — ffmpeg availability, the 4x byte gate,
+            # -max_pixels, the atomic temp+replace save — lives inside
+            # _generate_video_sync. A False here costs nothing: the request
+            # path (with its failure cache) remains the fallback, exactly as
+            # for images. This runs in the backup's to_thread lane, so the
+            # ffmpeg wait never blocks the event loop.
+            _generate_video_sync(source, dest, 200)
             return
 
         dest.parent.mkdir(parents=True, exist_ok=True)
