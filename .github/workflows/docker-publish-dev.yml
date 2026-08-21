@@ -68,6 +68,9 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          # Explicit, not inherited from the runner: dev stays amd64-only by
+          # decision (speed), not by accident of the builder's architecture.
+          platforms: linux/amd64
           push: true
           tags: ${{ env.DOCKER_IMAGE }}:dev
           cache-from: type=gha
@@ -79,6 +82,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.viewer
+          platforms: linux/amd64
           push: true
           tags: ${{ env.DOCKER_IMAGE_VIEWER }}:dev
           cache-from: type=gha
