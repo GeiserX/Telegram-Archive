@@ -264,6 +264,14 @@ class BackupScheduler:
                 id="telegram_backup",
                 name="Telegram Backup",
                 replace_existing=True,
+                # The shared event loop can be >1s late at the cron instant
+                # (CPU-bound stretches, DB contention); APScheduler's default
+                # 1-second misfire grace then SKIPS the run outright instead of
+                # starting late. An hour of grace turns a late tick into a late
+                # backup, and coalesce collapses several missed ticks into one
+                # catch-up run.
+                misfire_grace_time=3600,
+                coalesce=True,
             )
 
             logger.info(f"Backup scheduled with cron: {self.config.schedule}")

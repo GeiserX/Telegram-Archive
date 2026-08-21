@@ -1352,6 +1352,16 @@ class TelegramBackup:
                     has_synced_before = True
                     break
 
+            # Whitelist mode resolves entities without any dialog listing
+            # (#95: the full fetch can hang), so archived-folder membership
+            # comes from one batched GetPeerDialogs pass over exactly the
+            # resolved peers. None means the probe failed: no is_archived is
+            # written at all, preserving stored values instead of forcing a
+            # wrong 0 on every run.
+            archived_membership: set[int] | None = None
+            if self.config.whitelist_mode and filtered_dialogs:
+                archived_membership = await self._fetch_archived_membership([d.entity for d in filtered_dialogs])
+
             # Backup each dialog
             # v6.2.0: Check archived_chat_ids so chats in both INCLUDE_CHAT_IDS
             # and the archived folder get the correct is_archived flag immediately.
@@ -1362,11 +1372,14 @@ class TelegramBackup:
             for i, dialog in enumerate(filtered_dialogs, 1):
                 entity = dialog.entity
                 chat_id = self._get_marked_id(entity)
-                is_archived = chat_id in archived_chat_ids and chat_id not in seen_chat_ids
-                if chat_id in archived_chat_ids and chat_id in seen_chat_ids:
-                    logger.warning(
-                        "  Chat appears in both regular and archived dialog lists - treating as NOT archived"
-                    )
+                if self.config.whitelist_mode:
+                    is_archived = None if archived_membership is None else (chat_id in archived_membership)
+                else:
+                    is_archived = chat_id in archived_chat_ids and chat_id not in seen_chat_ids
+                    if chat_id in archived_chat_ids and chat_id in seen_chat_ids:
+                        logger.warning(
+                            "  Chat appears in both regular and archived dialog lists - treating as NOT archived"
+                        )
                 logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}")
 
                 try:
@@ -1548,47 +1561,52 @@ class TelegramBackup:
         logger.info("=" * 60)
         logger.info("Starting media verification...")
 
-        media_records = await self.db.get_media_for_verification(account_id=self.account_id)
-        logger.info(f"Found {len(media_records)} media records to verify")
-
         missing_files = []
         corrupted_files = []
         skipped_symlinks = 0
+        checked = 0
 
-        # Phase 1: Check which files need re-downloading
-        for record in media_records:
-            file_path = record.get("file_path")
-            if not file_path:
-                continue
+        # Phase 1: stream batches and keep only the records needing a
+        # re-download. The full-table materialization this replaces held every
+        # row in memory at once and OOM-killed the 256m backup container on
+        # large archives; the issue lists stay bounded by actual damage.
+        async for batch in self.db.iter_media_for_verification(account_id=self.account_id):
+            for record in batch:
+                checked += 1
+                file_path = record.get("file_path")
+                if not file_path:
+                    continue
 
-            # Detect "truly missing" via lexists so an existing symlink
-            # whose ultimate target is unreachable (e.g. git-annex object
-            # outside the bind mount) is not flagged for re-download.
-            # Re-downloading it would atomic-rename a regular file on top
-            # of the symlink, mutating an archived working tree (issue #143).
-            if not os.path.lexists(file_path):
-                missing_files.append(record)
-                continue
+                # Detect "truly missing" via lexists so an existing symlink
+                # whose ultimate target is unreachable (e.g. git-annex object
+                # outside the bind mount) is not flagged for re-download.
+                # Re-downloading it would atomic-rename a regular file on top
+                # of the symlink, mutating an archived working tree (issue #143).
+                if not os.path.lexists(file_path):
+                    missing_files.append(record)
+                    continue
 
-            # Trust symlinks: their content is managed externally and may
-            # be unreachable from this process. We cannot meaningfully
-            # check size or emptiness without following the link.
-            if os.path.islink(file_path):
-                skipped_symlinks += 1
-                continue
+                # Trust symlinks: their content is managed externally and may
+                # be unreachable from this process. We cannot meaningfully
+                # check size or emptiness without following the link.
+                if os.path.islink(file_path):
+                    skipped_symlinks += 1
+                    continue
 
-            # Check if file is empty (interrupted download)
-            if os.path.getsize(file_path) == 0:
-                corrupted_files.append(record)
-                continue
-
-            # Check file size matches (if we have the expected size)
-            expected_size = record.get("file_size")
-            if expected_size and expected_size > 0:
-                actual_size = os.path.getsize(file_path)
-                # Allow 1% tolerance for size differences (encoding variations)
-                if abs(actual_size - expected_size) > expected_size * 0.01:
+                # Check if file is empty (interrupted download)
+                if os.path.getsize(file_path) == 0:
                     corrupted_files.append(record)
+                    continue
+
+                # Check file size matches (if we have the expected size)
+                expected_size = record.get("file_size")
+                if expected_size and expected_size > 0:
+                    actual_size = os.path.getsize(file_path)
+                    # Allow 1% tolerance for size differences (encoding variations)
+                    if abs(actual_size - expected_size) > expected_size * 0.01:
+                        corrupted_files.append(record)
+
+        logger.info(f"Checked {checked} media records to verify")
 
         total_issues = len(missing_files) + len(corrupted_files)
         if total_issues == 0:
@@ -1912,13 +1930,14 @@ class TelegramBackup:
             return False
         return True
 
-    async def _backup_dialog(self, dialog, is_archived: bool = False) -> int:
+    async def _backup_dialog(self, dialog, is_archived: bool | None = False) -> int:
         """
         Backup a single dialog (chat).
 
         Args:
             dialog: Dialog object from Telegram
-            is_archived: Whether this dialog is from the archived folder
+            is_archived: Whether this dialog is from the archived folder;
+                None means unknown — the chat row keeps its stored value
 
         Returns:
             Number of new messages backed up
@@ -3611,12 +3630,41 @@ class TelegramBackup:
         }
         return extensions.get(media_type, "bin")
 
-    def _extract_chat_data(self, entity, is_archived: bool = False) -> dict:
+    async def _fetch_archived_membership(self, entities) -> set[int] | None:
+        """Which of these peers live in Telegram's archived folder (folder 1).
+
+        Whitelist mode never lists dialogs — the full fetch can hang on large
+        accounts (#95) — so archived status comes from batched GetPeerDialogs
+        requests covering exactly the given peers: bounded by the whitelist
+        size, not the account's dialog count. Returns None when any batch
+        fails; the caller must then write no is_archived at all rather than
+        claim 0.
+        """
+        from telethon.tl.functions.messages import GetPeerDialogsRequest
+        from telethon.tl.types import InputDialogPeer
+
+        archived: set[int] = set()
+        for start in range(0, len(entities), 100):
+            batch = entities[start : start + 100]
+            try:
+                peers = [InputDialogPeer(await self.client.get_input_entity(e)) for e in batch]
+                result = await call_with_flood_retry(self.client, GetPeerDialogsRequest(peers=peers))
+                for dlg in getattr(result, "dialogs", []):
+                    if getattr(dlg, "folder_id", None) == 1:
+                        archived.add(get_peer_id(dlg.peer))
+            except Exception as e:
+                # Type only — never peer ids (PII rule).
+                logger.warning(f"Could not determine archived status for whitelisted chats: {e.__class__.__name__}")
+                return None
+        return archived
+
+    def _extract_chat_data(self, entity, is_archived: bool | None = False) -> dict:
         """Extract chat data from entity.
 
         Args:
             entity: Telegram entity (User, Chat, Channel)
-            is_archived: Whether this chat is from the archived folder
+            is_archived: Whether this chat is from the archived folder;
+                None means unknown and omits the key entirely
         """
         # Use marked ID (with -100 prefix for channels/supergroups) for consistency
         chat_data = {"id": self._get_marked_id(entity)}
@@ -3639,8 +3687,11 @@ class TelegramBackup:
             if getattr(entity, "forum", False):
                 chat_data["is_forum"] = 1
 
-        # v6.2.0: Track archived status (always set explicitly)
-        chat_data["is_archived"] = 1 if is_archived else 0
+        # v6.2.0: Track archived status. Set explicitly when known; on None
+        # (unknown) the key is omitted so the adapter's presence guard keeps
+        # whatever an earlier run recorded instead of overwriting it with 0.
+        if is_archived is not None:
+            chat_data["is_archived"] = 1 if is_archived else 0
 
         return chat_data
 
