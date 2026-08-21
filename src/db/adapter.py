@@ -1849,7 +1849,12 @@ class DatabaseAdapter:
                 if account_id is not None:
                     cursor_stmt = cursor_stmt.where(Media.account_id == account_id)
                 cursor_result = await session.execute(cursor_stmt)
-                cursor_row = cursor_result.one_or_none()
+                # first(), not one_or_none(): unscoped (account_id=None) calls
+                # can match BOTH accounts' copies of the same media id, and the
+                # copies share the same (message_id, id) pair — any matching
+                # row resolves the cursor identically, while one_or_none()
+                # would raise MultipleResultsFound on exactly that duplicate.
+                cursor_row = cursor_result.first()
                 if cursor_row is None:
                     return {"items": [], "has_more": False}
                 cursor_media_id, cursor_message_id = cursor_row

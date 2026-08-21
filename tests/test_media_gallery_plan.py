@@ -114,3 +114,36 @@ async def test_forward_cursor_page_stays_an_index_seek(built):
     for plan in await _explain_page_statements(adapter, engine, limit=50, after_id=f"{CHAT_ID}_20_photo"):
         assert "idx_media_gallery" in plan, f"gallery index unused: {plan}"
         assert "SCAN media" not in plan, f"full media scan: {plan}"
+
+
+async def test_unscoped_cursor_survives_duplicate_ids_across_accounts(built):
+    """Two accounts archiving the same chat store identical Media.id strings.
+    An unscoped cursor lookup matches both copies — they share the same
+    (message_id, id) pair, so any row resolves the cursor identically, and
+    the old one_or_none() raised MultipleResultsFound on exactly this."""
+    adapter, engine = built
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        session.add(Chat(account_id=2, id=CHAT_ID, type="channel", title="Second copy"))
+        n = 30
+        session.add(Message(account_id=2, id=n, chat_id=CHAT_ID, date=datetime(2026, 2, 1, 10), text=None))
+        session.add(
+            Media(
+                account_id=2,
+                id=f"{CHAT_ID}_{n}_photo",
+                message_id=n,
+                chat_id=CHAT_ID,
+                type="photo",
+                file_path=f"{CHAT_ID}/photo_{n}.jpg",
+                file_name=f"photo_{n}.jpg",
+                file_size=1,
+                mime_type="image/jpeg",
+                downloaded=1,
+            )
+        )
+        await session.commit()
+
+    page = await adapter.get_media_paginated(CHAT_ID, limit=10, before_id=f"{CHAT_ID}_{n}_photo")
+    assert page["items"], "cursor resolution must survive the duplicate"
