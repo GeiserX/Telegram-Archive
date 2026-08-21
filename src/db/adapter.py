@@ -2559,13 +2559,23 @@ class DatabaseAdapter:
             return [(row[0], row[1], row[2]) for row in result.fetchall()]
 
     async def get_chats_with_messages(self, *, account_id: int) -> list[int]:
-        """Get one account's chat IDs from the chats table.
+        """One account's chat ids that have at least one stored message.
 
-        Queries the chats table directly instead of scanning the messages table,
-        which would be extremely slow on large databases.
+        The chats table drives the scan (never a wholesale messages sweep —
+        that is extremely slow on large databases); a correlated EXISTS probe
+        per chat row, served by the chat-leading messages index, keeps the
+        name honest. _backup_dialog upserts the chat row before any message
+        lands, so a bare chats query let message-less rows through — and in
+        gap-fill each of those cost a get_entity call and FloodWait exposure
+        for a chat that cannot have gaps.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Chat.id).where(Chat.account_id == account_id)
+            has_rows = (
+                select(Message.id)
+                .where(and_(Message.account_id == Chat.account_id, Message.chat_id == Chat.id))
+                .exists()
+            )
+            stmt = select(Chat.id).where(and_(Chat.account_id == account_id, has_rows))
             result = await session.execute(stmt)
             return [row[0] for row in result.fetchall()]
 

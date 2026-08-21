@@ -246,16 +246,20 @@ class TestDetectMessageGaps:
 class TestGetChatsWithMessages:
     """Exercise get_chats_with_messages with a real async SQLite database."""
 
-    async def test_returns_all_chat_ids(self):
-        """Should return all chat IDs from the chats table."""
+    async def test_returns_only_chats_that_hold_messages(self):
+        """_backup_dialog upserts the chat row before any message lands: a
+        message-less row must not pass this gate (each one cost gap-fill a
+        get_entity call and FloodWait exposure for a chat without gaps)."""
         adapter, engine = await _create_in_memory_adapter()
         try:
             await _insert_chat(adapter, chat_id=-1001, title="Chat A")
             await _insert_chat(adapter, chat_id=-1002, title="Chat B")
-            await _insert_chat(adapter, chat_id=-1003, title="Chat C")
+            await _insert_chat(adapter, chat_id=-1003, title="Empty row")
+            await _insert_messages(adapter, chat_id=-1001, msg_ids=[1, 2])
+            await _insert_messages(adapter, chat_id=-1002, msg_ids=[7])
 
             result = await adapter.get_chats_with_messages(account_id=1)
-            assert sorted(result) == [-1003, -1002, -1001]
+            assert sorted(result) == [-1002, -1001]
         finally:
             await engine.dispose()
 
