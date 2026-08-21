@@ -12,7 +12,6 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -630,9 +629,11 @@ class TestGapFillConfig:
     def test_fill_gaps_nonsense_is_rejected_and_names_the_variable(self):
         """FILL_GAPS=banana raises with the variable named — silently reading
         it as False was exactly the footgun the one-vocabulary parser removed."""
-        with patch.dict(os.environ, self._base_env(FILL_GAPS="banana"), clear=True):
-            with pytest.raises(ValueError, match="FILL_GAPS"):
-                Config()
+        with (
+            patch.dict(os.environ, self._base_env(FILL_GAPS="banana"), clear=True),
+            pytest.raises(ValueError, match="FILL_GAPS"),
+        ):
+            Config()
 
     def test_gap_threshold_default(self):
         """GAP_THRESHOLD should default to 50."""
