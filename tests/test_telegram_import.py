@@ -128,6 +128,22 @@ class TestParseDate(unittest.TestCase):
     def test_invalid_date(self):
         self.assertIsNone(parse_date({"date": "not-a-date"}))
 
+    def test_aware_iso_converts_to_naive_utc(self):
+        """An offset-bearing string is an instant, not a wall clock: 10:00+02:00 IS 08:00 UTC."""
+        result = parse_date({"date": "2024-01-15T10:00:00+02:00"})
+        self.assertEqual(result, datetime(2024, 1, 15, 8, 0, 0))
+        self.assertIsNone(result.tzinfo)
+
+    def test_aware_iso_negative_offset(self):
+        result = parse_date({"date": "2024-01-15T22:30:00-05:00"})
+        self.assertEqual(result, datetime(2024, 1, 16, 3, 30, 0))
+        self.assertIsNone(result.tzinfo)
+
+    def test_naive_iso_unchanged(self):
+        result = parse_date({"date": "2024-01-15T10:00:00"})
+        self.assertEqual(result, datetime(2024, 1, 15, 10, 0, 0))
+        self.assertIsNone(result.tzinfo)
+
 
 class TestParseEditedDate(unittest.TestCase):
     def test_edited_unixtime(self):
@@ -142,6 +158,11 @@ class TestParseEditedDate(unittest.TestCase):
 
     def test_no_edited(self):
         self.assertIsNone(parse_edited_date({}))
+
+    def test_aware_edited_converts_to_naive_utc(self):
+        result = parse_edited_date({"edited": "2024-01-15T10:05:00+02:00"})
+        self.assertEqual(result, datetime(2024, 1, 15, 8, 5, 0))
+        self.assertIsNone(result.tzinfo)
 
 
 class TestDetectMedia(unittest.TestCase):
@@ -952,7 +973,17 @@ class TestParseHtmlDate(unittest.TestCase):
         self.assertEqual(parse_html_date("15.01.2024 10:30:00"), "2024-01-15T10:30:00")
 
     def test_date_with_timezone(self):
-        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+02:00"), "2024-01-15T10:30:00")
+        """The UTC+HH:MM suffix is the only record of the offset — it must survive."""
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+02:00"), "2024-01-15T10:30:00+02:00")
+
+    def test_date_with_negative_offset(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC-05:00"), "2024-01-15T10:30:00-05:00")
+
+    def test_date_with_half_hour_offset(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+05:30"), "2024-01-15T10:30:00+05:30")
+
+    def test_unrecognised_third_token_is_dropped(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 CEST"), "2024-01-15T10:30:00")
 
     def test_empty_string(self):
         self.assertIsNone(parse_html_date(""))
@@ -1040,7 +1071,7 @@ class TestParseHtmlExport(unittest.TestCase):
         self.assertEqual(messages[0]["id"], 100)
         self.assertEqual(messages[0]["from"], "Alice")
         self.assertEqual(messages[0]["text"], "Hello world!")
-        self.assertEqual(messages[0]["date"], "2024-01-15T10:00:00")
+        self.assertEqual(messages[0]["date"], "2024-01-15T10:00:00+02:00")
         self.assertEqual(messages[0]["type"], "message")
 
     def test_joined_messages(self):
@@ -1248,6 +1279,10 @@ class TestHtmlImportIntegration(unittest.TestCase):
         inserted = db.insert_messages_batch.call_args.args[0][0]
         self.assertEqual(inserted["sender_name"], "Alice")
         self.assertIsNone(inserted["sender_id"])
+        # The fixture title is 10:00 UTC+02:00 — the stored instant is naive UTC,
+        # like every capture path, so the merged timeline interleaves correctly.
+        self.assertEqual(inserted["date"], datetime(2024, 1, 15, 8, 0, 0))
+        self.assertIsNone(inserted["date"].tzinfo)
 
     def test_html_import_dry_run(self):
         self._write_html(SAMPLE_HTML_MESSAGE)

@@ -137,9 +137,12 @@ def parse_date(msg: dict) -> datetime | None:
             pass
     if "date" in msg:
         try:
-            return datetime.fromisoformat(msg["date"]).replace(tzinfo=None)
+            parsed = datetime.fromisoformat(msg["date"])
         except ValueError, TypeError:
-            pass
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
     return None
 
 
@@ -152,9 +155,12 @@ def parse_edited_date(msg: dict) -> datetime | None:
             pass
     if "edited" in msg:
         try:
-            return datetime.fromisoformat(msg["edited"]).replace(tzinfo=None)
+            parsed = datetime.fromisoformat(msg["edited"])
         except ValueError, TypeError:
-            pass
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
     return None
 
 
@@ -250,20 +256,32 @@ def _build_service_text(msg: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+_HTML_DATE_OFFSET = re.compile(r"^UTC([+-]\d{2}:\d{2})$")
+
+
 def parse_html_date(date_str: str) -> str | None:
     """Convert HTML export date title to ISO format string.
 
     Input: 'DD.MM.YYYY HH:MM:SS' or 'DD.MM.YYYY HH:MM:SS UTC+HH:MM'
-    Output: ISO 8601 string like '2024-01-01T12:00:00'
+    Output: ISO 8601 string like '2024-01-01T12:00:00' or '2024-01-01T12:00:00+02:00'
+
+    The title is the exporter's local wall-clock time; the UTC+HH:MM suffix is the
+    only record of the offset, so it must survive into the ISO string — parse_date
+    normalises aware strings to naive UTC, matching every capture path.
     """
     if not date_str:
         return None
     parts = date_str.strip().split()
     if len(parts) < 2:
         return None
+    offset = ""
+    if len(parts) >= 3:
+        match = _HTML_DATE_OFFSET.match(parts[2])
+        if match:
+            offset = match.group(1)
     try:
         day, month, year = parts[0].split(".")
-        return f"{year}-{month}-{day}T{parts[1]}"
+        return f"{year}-{month}-{day}T{parts[1]}{offset}"
     except ValueError, IndexError:
         return None
 
