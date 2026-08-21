@@ -542,7 +542,7 @@ class TestExceptionHandlerRedaction(unittest.TestCase):
         return response, "\n".join(captured.output)
 
     def test_database_error_branch_logs_no_identifiers(self):
-        response, logged = self._drive_failing_request(OSError(20, "Not a directory", "/cache/thumbs"))
+        response, logged = self._drive_failing_request(ConnectionRefusedError(111, "Connection refused"))
         self.assertEqual(503, response.status_code)
         self.assertNotIn(self.CHAT_FOLDER, logged)
         self.assertNotIn(self.CHAT_REF, logged)
@@ -582,13 +582,13 @@ class TestExceptionHandlerRedaction(unittest.TestCase):
         self.assertIn("TimeoutExpired", logged)
         self.assertIn('File "', logged)
 
-    def test_oserror_with_a_media_path_stays_clean_on_the_503_branch(self):
-        """An OSError carrying the media path classifies as a connection error;
-        its 503 branch must keep refusing the exception text (which stringifies
-        with the offending filename) and must never grow an exc_info."""
+    def test_oserror_with_a_media_path_stays_clean_on_the_500_branch(self):
+        """A filesystem OSError carrying the media path is no longer classified
+        as a database outage; its 500 branch must keep refusing the exception
+        text (which stringifies with the offending filename)."""
         attack = FileNotFoundError(2, "No such file or directory", f"/data/media/{self.CHAT_FOLDER}/{self.FILE_NAME}")
         response, logged = self._drive_failing_request(attack)
-        self.assertEqual(503, response.status_code)
+        self.assertEqual(500, response.status_code)
         self.assertNotIn(self.CHAT_FOLDER, logged)
         self.assertNotIn(self.CHAT_REF, logged)
         self.assertNotIn("Maria", logged)
@@ -699,7 +699,7 @@ class TestUnhandledExceptionNeverReachesTheServer(unittest.TestCase):
 
     def test_db_connection_error_still_answers_503_without_reraise(self):
         """The 503-for-DB branch keeps its status and its redaction under the middleware."""
-        response, logged = self._drive(OSError(20, "Not a directory", "/cache/thumbs"))
+        response, logged = self._drive(ConnectionRefusedError(111, "Connection refused"))
         self.assertEqual(503, response.status_code)
         self.assertNotIn(self.CHAT_FOLDER, logged)
         self.assertNotIn("Maria", logged)

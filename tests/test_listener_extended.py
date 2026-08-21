@@ -866,6 +866,30 @@ class TestDownloadMedia:
         result = await listener._download_media(msg, -100)
         assert result is None
 
+    async def test_download_media_progressive_photo_size_gate_holds(self):
+        """A full-resolution PhotoSizeProgressive has no scalar .size — the old
+        max-by-getattr scored it 0, let a thumbnail win, and downloaded a
+        9.5 MB photo through a 100-byte cap."""
+        from telethon.tl.types import MessageMediaPhoto, PhotoSize, PhotoSizeProgressive
+
+        listener = self._make_listener()
+        listener.config.get_max_media_size_bytes.return_value = 100
+
+        msg = MagicMock()
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 790
+        media.photo.sizes = [
+            PhotoSize(type="m", w=320, h=240, size=90),  # under the cap on its own
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[12_000, 9_500_000]),
+        ]
+        msg.media = media
+        msg.id = 4
+
+        result = await listener._download_media(msg, -100)
+        assert result is None
+        listener.client.download_media.assert_not_called()
+
 
 # ===========================================================================
 # _download_avatar
@@ -1920,17 +1944,85 @@ class TestLogStats:
 
 
 class TestLoadTrackedChatsError:
-    """Tests for _load_tracked_chats exception handling."""
+    """A failed refresh must never shrink the live capture scope: every
+    handler gates on _tracked_chat_ids, so clobbering a serving set with an
+    empty one silently stops ALL real-time capture until the next scheduled
+    backup (hours)."""
 
-    async def test_exception_sets_empty_tracked_chats(self):
-        """When get_all_chats raises, tracked_chat_ids is set to empty set."""
+    async def test_first_load_failure_leaves_scope_empty_and_says_so(self, caplog):
         db = _make_db()
         db.get_all_chats = AsyncMock(side_effect=Exception("db error"))
         listener = TelegramListener(_make_config(), db, account_id=1)
 
-        await listener._load_tracked_chats()
+        with caplog.at_level("WARNING", logger="src.listener"):
+            await listener._load_tracked_chats()
 
         assert listener._tracked_chat_ids == set()
+        assert any("capture stays disabled" in r.getMessage() for r in caplog.records)
+
+    async def test_refresh_failure_keeps_the_previous_scope(self, caplog):
+        db = _make_db()
+        db.get_all_chats = AsyncMock(return_value=[{"id": -1001000000706}, {"id": -1001000000707}])
+        listener = TelegramListener(_make_config(), db, account_id=1)
+        await listener._load_tracked_chats()
+        assert listener._tracked_chat_ids == {-1001000000706, -1001000000707}
+
+        db.get_all_chats.side_effect = Exception("postgres failover")
+        with caplog.at_level("WARNING", logger="src.listener"):
+            await listener._load_tracked_chats()
+
+        assert listener._tracked_chat_ids == {-1001000000706, -1001000000707}
+        assert any("keeping the previous set of 2 chats" in r.getMessage() for r in caplog.records)
+
+    async def test_partial_failure_cannot_leave_the_sets_inconsistent(self):
+        """get_all_chats succeeds but the followed-migration load raises: the
+        previous scope survives untouched (assignment is all-or-nothing)."""
+        db = _make_db()
+        db.get_all_chats = AsyncMock(return_value=[{"id": -1001000000706}])
+        listener = TelegramListener(_make_config(), db, account_id=1)
+        await listener._load_tracked_chats()
+        previous_tracked = set(listener._tracked_chat_ids)
+        previous_followed = set(listener._followed_live)
+
+        db.get_all_chats = AsyncMock(return_value=[{"id": -1001000000999}])
+        listener._load_followed_migration_ids = AsyncMock(side_effect=Exception("metadata read failed"))
+        await listener._load_tracked_chats()
+
+        assert listener._tracked_chat_ids == previous_tracked
+        assert listener._followed_live == previous_followed
+
+    async def test_metadata_failure_inside_the_loader_keeps_the_previous_scope(self):
+        """The loader must PROPAGATE a database failure, never convert it to an
+        empty set: swallowed, it reads as a successful 'no migrations' load and
+        silently drops every followed supergroup from the live scope — the
+        exact failure mode the keep-previous guard exists to stop."""
+        db = _make_db()
+        config = _make_config()
+        config.follow_chat_migrations = True
+        db.get_all_chats = AsyncMock(return_value=[{"id": -1001000000706}])
+        db.get_metadata = AsyncMock(return_value="[-1001000000888]")
+        listener = TelegramListener(config, db, account_id=1)
+        await listener._load_tracked_chats()
+        assert listener._followed_live == {-1001000000888}
+
+        db.get_metadata = AsyncMock(side_effect=Exception("metadata read failed"))
+        await listener._load_tracked_chats()
+
+        assert listener._followed_live == {-1001000000888}
+        assert -1001000000888 in listener._tracked_chat_ids
+
+    async def test_exception_message_logs_type_only(self, caplog):
+        """PII rule: the exception repr may spell out peer ids — log the class."""
+        db = _make_db()
+        db.get_all_chats = AsyncMock(side_effect=ValueError("PeerUser(user_id=123456789)"))
+        listener = TelegramListener(_make_config(), db, account_id=1)
+
+        with caplog.at_level("WARNING", logger="src.listener"):
+            await listener._load_tracked_chats()
+
+        assert caplog.records
+        for r in caplog.records:
+            assert "123456789" not in r.getMessage()
 
 
 # ===========================================================================

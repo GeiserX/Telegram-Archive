@@ -1303,10 +1303,10 @@ class TestFillGaps(unittest.TestCase):
     def test_scan_all_chats_filters_by_config(self):
         """When chat_id is None, scans all chats filtered by should_backup_chat."""
         self.backup.db.get_chats_with_messages = AsyncMock(return_value=[1, 2])
-        self.backup.db.get_chat_by_id = AsyncMock(
-            side_effect=[
-                {"type": "private"},
-                {"type": "channel"},
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(
+            return_value=[
+                {"id": 1, "type": "private", "is_bot": False, "is_archived": False},
+                {"id": 2, "type": "channel", "is_bot": False, "is_archived": False},
             ]
         )
         self.backup.config.should_backup_chat = MagicMock(side_effect=[True, False])
@@ -1316,11 +1316,13 @@ class TestFillGaps(unittest.TestCase):
         summary = _run(self.backup._fill_gaps(chat_id=None))
 
         self.assertEqual(summary["chats_scanned"], 1)
+        self.backup.config.should_backup_chat.assert_any_call(1, True, False, False, False)
+        self.backup.config.should_backup_chat.assert_any_call(2, False, False, True, False)
 
     def test_scan_all_skips_chat_without_info(self):
-        """Chat without DB info is skipped during scan."""
+        """A chat with messages but no chats row never reaches the scan."""
         self.backup.db.get_chats_with_messages = AsyncMock(return_value=[1])
-        self.backup.db.get_chat_by_id = AsyncMock(return_value=None)
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
 
         summary = _run(self.backup._fill_gaps(chat_id=None))
 
@@ -1883,6 +1885,37 @@ class TestGetMediaSize(unittest.TestCase):
         size2.size = 500
         media.photo.sizes = [size1, size2]
         self.assertEqual(self.backup._get_media_size(media), 500)
+
+    def test_progressive_photo_measures_the_full_rendition(self):
+        """PhotoSizeProgressive (the full-resolution rendition) carries no
+        scalar .size — reading it as 0 made the MAX_MEDIA_SIZE_MB gate fail
+        open for exactly the photos it exists to block."""
+        from telethon.tl.types import PhotoSize, PhotoSizeProgressive
+
+        media = MagicMock()
+        media.document = None
+        del media.document
+        media.photo = MagicMock()
+        media.photo.sizes = [
+            PhotoSize(type="m", w=320, h=240, size=12_000),
+            PhotoSize(type="x", w=800, h=600, size=90_000),
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[12_000, 40_000, 9_500_000]),
+        ]
+        self.assertEqual(self.backup._get_media_size(media), 9_500_000)
+
+    def test_progressive_rendition_wins_regardless_of_position(self):
+        """max across renditions, never a positional sizes[-1] read."""
+        from telethon.tl.types import PhotoSize, PhotoSizeProgressive
+
+        media = MagicMock()
+        media.document = None
+        del media.document
+        media.photo = MagicMock()
+        media.photo.sizes = [
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[9_500_000]),
+            PhotoSize(type="m", w=320, h=240, size=12_000),
+        ]
+        self.assertEqual(self.backup._get_media_size(media), 9_500_000)
 
     def test_photo_no_sizes_returns_zero(self):
         """Photo with empty sizes list falls through to fallback which returns 0."""

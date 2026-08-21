@@ -55,6 +55,7 @@ from .db.models import account_metadata_key
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
+    _photo_size_bytes,
     build_media_filename,
     compute_file_hash_async,
     describe_exception,
@@ -185,7 +186,9 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         from src.web.thumbnails import (
             _IMAGE_EXTENSIONS,
             _MAX_SOURCE_BYTES,
+            _VIDEO_EXTENSIONS,
             WEBP_QUALITY,
+            _generate_video_sync,
             _thumb_path,
         )
 
@@ -195,10 +198,14 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         if not source.exists():
             return
 
-        if source.suffix.lower() not in _IMAGE_EXTENSIONS:
+        suffix = source.suffix.lower()
+        is_image = suffix in _IMAGE_EXTENSIONS
+        is_video = suffix in _VIDEO_EXTENSIONS
+        if not is_image and not is_video:
             return
 
-        if source.stat().st_size > _MAX_SOURCE_BYTES:
+        # Videos gate bytes inside _generate_video_sync (at 4x this limit).
+        if is_image and source.stat().st_size > _MAX_SOURCE_BYTES:
             return
 
         media_root_path = Path(media_root)
@@ -210,6 +217,16 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         dest = _thumb_path(media_root_path, 200, folder, source.name)
 
         if dest.exists():
+            return
+
+        if is_video:
+            # The whole guard stack — ffmpeg availability, the 4x byte gate,
+            # -max_pixels, the atomic temp+replace save — lives inside
+            # _generate_video_sync. A False here costs nothing: the request
+            # path (with its failure cache) remains the fallback, exactly as
+            # for images. This runs in the backup's to_thread lane, so the
+            # ffmpeg wait never blocks the event loop.
+            _generate_video_sync(source, dest, 200)
             return
 
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -2266,18 +2283,24 @@ class TelegramBackup:
             chat_ids = [chat_id]
         else:
             # Only scan chats that current config would back up (respects
-            # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists)
-            all_chat_ids = await self.db.get_chats_with_messages(account_id=self.account_id)
+            # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists).
+            # Classification must mirror backup_all's live-entity one, and the
+            # chats table stores bot DMs as type "private" — bot-ness lives in
+            # the users table — so reading chats.type alone made is_bot
+            # unreachable: CHAT_TYPES=bots never gap-filled a single bot
+            # conversation, and configs without bots kept gap-filling
+            # previously archived bot chats.
+            with_messages = set(await self.db.get_chats_with_messages(account_id=self.account_id))
             chat_ids = []
-            for cid in all_chat_ids:
-                chat_info = await self.db.get_chat_by_id(cid, account_id=self.account_id)
-                if not chat_info:
+            for chat_info in await self.db.get_chats_for_folder_resolution(account_id=self.account_id):
+                cid = chat_info["id"]
+                if cid not in with_messages:
                     continue
                 ctype = chat_info.get("type", "")
-                is_user = ctype == "private"
+                is_bot = ctype == "private" and bool(chat_info.get("is_bot"))
+                is_user = ctype == "private" and not is_bot
                 is_group = ctype in ("group", "supergroup")
                 is_channel = ctype == "channel"
-                is_bot = ctype == "bot"
                 if self.config.should_backup_chat(cid, is_user, is_group, is_channel, is_bot):
                     chat_ids.append(cid)
 
@@ -3541,10 +3564,13 @@ class TelegramBackup:
         if hasattr(media, "photo") and media.photo:
             sizes = getattr(media.photo, "sizes", [])
             if sizes:
-                # Return size of the last one (usually the largest)
-                # Some Size types have 'size' field, others don't (like PhotoCachedSize)
-                largest = sizes[-1]
-                return getattr(largest, "size", 0)
+                # The full-resolution rendition is PhotoSizeProgressive, which
+                # carries NO scalar .size — only a list of progressive byte
+                # offsets. Reading .size off it scored the largest rendition
+                # as 0, so the MAX_MEDIA_SIZE_MB gate failed open for exactly
+                # the photos it exists to block. _photo_size_bytes reads both
+                # shapes; take the max across renditions.
+                return max(_photo_size_bytes(s) for s in sizes)
 
         # Fallback to direct attribute
         return getattr(media, "size", 0)

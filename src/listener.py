@@ -39,6 +39,7 @@ from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .message_utils import (
+    _photo_size_bytes,
     build_media_filename,
     compute_file_hash_async,
     describe_exception,
@@ -465,32 +466,48 @@ class TelegramListener:
         """Load list of chat IDs we're backing up (to filter events)."""
         try:
             chats = await self.db.get_all_chats(account_id=self.account_id)
-            self._tracked_chat_ids = {chat["id"] for chat in chats}
+            tracked = {chat["id"] for chat in chats}
             # Supergroups adopted via FOLLOW_CHAT_MIGRATIONS (#228): keep them in
             # a dedicated set AND fold into the type-based tracked set, so the new
             # supergroup is captured live from listener start (even before its chat
             # row is persisted) in BOTH whitelist and type-based modes.
-            self._followed_live = await self._load_followed_migration_ids()
-            self._tracked_chat_ids |= self._followed_live
+            followed = await self._load_followed_migration_ids()
+            # Assigned only after BOTH loads succeed, so a failure part-way
+            # through cannot leave the two sets inconsistent.
+            self._followed_live = followed
+            self._tracked_chat_ids = tracked | followed
             logger.info(f"Tracking {len(self._tracked_chat_ids)} chats for real-time updates")
         except Exception as e:
-            logger.warning(f"Could not load tracked chats: {e}")
-            self._tracked_chat_ids = set()
-            self._followed_live = set()
+            # A transient refresh failure must not shrink the live capture
+            # scope: every handler gates on _tracked_chat_ids, so replacing a
+            # serving set with an empty one silently stops ALL real-time
+            # capture until the next scheduled backup reloads it (hours by
+            # default) — and edits/deletions in that window are exactly what
+            # the listener exists to catch. Keep the previous known-good sets.
+            if self._tracked_chat_ids:
+                logger.warning(
+                    f"Could not refresh tracked chats ({e.__class__.__name__}); "
+                    f"keeping the previous set of {len(self._tracked_chat_ids)} chats"
+                )
+            else:
+                logger.warning(
+                    f"Could not load tracked chats ({e.__class__.__name__}); "
+                    "real-time capture stays disabled until a load succeeds"
+                )
 
     async def _load_followed_migration_ids(self) -> set[int]:
         """Read adopted-supergroup ids from the metadata KV (#228).
 
-        Empty unless FOLLOW_CHAT_MIGRATIONS is on. Never raises — a missing or
-        malformed value degrades to an empty set.
+        Empty unless FOLLOW_CHAT_MIGRATIONS is on. A missing or malformed
+        value degrades to an empty set — that is a real observation. A
+        DATABASE failure raises instead: swallowing it here would hand
+        _load_tracked_chats an empty set that looks like success, silently
+        dropping every followed supergroup from the live scope — the exact
+        failure mode its keep-previous-scope guard exists to stop.
         """
         if not getattr(self.config, "follow_chat_migrations", False):
             return set()
-        try:
-            raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
-        except Exception as e:
-            logger.warning(f"Could not load followed migrations: {type(e).__name__}")
-            return set()
+        raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
         if not raw:
             return set()
         try:
@@ -820,9 +837,11 @@ class TelegramListener:
                 file_size = getattr(media.document, "size", 0)
             elif hasattr(media, "photo") and media.photo:
                 if hasattr(media.photo, "sizes") and media.photo.sizes:
-                    largest = max(media.photo.sizes, key=lambda s: getattr(s, "size", 0), default=None)
-                    if largest:
-                        file_size = getattr(largest, "size", 0)
+                    # PhotoSizeProgressive (the full rendition) has no scalar
+                    # .size, so max-by-getattr scored it 0 and a thumbnail won
+                    # — the size gate then measured kilobytes for a photo of
+                    # megabytes. _photo_size_bytes reads both shapes.
+                    file_size = max(_photo_size_bytes(s) for s in media.photo.sizes)
 
             max_size = self.config.get_max_media_size_bytes()
             if file_size > max_size:

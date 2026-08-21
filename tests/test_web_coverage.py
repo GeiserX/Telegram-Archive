@@ -1283,7 +1283,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         """push_subscribe returns 503 on DB connection error."""
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
-        mock_pm.subscribe = AsyncMock(side_effect=OSError("db down"))
+        mock_pm.subscribe = AsyncMock(side_effect=ConnectionRefusedError("db down"))
         web_main.push_manager = mock_pm
         with patch("src.web.push.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             async with self._client() as client:
@@ -1322,7 +1322,7 @@ class TestPushEndpointEdgeCases(_WebTestBase):
         """push_unsubscribe returns 503 on DB connection error."""
         mock_pm = MagicMock()
         mock_pm.is_enabled = True
-        mock_pm.unsubscribe = AsyncMock(side_effect=OSError("db down"))
+        mock_pm.unsubscribe = AsyncMock(side_effect=ConnectionRefusedError("db down"))
         web_main.push_manager = mock_pm
         async with self._client() as client:
             resp = await client.post(
@@ -1549,7 +1549,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_folders_db_connection_error(self):
         """get_folders returns 503 on DB connection error."""
-        self.mock_db.get_all_folders = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_all_folders = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/folders")
         self.assertEqual(resp.status_code, 503)
@@ -1563,7 +1563,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_topics_db_connection_error(self):
         """get_chat_topics returns 503 on DB connection error."""
-        self.mock_db.get_forum_topics = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_forum_topics = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/topics")
         self.assertEqual(resp.status_code, 503)
@@ -1577,7 +1577,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_pinned_db_connection_error(self):
         """get_pinned_messages returns 503 on DB connection error."""
-        self.mock_db.get_pinned_messages = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_pinned_messages = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/pinned")
         self.assertEqual(resp.status_code, 503)
@@ -1591,7 +1591,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_archived_count_db_connection_error(self):
         """get_archived_count returns 503 on DB connection error."""
-        self.mock_db.get_archived_chat_count = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_archived_chat_count = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/archived/count")
         self.assertEqual(resp.status_code, 503)
@@ -1605,7 +1605,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_stats_db_connection_error(self):
         """get_stats returns 503 on DB connection error."""
-        self.mock_db.get_cached_statistics = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_cached_statistics = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/stats")
         self.assertEqual(resp.status_code, 503)
@@ -1619,7 +1619,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_refresh_stats_db_connection_error(self):
         """refresh_stats returns 503 on DB connection error."""
-        self.mock_db.calculate_and_store_statistics = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.calculate_and_store_statistics = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.post("/api/stats/refresh")
         self.assertEqual(resp.status_code, 503)
@@ -1633,7 +1633,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_chat_stats_db_connection_error(self):
         """get_chat_stats returns 503 on DB connection error."""
-        self.mock_db.get_chat_stats = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_chat_stats = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/stats")
         self.assertEqual(resp.status_code, 503)
@@ -1654,7 +1654,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_message_by_date_db_connection_error(self):
         """get_message_by_date returns 503 on DB connection error."""
-        self.mock_db.find_message_by_date_with_joins = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.find_message_by_date_with_joins = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages/by-date?date=2025-01-01")
         self.assertEqual(resp.status_code, 503)
@@ -1668,7 +1668,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_message_dates_db_connection_error(self):
         """get_message_dates returns 503 on DB connection errors."""
-        self.mock_db.get_message_dates = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_message_dates = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages/dates?month=2026-03&timezone=UTC")
         self.assertEqual(resp.status_code, 503)
@@ -1682,7 +1682,7 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_export_db_connection_error(self):
         """export_chat returns 503 on DB connection error."""
-        self.mock_db.get_chat_by_id = AsyncMock(side_effect=OSError("conn"))
+        self.mock_db.get_chat_by_id = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/export")
         self.assertEqual(resp.status_code, 503)

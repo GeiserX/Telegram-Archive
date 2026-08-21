@@ -292,6 +292,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir, dry_run=True))
@@ -314,6 +315,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 100}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -349,6 +351,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -381,6 +384,7 @@ class TestTelegramImporterRun(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -420,6 +424,7 @@ class TestTelegramImporterRun(unittest.TestCase):
 
         media_dir = os.path.join(self.temp_dir, "media")
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, media_dir, account_id=1)
 
@@ -457,6 +462,7 @@ class TestTelegramImporterRun(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -489,6 +495,7 @@ class TestTelegramImporterRun(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -520,6 +527,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
         media_dir = Path(self.temp_dir, "media")
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, str(media_dir), max_filename_bytes=143, account_id=1)
 
@@ -558,6 +566,7 @@ class TestTelegramImporterRun(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
         real_copy2 = shutil.copy2
@@ -607,6 +616,7 @@ class TestTelegramImporterRun(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -643,6 +653,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -653,6 +664,7 @@ class TestTelegramImporterRun(unittest.TestCase):
 
     def test_missing_result_json(self):
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, "/tmp/media", account_id=1)
 
         with self.assertRaises(FileNotFoundError):
@@ -700,6 +712,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -721,6 +734,7 @@ class TestTelegramImporterRun(unittest.TestCase):
         )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1209,6 +1223,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_html_import_requires_chat_id(self):
         self._write_html(SAMPLE_HTML_MESSAGE)
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         with self.assertRaises(ValueError) as ctx:
@@ -1218,6 +1233,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_html_import_basic(self):
         self._write_html(SAMPLE_HTML_MESSAGE)
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1236,6 +1252,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_html_import_dry_run(self):
         self._write_html(SAMPLE_HTML_MESSAGE)
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
         summary = self._run(importer.run(self.export_dir, chat_id_override=42, dry_run=True))
@@ -1255,6 +1272,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
 
         media_dir = os.path.join(self.temp_dir, "media")
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, media_dir, account_id=1)
 
@@ -1275,6 +1293,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
             f.write(b"\x00" * 50)
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1286,6 +1305,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_html_import_forwarded(self):
         self._write_html(SAMPLE_HTML_FORWARDED)
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1297,6 +1317,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_html_import_reply(self):
         self._write_html(SAMPLE_HTML_REPLY)
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1326,6 +1347,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
             )
 
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -1337,6 +1359,7 @@ class TestHtmlImportIntegration(unittest.TestCase):
     def test_no_export_files_raises_error(self):
         """Neither result.json nor messages.html should raise FileNotFoundError."""
         db = AsyncMock()
+        db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, "/tmp/media", account_id=1)
 
         with self.assertRaises(FileNotFoundError) as ctx:
@@ -1346,6 +1369,89 @@ class TestHtmlImportIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestImportCursorGuard(unittest.TestCase):
+    """The sweep cursor may only advance when the export covers the chat head.
+
+    Raising sync_status.last_message_id above unfetched history marks every id
+    below it 'already captured' forever; gap-fill is structurally blind to a
+    missing head (LAG only sees holes between stored rows)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.export_dir = os.path.join(self.temp_dir, "export")
+        os.makedirs(self.export_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _write_export(self, messages):
+        data = {"name": "Test Chat", "type": "private_supergroup", "id": 42, "messages": messages}
+        with open(os.path.join(self.export_dir, "result.json"), "w") as f:
+            json.dump(data, f)
+
+    def _msg(self, msg_id, date="2024-01-15T10:00:00"):
+        m = {"id": msg_id, "type": "message", "from": "Alice", "from_id": "user42", "text": "hi"}
+        if date is not None:
+            m["date"] = date
+        return m
+
+    def _import(self, db):
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
+        return self._run(importer.run(self.export_dir))
+
+    def test_partial_export_leaves_cursor_untouched_and_warns(self):
+        self._write_export([self._msg(8000), self._msg(8001)])
+        db = AsyncMock()
+        db.get_last_message_id.return_value = 0
+        db.get_chat_stats.return_value = {"messages": 0}
+
+        with self.assertLogs("src.telegram_import", level="WARNING") as cm:
+            summary = self._run(
+                TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1).run(self.export_dir)
+            )
+
+        self.assertEqual(summary["total_messages"], 2)
+        db.update_sync_status.assert_not_called()
+        self.assertTrue(any("sweep cursor left unchanged" in r.getMessage() for r in cm.records))
+
+    def test_head_covering_export_advances_cursor(self):
+        self._write_export([self._msg(1), self._msg(2)])
+        db = AsyncMock()
+        db.get_last_message_id.return_value = 0
+        db.get_chat_stats.return_value = {"messages": 0}
+
+        self._import(db)
+
+        db.update_sync_status.assert_called_once_with(-1000000000042, 2, 2, account_id=1)
+
+    def test_existing_higher_cursor_is_never_lowered(self):
+        self._write_export([self._msg(1), self._msg(2)])
+        db = AsyncMock()
+        db.get_last_message_id.return_value = 99999
+        db.get_chat_stats.return_value = {"messages": 0}
+
+        self._import(db)
+
+        db.update_sync_status.assert_not_called()
+
+    def test_date_skipped_message_cannot_raise_the_cursor(self):
+        self._write_export([self._msg(1), self._msg(2), self._msg(3, date=None)])
+        db = AsyncMock()
+        db.get_last_message_id.return_value = 0
+        db.get_chat_stats.return_value = {"messages": 0}
+
+        self._import(db)
+
+        db.update_sync_status.assert_called_once_with(-1000000000042, 2, 2, account_id=1)
 
 
 class TestImportFidelity(unittest.TestCase):
@@ -1451,6 +1557,24 @@ class TestImportFidelity(unittest.TestCase):
         by_id = {m["id"]: m for m in batch}
         self.assertEqual(by_id[1]["is_outgoing"], 1)
         self.assertEqual(by_id[2]["is_outgoing"], 0)
+
+    def test_null_personal_information_leaves_owner_unset(self):
+        """A null or non-object personal_information must not crash the import
+        (review finding): the owner simply stays unknown."""
+        self._write_export(
+            {
+                "personal_information": None,
+                "chats": {
+                    "list": [{"name": "Alice", "type": "personal_chat", "id": 42, "messages": [self._msg(1, "user42")]}]
+                },
+            }
+        )
+        importer, db = self._importer()
+
+        self._run(importer.run(self.export_dir))
+
+        batch = db.insert_messages_batch.call_args.args[0]
+        assert "is_outgoing" not in batch[0]
 
     def test_single_chat_json_has_no_owner_and_no_is_outgoing(self):
         """A chat-scoped export cannot know the owner: the column stays absent

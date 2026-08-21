@@ -611,8 +611,10 @@ class TelegramImporter:
             # A full-account JSON export names its owner: with it, every
             # message can carry an honest is_outgoing instead of leaving the
             # column NULL for the viewer fallback to guess.
+            info = data.get("personal_information")
+            owner_raw = info.get("user_id") if isinstance(info, dict) else None
             try:
-                self._owner_user_id = int(data.get("personal_information", {}).get("user_id") or 0) or None
+                self._owner_user_id = int(owner_raw or 0) or None
             except TypeError, ValueError:
                 self._owner_user_id = None
         elif html_files:
@@ -725,6 +727,7 @@ class TelegramImporter:
         msg_count = 0
         media_count = 0
         max_msg_id = 0
+        min_msg_id = 0
         batch: list[dict[str, Any]] = []
         media_batch: list[dict[str, Any]] = []
 
@@ -733,7 +736,6 @@ class TelegramImporter:
             if msg_id is None:
                 continue
 
-            max_msg_id = max(max_msg_id, msg_id)
             msg_type = msg.get("type", "message")
 
             if msg_type == "service":
@@ -761,6 +763,11 @@ class TelegramImporter:
             if date is None:
                 logger.warning(f"Skipping message {msg_id}: no valid date")
                 continue
+
+            # Cursor bounds track only messages actually accepted for insert: a
+            # skipped message must never advance the sweep cursor past itself.
+            max_msg_id = max(max_msg_id, msg_id)
+            min_msg_id = msg_id if min_msg_id == 0 else min(min_msg_id, msg_id)
 
             raw_data: dict[str, Any] = {}
             if msg.get("forwarded_from"):
@@ -850,7 +857,23 @@ class TelegramImporter:
             media_count += await self._flush_batch(batch, media_batch)
 
         if not dry_run and msg_count > 0:
-            await self.db.update_sync_status(chat_id, max_msg_id, msg_count, account_id=self.account_id)
+            # Advance the sweep cursor only when the export demonstrably covers
+            # the chat's head (Telegram ids start at 1). Desktop's exporter
+            # offers date ranges, so a partial export must not raise the
+            # cursor: every id below its maximum would be treated as already
+            # captured and the still-retrievable older history silently never
+            # fetched. Gap-fill cannot recover a missing head — it only sees
+            # holes BETWEEN stored rows — so this guard is the only protection.
+            # An existing higher cursor is never lowered either (merge case).
+            if min_msg_id > 1:
+                logger.warning(
+                    f"Export starts at message id {min_msg_id}, not the chat head - "
+                    "sweep cursor left unchanged so the next backup run can still fetch the older history"
+                )
+            else:
+                current = await self.db.get_last_message_id(chat_id, account_id=self.account_id)
+                if max_msg_id > (current or 0):
+                    await self.db.update_sync_status(chat_id, max_msg_id, msg_count, account_id=self.account_id)
 
         action = "Would import" if dry_run else "Imported"
         logger.info(f"{action} {msg_count} messages and {media_count} media files")
