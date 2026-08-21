@@ -312,9 +312,17 @@ class TestChatsAreAccountIsolated:
         assert [ref for *_, ref in rows_after] == refs  # update branch never touches ref
 
     async def test_get_chats_with_messages_lists_only_that_accounts_chats(self, real_adapter):
+        """Scoping AND the with-messages gate: each account sees exactly its
+        own chats that actually hold messages — a bare chat row (upserted
+        before any message lands) does not pass."""
         await _seed_accounts(real_adapter)
         await _seed_chat(real_adapter, -100712)
         await _seed_chat(real_adapter, -100722, accounts=(OTHER_ACCOUNT,))
+        await real_adapter.insert_messages_batch([_message(-100712, 1)], account_id=DEFAULT_ACCOUNT_ID)
+        await real_adapter.insert_messages_batch([_message(-100712, 1)], account_id=OTHER_ACCOUNT)
+        await real_adapter.insert_messages_batch([_message(-100722, 1)], account_id=OTHER_ACCOUNT)
+        # A message-less chat row for the default account: must not appear.
+        await _seed_chat(real_adapter, -100733, accounts=(DEFAULT_ACCOUNT_ID,))
 
         assert await real_adapter.get_chats_with_messages(account_id=DEFAULT_ACCOUNT_ID) == [-100712]
         assert sorted(await real_adapter.get_chats_with_messages(account_id=OTHER_ACCOUNT)) == [-100722, -100712]

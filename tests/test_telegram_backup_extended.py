@@ -1303,10 +1303,10 @@ class TestFillGaps(unittest.TestCase):
     def test_scan_all_chats_filters_by_config(self):
         """When chat_id is None, scans all chats filtered by should_backup_chat."""
         self.backup.db.get_chats_with_messages = AsyncMock(return_value=[1, 2])
-        self.backup.db.get_chat_by_id = AsyncMock(
-            side_effect=[
-                {"type": "private"},
-                {"type": "channel"},
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(
+            return_value=[
+                {"id": 1, "type": "private", "is_bot": False, "is_archived": False},
+                {"id": 2, "type": "channel", "is_bot": False, "is_archived": False},
             ]
         )
         self.backup.config.should_backup_chat = MagicMock(side_effect=[True, False])
@@ -1316,11 +1316,13 @@ class TestFillGaps(unittest.TestCase):
         summary = _run(self.backup._fill_gaps(chat_id=None))
 
         self.assertEqual(summary["chats_scanned"], 1)
+        self.backup.config.should_backup_chat.assert_any_call(1, True, False, False, False)
+        self.backup.config.should_backup_chat.assert_any_call(2, False, False, True, False)
 
     def test_scan_all_skips_chat_without_info(self):
-        """Chat without DB info is skipped during scan."""
+        """A chat with messages but no chats row never reaches the scan."""
         self.backup.db.get_chats_with_messages = AsyncMock(return_value=[1])
-        self.backup.db.get_chat_by_id = AsyncMock(return_value=None)
+        self.backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
 
         summary = _run(self.backup._fill_gaps(chat_id=None))
 
