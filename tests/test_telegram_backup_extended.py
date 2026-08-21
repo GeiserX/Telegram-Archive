@@ -780,6 +780,37 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
 
         self.backup.db.delete_chat_and_related_data.assert_awaited_once()
 
+    def test_archived_only_excluded_chat_is_also_deleted(self):
+        """Exclusion must mean the same thing in both Telegram folders: the
+        excluded set was built from the regular dialog list only, so a chat
+        living only in the archived folder was skipped but never purged."""
+        user_entity = self._make_entity(User, 100, bot=False)
+        dialog = self._make_dialog(user_entity)
+
+        self.backup.config.global_exclude_ids = {100}
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [dialog]])
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+        _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_awaited_once()
+        args = self.backup.db.delete_chat_and_related_data.await_args.args
+        self.assertEqual(args[0], 100)
+
+    def test_archived_only_unexcluded_chat_is_not_deleted(self):
+        """Control: the archived pass must never delete a chat that is merely
+        filtered out, only ones in an explicit exclude list."""
+        user_entity = self._make_entity(User, 100, bot=False)
+        dialog = self._make_dialog(user_entity)
+
+        self.backup.config.global_exclude_ids = set()
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [dialog]])
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+        _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_not_awaited()
+
     def test_delete_chat_exception_does_not_crash(self):
         """Exception during chat deletion should be caught."""
         user_entity = self._make_entity(User, 100, bot=False)

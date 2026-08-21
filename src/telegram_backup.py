@@ -978,6 +978,24 @@ class TelegramBackup:
             await self.client.disconnect()
             logger.info("Disconnected from Telegram")
 
+    def _is_explicitly_excluded(self, chat_id: int, entity) -> bool:
+        """True when the user put this chat in an exclude list (not merely filtered out).
+
+        THE single copy of the predicate: the regular and archived dialog
+        passes must agree, or exclusion means "purge" in one Telegram folder
+        and "keep forever" in the other.
+        """
+        is_bot = isinstance(entity, User) and entity.bot
+        is_user = isinstance(entity, User) and not entity.bot
+        is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
+        is_channel = isinstance(entity, Channel) and not entity.megagroup
+        return (
+            chat_id in self.config.global_exclude_ids
+            or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
+            or (is_group and chat_id in self.config.groups_exclude_ids)
+            or (is_channel and chat_id in self.config.channels_exclude_ids)
+        )
+
     async def backup_all(self):
         """
         Perform backup of all configured chats.
@@ -1246,15 +1264,7 @@ class TelegramBackup:
                     is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
                     is_channel = isinstance(entity, Channel) and not entity.megagroup
 
-                    # Check if chat is explicitly in an exclude list (not just filtered out)
-                    is_explicitly_excluded = (
-                        chat_id in self.config.global_exclude_ids
-                        or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
-                        or (is_group and chat_id in self.config.groups_exclude_ids)
-                        or (is_channel and chat_id in self.config.channels_exclude_ids)
-                    )
-
-                    if is_explicitly_excluded:
+                    if self._is_explicitly_excluded(chat_id, entity):
                         # Chat is explicitly excluded - mark for deletion
                         explicitly_excluded_chat_ids.add(chat_id)
                     elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
@@ -1264,6 +1274,19 @@ class TelegramBackup:
                         # Adopted after a group→supergroup migration (#228): in
                         # scope even though it is not in any user include list.
                         filtered_dialogs.append(dialog)
+
+                # The SAME exclusion must purge a chat wherever it lives:
+                # this set was built from the regular dialog list only, so a
+                # chat the user had archived in Telegram was skipped by the
+                # archived loop below but never deleted — exclusion silently
+                # meant "keep everything" for exactly those chats, and the
+                # storage the user tried to reclaim never was.
+                for dialog in archived_dialogs:
+                    chat_id = self._get_marked_id(dialog.entity)
+                    if chat_id not in explicitly_excluded_chat_ids and self._is_explicitly_excluded(
+                        chat_id, dialog.entity
+                    ):
+                        explicitly_excluded_chat_ids.add(chat_id)
 
                 # Fetch explicitly included chats that weren't in dialogs
                 # This handles cases where chats don't appear in the dialog list
