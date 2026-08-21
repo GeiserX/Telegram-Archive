@@ -59,25 +59,42 @@ jobs:
       # tests/conftest.py, which never touch the database named here: they
       # create their own telegram_archive_pytest / _parity_* databases on it.
       TEST_POSTGRES_URL: postgresql://telegram:ci-not-a-secret@localhost:5432/telegram_archive_ci
+    outputs:
+      resolved_sha: ${{ steps.resolve.outputs.sha }}
     steps:
       # A dispatch republish must rebuild the TAGGED commit, never re-stamp a
       # version onto whatever ref the run happened to use. Refuse inputs that
       # are not existing git tags before anything builds. The input reaches the
       # shell via env, never inline interpolation.
-      - name: Refuse a dispatch tag that is not a real git tag
-        if: github.event.inputs.tag != ''
+      # Resolve the commit to build EXACTLY ONCE. Both jobs used to resolve
+      # the tag name independently, so a tag re-pointed between the test
+      # checkout and the build checkout published a commit the tests never
+      # saw. The build job consumes this job's resolved SHA instead.
+      - name: Resolve and pin the commit to build
+        id: resolve
         env:
           DISPATCH_TAG: ${{ github.event.inputs.tag }}
         run: |
-          git ls-remote --exit-code --tags "https://github.com/${{ github.repository }}" "refs/tags/$DISPATCH_TAG" >/dev/null || {
-            echo "::error::'$DISPATCH_TAG' is not an existing git tag - the image tag and the git tag may never disagree"
-            exit 1
-          }
+          if [ -n "$DISPATCH_TAG" ]; then
+            LINES=$(git ls-remote --exit-code --tags \
+              "https://github.com/${{ github.repository }}" \
+              "refs/tags/$DISPATCH_TAG" "refs/tags/$DISPATCH_TAG^{}") || {
+              echo "::error::'$DISPATCH_TAG' is not an existing git tag - the image tag and the git tag may never disagree"
+              exit 1
+            }
+            # Annotated tags list a peeled ^{} line with the commit; prefer it.
+            SHA=$(printf '%s\n' "$LINES" | grep '\^{}' | cut -f1)
+            [ -n "$SHA" ] || SHA=$(printf '%s\n' "$LINES" | head -n1 | cut -f1)
+          else
+            SHA="${{ github.sha }}"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           # Dispatch with a tag input builds that tag's commit; everything else
           # keeps building the triggering ref exactly as before.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The pinned commit: the dispatch tag's target, or the push's own SHA.
+          ref: ${{ steps.resolve.outputs.sha }}
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -123,7 +140,9 @@ jobs:
         with:
           # Same source rule as the test job: the dispatch tag input is
           # authoritative for the content, not just the image label.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The exact commit the test job resolved and tested - never a second
+          # by-name resolution that could see a re-pointed tag.
+          ref: ${{ needs.test.outputs.resolved_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
