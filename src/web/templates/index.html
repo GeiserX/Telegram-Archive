@@ -11,42 +11,20 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="manifest" href="/static/manifest.json">
     <title>Telegram Archive</title>
-    <!-- Third-party assets: every URL is pinned to an exact version and carries a
-         Subresource Integrity hash, because these scripts run in the same origin
-         as the archive session — an unpinned URL ships whatever the next npm
-         publish contains, and without integrity a compromised CDN edge can
-         return anything at all.
-         TWO DELIBERATE EXCEPTIONS, both unhashable rather than overlooked:
-           * cdn.tailwindcss.com serves no Access-Control-Allow-Origin header even
-             when the request carries an Origin (re-verified 2026-08-15), and
-             integrity= forces a CORS-checked fetch, so adding it would block the
-             script outright and the UI would load unstyled. The bytes themselves
-             are stable and hashable, but the npm package ships no browser bundle,
-             so no CORS-enabled CDN can serve this file. Pinned only.
-           * the Google Fonts stylesheet is generated per user agent, so its bytes
-             (and therefore its hash) differ between browsers. It has no version
-             to pin and delivers CSS, not script. -->
-    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-    <script src="https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js"
-        integrity="sha384-arPHRzOKPl8g3Rbe/cQBWYPnq4HcxfPFSFWD3qvI/hc2XQf+4GkVqkOlWgjN5mD3"
-        crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"
-        integrity="sha384-VCGDSwGwLWkVOK5vAWSaY38KZ4oKJ0whHjpJQhjqrMlWadpf2dUVKLgOLBdEaLvZ"
-        crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data-1970-2030.min.js"
-        integrity="sha384-l7VdBcaAfGCeXKsn587Z+4Z3m6M5/96OPpQu1zC3wscMtXK9xPY8oQQYUhZBJIC/"
-        crossorigin="anonymous"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
-        integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0"
-        crossorigin="anonymous">
+    <!-- Third-party assets are vendored under /static/vendor (exact versions,
+         origin URLs and hashes in VENDOR-MANIFEST.txt there). They run in the
+         same origin as the archive session, so they load from this server and
+         nowhere else: no CDN edge to compromise, no per-pageview IP/UA leak to
+         third parties, and the UI keeps working offline/air-gapped. -->
+    <script src="/static/vendor/tailwindcss-play-3.4.17.js"></script>
+    <script src="/static/vendor/vue-3.5.41.global.prod.js"></script>
+    <script src="/static/vendor/moment-2.29.4.min.js"></script>
+    <script src="/static/vendor/moment-timezone-with-data-1970-2030-0.5.43.min.js"></script>
+    <link href="/static/vendor/inter.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
     <!-- Flatpickr for date picker -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css"
-        integrity="sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt"
-        crossorigin="anonymous">
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"
-        integrity="sha384-5JqMv4L/Xa0hfvtF06qboNdhvuYXUku9ZrhZh3bSk8VXF0A/RuSLHpLsSV9Zqhl6"
-        crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="/static/vendor/flatpickr-4.6.13.min.css">
+    <script src="/static/vendor/flatpickr-4.6.13.min.js"></script>
     <style>
         /* iOS Safe Area Support */
         :root {

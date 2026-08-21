@@ -1019,51 +1019,6 @@ def _external_subresources(html: str) -> dict[str, str]:
     return found
 
 
-def test_every_cdn_asset_is_version_pinned_and_integrity_checked() -> None:
-    """Third-party code runs in the origin that holds the archive session.
-
-    ``vue@3`` and a versionless ``/npm/flatpickr`` resolved to whatever was latest at
-    page load, and not one tag carried an integrity hash — so a malicious publish, or
-    one bad CDN edge, executed arbitrary JS against the viewer's own API.
-    """
-    html = INDEX_HTML.read_text(encoding="utf-8")
-    found = _external_subresources(html)
-
-    assert set(found) == set(EXPECTED_SUBRESOURCES) | UNHASHABLE_SUBRESOURCES, (
-        "an external asset was added, removed or re-pointed without updating this test"
-    )
-
-    for url, expected_hash in EXPECTED_SUBRESOURCES.items():
-        attrs = found[url]
-        assert f'integrity="{expected_hash}"' in attrs, f"{url} has no (or a changed) integrity hash"
-        assert 'crossorigin="anonymous"' in attrs, f"{url} needs crossorigin for integrity to be checked"
-
-    for url in UNHASHABLE_SUBRESOURCES:
-        assert "integrity=" not in found[url], f"{url} cannot be hashed; see the comment above it"
-
-    # No floating version may come back.
-    assert "https://unpkg.com/vue@3/" not in html
-    assert '<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>' not in html
-    assert "https://cdn.jsdelivr.net/npm/flatpickr/" not in html
-    assert '"https://cdn.tailwindcss.com"' not in html
-
-
-def test_the_unhashable_exceptions_are_documented_in_the_template() -> None:
-    """A missing integrity= must read as a decision, not an oversight."""
-    html = INDEX_HTML.read_text(encoding="utf-8")
-    head = html[: html.index("</head>")]
-
-    assert "Access-Control-Allow-Origin" in head
-    assert "per user agent" in head
-
-
-# --------------------------------------------------------------------------------------
-# The stats header and pinned banner kept a previous chat's data: their loaders wrote
-# state after their awaits with no staleness check, and neither panel auto-refreshes,
-# so a response that lost the race to a chat switch stuck until the NEXT switch
-# --------------------------------------------------------------------------------------
-
-
 _STALE_PANEL_FETCH_STUB = """
 const requests = [];
 const fetch = url => new Promise((resolve, reject) => { requests.push({ url, resolve, reject }); });
