@@ -1177,8 +1177,10 @@ class TestDeleteChatOperations:
 
         # 8 deletes: versions, media, reactions, messages, sync_status,
         # forum_topics, chat_folder_members (explicit - SQLite runs with
-        # foreign_keys off, so their CASCADEs never fire), chat
-        assert mock_session.execute.await_count == 8
+        # foreign_keys off, so their CASCADEs never fire), chat — plus the
+        # push-subscription orphan probe (the mock reports the chat as still
+        # present in another account, so no 10th delete fires here).
+        assert mock_session.execute.await_count == 9
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -3582,3 +3584,74 @@ class TestCalculateAndStoreStatisticsStorage:
             assert stats["total_size_mb"] == 4.0
         finally:
             await db_manager.close()
+
+
+class TestDeleteChatPushSubscriptionPurge:
+    """Chat-scoped push subscriptions die with the LAST account's copy of the
+    chat — never earlier (ids collide across accounts and the table carries no
+    account column), and global subscriptions (chat_id NULL) never die here."""
+
+    async def _real_adapter(self):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from src.db.base import DatabaseManager
+        from src.db.models import Base, Chat, PushSubscription
+
+        engine = create_async_engine(
+            "sqlite+aiosqlite://",
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        db_manager = DatabaseManager.__new__(DatabaseManager)
+        db_manager.engine = engine
+        db_manager.database_url = "sqlite+aiosqlite://"
+        db_manager._is_sqlite = True
+        db_manager.async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with db_manager.async_session_factory() as session:
+            session.add(Chat(account_id=1, id=-100200, type="channel", title="A1 copy"))
+            session.add(Chat(account_id=2, id=-100200, type="channel", title="A2 copy"))
+            session.add(Chat(account_id=1, id=-100300, type="channel", title="Other chat"))
+            session.add(PushSubscription(endpoint="https://push.example/one", p256dh="k", auth="a", chat_id=-100200))
+            session.add(PushSubscription(endpoint="https://push.example/other", p256dh="k", auth="a", chat_id=-100300))
+            session.add(PushSubscription(endpoint="https://push.example/global", p256dh="k", auth="a", chat_id=None))
+            await session.commit()
+
+        return DatabaseAdapter(db_manager), db_manager
+
+    async def _endpoints(self, db_manager):
+        from sqlalchemy import select as sa_select
+
+        from src.db.models import PushSubscription
+
+        async with db_manager.async_session_factory() as session:
+            rows = await session.execute(sa_select(PushSubscription.endpoint))
+            return {row[0] for row in rows}
+
+    @pytest.mark.asyncio
+    async def test_subscription_survives_while_another_account_has_the_chat(self):
+        adapter, db_manager = await self._real_adapter()
+
+        await adapter.delete_chat_and_related_data(-100200, account_id=1)
+
+        assert await self._endpoints(db_manager) == {
+            "https://push.example/one",
+            "https://push.example/other",
+            "https://push.example/global",
+        }
+
+    @pytest.mark.asyncio
+    async def test_subscription_dies_with_the_last_copy(self):
+        adapter, db_manager = await self._real_adapter()
+
+        await adapter.delete_chat_and_related_data(-100200, account_id=1)
+        await adapter.delete_chat_and_related_data(-100200, account_id=2)
+
+        assert await self._endpoints(db_manager) == {
+            "https://push.example/other",
+            "https://push.example/global",
+        }

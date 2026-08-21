@@ -2719,6 +2719,15 @@ class DatabaseAdapter:
             # Delete chat
             await session.execute(delete(Chat).where(and_(Chat.account_id == account_id, Chat.id == chat_id)))
 
+            # Push subscriptions are viewer-side and carry no account column,
+            # so a chat-scoped subscription is orphaned only when NO account
+            # still has this chat. Checked after the Chat delete above, inside
+            # the same transaction; global subscriptions (chat_id NULL) are
+            # untouched by construction.
+            remaining = await session.execute(select(Chat.id).where(Chat.id == chat_id).limit(1))
+            if remaining.first() is None:
+                await session.execute(delete(PushSubscription).where(PushSubscription.chat_id == chat_id))
+
             await session.commit()
             logger.info("Deleted chat and all related data from database")
 
