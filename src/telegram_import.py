@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 500
 
 CHAT_TYPE_MAP = {
-    "personal_chat": "user",
-    "bot_chat": "user",
-    "saved_messages": "user",
+    "personal_chat": "private",
+    "bot_chat": "private",
+    "saved_messages": "private",
     "private_group": "group",
     "private_supergroup": "supergroup",
     "public_supergroup": "supergroup",
@@ -571,6 +571,9 @@ class TelegramImporter:
         self.media_path = media_path
         self.media_root = Path(media_path).resolve()
         self.max_filename_bytes = max_filename_bytes
+        # Owner of a full-account JSON export (personal_information.user_id);
+        # None for HTML and chat-scoped exports, which cannot know it.
+        self._owner_user_id: int | None = None
 
     @classmethod
     async def create(cls, media_path: str, max_filename_bytes: int = 143) -> TelegramImporter:
@@ -605,6 +608,15 @@ class TelegramImporter:
             with open(result_file, encoding="utf-8") as f:
                 data = json.load(f)
             chats = self._extract_chats(data)
+            # A full-account JSON export names its owner: with it, every
+            # message can carry an honest is_outgoing instead of leaving the
+            # column NULL for the viewer fallback to guess.
+            info = data.get("personal_information")
+            owner_raw = info.get("user_id") if isinstance(info, dict) else None
+            try:
+                self._owner_user_id = int(owner_raw or 0) or None
+            except TypeError, ValueError:
+                self._owner_user_id = None
         elif html_files:
             logger.info(f"Detected HTML export format ({len(html_files)} file(s))")
             if not chat_id_override:
@@ -691,15 +703,25 @@ class TelegramImporter:
                 )
 
         if not dry_run:
-            await self.db.upsert_chat(
-                {
-                    "id": chat_id,
-                    "type": CHAT_TYPE_MAP.get(export_type, "unknown"),
-                    "title": chat_name if export_type not in ("personal_chat", "bot_chat") else None,
-                    "first_name": chat_name if export_type in ("personal_chat", "bot_chat") else None,
-                },
-                account_id=self.account_id,
-            )
+            # Only observations the export actually made may reach the row:
+            # upsert_chat updates exactly the keys present, so an absent key
+            # preserves whatever capture already recorded. Supplying
+            # type='unknown' / first_name=None here rewrote captured private
+            # chats and NULLed the contact's real name on --merge.
+            chat_row: dict[str, Any] = {"id": chat_id}
+            if export_type == "html_export":
+                # An HTML export names the chat but cannot say what KIND it
+                # is, nor whether that name is a person's first name. The
+                # name is still worth keeping when no row exists yet.
+                if await self.db.get_chat_by_id(chat_id, account_id=self.account_id) is None:
+                    chat_row["title"] = chat_name
+            elif export_type in ("personal_chat", "bot_chat"):
+                chat_row["type"] = CHAT_TYPE_MAP[export_type]
+                chat_row["first_name"] = chat_name
+            else:
+                chat_row["type"] = CHAT_TYPE_MAP.get(export_type, "unknown")
+                chat_row["title"] = chat_name
+            await self.db.upsert_chat(chat_row, account_id=self.account_id)
 
         seen_users: set[int] = set()
         msg_count = 0
@@ -770,6 +792,9 @@ class TelegramImporter:
                 "edit_date": parse_edited_date(msg),
                 "raw_data": raw_data,
             }
+
+            if self._owner_user_id and sender_id is not None:
+                message_data["is_outgoing"] = 1 if sender_id == self._owner_user_id else 0
 
             batch.append(message_data)
             msg_count += 1
