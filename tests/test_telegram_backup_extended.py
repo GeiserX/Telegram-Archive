@@ -3796,6 +3796,28 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         _run(self.backup._retry_pending_media_downloads())
         self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
 
+    def test_increment_when_message_is_gone(self):
+        """A deleted message is the one provably PERMANENT failure — without
+        counting it, the row re-requests the id from Telegram on every run
+        forever and the cap never retires it."""
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup._process_media = AsyncMock()
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
+        self.backup._process_media.assert_not_awaited()
+
+    def test_increment_when_message_lost_its_media(self):
+        """A message that still exists but no longer carries media is equally
+        permanent for this pending row."""
+        bare_msg = MagicMock()
+        bare_msg.id = 10
+        bare_msg.media = None
+        self.backup.client.get_messages = AsyncMock(return_value=[bare_msg])
+        self.backup._process_media = AsyncMock()
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
+        self.backup._process_media.assert_not_awaited()
+
     def test_no_increment_on_success(self):
         """A successful re-download does not bump the counter (row leaves the pending set)."""
         self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})

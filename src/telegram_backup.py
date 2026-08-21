@@ -1814,10 +1814,18 @@ class TelegramBackup:
                     msg = msg_map.get(msg_id)
 
                     if not msg:
+                        # The message is gone on Telegram — the one provably
+                        # permanent failure. Count it, or this row re-requests
+                        # the id on every run forever and never converges on
+                        # MEDIA_MAX_DOWNLOAD_ATTEMPTS (#212's cap).
+                        await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                         skipped += 1
                         continue
 
                     if not msg.media:
+                        # Still exists but no longer carries media: equally
+                        # permanent for this pending row.
+                        await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                         skipped += 1
                         continue
 
