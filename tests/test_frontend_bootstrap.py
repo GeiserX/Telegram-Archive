@@ -1873,6 +1873,145 @@ const scenario = async (pages) => {
             body.index("scrollToMessage(track.id)"),
         )
 
+    def test_playbar_jump_lands_in_the_forum_tracks_own_topic(self) -> None:
+        """selectChat short-circuits a forum chat into its topics list without
+        touching selectedChat, so the old jump windowed WHATEVER pane was left
+        behind — an unrelated slice of another chat positioned by a message id
+        that means nothing there. The real navigation chain is executed here:
+        the window load must only ever fire with the pane on the track's chat
+        and topic, and a vanished topic must bail instead of windowing."""
+        prelude = """
+const selectedChat = { value: null }
+const selectedPaneTopic = { value: null }
+const messages = { value: [] }
+const messageSearchQuery = { value: '' }
+const chatStats = { value: null }
+const pinnedMessages = { value: [] }
+const currentPinnedIndex = { value: 0 }
+const showPinnedOnly = { value: false }
+const showMediaGallery = { value: false }
+const loading = { value: false }
+const navStack = { value: [] }
+const chats = { value: [] }
+const topics = { value: [] }
+const audioTrack = { value: null }
+let chatVersion = 0
+let galleryReturnState = null
+let TOPICS_BY_REF = {}
+const WINDOW_LOADS = []
+const SCROLLS = []
+const stopMessageRefresh = () => {}
+const startMessageRefresh = () => {}
+const resetMessagePagination = () => {}
+const setupMessagesScrollObserver = () => {}
+const scrollToBottom = () => {}
+const nextTick = async () => {}
+const loadMessages = async () => {}
+const loadChatStats = async () => {}
+const loadPinnedMessages = async () => {}
+const getChatName = (chat) => chat.title || ''
+const navigateTo = (entry) => { navStack.value.push(entry) }
+const loadTopics = async (ref) => { topics.value = TOPICS_BY_REF[ref] || [] }
+const findMessageElement = () => null
+const scrollToMessage = (id) => { SCROLLS.push(id) }
+const loadMessagesAroundId = async (messageId) => {
+    WINDOW_LOADS.push({
+        messageId,
+        chatId: selectedChat.value?.id ?? null,
+        topicId: activeTopicId(),
+    })
+}
+"""
+        epilogue = """
+(async () => {
+    const forumChat = { id: -1001111, ref: 'refA', title: 'Forum A', is_forum: true }
+    const plainChat = { id: -1002222, ref: 'refB', title: 'Plain B' }
+    const otherChat = { id: -1003333, ref: 'refC', title: 'Plain C' }
+    chats.value = [forumChat, plainChat, otherChat]
+
+    const reset = () => {
+        WINDOW_LOADS.length = 0
+        navStack.value = []
+        topics.value = []
+        selectedPaneTopic.value = null
+    }
+
+    // 1. The bead's trigger: track from a forum topic, pane on another chat.
+    reset()
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }, { id: 7, title: 'Topic 7' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const forumJump = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
+
+    // 2. The track's topic no longer exists: bail on the topics list.
+    reset()
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const vanishedTopic = { loads: [...WINDOW_LOADS] }
+
+    // 3. Same forum chat, pane scoped to a different topic.
+    reset()
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }, { id: 7, title: 'Topic 7' }] }
+    selectedChat.value = forumChat
+    selectedPaneTopic.value = { id: 1, title: 'General' }
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const topicSwitch = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
+
+    // 4. A plain chat switch keeps working exactly as before.
+    reset()
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 99, chatId: -1003333, topicId: null }
+    await focusAudioTrackMessage()
+    const plainSwitch = { loads: [...WINDOW_LOADS] }
+
+    console.log(JSON.stringify({ forumJump, vanishedTopic, topicSwitch, plainSwitch }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const GENERAL_TOPIC_ID = ",
+                "const activeTopicId = () => {",
+                "const openForumTopics = async (chat) =>",
+                "const selectTopic = async (chat, topic) =>",
+                "const selectChat = async (chat) =>",
+            ),
+            prelude,
+            # focusAudioTrackMessage is followed by audioEngine listener wiring,
+            # not a 16-space const, so _setup_slice would swallow it — lift the
+            # function by exact brace match and define it just before the driver.
+            _setup_function(self.html, "const focusAudioTrackMessage = async () =>") + "\n" + epilogue,
+        )
+
+        # The window load fired exactly once, with the pane on the track's chat
+        # AND topic — never on the chat the user happened to be reading.
+        self.assertEqual(
+            out["forumJump"]["loads"],
+            [{"messageId": 4242, "chatId": -1001111, "topicId": 7}],
+        )
+        self.assertEqual(out["forumJump"]["paneTopic"], 7)
+
+        # Vanished topic: no window load at all — the user is left on the
+        # topics list, not on an unrelated pane.
+        self.assertEqual(out["vanishedTopic"]["loads"], [])
+
+        # Same chat, wrong topic pane: re-navigates into the track's topic.
+        self.assertEqual(
+            out["topicSwitch"]["loads"],
+            [{"messageId": 4242, "chatId": -1001111, "topicId": 7}],
+        )
+        self.assertEqual(out["topicSwitch"]["paneTopic"], 7)
+
+        # A non-forum switch is untouched by all of this.
+        self.assertEqual(
+            out["plainSwitch"]["loads"],
+            [{"messageId": 99, "chatId": -1003333, "topicId": None}],
+        )
+
 
 # --- Directional, on-demand audio queue (#266) ---------------------------------
 

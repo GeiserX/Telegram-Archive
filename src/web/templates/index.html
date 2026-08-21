@@ -5922,6 +5922,9 @@
                 const audioTrackFromMessage = (msg) => ({
                     id: msg.id,
                     chatId: audioMessageChatId(msg),
+                    // Forum messages live in a topic; the jump needs it to land the
+                    // pane on the right one (null means the General topic).
+                    topicId: msg.reply_to_top_id ?? null,
                     // The ref addresses every queue-page request; chatId stays as the
                     // in-memory identity the queue compares tracks by.
                     chatRef: selectedChat.value?.ref ?? null,
@@ -6684,11 +6687,32 @@
                 const focusAudioTrackMessage = async () => {
                     const track = audioTrack.value
                     if (!track) return
-                    if (track.chatId != null && track.chatId !== (selectedChat.value?.id ?? null)) {
+                    const trackTopicId = Number(track.topicId ?? GENERAL_TOPIC_ID)
+                    // Re-navigate when the pane is another chat, or the same forum
+                    // chat's pane is scoped to a different topic — the window fetch
+                    // below is scoped to the active topic, so a mismatched pane
+                    // would show an unrelated slice positioned by a meaningless id.
+                    const wrongChat = track.chatId != null && track.chatId !== (selectedChat.value?.id ?? null)
+                    const wrongTopic = !wrongChat && track.chatId != null && !!selectedChat.value?.is_forum
+                        && activeTopicId() != null && Number(activeTopicId()) !== trackTopicId
+                    if (wrongChat || wrongTopic) {
                         const chat = chats.value.find(c => c.id === track.chatId)
                         if (!chat) return
                         await selectChat(chat)
+                        // A forum chat short-circuits selectChat into its topics list
+                        // without touching selectedChat (that is what selectTopic is
+                        // for) — continue into the track's own topic. selectChat just
+                        // reloaded this chat's topics, so the lookup cannot hit a
+                        // stale list. A vanished topic bails on the topics list
+                        // rather than windowing whatever pane was left behind.
+                        if (chat.is_forum) {
+                            const topic = topics.value.find(t => Number(t.id) === trackTopicId)
+                            if (!topic) return
+                            await selectTopic(chat, topic)
+                        }
                     }
+                    // The pane must be the track's chat before loading a window by id.
+                    if (track.chatId != null && (selectedChat.value?.id ?? null) !== track.chatId) return
                     await nextTick()
                     // #257: the queue reaches far past the loaded message window, so the
                     // track's row is usually NOT in the DOM — scrollToMessage alone just
