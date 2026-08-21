@@ -1,6 +1,8 @@
 """Tests for thumbnail generation (src/web/thumbnails.py)."""
 
+import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -340,3 +342,88 @@ class TestEnsureThumbnail(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConcurrentGenerationCollapse(unittest.IsolatedAsyncioTestCase):
+    """One missing thumbnail costs one generation, no matter how many ask."""
+
+    def setUp(self):
+        import src.web.thumbnails as mod
+
+        mod._recent_failures.clear()
+        mod._inflight_locks.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.media_root = Path(self.tmp.name)
+        (self.media_root / "chat1").mkdir()
+        (self.media_root / "chat1" / "photo.jpg").write_bytes(b"not-a-real-jpeg")
+
+    async def test_concurrent_requests_for_same_thumb_generate_once(self):
+        calls = []
+
+        def fake_generate(source, dest, size):
+            calls.append(str(dest))
+            time.sleep(0.05)  # hold the window open so the duplicates really overlap
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+            results = await asyncio.gather(
+                *(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg") for _ in range(6))
+            )
+
+        self.assertEqual(len(calls), 1)
+        for result in results:
+            self.assertIsNotNone(result)
+            self.assertEqual(result[0].name, "photo.webp")
+
+    async def test_concurrent_requests_share_one_failure(self):
+        calls = []
+
+        def fake_generate(source, dest, size):
+            calls.append(str(dest))
+            time.sleep(0.05)
+            return False
+
+        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+            results = await asyncio.gather(
+                *(ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg") for _ in range(6))
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(results, [None] * 6)
+
+    async def test_distinct_thumbnails_generate_independently(self):
+        (self.media_root / "chat1" / "other.jpg").write_bytes(b"x")
+        calls = []
+
+        def fake_generate(source, dest, size):
+            calls.append(str(dest))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+            results = await asyncio.gather(
+                ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg"),
+                ensure_thumbnail(self.media_root, 400, "chat1", "photo.jpg"),
+                ensure_thumbnail(self.media_root, 200, "chat1", "other.jpg"),
+            )
+
+        self.assertEqual(len(calls), 3)
+        for result in results:
+            self.assertIsNotNone(result)
+
+    async def test_inflight_map_is_empty_after_completion(self):
+        import src.web.thumbnails as mod
+
+        def fake_generate(source, dest, size):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"webp")
+            return True
+
+        with patch("src.web.thumbnails._generate_sync", side_effect=fake_generate):
+            await ensure_thumbnail(self.media_root, 200, "chat1", "photo.jpg")
+
+        self.assertEqual(mod._inflight_locks, {})

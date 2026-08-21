@@ -64,6 +64,15 @@ _FAILURE_TTL_SECONDS = 300.0
 _MAX_FAILURE_ENTRIES = 1024
 _recent_failures: dict[tuple[int, str], float] = {}
 
+# Collapse duplicate concurrent generations: a cold gallery grid (or a reload
+# during first render) fires many requests for the same missing thumbnail, and
+# each one would decode the same source again — the semaphore caps how many run
+# at once, not how many run. The first request generates; every concurrent
+# duplicate waits on the same per-destination lock and then finds the finished
+# file (or the cached failure). Entries are removed as soon as the generation
+# settles, so the dict stays bounded by in-flight distinct thumbnails.
+_inflight_locks: dict[str, asyncio.Lock] = {}
+
 
 def _failure_cached(key: tuple[int, str]) -> bool:
     """True when this (size, source) failed recently enough to skip retrying."""
@@ -308,11 +317,24 @@ async def ensure_thumbnail(
     if _failure_cached(failure_key):
         return None
 
-    sem = _video_semaphore if is_vid else _generation_semaphore
-    async with sem:
-        loop = asyncio.get_running_loop()
-        gen_fn = _generate_video_sync if is_vid else _generate_sync
-        ok = await loop.run_in_executor(None, gen_fn, source, dest, size)
+    dest_key = str(dest)
+    lock = _inflight_locks.setdefault(dest_key, asyncio.Lock())
+    try:
+        async with lock:
+            # A duplicate that waited here finds the owner's result: the file
+            # for a success, the failure cache for a failure. Either way the
+            # wait replaces a second decode of the same source.
+            if dest.exists():
+                return dest, resolved_folder
+            if _failure_cached(failure_key):
+                return None
+            sem = _video_semaphore if is_vid else _generation_semaphore
+            async with sem:
+                loop = asyncio.get_running_loop()
+                gen_fn = _generate_video_sync if is_vid else _generate_sync
+                ok = await loop.run_in_executor(None, gen_fn, source, dest, size)
+    finally:
+        _inflight_locks.pop(dest_key, None)
     if not ok:
         _record_failure(failure_key)
         return None
