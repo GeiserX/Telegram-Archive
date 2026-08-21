@@ -376,6 +376,10 @@ class Media(Base):
         Index("idx_media_type", "type"),
         Index("idx_media_content_hash", "content_hash"),
         Index("idx_media_chat_type", "chat_id", "type"),
+        # Serves the gallery page as ONE index seek: filter (chat_id, downloaded),
+        # keyset cursor and ORDER BY all live on this column order, so a page
+        # costs O(page size) instead of sorting every media row in the chat.
+        Index("idx_media_gallery", "chat_id", "downloaded", "message_id", "id"),
     )
 
 
