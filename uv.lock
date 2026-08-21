@@ -1226,8 +1226,22 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-viewer = [
+
+[package.dev-dependencies]
+viewer-runtime = [
+    { name = "aiosqlite" },
+    { name = "asyncpg" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "greenlet" },
+    { name = "jinja2" },
     { name = "pillow" },
+    { name = "py-vapid" },
+    { name = "python-dotenv" },
+    { name = "pywebpush" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -1244,7 +1258,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jinja2", specifier = ">=3.1.4" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "pillow", marker = "extra == 'viewer'", specifier = ">=12.3.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "py-vapid", specifier = ">=1.9.4" },
@@ -1260,7 +1273,24 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.32.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["viewer", "dev"]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+viewer-runtime = [
+    { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "cryptography", specifier = ">=50.0.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "greenlet", specifier = ">=3.1.0" },
+    { name = "jinja2", specifier = ">=3.1.4" },
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "py-vapid", specifier = ">=1.9.4" },
+    { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "pywebpush", specifier = ">=2.3.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
+    { name = "uvicorn", specifier = ">=0.32.0" },
+    { name = "websockets", specifier = ">=12.0" },
+]
 
 [[package]]
 name = "telethon"

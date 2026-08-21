@@ -48,9 +48,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-viewer = [
-    "Pillow>=12.3.0",  # v7.2.0: thumbnail generation
-]
 dev = [
     # 9.0 for the built-in `subtests` fixture the equivalence matrices use;
     # on 7.x/8.x those tests fail at collection rather than run.
@@ -59,6 +56,28 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.10",
     "pre-commit>=4.5.1",
+]
+
+[dependency-groups]
+# Standalone runtime set for the viewer image: Dockerfile.viewer installs ONLY
+# this group, so the internet-facing container carries no telethon, cryptg,
+# psycopg2-binary or APScheduler it can never import. Every entry MUST mirror
+# the exact requirement string in [project] dependencies —
+# tests/test_viewer_dependency_group.py enforces the subset.
+viewer-runtime = [
+    "python-dotenv>=1.0.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "jinja2>=3.1.4",
+    "websockets>=12.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "asyncpg>=0.30.0",
+    "greenlet>=3.1.0",
+    "pywebpush>=2.3.0",
+    "py-vapid>=1.9.4",
+    "cryptography>=50.0.0",
+    "Pillow>=12.3.0",
 ]
 
 [project.urls]

@@ -16,7 +16,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /bin/uv
 # --locked fails the build if uv.lock is out of date with pyproject.toml,
 # instead of silently shipping an image that is missing a declared dependency.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+# Only the viewer's runtime group: the exposed image must not carry the
+# capture stack (telethon, cryptg, psycopg2-binary, APScheduler) it can
+# never import.
+RUN uv sync --locked --no-install-project --only-group viewer-runtime
 
 # Copy only the necessary application code for the viewer
 COPY src/__init__.py ./src/
