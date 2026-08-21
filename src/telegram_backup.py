@@ -2272,6 +2272,7 @@ class TelegramBackup:
         summary = {
             "chats_scanned": 0,
             "chats_with_gaps": 0,
+            "chats_with_leading_holes": 0,
             "total_gaps": 0,
             "total_recovered": 0,
             "errors": 0,
@@ -2327,40 +2328,66 @@ class TelegramBackup:
                 summary["errors"] += 1
                 continue
 
-            if not gaps:
+            # A hole BEFORE the earliest archived id is structurally invisible
+            # to detect_message_gaps: LAG() has no predecessor row for the
+            # first id, so the leading range never appears. Report it — never
+            # auto-fetch it: hidden-history groups make the range unfetchable
+            # (auto-fill would hammer it every run), and a partial import can
+            # make it enormous. The summary carries the numbers; the operator
+            # decides what a missing head is worth.
+            leading_missing = 0
+            earliest = 0
+            try:
+                earliest = await self.db.get_earliest_message_id(cid, account_id=self.account_id)
+                if isinstance(earliest, int) and earliest > 1 and (earliest - 1) > threshold:
+                    leading_missing = earliest - 1
+                    summary["chats_with_leading_holes"] += 1
+            except Exception as e:
+                logger.debug(f"Gap-fill: could not probe the leading range: {type(e).__name__}")
+
+            if not gaps and not leading_missing:
                 continue
 
-            summary["chats_with_gaps"] += 1
             chat_recovered = 0
+            if gaps:
+                summary["chats_with_gaps"] += 1
 
-            logger.info(f"Gap-fill: chat has {len(gaps)} gap(s)")
+                logger.info(f"Gap-fill: chat has {len(gaps)} gap(s)")
 
-            for gap_start, gap_end, gap_size in gaps:
-                logger.info(f"  → Filling gap (size {gap_size})")
-                try:
-                    recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
-                    chat_recovered += recovered
-                    logger.info(f"    Recovered {recovered} messages")
-                except Exception as e:
-                    logger.error(f"    Error filling gap (size {gap_size}): {type(e).__name__}")
-                    summary["errors"] += 1
+                for gap_start, gap_end, gap_size in gaps:
+                    logger.info(f"  → Filling gap (size {gap_size})")
+                    try:
+                        recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
+                        chat_recovered += recovered
+                        logger.info(f"    Recovered {recovered} messages")
+                    except Exception as e:
+                        logger.error(f"    Error filling gap (size {gap_size}): {type(e).__name__}")
+                        summary["errors"] += 1
 
             summary["total_gaps"] += len(gaps)
             summary["total_recovered"] += chat_recovered
-            summary["details"].append(
-                {
-                    "chat_id": cid,
-                    "chat_name": chat_name,
-                    "gaps": len(gaps),
-                    "recovered": chat_recovered,
-                }
-            )
+            detail = {
+                "chat_id": cid,
+                "chat_name": chat_name,
+                "gaps": len(gaps),
+                "recovered": chat_recovered,
+            }
+            if leading_missing:
+                detail["leading_hole_before_id"] = earliest
+                detail["leading_missing"] = leading_missing
+            summary["details"].append(detail)
 
         status = "complete" if summary["errors"] == 0 else "complete with errors"
         logger.info(
             f"Gap-fill {status}: {summary['chats_scanned']} chats scanned, "
             f"{summary['total_gaps']} gaps found, {summary['total_recovered']} messages recovered"
             + (f", {summary['errors']} error(s)" if summary["errors"] else "")
+            + (
+                f"; {summary['chats_with_leading_holes']} chat(s) have history missing before "
+                "their earliest archived message (reported only, never auto-fetched)"
+                if summary["chats_with_leading_holes"]
+                else ""
+            )
         )
 
         return summary
