@@ -136,6 +136,9 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          # QEMU/buildx are set up above precisely for this: release manifests
+          # ship amd64 + arm64 (Raspberry Pi, ARM NAS, Apple Silicon, Ampere).
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
