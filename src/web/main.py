@@ -610,12 +610,20 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+        # Every third-party asset is vendored under /static/vendor, so no
+        # remote host belongs in this policy: a compromised CDN can no longer
+        # ship script into the archive session at all. 'unsafe-inline' and
+        # 'unsafe-eval' remain for the inline SPA script and the Tailwind
+        # play runtime.
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
         "media-src 'self' blob:; "
-        "connect-src 'self' ws: wss:; "
-        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com"
+        # 'self' also covers the same-origin /ws/updates socket: CSP3 matches
+        # ws/wss upgrades of the page origin. Scheme-wide ws:/wss: would let
+        # injected script exfiltrate to any WebSocket host.
+        "connect-src 'self'; "
+        "font-src 'self'"
     )
     return response
 
