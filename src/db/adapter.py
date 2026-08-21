@@ -2481,7 +2481,10 @@ class DatabaseAdapter:
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["account_id", "chat_id"],
                     set_={
-                        "last_message_id": stmt.excluded.last_message_id,
+                        # High-water mark: the backup reads this as min_id for the
+                        # next incremental pass, so it must never move backwards
+                        # (an older export import supplies a smaller max id).
+                        "last_message_id": func.max(SyncStatus.last_message_id, stmt.excluded.last_message_id),
                         "last_sync_date": stmt.excluded.last_sync_date,
                         "message_count": SyncStatus.message_count + stmt.excluded.message_count,
                     },
@@ -2491,7 +2494,8 @@ class DatabaseAdapter:
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["account_id", "chat_id"],
                     set_={
-                        "last_message_id": stmt.excluded.last_message_id,
+                        # Same high-water clamp; PostgreSQL spells two-arg max GREATEST.
+                        "last_message_id": func.greatest(SyncStatus.last_message_id, stmt.excluded.last_message_id),
                         "last_sync_date": stmt.excluded.last_sync_date,
                         "message_count": SyncStatus.message_count + stmt.excluded.message_count,
                     },
