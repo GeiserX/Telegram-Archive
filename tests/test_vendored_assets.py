@@ -9,6 +9,7 @@ parties.
 
 import hashlib
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 WEB = Path(__file__).resolve().parent.parent / "src" / "web"
@@ -18,10 +19,26 @@ VENDOR = STATIC / "vendor"
 EXTERNAL = re.compile(r"(?:https?:)?//", re.IGNORECASE)
 
 
+class _AssetRefs(HTMLParser):
+    """src/href values of script/link tags — any tag case, quoting, or entity form."""
+
+    def __init__(self):
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "link"}:
+            self.urls.extend(value for name, value in attrs if name in {"src", "href"} and value)
+
+
+def _index_asset_urls():
+    parser = _AssetRefs()
+    parser.feed((WEB / "templates" / "index.html").read_text())
+    return parser.urls
+
+
 def test_index_html_references_no_external_origin():
-    html = (WEB / "templates" / "index.html").read_text()
-    tags = re.findall(r"<(?:script|link)\b[^>]*>", html)
-    urls = [u for tag in tags for u in re.findall(r'(?:src|href)="([^"]+)"', tag)]
+    urls = _index_asset_urls()
     assert urls, "expected script/link references in index.html"
     for url in urls:
         if url.startswith("data:"):
@@ -30,8 +47,7 @@ def test_index_html_references_no_external_origin():
 
 
 def test_every_referenced_static_asset_exists():
-    html = (WEB / "templates" / "index.html").read_text()
-    refs = re.findall(r'(?:src|href)="(/static/[^"]+)"', html)
+    refs = [url for url in _index_asset_urls() if url.startswith("/static/")]
     assert refs, "expected /static/ asset references"
     for ref in refs:
         candidate = (WEB / ref.split("?")[0].lstrip("/")).resolve()
