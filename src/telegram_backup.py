@@ -2252,18 +2252,24 @@ class TelegramBackup:
             chat_ids = [chat_id]
         else:
             # Only scan chats that current config would back up (respects
-            # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists)
-            all_chat_ids = await self.db.get_chats_with_messages(account_id=self.account_id)
+            # CHAT_IDS whitelist, CHAT_TYPES, and all exclude lists).
+            # Classification must mirror backup_all's live-entity one, and the
+            # chats table stores bot DMs as type "private" — bot-ness lives in
+            # the users table — so reading chats.type alone made is_bot
+            # unreachable: CHAT_TYPES=bots never gap-filled a single bot
+            # conversation, and configs without bots kept gap-filling
+            # previously archived bot chats.
+            with_messages = set(await self.db.get_chats_with_messages(account_id=self.account_id))
             chat_ids = []
-            for cid in all_chat_ids:
-                chat_info = await self.db.get_chat_by_id(cid, account_id=self.account_id)
-                if not chat_info:
+            for chat_info in await self.db.get_chats_for_folder_resolution(account_id=self.account_id):
+                cid = chat_info["id"]
+                if cid not in with_messages:
                     continue
                 ctype = chat_info.get("type", "")
-                is_user = ctype == "private"
+                is_bot = ctype == "private" and bool(chat_info.get("is_bot"))
+                is_user = ctype == "private" and not is_bot
                 is_group = ctype in ("group", "supergroup")
                 is_channel = ctype == "channel"
-                is_bot = ctype == "bot"
                 if self.config.should_backup_chat(cid, is_user, is_group, is_channel, is_bot):
                     chat_ids.append(cid)
 

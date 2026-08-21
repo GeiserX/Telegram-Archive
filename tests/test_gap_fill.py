@@ -287,6 +287,11 @@ def _make_backup_instance(db_mock=None, client_mock=None, config_mock=None):
     return backup
 
 
+def _resolution_rows(*chat_ids, chat_type="channel"):
+    """Rows shaped like adapter.get_chats_for_folder_resolution returns."""
+    return [{"id": cid, "type": chat_type, "is_bot": False, "is_archived": False} for cid in chat_ids]
+
+
 class TestFillGaps:
     """Exercise _fill_gaps logic with mocked DB and Telegram client."""
 
@@ -294,6 +299,7 @@ class TestFillGaps:
         """When chat_id=None, _fill_gaps should query all chats from DB."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001, -1002))
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -358,6 +364,7 @@ class TestFillGaps:
 
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002, -1003])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001, -1002, -1003))
 
         accessible_entity = MagicMock()
         accessible_entity.title = "Accessible"
@@ -388,6 +395,7 @@ class TestFillGaps:
         """When gaps are found, _fill_gap_range should be called for each."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
         db.detect_message_gaps = AsyncMock(
             return_value=[
                 (50, 100, 50),
@@ -421,6 +429,7 @@ class TestFillGaps:
         """Chats with no gaps should not appear in the details list."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001, -1002))
         db.detect_message_gaps = AsyncMock(
             side_effect=[
                 [],  # chat -1001: no gaps
@@ -452,6 +461,7 @@ class TestFillGaps:
         """The threshold passed to detect_message_gaps should come from config."""
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -661,3 +671,83 @@ class TestGapFillConfig:
             config = Config()
             assert config.fill_gaps is True
             assert config.gap_threshold == 200
+
+
+class TestGapFillBotClassification:
+    """Gap-fill classifies bot DMs the way backup_all does — from the users
+    table — never from chats.type, where a bot is stored as "private"."""
+
+    _BASE_ENV = {
+        "TELEGRAM_API_ID": "12345",
+        "TELEGRAM_API_HASH": "test@hash/value",
+        "TELEGRAM_PHONE": "+1000000",
+        # Config() creates BACKUP_PATH on init; the default /data is read-only here.
+        "BACKUP_PATH": tempfile.mkdtemp(prefix="ta_gapfill_"),
+    }
+
+    def _real_config(self, chat_types: str):
+        import os
+        from unittest.mock import patch as _patch
+
+        from src.config import Config
+
+        env = dict(self._BASE_ENV, CHAT_TYPES=chat_types)
+        with _patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def _backup(self, chat_types: str, resolution_rows, with_messages):
+        db = AsyncMock()
+        db.get_chats_with_messages = AsyncMock(return_value=with_messages)
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=resolution_rows)
+        db.detect_message_gaps = AsyncMock(return_value=[])
+        client = AsyncMock()
+        entity = MagicMock()
+        entity.title = "chat"
+        client.get_entity = AsyncMock(return_value=entity)
+        backup = _make_backup_instance(db_mock=db, client_mock=client, config_mock=self._real_config(chat_types))
+        return backup, client
+
+    async def test_bots_only_config_scans_the_bot_dm(self):
+        rows = [
+            {"id": 777, "type": "private", "is_bot": True, "is_archived": False},
+            {"id": 888, "type": "private", "is_bot": False, "is_archived": False},
+        ]
+        backup, client = self._backup("bots", rows, with_messages=[777, 888])
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_scanned"] == 1
+        client.get_entity.assert_awaited_once_with(777)
+
+    async def test_private_only_config_excludes_the_bot_dm(self):
+        """The mirror case: an archived bot chat must stop being gap-filled."""
+        rows = [
+            {"id": 777, "type": "private", "is_bot": True, "is_archived": False},
+            {"id": 888, "type": "private", "is_bot": False, "is_archived": False},
+        ]
+        backup, client = self._backup("private", rows, with_messages=[777, 888])
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_scanned"] == 1
+        client.get_entity.assert_awaited_once_with(888)
+
+    async def test_groups_and_channels_classification_unchanged(self):
+        rows = [
+            {"id": -100200, "type": "group", "is_bot": False, "is_archived": False},
+            {"id": -1000000300, "type": "channel", "is_bot": False, "is_archived": False},
+        ]
+        backup, _client = self._backup("groups,channels", rows, with_messages=[-100200, -1000000300])
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_scanned"] == 2
+
+    async def test_chat_without_messages_is_not_scanned(self):
+        rows = [{"id": 777, "type": "private", "is_bot": True, "is_archived": False}]
+        backup, client = self._backup("bots", rows, with_messages=[])
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_scanned"] == 0
+        client.get_entity.assert_not_awaited()
