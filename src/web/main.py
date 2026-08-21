@@ -72,6 +72,15 @@ class ConnectionIdentity:
     source_token_id: int | None = None
 
 
+# The viewer is documented as internet-exposed (behind a reverse proxy). A
+# single client must not be able to grow server state without bound: sockets
+# are capped globally (a per-IP cap would misfire behind a proxy, where every
+# client arrives from the proxy's address) and each socket's subscription set
+# is capped (a live SPA follows one or two chats; 16 is generous).
+MAX_WS_CONNECTIONS = int(os.environ.get("MAX_WS_CONNECTIONS", "200"))
+MAX_WS_SUBSCRIPTIONS_PER_CONNECTION = int(os.environ.get("MAX_WS_SUBSCRIPTIONS_PER_CONNECTION", "16"))
+
+
 # WebSocket Connection Manager for real-time updates
 class ConnectionManager:
     """Manages WebSocket connections for real-time updates.
@@ -93,12 +102,30 @@ class ConnectionManager:
         self._contexts: dict[WebSocket, UserContext] = {}
         self._identities: dict[WebSocket, ConnectionIdentity] = {}
 
-    async def connect(self, websocket: WebSocket, user: UserContext, identity: ConnectionIdentity | None = None):
-        await websocket.accept()
+    async def connect(
+        self, websocket: WebSocket, user: UserContext, identity: ConnectionIdentity | None = None
+    ) -> bool:
+        if len(self.active_connections) >= MAX_WS_CONNECTIONS:
+            # 1013 = Try Again Later. Accepted then closed so the client gets a
+            # real close code instead of an opaque handshake failure.
+            await websocket.accept()
+            await websocket.close(code=1013, reason="Too many connections")
+            logger.warning(f"WebSocket refused: connection cap reached ({MAX_WS_CONNECTIONS})")
+            return False
+        # Reserve the slot BEFORE the first await: between the cap check above
+        # and these registrations there is no suspension point, so concurrent
+        # connection tasks cannot all pass the check and register after
+        # accept() suspends — the cap would be advisory otherwise.
         self.active_connections[websocket] = set()
         self._contexts[websocket] = user
         self._identities[websocket] = identity or ConnectionIdentity(username=user.username)
+        try:
+            await websocket.accept()
+        except BaseException:
+            self.disconnect(websocket)
+            raise
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
+        return True
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.pop(websocket, None)
@@ -146,11 +173,20 @@ class ConnectionManager:
         return len(revoked)
 
     def subscribe(self, websocket: WebSocket, chat_ref: str) -> bool:
-        """Record a subscription for an already-authorized chat ref."""
-        if websocket in self.active_connections:
-            self.active_connections[websocket].add(chat_ref)
-            return True
-        return False
+        """Record a subscription for an already-authorized chat ref.
+
+        Bounded per connection: re-subscribing an existing ref stays free, a
+        NEW ref past the cap is refused — otherwise one socket looping over
+        distinct refs grows this set (and every broadcast's work) without
+        limit.
+        """
+        subs = self.active_connections.get(websocket)
+        if subs is None:
+            return False
+        if chat_ref not in subs and len(subs) >= MAX_WS_SUBSCRIPTIONS_PER_CONNECTION:
+            return False
+        subs.add(chat_ref)
+        return True
 
     def unsubscribe(self, websocket: WebSocket, chat_ref: str):
         """Unsubscribe a connection from a specific chat."""
@@ -3539,7 +3575,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4001, reason=exc.detail)
         return
 
-    await ws_manager.connect(websocket, user_ctx, _socket_identity(user_ctx, auth_cookie))
+    if not await ws_manager.connect(websocket, user_ctx, _socket_identity(user_ctx, auth_cookie)):
+        return
 
     try:
         while True:
@@ -3557,8 +3594,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     except HTTPException:
                         await websocket.send_json({"type": "subscribe_denied", "chat_ref": chat_ref})
                     else:
-                        ws_manager.subscribe(websocket, chat_ref)
-                        await websocket.send_json({"type": "subscribed", "chat_ref": chat_ref})
+                        if ws_manager.subscribe(websocket, chat_ref):
+                            await websocket.send_json({"type": "subscribed", "chat_ref": chat_ref})
+                        else:
+                            # Entitled but over the per-connection cap.
+                            await websocket.send_json(
+                                {"type": "subscribe_denied", "chat_ref": chat_ref, "reason": "subscription_limit"}
+                            )
 
             elif action == "unsubscribe":
                 chat_ref = data.get("chat_ref")
