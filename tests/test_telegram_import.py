@@ -1452,3 +1452,137 @@ class TestImportCursorGuard(unittest.TestCase):
         self._import(db)
 
         db.update_sync_status.assert_called_once_with(-1000000000042, 2, 2, account_id=1)
+
+
+class TestImportFidelity(unittest.TestCase):
+    """Imports speak the system's chat-type vocabulary and never clobber capture."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.export_dir = os.path.join(self.temp_dir, "export")
+        os.makedirs(self.export_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _write_export(self, data):
+        with open(os.path.join(self.export_dir, "result.json"), "w") as f:
+            json.dump(data, f)
+
+    def _importer(self):
+        db = AsyncMock()
+        db.get_chat_stats = AsyncMock(return_value=None)
+        db.get_chat_by_id = AsyncMock(return_value=None)
+        db.get_last_message_id = AsyncMock(return_value=0)
+        importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
+        return importer, db
+
+    def _msg(self, mid, sender, text="hi"):
+        return {
+            "id": mid,
+            "type": "message",
+            "date": "2024-01-15T10:00:00",
+            "from": "Someone",
+            "from_id": sender,
+            "text": text,
+        }
+
+    def test_personal_chat_imports_as_private(self):
+        """'user' appears nowhere else in the system; capture writes 'private'."""
+        self._write_export({"name": "Alice", "type": "personal_chat", "id": 42, "messages": [self._msg(1, "user42")]})
+        importer, db = self._importer()
+
+        self._run(importer.run(self.export_dir))
+
+        row = db.upsert_chat.call_args.args[0]
+        self.assertEqual(row["type"], "private")
+        self.assertEqual(row["first_name"], "Alice")
+        self.assertNotIn("title", row)
+
+    def test_html_merge_supplies_no_identity_fields(self):
+        """--merge into a captured chat must not rewrite type/title/first_name:
+        the old dict set type='unknown' and first_name=None, wiping the
+        contact's real name."""
+        importer, db = self._importer()
+        db.get_chat_by_id = AsyncMock(return_value={"id": 777, "type": "private", "first_name": "Maria"})
+        chat_data = {"name": "Exported Chat", "type": "html_export", "id": 0, "messages": [self._msg(1, None)]}
+
+        self._run(
+            importer._import_chat(chat_data, 777, Path(self.export_dir), dry_run=False, skip_media=True, merge=True)
+        )
+
+        row = db.upsert_chat.call_args.args[0]
+        self.assertEqual(row, {"id": 777})
+
+    def test_html_fresh_import_keeps_the_export_name(self):
+        importer, db = self._importer()
+        chat_data = {"name": "Exported Chat", "type": "html_export", "id": 0, "messages": [self._msg(1, None)]}
+
+        self._run(
+            importer._import_chat(chat_data, 778, Path(self.export_dir), dry_run=False, skip_media=True, merge=False)
+        )
+
+        row = db.upsert_chat.call_args.args[0]
+        self.assertEqual(row, {"id": 778, "title": "Exported Chat"})
+
+    def test_json_owner_marks_own_messages_outgoing(self):
+        """A full-account export names its owner; is_outgoing becomes honest."""
+        self._write_export(
+            {
+                "personal_information": {"user_id": 42},
+                "chats": {
+                    "list": [
+                        {
+                            "name": "Alice",
+                            "type": "personal_chat",
+                            "id": 42,
+                            "messages": [self._msg(1, "user42"), self._msg(2, "user99")],
+                        }
+                    ]
+                },
+            }
+        )
+        importer, db = self._importer()
+
+        self._run(importer.run(self.export_dir))
+
+        batch = db.insert_messages_batch.call_args.args[0]
+        by_id = {m["id"]: m for m in batch}
+        self.assertEqual(by_id[1]["is_outgoing"], 1)
+        self.assertEqual(by_id[2]["is_outgoing"], 0)
+
+    def test_null_personal_information_leaves_owner_unset(self):
+        """A null or non-object personal_information must not crash the import
+        (review finding): the owner simply stays unknown."""
+        self._write_export(
+            {
+                "personal_information": None,
+                "chats": {
+                    "list": [{"name": "Alice", "type": "personal_chat", "id": 42, "messages": [self._msg(1, "user42")]}]
+                },
+            }
+        )
+        importer, db = self._importer()
+
+        self._run(importer.run(self.export_dir))
+
+        batch = db.insert_messages_batch.call_args.args[0]
+        assert "is_outgoing" not in batch[0]
+
+    def test_single_chat_json_has_no_owner_and_no_is_outgoing(self):
+        """A chat-scoped export cannot know the owner: the column stays absent
+        so the viewer fallback (and any future backfill) still applies."""
+        self._write_export({"name": "Alice", "type": "personal_chat", "id": 42, "messages": [self._msg(1, "user42")]})
+        importer, db = self._importer()
+
+        self._run(importer.run(self.export_dir))
+
+        batch = db.insert_messages_batch.call_args.args[0]
+        self.assertNotIn("is_outgoing", batch[0])
