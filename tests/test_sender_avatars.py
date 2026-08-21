@@ -503,7 +503,7 @@ class TestMemberAvatarAclEndpoint(unittest.IsolatedAsyncioTestCase):
     async def test_db_error_fails_closed_no_bytes(self):
         """A DB error in the sender lookup serves no bytes: a connection-shaped
         error answers 503 (the redacting handler's split), never the avatar."""
-        self.mock_db.get_message_sender_id = AsyncMock(side_effect=OSError("db down"))
+        self.mock_db.get_message_sender_id = AsyncMock(side_effect=ConnectionRefusedError("db down"))
         async with self._client() as client:
             resp = await client.get(f"/media/avatar/{self.VISIBLE_REF}/1")
         self.assertEqual(resp.status_code, 503)

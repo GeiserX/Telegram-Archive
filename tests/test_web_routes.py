@@ -436,7 +436,7 @@ class TestChatsEndpoint(_WebTestBase):
 
     async def test_chats_handles_db_connection_error(self):
         """get_chats returns 503 on db connection error."""
-        self.mock_db.get_all_chats = AsyncMock(side_effect=OSError("connection refused"))
+        self.mock_db.get_all_chats = AsyncMock(side_effect=ConnectionRefusedError("connection refused"))
         async with self._client() as client:
             resp = await client.get("/api/chats")
         self.assertEqual(resp.status_code, 503)
@@ -503,7 +503,7 @@ class TestMessagesEndpoint(_WebTestBase):
 
     async def test_messages_db_connection_error_returns_503(self):
         """get_messages returns 503 on db connection error."""
-        self.mock_db.get_messages_paginated = AsyncMock(side_effect=OSError("conn refused"))
+        self.mock_db.get_messages_paginated = AsyncMock(side_effect=ConnectionRefusedError("conn refused"))
         async with self._client() as client:
             resp = await client.get("/api/chats/1/messages")
         self.assertEqual(resp.status_code, 503)
@@ -566,7 +566,7 @@ class TestMessageVersionsEndpoint(_WebTestBase):
 
     async def test_db_connection_error_returns_503(self):
         """get_message_versions returns 503 on DB connection errors."""
-        self.mock_db.get_message_versions = AsyncMock(side_effect=OSError("conn refused"))
+        self.mock_db.get_message_versions = AsyncMock(side_effect=ConnectionRefusedError("conn refused"))
 
         async with self._client() as client:
             resp = await client.get("/api/chats/123/messages/42/versions")
@@ -1816,8 +1816,8 @@ class TestExceptionHandler(_WebTestBase):
     """Test the unhandled exception handler."""
 
     async def test_db_connection_error_returns_503(self):
-        """Unhandled OSError returns 503."""
-        self.mock_db.get_all_chats = AsyncMock(side_effect=OSError("conn error"))
+        """A connection-shaped error through the handler returns 503."""
+        self.mock_db.get_all_chats = AsyncMock(side_effect=ConnectionRefusedError("conn error"))
         async with self._client() as client:
             resp = await client.get("/api/chats")
         self.assertEqual(resp.status_code, 503)

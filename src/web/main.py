@@ -915,7 +915,13 @@ def _is_db_connection_error(exc: Exception) -> bool:
     for _ in range(10):
         if current is None:
             break
-        if isinstance(current, OSError):
+        # Only connection-shaped OS errors count. Bare OSError is the base of
+        # every filesystem fault (NotADirectoryError, PermissionError, ENOSPC),
+        # and matching it here sent operators to debug the database while the
+        # media volume or thumbnail cache was the broken part. DB connect and
+        # DNS failures on database paths arrive wrapped in OperationalError,
+        # which the next branch already catches.
+        if isinstance(current, ConnectionError | TimeoutError):
             return True
         if isinstance(current, OperationalError):
             return True
