@@ -1884,6 +1884,37 @@ class TestGetMediaSize(unittest.TestCase):
         media.photo.sizes = [size1, size2]
         self.assertEqual(self.backup._get_media_size(media), 500)
 
+    def test_progressive_photo_measures_the_full_rendition(self):
+        """PhotoSizeProgressive (the full-resolution rendition) carries no
+        scalar .size — reading it as 0 made the MAX_MEDIA_SIZE_MB gate fail
+        open for exactly the photos it exists to block."""
+        from telethon.tl.types import PhotoSize, PhotoSizeProgressive
+
+        media = MagicMock()
+        media.document = None
+        del media.document
+        media.photo = MagicMock()
+        media.photo.sizes = [
+            PhotoSize(type="m", w=320, h=240, size=12_000),
+            PhotoSize(type="x", w=800, h=600, size=90_000),
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[12_000, 40_000, 9_500_000]),
+        ]
+        self.assertEqual(self.backup._get_media_size(media), 9_500_000)
+
+    def test_progressive_rendition_wins_regardless_of_position(self):
+        """max across renditions, never a positional sizes[-1] read."""
+        from telethon.tl.types import PhotoSize, PhotoSizeProgressive
+
+        media = MagicMock()
+        media.document = None
+        del media.document
+        media.photo = MagicMock()
+        media.photo.sizes = [
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[9_500_000]),
+            PhotoSize(type="m", w=320, h=240, size=12_000),
+        ]
+        self.assertEqual(self.backup._get_media_size(media), 9_500_000)
+
     def test_photo_no_sizes_returns_zero(self):
         """Photo with empty sizes list falls through to fallback which returns 0."""
         media = MagicMock(spec=[])
