@@ -497,16 +497,16 @@ class TelegramListener:
     async def _load_followed_migration_ids(self) -> set[int]:
         """Read adopted-supergroup ids from the metadata KV (#228).
 
-        Empty unless FOLLOW_CHAT_MIGRATIONS is on. Never raises — a missing or
-        malformed value degrades to an empty set.
+        Empty unless FOLLOW_CHAT_MIGRATIONS is on. A missing or malformed
+        value degrades to an empty set — that is a real observation. A
+        DATABASE failure raises instead: swallowing it here would hand
+        _load_tracked_chats an empty set that looks like success, silently
+        dropping every followed supergroup from the live scope — the exact
+        failure mode its keep-previous-scope guard exists to stop.
         """
         if not getattr(self.config, "follow_chat_migrations", False):
             return set()
-        try:
-            raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
-        except Exception as e:
-            logger.warning(f"Could not load followed migrations: {type(e).__name__}")
-            return set()
+        raw = await self.db.get_metadata(account_metadata_key("followed_migrations", self.account_id))
         if not raw:
             return set()
         try:

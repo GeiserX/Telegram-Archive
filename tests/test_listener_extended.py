@@ -1967,6 +1967,26 @@ class TestLoadTrackedChatsError:
         assert listener._tracked_chat_ids == previous_tracked
         assert listener._followed_live == previous_followed
 
+    async def test_metadata_failure_inside_the_loader_keeps_the_previous_scope(self):
+        """The loader must PROPAGATE a database failure, never convert it to an
+        empty set: swallowed, it reads as a successful 'no migrations' load and
+        silently drops every followed supergroup from the live scope — the
+        exact failure mode the keep-previous guard exists to stop."""
+        db = _make_db()
+        config = _make_config()
+        config.follow_chat_migrations = True
+        db.get_all_chats = AsyncMock(return_value=[{"id": -1001000000706}])
+        db.get_metadata = AsyncMock(return_value="[-1001000000888]")
+        listener = TelegramListener(config, db, account_id=1)
+        await listener._load_tracked_chats()
+        assert listener._followed_live == {-1001000000888}
+
+        db.get_metadata = AsyncMock(side_effect=Exception("metadata read failed"))
+        await listener._load_tracked_chats()
+
+        assert listener._followed_live == {-1001000000888}
+        assert -1001000000888 in listener._tracked_chat_ids
+
     async def test_exception_message_logs_type_only(self, caplog):
         """PII rule: the exception repr may spell out peer ids — log the class."""
         db = _make_db()
