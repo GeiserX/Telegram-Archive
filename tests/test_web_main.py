@@ -330,18 +330,26 @@ class TestRecordLoginAttempt(unittest.TestCase):
 
 @_skip_unless_web_main
 class TestIsDbConnectionError(unittest.TestCase):
-    """Test _is_db_connection_error detects OSError in chain."""
+    """Connection-shaped errors are 503-retryable; filesystem faults are not."""
 
-    def test_returns_true_for_direct_oserror(self):
-        """_is_db_connection_error returns True for direct OSError."""
-        self.assertTrue(web_main._is_db_connection_error(OSError("conn refused")))
+    def test_returns_true_for_direct_connection_error(self):
+        """A refused DB socket is exactly what the predicate exists for."""
+        self.assertTrue(web_main._is_db_connection_error(ConnectionRefusedError("conn refused")))
 
-    def test_returns_true_for_chained_oserror(self):
-        """_is_db_connection_error returns True when OSError is in __cause__."""
-        inner = OSError("network down")
+    def test_returns_true_for_timeout(self):
+        self.assertTrue(web_main._is_db_connection_error(TimeoutError("connect timed out")))
+
+    def test_returns_true_for_chained_connection_error(self):
+        inner = ConnectionResetError("network down")
         outer = RuntimeError("query failed")
         outer.__cause__ = inner
         self.assertTrue(web_main._is_db_connection_error(outer))
+
+    def test_returns_false_for_filesystem_oserror(self):
+        """A thumbnail-cache mkdir failure is not a database outage (#9t6.4.19)."""
+        self.assertFalse(web_main._is_db_connection_error(NotADirectoryError(20, "Not a directory")))
+        self.assertFalse(web_main._is_db_connection_error(PermissionError(13, "Permission denied")))
+        self.assertFalse(web_main._is_db_connection_error(OSError(28, "No space left on device")))
 
     def test_returns_false_for_unrelated_error(self):
         """_is_db_connection_error returns False for non-connection errors."""
@@ -352,8 +360,8 @@ class TestIsDbConnectionError(unittest.TestCase):
         self.assertFalse(web_main._is_db_connection_error(TypeError("type")))
 
     def test_deep_chain_detection(self):
-        """_is_db_connection_error detects OSError several levels deep."""
-        e1 = OSError("root")
+        """Connection errors are found several wrap levels deep."""
+        e1 = ConnectionRefusedError("root")
         e2 = RuntimeError("mid")
         e2.__cause__ = e1
         e3 = Exception("outer")
