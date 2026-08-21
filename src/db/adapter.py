@@ -1784,10 +1784,15 @@ class DatabaseAdapter:
 
         ``before_id``/``after_id`` are opaque ``Media.id`` tokens (the gallery
         round-trips the composite ``{chat}_{msg}_{type}`` string), but each is resolved
-        to the triple (Message.date, Media.message_id, Media.id) before use.
-        ``Media.id`` alone sorts lexically, so rows sharing a timestamp came back as
-        9, 99, 98, ..., 8, 89 — numerically meaningless; ``Media.message_id`` is an
-        integer and orders correctly.
+        to the pair (Media.message_id, Media.id) before use. ``Media.id`` alone sorts
+        lexically, so rows sharing a message came back as 9, 99, 98, ..., 8, 89 —
+        numerically meaningless; ``Media.message_id`` is an integer and orders
+        correctly. Ordering on the media pair rather than on ``Message.date`` is what
+        lets one covering index (``idx_media_gallery``) serve filter, cursor predicate
+        and ORDER BY in a single seek: per-chat Telegram message ids are assigned
+        monotonically in time (the same fact the message ``before_id`` cursor relies
+        on), so the pair yields the identical chronological order without dragging
+        the messages join into the sort.
 
         Two directions, one cursor shape:
 
@@ -1801,7 +1806,7 @@ class DatabaseAdapter:
         The two are MUTUALLY EXCLUSIVE: supplying both is a caller bug (there is no
         coherent page "before X and after Y" in this API) and raises ``ValueError``.
 
-        The ORDER BY and the cursor predicate MUST stay the same triple, in the same
+        The ORDER BY and the cursor predicate MUST stay the same pair, in the same
         direction: that identity is what guarantees a full walk yields every row
         exactly once (no skips, no duplicates). Change one and you must change the
         other — in both directions.
@@ -1823,22 +1828,13 @@ class DatabaseAdapter:
 
         async with self.db_manager.async_session_factory() as session:
             # Two-step page: pick the page's Media.ids from a NARROW statement
-            # (three sort keys, nothing else), then hydrate only those rows.
-            # The sort still walks the chat's media, but it no longer drags every
-            # media column — file_path, file_name, mime_type — plus the joined
-            # user columns through the sorter. Measured on a chat holding 120,000
-            # downloaded media: 112 ms -> 55 ms for an identical result set.
-            # (Making this O(page) needs the message timestamp denormalised onto
-            # media so one index can serve filter + cursor + ORDER BY; that is a
-            # schema change, not a query change.)
-            key_stmt = select(Media.id.label("page_media_id")).join(
-                Message,
-                and_(
-                    Media.account_id == Message.account_id,
-                    Media.message_id == Message.id,
-                    Media.chat_id == Message.chat_id,
-                ),
-            )
+            # (the two sort keys, nothing else), then hydrate only those rows.
+            # The key statement touches only media columns — filter (chat_id,
+            # downloaded), cursor predicate and ORDER BY are all on the media
+            # pair — so idx_media_gallery (chat_id, downloaded, message_id, id)
+            # serves the whole page as one index seek: O(page size) after the
+            # cursor, no temp sort, no messages join until hydration.
+            key_stmt = select(Media.id.label("page_media_id"))
             key_stmt = key_stmt.where(and_(Media.chat_id == chat_id, Media.downloaded == 1))
             if account_id is not None:
                 key_stmt = key_stmt.where(Media.account_id == account_id)
@@ -1847,17 +1843,8 @@ class DatabaseAdapter:
                 key_stmt = key_stmt.where(Media.type.in_(media_types))
 
             if cursor_token:
-                cursor_stmt = (
-                    select(Media.id, Media.message_id, Message.date)
-                    .join(
-                        Message,
-                        and_(
-                            Media.account_id == Message.account_id,
-                            Media.message_id == Message.id,
-                            Media.chat_id == Message.chat_id,
-                        ),
-                    )
-                    .where(and_(Media.id == cursor_token, Media.chat_id == chat_id))
+                cursor_stmt = select(Media.id, Media.message_id).where(
+                    and_(Media.id == cursor_token, Media.chat_id == chat_id)
                 )
                 if account_id is not None:
                     cursor_stmt = cursor_stmt.where(Media.account_id == account_id)
@@ -1865,44 +1852,32 @@ class DatabaseAdapter:
                 cursor_row = cursor_result.one_or_none()
                 if cursor_row is None:
                     return {"items": [], "has_more": False}
-                cursor_media_id, cursor_message_id, cursor_date = cursor_row
+                cursor_media_id, cursor_message_id = cursor_row
                 if forward:
                     key_stmt = key_stmt.where(
                         or_(
-                            Message.date > cursor_date,
+                            Media.message_id > cursor_message_id,
                             and_(
-                                Message.date == cursor_date,
-                                or_(
-                                    Media.message_id > cursor_message_id,
-                                    and_(
-                                        Media.message_id == cursor_message_id,
-                                        Media.id > cursor_media_id,
-                                    ),
-                                ),
+                                Media.message_id == cursor_message_id,
+                                Media.id > cursor_media_id,
                             ),
                         )
                     )
                 else:
                     key_stmt = key_stmt.where(
                         or_(
-                            Message.date < cursor_date,
+                            Media.message_id < cursor_message_id,
                             and_(
-                                Message.date == cursor_date,
-                                or_(
-                                    Media.message_id < cursor_message_id,
-                                    and_(
-                                        Media.message_id == cursor_message_id,
-                                        Media.id < cursor_media_id,
-                                    ),
-                                ),
+                                Media.message_id == cursor_message_id,
+                                Media.id < cursor_media_id,
                             ),
                         )
                     )
 
             if forward:
-                order_by = (Message.date.asc(), Media.message_id.asc(), Media.id.asc())
+                order_by = (Media.message_id.asc(), Media.id.asc())
             else:
-                order_by = (Message.date.desc(), Media.message_id.desc(), Media.id.desc())
+                order_by = (Media.message_id.desc(), Media.id.desc())
 
             page_keys = key_stmt.add_columns(Media.account_id.label("page_account_id")).order_by(*order_by)
             page_keys = page_keys.limit(limit + 1).subquery()
