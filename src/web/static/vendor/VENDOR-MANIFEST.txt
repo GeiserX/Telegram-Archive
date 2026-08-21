@@ -1,5 +1,9 @@
 # Vendored third-party assets: origin URL -> sha256 of the local copy.
 # Re-vendor by fetching the URL and replacing the file; keep versions pinned.
+# inter.css: fonts.googleapis.com/css2 serves user-agent-dependent bytes with
+# no stable version, so its origin is provenance, not a byte-reproducible
+# source; the local file is further rewritten to /static/vendor/fonts/. The
+# Inter binaries below are pinned immutable (fonts.gstatic.com/s/inter/v20/).
 https://cdn.tailwindcss.com/3.4.17 -> 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15  tailwindcss-play-3.4.17.js
 https://unpkg.com/vue@3.5.41/dist/vue.global.prod.js -> 45c5186437878319a4b86339f475e8e2f0b27e1752f9e6387ebb15854425847f  vue-3.5.41.global.prod.js
 https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js -> 081737985335af4be15fc676ed4ccc0703c7446c6b5cbc9317e40bcdc6428e5d  moment-2.29.4.min.js

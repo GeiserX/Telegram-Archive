@@ -619,7 +619,10 @@ async def add_security_headers(request: Request, call_next):
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
         "media-src 'self' blob:; "
-        "connect-src 'self' ws: wss:; "
+        # 'self' also covers the same-origin /ws/updates socket: CSP3 matches
+        # ws/wss upgrades of the page origin. Scheme-wide ws:/wss: would let
+        # injected script exfiltrate to any WebSocket host.
+        "connect-src 'self'; "
         "font-src 'self'"
     )
     return response
