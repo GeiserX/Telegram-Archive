@@ -39,6 +39,7 @@ from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .message_utils import (
+    _photo_size_bytes,
     build_media_filename,
     compute_file_hash_async,
     describe_exception,
@@ -836,9 +837,11 @@ class TelegramListener:
                 file_size = getattr(media.document, "size", 0)
             elif hasattr(media, "photo") and media.photo:
                 if hasattr(media.photo, "sizes") and media.photo.sizes:
-                    largest = max(media.photo.sizes, key=lambda s: getattr(s, "size", 0), default=None)
-                    if largest:
-                        file_size = getattr(largest, "size", 0)
+                    # PhotoSizeProgressive (the full rendition) has no scalar
+                    # .size, so max-by-getattr scored it 0 and a thumbnail won
+                    # — the size gate then measured kilobytes for a photo of
+                    # megabytes. _photo_size_bytes reads both shapes.
+                    file_size = max(_photo_size_bytes(s) for s in media.photo.sizes)
 
             max_size = self.config.get_max_media_size_bytes()
             if file_size > max_size:

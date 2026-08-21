@@ -55,6 +55,7 @@ from .db.models import account_metadata_key
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
+    _photo_size_bytes,
     build_media_filename,
     compute_file_hash_async,
     describe_exception,
@@ -3563,10 +3564,13 @@ class TelegramBackup:
         if hasattr(media, "photo") and media.photo:
             sizes = getattr(media.photo, "sizes", [])
             if sizes:
-                # Return size of the last one (usually the largest)
-                # Some Size types have 'size' field, others don't (like PhotoCachedSize)
-                largest = sizes[-1]
-                return getattr(largest, "size", 0)
+                # The full-resolution rendition is PhotoSizeProgressive, which
+                # carries NO scalar .size — only a list of progressive byte
+                # offsets. Reading .size off it scored the largest rendition
+                # as 0, so the MAX_MEDIA_SIZE_MB gate failed open for exactly
+                # the photos it exists to block. _photo_size_bytes reads both
+                # shapes; take the max across renditions.
+                return max(_photo_size_bytes(s) for s in sizes)
 
         # Fallback to direct attribute
         return getattr(media, "size", 0)

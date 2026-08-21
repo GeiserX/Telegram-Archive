@@ -866,6 +866,30 @@ class TestDownloadMedia:
         result = await listener._download_media(msg, -100)
         assert result is None
 
+    async def test_download_media_progressive_photo_size_gate_holds(self):
+        """A full-resolution PhotoSizeProgressive has no scalar .size — the old
+        max-by-getattr scored it 0, let a thumbnail win, and downloaded a
+        9.5 MB photo through a 100-byte cap."""
+        from telethon.tl.types import MessageMediaPhoto, PhotoSize, PhotoSizeProgressive
+
+        listener = self._make_listener()
+        listener.config.get_max_media_size_bytes.return_value = 100
+
+        msg = MagicMock()
+        media = MagicMock(spec=MessageMediaPhoto)
+        media.photo = MagicMock()
+        media.photo.id = 790
+        media.photo.sizes = [
+            PhotoSize(type="m", w=320, h=240, size=90),  # under the cap on its own
+            PhotoSizeProgressive(type="y", w=2560, h=1440, sizes=[12_000, 9_500_000]),
+        ]
+        msg.media = media
+        msg.id = 4
+
+        result = await listener._download_media(msg, -100)
+        assert result is None
+        listener.client.download_media.assert_not_called()
+
 
 # ===========================================================================
 # _download_avatar
