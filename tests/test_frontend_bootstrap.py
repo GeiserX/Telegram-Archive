@@ -4316,3 +4316,21 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         icon_start = bubble.index("🎵")
         icon_span = bubble[bubble.rindex("<span", 0, icon_start) : icon_start]
         self.assertIn("shrink-0", icon_span)
+
+
+def test_gif_observer_watcher_is_shallow_and_ordered():
+    """The GIF re-observe watcher rides sortedMessages (shallow): the old
+    watch(messages, ..., {deep: true}) re-traversed every loaded message
+    object — nested media, raw_data, reactions — on every arriving message,
+    and the dependency sets themselves grew with history depth. It must also
+    stay declared AFTER sortedMessages (watchers evaluate their source
+    eagerly — the same placement rule updateFloatingDate's watcher documents).
+    """
+    html = INDEX_HTML.read_text()
+    assert "deep: true" not in html, "a deep watcher crept back into the page"
+    gif_watch = re.search(
+        r"watch\(sortedMessages, \(\) => \{\s*nextTick\(\(\) => \{\s*if \(!gifObserver\) setupGifObserver\(\)",
+        html,
+    )
+    assert gif_watch, "gif observer watcher must watch sortedMessages shallowly"
+    assert html.index("const sortedMessages") < gif_watch.start(), "watcher declared before its source"

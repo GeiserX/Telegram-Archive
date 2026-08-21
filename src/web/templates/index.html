@@ -3852,16 +3852,6 @@
                     }, { threshold: 0.1 })
                 }
 
-                // Watch for messages changes to observe new GIFs
-                watch(messages, () => {
-                    nextTick(() => {
-                        if (!gifObserver) setupGifObserver()
-                        document.querySelectorAll('.gif-video').forEach(video => {
-                            gifObserver.observe(video)
-                        })
-                    })
-                }, { deep: true })
-
                 // Subscribe to WebSocket updates when chat changes
                 watch(selectedChat, (newChat, oldChat) => {
                     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -4378,6 +4368,22 @@
                 watch(sortedMessages, () => {
                     nextTick(updateFloatingDate)
                 }, { flush: 'post' })
+
+                // Observe newly rendered GIFs. Watches sortedMessages (the same
+                // source updateFloatingDate uses above): it recomputes on every
+                // list change, so this fires exactly as often as the old
+                // deep watcher on `messages` — without re-traversing every
+                // loaded message object, its media and its raw_data per new
+                // message just to re-collect reactive dependencies.
+                watch(sortedMessages, () => {
+                    nextTick(() => {
+                        if (!gifObserver) setupGifObserver()
+                        document.querySelectorAll('.gif-video').forEach(video => {
+                            gifObserver.observe(video)
+                        })
+                    })
+                })
+
 
                 // Computed: current pinned message to display in banner
                 const pinnedMessage = computed(() => {
