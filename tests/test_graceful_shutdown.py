@@ -72,6 +72,37 @@ class TestOpsWiring:
         assert compose.count("stop_grace_period: 90s") == 2
         assert compose.count('max-size: "10m"') == 2
 
+    def test_compose_loads_dotenv_into_both_containers(self):
+        """The README path is `cp .env.example .env; docker compose up -d` —
+        but compose uses .env only to interpolate ${VAR} references in the
+        file. Without env_file, every documented variable missing from an
+        environment: block is silently inert inside the container; worst is
+        DISPLAY_CHAT_IDS, where a viewer shared assuming restriction
+        restricts nothing."""
+        compose = (REPO / "docker-compose.yml").read_text()
+        backup, viewer = compose.split("telegram-viewer:")
+        # Backup: wholesale env_file — every documented variable reaches it.
+        assert backup.count("env_file:") == 1
+        assert backup.count("- path: .env") == 1
+        assert backup.count("required: false") == 1
+        # Viewer: DELIBERATELY no env_file (capture credentials must not enter
+        # the exposed container) — instead every documented viewer setting has
+        # an explicit interpolated entry.
+        assert "env_file:" not in viewer
+        for var in (
+            "DISPLAY_CHAT_IDS",
+            "CORS_ORIGINS",
+            "SECURE_COOKIES",
+            "PUSH_NOTIFICATIONS",
+            "VAPID_PRIVATE_KEY",
+            "VAPID_PUBLIC_KEY",
+            "VAPID_CONTACT",
+            "AUTH_PROXY_HEADER",
+            "AUTH_PROXY_ADMIN_USERS",
+            "AUTH_PROXY_DEFAULT_ACCESS",
+        ):
+            assert f"{var}: ${{{var}:-" in viewer, f"viewer allowlist missing {var}"
+
     def test_run_forever_registers_loop_signal_handlers(self):
         src = (REPO / "src" / "scheduler.py").read_text()
         assert "loop.add_signal_handler(signum, self._request_shutdown, main_task, signum)" in src
