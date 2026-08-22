@@ -1069,5 +1069,10 @@ class TestListenPostgresShutdownDiscipline:
             stop_task = asyncio.ensure_future(listener.stop())
             done, pending = await asyncio.wait([stop_task], timeout=2)
             assert stop_task in done, "stop() hung on the wedged connection"
+            # Retrieve stop()'s outcome and pin the teardown contract: both
+            # calls must have been attempted (bounded), not skipped outright.
+            await stop_task
+            mock_conn.remove_listener.assert_awaited_once()
+            mock_conn.close.assert_awaited_once()
             for task in pending:
                 task.cancel()
