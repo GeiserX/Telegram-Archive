@@ -8,6 +8,7 @@ pointed at the old flat location.
 Idempotent: files already in shard buckets are skipped.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -111,18 +112,11 @@ def migrate_shared_media(media_path: str) -> int:
             # created bucket entry — and every failure state is retried or
             # healed by the duplicate branch above on the next start.
             _create_bucket_entry(shared_dir, src_path, dest_path, entry.is_symlink())
-            try:
-                _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs)
-            except OSError:
-                # The relink rolled its own changes back; drop the bucket
-                # entry so the retry starts from the original state. If even
-                # that fails, the links that stayed repointed still resolve
-                # (the entry exists) and the next start heals the rest.
-                try:
-                    os.unlink(dest_path)
-                except OSError:
-                    pass
-                raise
+            # On a mid-sweep failure the relink rolls its repoints back and —
+            # only when every rollback landed — removes the bucket entry, so
+            # the retry starts from the original state. A link whose rollback
+            # failed stays aimed at the entry, which therefore must survive.
+            _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs, unwind_path=dest_path)
             os.unlink(src_path)
             migrated += 1
         except OSError:
@@ -174,14 +168,20 @@ def _create_bucket_entry(shared_dir: str, src_path: str, dest_path: str, is_syml
 
 
 def _relink_chat_symlinks(
-    media_path: str, shared_dir: str, file_name: str, new_target: str, chat_dirs: list[str]
+    media_path: str,
+    shared_dir: str,
+    file_name: str,
+    new_target: str,
+    chat_dirs: list[str],
+    unwind_path: str | None = None,
 ) -> None:
     """Find and update chat-dir symlinks that pointed at the old flat shared path.
 
     All-or-nothing: on a mid-sweep failure every already-repointed link is put
     back before the error propagates, so the caller can retry from the exact
-    original state. A link whose restore also fails stays pointed at the new
-    target — which the caller created before this sweep, so it still resolves.
+    original state. ``unwind_path`` (the just-created bucket entry) is removed
+    only when EVERY rollback landed — a link whose rollback failed stays aimed
+    at that entry, so removing it would dangle the link for good.
     """
     old_rel_suffix = os.path.join("_shared", file_name)
     repointed: list[tuple[str, str]] = []
@@ -200,11 +200,15 @@ def _relink_chat_symlinks(
                 _swap_symlink(link_path, os.path.relpath(new_target, chat_dir))
                 repointed.append((link_path, target))
     except OSError:
+        rollback_complete = True
         for link_path, original_target in repointed:
             try:
                 _swap_symlink(link_path, original_target)
             except OSError:
-                continue
+                rollback_complete = False
+        if unwind_path is not None and rollback_complete:
+            with contextlib.suppress(OSError):
+                os.unlink(unwind_path)
         raise
 
 

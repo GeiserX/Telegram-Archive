@@ -425,3 +425,97 @@ class TestTransactionalRelocate(unittest.TestCase):
         assert os.path.realpath(link) == os.path.realpath(self._bucket_path("photo.jpg", content))
         assert not os.path.lexists(flat)
         assert os.path.exists(self.marker)
+
+    def test_partial_rollback_keeps_the_bucket_entry_alive(self):
+        """If a rollback swap ALSO fails, the repointed link stays aimed at the
+        bucket entry — so the entry must survive the unwind, or that link
+        dangles for good. Convergence still happens next start via the
+        duplicate branch."""
+        content = "partial rollback"
+        flat = self._flat_file("song.mp3", content)
+        link_one = self._chat_link("-2001", "song.mp3", flat)
+        link_two = self._chat_link("-2002", "song.mp3", flat)
+
+        real_symlink = os.symlink
+        calls = {"n": 0}
+
+        def _symlink(target, link, **kwargs):
+            if not link.startswith(self.shared_dir):
+                calls["n"] += 1
+                if calls["n"] >= 2:
+                    raise PermissionError(13, "Permission denied")
+            return real_symlink(target, link, **kwargs)
+
+        with patch("src.migrate_shared_media.os.symlink", side_effect=_symlink):
+            count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        # Every link resolves, whatever it points at.
+        assert os.path.exists(link_one) and os.path.exists(link_two)
+        assert os.path.isfile(flat)
+        assert not os.path.exists(self.marker)
+
+        # Next start converges completely.
+        count2 = migrate_shared_media(self.media_path)
+        bucket = self._bucket_path("song.mp3", content)
+        assert os.path.exists(link_one) and os.path.exists(link_two)
+        assert os.path.realpath(link_one) == os.path.realpath(bucket)
+        assert os.path.realpath(link_two) == os.path.realpath(bucket)
+        assert not os.path.lexists(flat)
+        assert os.path.exists(self.marker)
+
+    def test_swap_failure_cleans_its_temp_link(self):
+        content = "swap cleanup"
+        flat = self._flat_file("pic.png", content)
+        link = self._chat_link("-2003", "pic.png", flat)
+        chat_dir = os.path.dirname(link)
+
+        real_replace = os.replace
+
+        def _replace(src, dst, **kwargs):
+            if ".relink" in src:
+                raise PermissionError(13, "Permission denied")
+            return real_replace(src, dst, **kwargs)
+
+        with patch("src.migrate_shared_media.os.replace", side_effect=_replace):
+            count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        assert os.path.exists(link), "the original link must be untouched"
+        assert os.path.realpath(link) == os.path.realpath(flat)
+        assert not [name for name in os.listdir(chat_dir) if ".relink" in name], "temp link left behind"
+        assert not os.path.exists(self.marker)
+
+    def test_copy_fallback_failure_defers_cleanly(self):
+        content = "no copy either"
+        flat = self._flat_file("doc2.pdf", content)
+        link = self._chat_link("-2004", "doc2.pdf", flat)
+
+        with (
+            patch("src.migrate_shared_media.os.link", side_effect=OSError(1, "no hardlinks")),
+            patch("src.migrate_shared_media.shutil.copy2", side_effect=OSError(28, "disk full")),
+        ):
+            count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        assert os.path.exists(link)
+        assert os.path.isfile(flat)
+        bucket_dir = os.path.dirname(self._bucket_path("doc2.pdf", content))
+        leftovers = [name for name in os.listdir(bucket_dir)] if os.path.isdir(bucket_dir) else []
+        assert not [name for name in leftovers if name.endswith(".part")], "temp copy left behind"
+        assert not os.path.exists(self.marker)
+
+    def test_dangling_bucket_destination_defers(self):
+        content = "dest is a dead link"
+        flat = self._flat_file("clip2.mp4", content)
+        link = self._chat_link("-2005", "clip2.mp4", flat)
+        bucket = self._bucket_path("clip2.mp4", content)
+        os.makedirs(os.path.dirname(bucket), exist_ok=True)
+        os.symlink(os.path.join(os.path.dirname(bucket), "nowhere"), bucket)  # lexists, not usable
+
+        count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        assert os.path.exists(link)
+        assert os.path.isfile(flat), "the flat copy must survive an unusable destination"
+        assert not os.path.exists(self.marker)
