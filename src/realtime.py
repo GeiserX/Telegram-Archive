@@ -428,13 +428,8 @@ class RealtimeListener:
         if not self._callback:
             return
 
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError as e:
-            # Never log the raw payload -- it may contain message content (PII rule).
-            logger.warning(f"Invalid JSON in notification: {type(e).__name__}: {e}")
-            return
-
+        # Capacity first: this runs synchronously on the event loop, so at
+        # overload the drop must not pay json.loads per discarded payload.
         if len(self._callback_tasks) >= self._MAX_CALLBACK_TASKS:
             self._callbacks_dropped += 1
             # Payload never logged (PII rule); counts only.
@@ -443,6 +438,13 @@ class RealtimeListener:
                 len(self._callback_tasks),
                 self._callbacks_dropped,
             )
+            return
+
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as e:
+            # Never log the raw payload -- it may contain message content (PII rule).
+            logger.warning(f"Invalid JSON in notification: {type(e).__name__}: {e}")
             return
 
         # Keep a reference so the task isn't GC'd mid-flight, and retrieve its

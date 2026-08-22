@@ -729,6 +729,9 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
         notification is dropped and counted, never queued unbounded."""
         mock_cb = AsyncMock()
         listener = RealtimeListener(callback=mock_cb)
+        # The ceiling itself is pinned so a tuning change is deliberate, not
+        # an accident these self-sizing fixtures would silently absorb.
+        assert listener._MAX_CALLBACK_TASKS == 200
         listener._callback_tasks = {MagicMock() for _ in range(listener._MAX_CALLBACK_TASKS)}
 
         with patch("src.realtime.asyncio.create_task") as mock_task:
@@ -743,7 +746,11 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
         listener = RealtimeListener(callback=mock_cb)
         listener._callback_tasks = {MagicMock() for _ in range(listener._MAX_CALLBACK_TASKS - 1)}
 
-        with patch("src.realtime.asyncio.create_task") as mock_task:
+        def close_coro(coro):
+            coro.close()  # never-awaited otherwise: the patch swallows it
+            return MagicMock()
+
+        with patch("src.realtime.asyncio.create_task", side_effect=close_coro) as mock_task:
             listener._pg_callback(None, 0, "telegram_updates", '{"type": "new_message"}')
 
         mock_task.assert_called_once()
