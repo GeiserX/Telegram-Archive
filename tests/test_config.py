@@ -1879,3 +1879,41 @@ class TestSchedulerConfigValidation(unittest.TestCase):
     def test_hour_bounds_are_accepted(self):
         self.assertEqual(self._config(STATS_CALCULATION_HOUR="0").stats_calculation_hour, 0)
         self.assertEqual(self._config(STATS_CALCULATION_HOUR="23").stats_calculation_hour, 23)
+
+
+class TestMassOperationGuardrails(unittest.TestCase):
+    """Non-positive limiter settings invert the protection instead of degrading
+    it: window<=0 prunes each operation before counting (limiter permanently
+    dark), threshold<=0 blocks everything after the first. Both fail loudly."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **extra):
+        env = _get_base_env(self.temp_dir) | extra
+        with patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def test_valid_values_pass(self):
+        config = self._config(MASS_OPERATION_THRESHOLD="1", MASS_OPERATION_WINDOW_SECONDS="1")
+        self.assertEqual(config.mass_operation_threshold, 1)
+        self.assertEqual(config.mass_operation_window_seconds, 1)
+
+    def test_zero_window_raises(self):
+        with self.assertRaisesRegex(ValueError, "MASS_OPERATION_WINDOW_SECONDS"):
+            self._config(MASS_OPERATION_WINDOW_SECONDS="0")
+
+    def test_negative_window_raises(self):
+        with self.assertRaisesRegex(ValueError, "MASS_OPERATION_WINDOW_SECONDS"):
+            self._config(MASS_OPERATION_WINDOW_SECONDS="-30")
+
+    def test_zero_threshold_raises(self):
+        with self.assertRaisesRegex(ValueError, "MASS_OPERATION_THRESHOLD"):
+            self._config(MASS_OPERATION_THRESHOLD="0")
+
+    def test_negative_threshold_raises(self):
+        with self.assertRaisesRegex(ValueError, "MASS_OPERATION_THRESHOLD"):
+            self._config(MASS_OPERATION_THRESHOLD="-1")

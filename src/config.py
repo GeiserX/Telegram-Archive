@@ -625,18 +625,31 @@ class Config:
         self.deduplicate_media = _parse_bool_env("DEDUPLICATE_MEDIA", True)
 
         # =====================================================================
-        # ZERO-FOOTPRINT MASS OPERATION PROTECTION
+        # MASS OPERATION PROTECTION (rate limiter)
         # =====================================================================
-        # Operations are BUFFERED before being applied. If a burst is detected,
-        # the ENTIRE buffer is discarded - ZERO changes written to your backup.
+        # Deletions/edits are RATE LIMITED per chat: the first THRESHOLD
+        # operations inside WINDOW are applied immediately (in hard deletion
+        # mode, irreversibly), and only the overflow is blocked. Nothing is
+        # buffered and nothing already applied is ever rolled back.
         #
-        # THRESHOLD: How many operations trigger protection (default: 10 - aggressive!)
-        # WINDOW: Time window for counting operations (default: 30 seconds)
-        # BUFFER_DELAY: How long ops wait before applying (default: 2.0 seconds)
+        # THRESHOLD: Max operations applied per chat per window (default: 10)
+        # WINDOW: Sliding window for counting operations (default: 30 seconds)
         #
-        # Example: If >10 deletions arrive within 30s, all are discarded
+        # Example: If >10 deletions arrive within 30s, the first 10 are
+        # applied and the rest are blocked (counted, logged).
         self.mass_operation_threshold = int(os.getenv("MASS_OPERATION_THRESHOLD", "10"))
         self.mass_operation_window_seconds = int(os.getenv("MASS_OPERATION_WINDOW_SECONDS", "30"))
+        # Non-positive values do not degrade — they invert the protection: a
+        # zero/negative window prunes each operation before it is counted (the
+        # limiter never fires again), and a non-positive threshold blocks every
+        # operation after the first. This knob guards the archive against mass
+        # deletion mirroring, so a typo fails loudly (DELETION_MODE convention)
+        # instead of silently disarming it.
+        if self.mass_operation_threshold < 1:
+            raise ValueError("MASS_OPERATION_THRESHOLD must be >= 1")
+        if self.mass_operation_window_seconds < 1:
+            raise ValueError("MASS_OPERATION_WINDOW_SECONDS must be >= 1")
+        # DEPRECATED: parsed for compatibility, consumed by nothing.
         self.mass_operation_buffer_delay = float(os.getenv("MASS_OPERATION_BUFFER_DELAY", "2.0"))
 
         # Display chat IDs - restrict viewer to specific chats only
