@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
@@ -57,25 +58,64 @@ def resolve_internal_push_secret(database_url: str | None) -> str | None:
     if directory is None:
         return None
     secret_path = os.path.join(directory, ".push-secret")
+    value = _read_secret_file(secret_path)
+    if value is not None:
+        return value
+    # Mint and publish ATOMICALLY: write a private sibling, fsync, then link it
+    # into place. A create-then-write of the final path had a window in which
+    # the other container read an empty file, cached no secret, and sent
+    # unauthenticated pushes the viewer 403'd — both containers start together
+    # under compose, so that race was likely, not theoretical.
+    tmp_path = f"{secret_path}.{os.getpid()}.tmp"
     try:
-        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        # The other container won the creation race, or an earlier run made it.
-        try:
-            with open(secret_path) as handle:
-                value = handle.read().strip()
-            return value or None
-        except OSError:
-            return None
-    except OSError:
-        return None
-    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         value = secrets.token_hex(32)
         with os.fdopen(fd, "w") as handle:
             handle.write(value)
-        return value
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_path, secret_path)
+            return value
+        except FileExistsError:
+            # The other container published first — adopt its token.
+            return _read_secret_file(secret_path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
     except OSError:
         return None
+
+
+def _read_secret_file(secret_path: str) -> str | None:
+    """Read the shared token, enforcing a private-regular-file contract.
+
+    Symlinks and non-regular files are refused (a planted link could exfiltrate
+    or spoof the bearer token). A permissive mode is healed to 0600 rather than
+    refused — the volume is the trust boundary, the chmod is hygiene, and
+    refusing service over it would silently kill realtime for the operator.
+    """
+    try:
+        fd = os.open(secret_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        # Missing file, or a symlink (ELOOP) — either way, no token from here.
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_mode & 0o077:
+            with contextlib.suppress(OSError):
+                os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "r") as handle:
+            fd = None  # fdopen owns it now
+            return handle.read().strip() or None
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _json_serializer(obj):
@@ -173,7 +213,10 @@ class RealtimeNotifier:
             viewer_host = os.getenv("VIEWER_HOST", "localhost")
             viewer_port = os.getenv("VIEWER_PORT", "8080")
             self._http_endpoint = f"http://{viewer_host}:{viewer_port}/internal/push"
-            self._push_secret = resolve_internal_push_secret(getattr(self._db_manager, "database_url", None))
+            # Managerless mode (viewer-side HTTP) still deserves the shared
+            # token when DATABASE_URL names the SQLite file directly.
+            database_url = getattr(self._db_manager, "database_url", None) or os.getenv("DATABASE_URL")
+            self._push_secret = resolve_internal_push_secret(database_url)
             logger.info(f"Realtime notifier: Using HTTP webhook ({self._http_endpoint})")
 
         self._initialized = True

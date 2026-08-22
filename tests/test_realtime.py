@@ -1109,10 +1109,44 @@ class TestResolveInternalPushSecret:
         assert (secret_file.stat().st_mode & 0o777) == 0o600
         assert secret_file.read_text().strip() == sender_secret
 
-    def test_existing_file_from_the_other_container_is_read(self, tmp_path, monkeypatch):
+    def test_existing_file_from_the_other_container_is_read_and_healed(self, tmp_path, monkeypatch):
         self._clear_env(monkeypatch)
-        (tmp_path / ".push-secret").write_text("already-minted\n")
+        secret_file = tmp_path / ".push-secret"
+        secret_file.write_text("already-minted\n")
+        secret_file.chmod(0o644)
         assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "already-minted"
+        # A permissive mode is hygiene-healed, never refused (that would
+        # silently kill realtime for the operator who hand-made the file).
+        assert (secret_file.stat().st_mode & 0o777) == 0o600
+
+    def test_symlinked_secret_file_is_refused(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        (tmp_path / "decoy").write_text("stolen-token\n")
+        (tmp_path / ".push-secret").symlink_to(tmp_path / "decoy")
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    def test_empty_existing_file_resolves_to_none(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        (tmp_path / ".push-secret").write_text("")
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    def test_publish_race_loser_adopts_the_winners_token(self, tmp_path, monkeypatch):
+        """The mint is atomic: a reader can never see a half-written file, and
+        the container that loses the link race adopts the winner's token."""
+        self._clear_env(monkeypatch)
+        secret_file = tmp_path / ".push-secret"
+        real_link = os.link
+
+        def other_container_wins(src, dst, **kwargs):
+            secret_file.write_text("winner-token")
+            secret_file.chmod(0o600)
+            raise FileExistsError(dst)
+
+        with patch("src.realtime.os.link", side_effect=other_container_wins):
+            assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "winner-token"
+        assert os.link is real_link  # patch scope sanity
+        # The loser's private sibling never lingers on the shared volume.
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".push-secret.")] == []
 
     def test_non_sqlite_memory_and_mock_urls_resolve_to_none(self, tmp_path, monkeypatch):
         self._clear_env(monkeypatch)
@@ -1122,11 +1156,17 @@ class TestResolveInternalPushSecret:
         assert resolve_internal_push_secret(MagicMock()) is None
 
     def test_unwritable_directory_keeps_the_old_locked_down_behavior(self, tmp_path, monkeypatch):
+        # os.open is mocked (not a chmod-0500 directory) so the test also
+        # holds when the suite runs as root, which ignores directory modes.
         self._clear_env(monkeypatch)
-        locked = tmp_path / "locked"
-        locked.mkdir()
-        locked.chmod(0o500)
-        try:
-            assert resolve_internal_push_secret(f"sqlite:///{locked / 'db.sqlite'}") is None
-        finally:
-            locked.chmod(0o700)
+        with patch("src.realtime.os.open", side_effect=PermissionError):
+            assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    async def test_managerless_init_resolves_secret_from_database_url_env(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'db.sqlite'}")
+        monkeypatch.delenv("DB_TYPE", raising=False)
+        notifier = RealtimeNotifier()
+        await notifier.init()
+        assert notifier._push_secret is not None
+        assert (tmp_path / ".push-secret").read_text().strip() == notifier._push_secret
