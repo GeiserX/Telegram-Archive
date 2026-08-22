@@ -89,13 +89,11 @@ class MassOperationProtector:
         self,
         threshold: int = 10,
         window_seconds: int = 30,
-        buffer_delay_seconds: float = 2.0,  # DEPRECATED: kept for config compatibility
     ):
         """
         Args:
             threshold: Max operations allowed per chat in the time window
             window_seconds: Sliding window for counting operations
-            buffer_delay_seconds: DEPRECATED - no longer used, operations apply immediately
         """
         self.threshold = threshold
         self.window_seconds = window_seconds
@@ -297,11 +295,7 @@ class TelegramListener:
         self._protector = MassOperationProtector(
             threshold=config.mass_operation_threshold,
             window_seconds=config.mass_operation_window_seconds,
-            buffer_delay_seconds=config.mass_operation_buffer_delay,
         )
-
-        # Background task for processing buffered operations
-        self._processor_task: asyncio.Task | None = None
 
         # Reaction debounce buffer (#219): a hot message fires many reaction updates,
         # each a full snapshot, so we coalesce per (chat_id, message_id) keeping only
@@ -371,9 +365,10 @@ class TelegramListener:
         if config.skip_topic_ids:
             total = sum(len(t) for t in config.skip_topic_ids.values())
             logger.info(f"  SKIP_TOPIC_IDS: {total} topic(s) excluded across {len(config.skip_topic_ids)} chat(s)")
-        logger.info(f"  Protection threshold: {config.mass_operation_threshold} ops triggers block")
-        logger.info(f"  Protection window: {config.mass_operation_window_seconds}s")
-        logger.info(f"  Buffer delay: {config.mass_operation_buffer_delay}s (operations held before applying)")
+        logger.info(
+            f"  Mass-op rate limit: first {config.mass_operation_threshold} ops per chat per "
+            f"{config.mass_operation_window_seconds}s window are applied, the rest blocked"
+        )
         logger.info("=" * 70)
 
     @classmethod
@@ -1510,7 +1505,12 @@ class TelegramListener:
                         if entity:
                             chat_data = {
                                 "id": chat_id,
-                                "type": "channel" if hasattr(entity, "broadcast") else "group",
+                                # _get_chat_type, not hasattr(entity, "broadcast"):
+                                # Telethon's Channel always CARRIES broadcast (False
+                                # on a megagroup), so the hasattr test relabelled
+                                # every supergroup as a broadcast channel and folder
+                                # sync then filed it under the wrong folder flag.
+                                "type": self._get_chat_type(entity),
                                 "title": getattr(entity, "title", None),
                                 "username": getattr(entity, "username", None),
                             }
@@ -1683,14 +1683,6 @@ class TelegramListener:
                 await self.db.set_metadata(account_metadata_key("listener_active_since", self.account_id), "")
             except Exception:
                 pass
-
-            # Stop the processor
-            if self._processor_task:
-                self._processor_task.cancel()
-                try:
-                    await self._processor_task
-                except asyncio.CancelledError:
-                    pass
 
             # Stop the reaction flusher and drain any buffered snapshots so a
             # reaction observed just before shutdown is not lost (#219).

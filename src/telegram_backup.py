@@ -1381,17 +1381,6 @@ class TelegramBackup:
                 if priority_count > 0:
                     logger.info(f"📌 {priority_count} priority chat(s) will be processed first")
 
-            # Detect whether we've already completed at least one full backup run
-            # (i.e. some chats have a non-zero last_message_id recorded)
-            has_synced_before = False
-            for dialog in filtered_dialogs:
-                if (
-                    await self.db.get_last_message_id(self._get_marked_id(dialog.entity), account_id=self.account_id)
-                    > 0
-                ):
-                    has_synced_before = True
-                    break
-
             # Whitelist mode resolves entities without any dialog listing
             # (#95: the full fetch can hang), so archived-folder membership
             # comes from one batched GetPeerDialogs pass over exactly the
@@ -2457,9 +2446,36 @@ class TelegramBackup:
                 # Fetch current state from Telegram
                 remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
 
-                for msg_id, remote_msg in zip(batch_ids, remote_messages):
+                # Telethon buffers one entry per RETURNED message, and its own
+                # comment warns Telegram "may decide to not send" invalid ids at
+                # all on the non-channel path — one omission shifts every later
+                # position, and a positional zip would overwrite message A's
+                # text with message B's or hard-delete a live message. Trust
+                # positions only when the response provably lines up; otherwise
+                # key by id and treat unmatched ids as unknown — a destructive
+                # write never rides an ambiguous signal.
+                aligned = len(remote_messages) == len(batch_ids) and all(
+                    remote_msg is None or remote_msg.id == msg_id
+                    for msg_id, remote_msg in zip(batch_ids, remote_messages)
+                )
+                if aligned:
+                    pairs = list(zip(batch_ids, remote_messages))
+                else:
+                    remote_by_id = {m.id: m for m in remote_messages if m is not None}
+                    pairs = [(msg_id, remote_by_id.get(msg_id)) for msg_id in batch_ids]
+                    unmatched = len(batch_ids) - sum(1 for _, m in pairs if m is not None)
+                    logger.warning(
+                        f"  → Sync response misaligned for a batch ({unmatched} of {len(batch_ids)} ids "
+                        "unmatched) — treating the unmatched ids as unknown this run, no deletions for them"
+                    )
+
+                for msg_id, remote_msg in pairs:
                     # Check for deletion
                     if remote_msg is None:
+                        if not aligned:
+                            # Ambiguous: the id was omitted from a misaligned
+                            # response, not confirmed deleted. Retry next run.
+                            continue
                         if getattr(self.config, "deletion_mode", "hard") == "soft":
                             # mark_message_deleted defaults deleted_at to now(UTC); this path
                             # doesn't broadcast, so no need to pass an explicit timestamp.
@@ -2741,7 +2757,7 @@ class TelegramBackup:
             try:
                 result = await self.client(GetMessagesReactionsRequest(peer=entity, id=chunk))
                 updates = getattr(result, "updates", []) or []
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "getMessagesReactions")
                 return
             except Exception as e:
@@ -2781,7 +2797,7 @@ class TelegramBackup:
             await self._resweep_pace()
             try:
                 msgs = await self.client.get_messages(entity, ids=chunk)
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "get_messages")
                 return
             except Exception as e:
@@ -2860,15 +2876,15 @@ class TelegramBackup:
 
         peer = message.fwd_from.from_id
 
-        # Handle different Peer types
-        if hasattr(peer, "user_id"):
-            return peer.user_id
-        if hasattr(peer, "channel_id"):
-            return peer.channel_id
-        if hasattr(peer, "chat_id"):
-            return peer.chat_id
-
-        return None
+        # Store the MARKED id (user_id, -chat_id, -100<channel_id>) — the
+        # convention every other persisted id in this project follows and the
+        # id the user can actually look up. Returning the raw channel/chat id
+        # dropped it into the user-id numeric space, indistinguishable from a
+        # user forward and matching nothing the user knows.
+        try:
+            return get_peer_id(peer)
+        except TypeError:
+            return None
 
     def _text_with_entities_to_string(self, text_obj) -> str:
         """
