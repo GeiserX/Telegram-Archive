@@ -2461,6 +2461,20 @@ class DatabaseAdapter:
             row = result.scalar_one_or_none()
             return row if row else 0
 
+    async def get_earliest_message_id(self, chat_id: int, *, account_id: int) -> int:
+        """Smallest archived message id for one account's copy of a chat (0 when empty).
+
+        One indexed MIN() probe — the leading-hole check in gap-fill calls it
+        once per scanned chat.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(func.min(Message.id)).where(
+                and_(Message.account_id == account_id, Message.chat_id == chat_id)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return row if row else 0
+
     @retry_on_locked()
     async def update_sync_status(
         self, chat_id: int, last_message_id: int, message_count: int, *, account_id: int

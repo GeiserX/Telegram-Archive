@@ -1275,6 +1275,7 @@ class TestFillGaps(unittest.TestCase):
 
     def test_single_chat_with_gaps_fills_them(self):
         """Gap detected in a chat triggers _fill_gap_range."""
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[(10, 20, 10)])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
         self.backup._fill_gap_range = AsyncMock(return_value=5)
@@ -1287,6 +1288,7 @@ class TestFillGaps(unittest.TestCase):
 
     def test_no_gaps_found(self):
         """Chat with no gaps produces empty summary."""
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
 
@@ -1315,6 +1317,7 @@ class TestFillGaps(unittest.TestCase):
     def test_detect_gaps_error_counts_as_error(self):
         """Exception in detect_message_gaps counts as error."""
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(side_effect=Exception("db fail"))
 
         summary = _run(self.backup._fill_gaps(chat_id=100))
@@ -1324,6 +1327,7 @@ class TestFillGaps(unittest.TestCase):
     def test_fill_gap_range_error_counts_as_error(self):
         """Exception in _fill_gap_range counts as error."""
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[(10, 20, 10)])
         self.backup._fill_gap_range = AsyncMock(side_effect=Exception("range fail"))
 
@@ -1342,6 +1346,7 @@ class TestFillGaps(unittest.TestCase):
         )
         self.backup.config.should_backup_chat = MagicMock(side_effect=[True, False])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[])
 
         summary = _run(self.backup._fill_gaps(chat_id=None))

@@ -244,12 +244,21 @@ async def run_fill_gaps_cmd(args) -> int:
         print(f"  Chats with gaps: {summary['chats_with_gaps']}")
         print(f"  Total gaps found: {summary['total_gaps']}")
         print(f"  Messages recovered: {summary['total_recovered']}")
+        if summary.get("chats_with_leading_holes"):
+            print(
+                f"  Chats with history missing before their earliest archived message: "
+                f"{summary['chats_with_leading_holes']} (reported only - "
+                "fill it deliberately with a targeted import or backup if wanted)"
+            )
         if summary["details"]:
             for detail in summary["details"]:
-                print(
+                line = (
                     f"  - {detail['chat_name']} (ID {detail['chat_id']}): "
                     f"{detail['gaps']} gaps, {detail['recovered']} recovered"
                 )
+                if detail.get("leading_missing"):
+                    line += f", ~{detail['leading_missing']} ids missing before id {detail['leading_hole_before_id']}"
+                print(line)
         return 0
     except Exception as e:
         print(f"Gap-fill failed: {e}", file=sys.stderr)
