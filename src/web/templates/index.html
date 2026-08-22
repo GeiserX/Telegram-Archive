@@ -6697,7 +6697,10 @@
                         && activeTopicId() != null && Number(activeTopicId()) !== trackTopicId
                     if (wrongChat || wrongTopic) {
                         const chat = chats.value.find(c => c.id === track.chatId)
-                        if (!chat) return
+                        if (!chat) {
+                            audioError.value = "This track's chat is not in the archive view"
+                            return
+                        }
                         await selectChat(chat)
                         // A forum chat short-circuits selectChat into its topics list
                         // without touching selectedChat (that is what selectTopic is
@@ -6706,8 +6709,18 @@
                         // stale list. A vanished topic bails on the topics list
                         // rather than windowing whatever pane was left behind.
                         if (chat.is_forum) {
-                            const topic = topics.value.find(t => Number(t.id) === trackTopicId)
-                            if (!topic) return
+                            let topic = topics.value.find(t => Number(t.id) === trackTopicId)
+                            if (!topic && trackTopicId === Number(GENERAL_TOPIC_ID)) {
+                                // get_forum_topics returns captured rows only, and old
+                                // captures may lack a General row — but General always
+                                // exists conceptually, so synthesize it rather than
+                                // stranding the jump on the topics list.
+                                topic = { id: GENERAL_TOPIC_ID, title: 'General' }
+                            }
+                            if (!topic) {
+                                audioError.value = "The track's topic is no longer in the archive"
+                                return
+                            }
                             await selectTopic(chat, topic)
                         }
                     }

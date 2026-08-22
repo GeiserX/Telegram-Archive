@@ -1873,6 +1873,7 @@ const scenario = async (pages) => {
             body.index("scrollToMessage(track.id)"),
         )
 
+    @unittest.skipUnless(NODE, "node is required to execute the navigation chain")
     def test_playbar_jump_lands_in_the_forum_tracks_own_topic(self) -> None:
         """selectChat short-circuits a forum chat into its topics list without
         touching selectedChat, so the old jump windowed WHATEVER pane was left
@@ -1895,6 +1896,7 @@ const navStack = { value: [] }
 const chats = { value: [] }
 const topics = { value: [] }
 const audioTrack = { value: null }
+const audioError = { value: '' }
 let chatVersion = 0
 let galleryReturnState = null
 let TOPICS_BY_REF = {}
@@ -1944,13 +1946,24 @@ const loadMessagesAroundId = async (messageId) => {
     await focusAudioTrackMessage()
     const forumJump = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
 
-    // 2. The track's topic no longer exists: bail on the topics list.
+    // 2. The track's topic no longer exists: bail on the topics list, and SAY so.
     reset()
+    audioError.value = ''
     TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }] }
     selectedChat.value = plainChat
     audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
     await focusAudioTrackMessage()
-    const vanishedTopic = { loads: [...WINDOW_LOADS] }
+    const vanishedTopic = { loads: [...WINDOW_LOADS], error: audioError.value }
+
+    // 2b. A General-topic track whose captured topics lack a General row:
+    // General always exists conceptually — the jump synthesizes it.
+    reset()
+    audioError.value = ''
+    TOPICS_BY_REF = { refA: [{ id: 7, title: 'Topic 7' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4243, chatId: -1001111, topicId: null }
+    await focusAudioTrackMessage()
+    const generalSynthesized = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
 
     // 3. Same forum chat, pane scoped to a different topic.
     reset()
@@ -1968,7 +1981,7 @@ const loadMessagesAroundId = async (messageId) => {
     await focusAudioTrackMessage()
     const plainSwitch = { loads: [...WINDOW_LOADS] }
 
-    console.log(JSON.stringify({ forumJump, vanishedTopic, topicSwitch, plainSwitch }))
+    console.log(JSON.stringify({ forumJump, vanishedTopic, generalSynthesized, topicSwitch, plainSwitch }))
 })();
 """
         out = _run_setup_program(
@@ -1996,8 +2009,16 @@ const loadMessagesAroundId = async (messageId) => {
         self.assertEqual(out["forumJump"]["paneTopic"], 7)
 
         # Vanished topic: no window load at all — the user is left on the
-        # topics list, not on an unrelated pane.
+        # topics list with an error surfaced, not on an unrelated pane.
         self.assertEqual(out["vanishedTopic"]["loads"], [])
+        self.assertTrue(out["vanishedTopic"]["error"], "the bail must be surfaced, not silent")
+
+        # Missing General row: synthesized, jump lands in topic 1.
+        self.assertEqual(
+            out["generalSynthesized"]["loads"],
+            [{"messageId": 4243, "chatId": -1001111, "topicId": 1}],
+        )
+        self.assertEqual(out["generalSynthesized"]["paneTopic"], 1)
 
         # Same chat, wrong topic pane: re-navigates into the track's topic.
         self.assertEqual(
