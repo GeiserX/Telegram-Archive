@@ -78,7 +78,10 @@ class TestDeduplicateSharedFileMatch(unittest.IsolatedAsyncioTestCase):
 
     async def test_dangling_canonical_is_not_reused(self):
         os.remove(self.canonical)
-        os.symlink(os.path.join(self.tmp.name, "gone.jpg"), self.canonical)  # lexists, not exists
+        # The absent target must live INSIDE the store: realpath follows the
+        # link, so an outside target trips the containment guard first and the
+        # missing-file branch stays dark (review finding).
+        os.symlink(os.path.join(self.shared, "gone.jpg"), self.canonical)  # lexists, not exists
 
         path, _, reused = await deduplicate_shared_file(self.db, self.duplicate, self.shared, account_id=1)
 
