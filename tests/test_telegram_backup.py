@@ -2281,6 +2281,37 @@ class TestForwardSourceNameResolution(unittest.TestCase):
         self.assertEqual(results, [None] * 50)
         self.backup.client.get_entity.assert_awaited_once()
 
+    def test_cache_at_capacity_evicts_fifo_instead_of_refusing_new_sources(self):
+        """Beyond the cap the cache must stay best-effort (FIFO eviction), not
+        go read-only: a refuse-at-cap policy made every message from source
+        10,001+ repeat the get_entity call — the per-message API pattern this
+        cache exists to prevent."""
+        from telethon.tl.types import PeerChannel
+
+        entity = MagicMock(spec=["title"])
+        entity.title = "Overflow"
+        self.backup.client.get_entity = AsyncMock(return_value=entity)
+        # The cache is lazily created on first resolve; pre-fill it to the cap
+        # with resolved entries. Id 0 is the oldest.
+        cache = self.backup._forward_name_cache = {
+            marked_id: f"cached-{marked_id}" for marked_id in range(self.backup._FORWARD_NAME_CACHE_LIMIT)
+        }
+
+        async def scenario():
+            return [await self.backup._resolve_forward_source_name(PeerChannel(channel_id=777)) for _ in range(5)]
+
+        results = self._run(scenario())
+
+        self.assertEqual(results, ["Overflow"] * 5)
+        # One lookup, then served from cache — the new source WAS admitted...
+        self.backup.client.get_entity.assert_awaited_once()
+        marked = next(k for k in cache if k not in range(self.backup._FORWARD_NAME_CACHE_LIMIT))
+        self.assertEqual(cache[marked], "Overflow")
+        # ...the oldest entry made room, and the cap still holds.
+        self.assertNotIn(0, cache)
+        self.assertIn(1, cache)
+        self.assertEqual(len(cache), self.backup._FORWARD_NAME_CACHE_LIMIT)
+
     def test_process_message_stores_the_resolved_name(self):
         from telethon.tl.types import PeerChannel
 

@@ -2837,8 +2837,13 @@ class TelegramBackup:
                 # Can't resolve - will fall back to ID in viewer
                 name = None
 
-        if len(cache) < self._FORWARD_NAME_CACHE_LIMIT:
-            cache[marked_id] = name
+        if len(cache) >= self._FORWARD_NAME_CACHE_LIMIT and marked_id not in cache:
+            # FIFO eviction at the cap (dicts preserve insertion order): a run
+            # with >10k distinct forward sources keeps best-effort caching
+            # instead of silently reverting to a per-message get_entity
+            # pattern — the FloodWait risk this cache exists to prevent.
+            cache.pop(next(iter(cache)))
+        cache[marked_id] = name
         return name
 
     def _extract_forward_from_id(self, message: Message) -> int | None:
