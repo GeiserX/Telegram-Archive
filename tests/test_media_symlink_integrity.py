@@ -455,8 +455,10 @@ class TestTransactionalRelocate(unittest.TestCase):
         assert os.path.isfile(flat)
         assert not os.path.exists(self.marker)
 
-        # Next start converges completely.
+        # Next start converges completely — via the duplicate/heal branch,
+        # which must never double-count as a migration.
         count2 = migrate_shared_media(self.media_path)
+        assert count2 == 0, "the duplicate branch heals; it does not re-migrate"
         bucket = self._bucket_path("song.mp3", content)
         assert os.path.exists(link_one) and os.path.exists(link_two)
         assert os.path.realpath(link_one) == os.path.realpath(bucket)
@@ -519,3 +521,36 @@ class TestTransactionalRelocate(unittest.TestCase):
         assert os.path.exists(link)
         assert os.path.isfile(flat), "the flat copy must survive an unusable destination"
         assert not os.path.exists(self.marker)
+
+    def test_different_content_at_the_bucket_name_is_never_adopted(self):
+        """Two different files CAN share the bucket and filename (the bucket is
+        only two hash characters) — relinking to the impostor and deleting the
+        flat original would silently swap the media's content."""
+        content = "the real bytes"
+        flat = self._flat_file("track.mp3", content)
+        link = self._chat_link("-2006", "track.mp3", flat)
+        bucket = self._bucket_path("track.mp3", content)
+        os.makedirs(os.path.dirname(bucket), exist_ok=True)
+        with open(bucket, "w") as handle:
+            handle.write("an impostor with the same name")
+
+        count = migrate_shared_media(self.media_path)
+
+        assert count == 0
+        assert os.path.isfile(flat), "the original must survive"
+        assert os.path.exists(link)
+        assert os.path.realpath(link) == os.path.realpath(flat), "the link must NOT be swapped to the impostor"
+        assert not os.path.exists(self.marker)
+
+    def test_orphaned_relink_temp_is_swept_at_start(self):
+        content = "sweep me"
+        flat = self._flat_file("note.ogg", content)
+        link = self._chat_link("-2007", "note.ogg", flat)
+        chat_dir = os.path.dirname(link)
+        orphan = os.path.join(chat_dir, "note.ogg.deadbeef.relink")
+        os.symlink("nowhere", orphan)
+
+        migrate_shared_media(self.media_path)
+
+        assert not os.path.lexists(orphan), "the kill-window orphan must be swept"
+        assert os.path.exists(link)

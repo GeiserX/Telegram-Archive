@@ -67,11 +67,22 @@ def migrate_shared_media(media_path: str) -> int:
 
     logger.info(f"Migrating {len(flat_files)} files from flat _shared/ to sharded layout...")
 
-    # Compute chat directories once (not per file)
+    # Compute chat directories once (not per file), sweeping any .relink
+    # temp left by a process kill mid-swap — at migration start no swap is in
+    # flight, so every such name is an orphan sitting in a user-visible
+    # folder.
     try:
         chat_dirs = [e.path for e in os.scandir(media_path) if e.is_dir() and not e.name.startswith("_")]
     except OSError:
         chat_dirs = []
+    for chat_dir in chat_dirs:
+        try:
+            for stale in os.scandir(chat_dir):
+                if stale.name.endswith(".relink"):
+                    with contextlib.suppress(OSError):
+                        os.unlink(stale.path)
+        except OSError:
+            continue
 
     migrated = 0
     deferred = 0
@@ -92,15 +103,19 @@ def migrate_shared_media(media_path: str) -> int:
             dest_path = os.path.join(dest_dir, entry.name)
 
             if os.path.lexists(dest_path):
-                if os.path.isfile(dest_path):
-                    # Already exists in shard. Repoint any chat symlink still
-                    # aimed at the flat copy BEFORE removing it — this also
-                    # heals a previous run that created the bucket entry but
-                    # failed between the relink and the flat removal.
+                if os.path.isfile(dest_path) and _compute_hash(dest_path) == content_hash:
+                    # Same content already in the shard. Repoint any chat
+                    # symlink still aimed at the flat copy BEFORE removing it —
+                    # this also heals a previous run that created the bucket
+                    # entry but failed between the relink and the flat removal.
+                    # The hash comparison is what makes the removal safe: a
+                    # DIFFERENT file can share the bucket and name (the bucket
+                    # is only two hash characters), and relinking to it would
+                    # silently swap the media's content.
                     _relink_chat_symlinks(media_path, shared_dir, entry.name, dest_path, chat_dirs)
                     os.remove(src_path)
                 else:
-                    # Destination is not usable content (e.g. a dangling link);
+                    # Dangling link, or a different file occupying the name —
                     # the flat copy stays, so this entry is still outstanding.
                     deferred += 1
                 continue
