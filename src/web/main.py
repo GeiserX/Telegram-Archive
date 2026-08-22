@@ -2580,7 +2580,15 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         # Filter per-chat stats to only chats the user can access
         user_chat_ids = await _visible_chat_id_set(user)
         per_chat = stats.get("per_chat_message_counts", {})
-        if user_chat_ids is not None and per_chat:
+        if not isinstance(per_chat, dict):
+            # A malformed cached blob (null, a list) must scope to zeros like
+            # an absent map — not crash the restricted request with a 500.
+            per_chat = {}
+        if user_chat_ids is not None:
+            # ACL-driven, never data-driven: an absent or empty per-chat map
+            # (startup calculation failed, or a pre-8.0 cached blob) must scope
+            # a restricted viewer to zeros, not fail open to the archive-wide
+            # numbers this block exists to hide.
             # JSON keys are strings after json.loads(), user_chat_ids are ints
             stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if int(k) in user_chat_ids}
             # Recompute aggregates from visible chats only
