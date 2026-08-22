@@ -2679,7 +2679,7 @@ class TelegramBackup:
             try:
                 result = await self.client(GetMessagesReactionsRequest(peer=entity, id=chunk))
                 updates = getattr(result, "updates", []) or []
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "getMessagesReactions")
                 return
             except Exception as e:
@@ -2719,7 +2719,7 @@ class TelegramBackup:
             await self._resweep_pace()
             try:
                 msgs = await self.client.get_messages(entity, ids=chunk)
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "get_messages")
                 return
             except Exception as e:

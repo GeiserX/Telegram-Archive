@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodPremiumWaitError, FloodWaitError
 from telethon.tl.types import PeerChannel, UpdateMessageReactions
 
 from src.config import Config
@@ -403,6 +403,21 @@ class TestResweepPacing:
         b.db.get_message_ids_since.assert_not_awaited()
         assert b._resweep_dialogs_deferred == 2
         assert b._resweep_deferred_any is True
+
+    async def test_premium_flood_on_raw_also_pauses_without_fallback(self):
+        # FloodPremiumWaitError is NOT a FloodWaitError subclass in Telethon;
+        # the old lone catch dropped it into the generic handler, which fell
+        # back to get_messages — a second rate bucket hammered under the same
+        # pressure, the exact regression #224 was fixed to prevent.
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1, 2])
+        b.client.side_effect = FloodPremiumWaitError(request=None, capture=60)
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        assert b._resweep_flood_until is not None
+        b.client.get_messages.assert_not_awaited()
+        assert CHAT not in b._resweep_cycle_done
 
     async def test_flood_on_fallback_also_pauses(self):
         b = _backup()
