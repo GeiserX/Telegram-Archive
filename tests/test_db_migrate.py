@@ -692,10 +692,11 @@ class TestMigrateTableKeysetRealEngine:
     """_migrate_table executed against two real SQLite databases.
 
     The old LIMIT/OFFSET over an unordered scan silently skipped a
-    not-yet-copied row whenever an already-copied row vanished mid-copy —
-    every later window shifted back by one. The keyset cursor cannot lose a
-    row that existed when the copy started, whatever the source does
-    meanwhile.
+    not-yet-copied row whenever an ALREADY-COPIED row vanished mid-copy —
+    every later window shifted back by one. The keyset cursor keeps every
+    surviving row: the covered scenario deletes a row that was already
+    copied, and all 25 originals still land. (A row deleted BEFORE its batch
+    is read is simply gone from the source — no pagination scheme copies it.)
     """
 
     async def _manager(self, path):
@@ -723,10 +724,11 @@ class TestMigrateTableKeysetRealEngine:
 
         source = await self._manager(tmp_path / "src.db")
         target = await self._manager(tmp_path / "tgt.db")
-        async with source.get_session() as session:
-            for n in range(1, 26):
-                session.add(Metadata(key=f"m{n:02d}", value=str(n)))
-            await session.commit()
+        try:
+            async with source.get_session() as session:
+                for n in range(1, 26):
+                    session.add(Metadata(key=f"m{n:02d}", value=str(n)))
+                await session.commit()
 
         class ChurningTarget:
             """Duck-typed target manager: after the first batch commits, an
@@ -757,11 +759,11 @@ class TestMigrateTableKeysetRealEngine:
         churning = ChurningTarget(target, source)
         migrated = await _migrate_table(source, churning, Metadata, batch_size=10)
 
-        async with target.get_session() as session:
-            keys = sorted((await session.execute(select(Metadata.key))).scalars().all())
-        assert keys == [f"m{n:02d}" for n in range(1, 26)]
-        assert migrated == 25
-        assert churning.batches == 3
-
-        await source.engine.dispose()
-        await target.engine.dispose()
+            async with target.get_session() as session:
+                keys = sorted((await session.execute(select(Metadata.key))).scalars().all())
+            assert keys == [f"m{n:02d}" for n in range(1, 26)]
+            assert migrated == 25
+            assert churning.batches == 3
+        finally:
+            await source.engine.dispose()
+            await target.engine.dispose()

@@ -6,9 +6,10 @@ This script migrates your Telegram Archive data from SQLite to PostgreSQL.
 It can be run standalone or via Docker.
 
 Stop the backup container for the duration of the copy: the batched read is
-keyset-ordered so it never loses a row that existed when it started, but rows
-written behind the cursor while it runs are not re-read, and the final count
-verification compares against a source that has moved on.
+keyset-ordered so concurrent changes can no longer shift a window and skip
+rows that are still present — but rows deleted mid-copy before their batch is
+read are not copied, rows written behind the cursor are not re-read, and the
+final count verification compares against a source that has moved on.
 
 Usage:
     # Via Docker (recommended)

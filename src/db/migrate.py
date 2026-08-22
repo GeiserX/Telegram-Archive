@@ -189,10 +189,12 @@ async def _migrate_table(source: DatabaseManager, target: DatabaseManager, model
 
         # Stream records in primary-key keyset order. LIMIT/OFFSET over an
         # unordered scan let a source that changed mid-copy (or a planner that
-        # varied its scan order) shift a later window and silently skip rows;
-        # an ordered cursor can never lose a row that existed when the copy
-        # started. Still run the copy with the backup container stopped: rows
-        # written behind the cursor after their batch was read are not re-read.
+        # varied its scan order) shift a later window and silently skip rows
+        # that were still present; the ordered cursor removes that entire
+        # failure class for SURVIVING rows. It cannot copy a row deleted
+        # before its batch is read, nor track a primary key that mutates
+        # mid-copy — so still run the copy with the backup container stopped
+        # (rows written behind the cursor are also not re-read).
         pk_columns = list(model.__mapper__.primary_key)
         last_key = None
         while True:
