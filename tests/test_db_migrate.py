@@ -730,34 +730,34 @@ class TestMigrateTableKeysetRealEngine:
                     session.add(Metadata(key=f"m{n:02d}", value=str(n)))
                 await session.commit()
 
-        class ChurningTarget:
-            """Duck-typed target manager: after the first batch commits, an
-            already-copied source row is deleted — the exact churn that made
-            OFFSET windows shift and drop an uncopied row."""
+            class ChurningTarget:
+                """Duck-typed target manager: after the first batch commits, an
+                already-copied source row is deleted — the exact churn that made
+                OFFSET windows shift and drop an uncopied row."""
 
-            def __init__(self, inner, source_manager):
-                self._inner = inner
-                self._source = source_manager
-                self.batches = 0
+                def __init__(self, inner, source_manager):
+                    self._inner = inner
+                    self._source = source_manager
+                    self.batches = 0
 
-            def get_session(self):
-                outer = self
+                def get_session(self):
+                    outer = self
 
-                @asynccontextmanager
-                async def _ctx():
-                    async with outer._inner.get_session() as session:
-                        yield session
-                    outer.batches += 1
-                    if outer.batches == 1:
-                        async with outer._source.get_session() as src:
-                            row = await src.get(Metadata, "m01")
-                            await src.delete(row)
-                            await src.commit()
+                    @asynccontextmanager
+                    async def _ctx():
+                        async with outer._inner.get_session() as session:
+                            yield session
+                        outer.batches += 1
+                        if outer.batches == 1:
+                            async with outer._source.get_session() as src:
+                                row = await src.get(Metadata, "m01")
+                                await src.delete(row)
+                                await src.commit()
 
-                return _ctx()
+                    return _ctx()
 
-        churning = ChurningTarget(target, source)
-        migrated = await _migrate_table(source, churning, Metadata, batch_size=10)
+            churning = ChurningTarget(target, source)
+            migrated = await _migrate_table(source, churning, Metadata, batch_size=10)
 
             async with target.get_session() as session:
                 keys = sorted((await session.execute(select(Metadata.key))).scalars().all())
