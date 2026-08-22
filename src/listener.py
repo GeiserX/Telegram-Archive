@@ -1436,7 +1436,12 @@ class TelegramListener:
                         if entity:
                             chat_data = {
                                 "id": chat_id,
-                                "type": "channel" if hasattr(entity, "broadcast") else "group",
+                                # _get_chat_type, not hasattr(entity, "broadcast"):
+                                # Telethon's Channel always CARRIES broadcast (False
+                                # on a megagroup), so the hasattr test relabelled
+                                # every supergroup as a broadcast channel and folder
+                                # sync then filed it under the wrong folder flag.
+                                "type": self._get_chat_type(entity),
                                 "title": getattr(entity, "title", None),
                                 "username": getattr(entity, "username", None),
                             }

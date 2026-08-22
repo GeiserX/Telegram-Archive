@@ -470,3 +470,43 @@ class TestServiceMessageText:
             pass
 
         assert service_message_text(MessageActionSomethingExotic(), actor_name="Zed") is None
+
+
+class TestMetadataRefreshChatType:
+    """The metadata refresh must classify like the scheduled sweep does.
+
+    Telethon's Channel type always CARRIES a ``broadcast`` attribute — it is
+    False on a megagroup, not absent — so the old ``hasattr(entity,
+    'broadcast')`` test relabelled every supergroup as a broadcast channel on
+    any title or photo change, and folder sync then filed it under the wrong
+    folder flag until (unless) the next full sweep visited the dialog.
+    """
+
+    def _title_event(self):
+        return _event(
+            _service_msg(MessageActionChatEditTitle(title="Renamed")),
+            new_title="Renamed",
+            user_id=ACTOR_ID,
+        )
+
+    async def test_supergroup_stays_group_on_metadata_refresh(self):
+        from telethon.tl.types import Channel as TelethonChannel
+
+        listener, handler, db = _build()
+        supergroup = TelethonChannel(id=123, title="SG", photo=None, date=None, megagroup=True, broadcast=False)
+        listener.client.get_entity = AsyncMock(return_value=supergroup)
+
+        await handler(self._title_event())
+
+        assert db.upsert_chat.call_args[0][0]["type"] == "group"
+
+    async def test_broadcast_channel_stays_channel_on_metadata_refresh(self):
+        from telethon.tl.types import Channel as TelethonChannel
+
+        listener, handler, db = _build()
+        broadcast = TelethonChannel(id=124, title="BC", photo=None, date=None, megagroup=False, broadcast=True)
+        listener.client.get_entity = AsyncMock(return_value=broadcast)
+
+        await handler(self._title_event())
+
+        assert db.upsert_chat.call_args[0][0]["type"] == "channel"
