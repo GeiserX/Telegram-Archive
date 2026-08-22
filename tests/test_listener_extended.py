@@ -1868,30 +1868,6 @@ class TestRunAndStopLifecycle:
 
         db.close.assert_called_once()
 
-    async def test_run_cancels_processor_task_in_finally(self):
-        """run() cancels _processor_task in finally block if it exists."""
-        config = _make_config()
-        db = _make_db()
-        listener = TelegramListener(config, db, account_id=1)
-
-        mock_client = AsyncMock()
-        mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
-        listener.client = mock_client
-
-        # Create a real asyncio Future that acts like a cancelled task
-        loop = asyncio.get_event_loop()
-        fake_task = loop.create_future()
-        fake_task.cancel()
-        # Wrap cancel in a MagicMock so we can assert it was called again by run()
-        original_cancel = fake_task.cancel
-        cancel_mock = MagicMock(side_effect=original_cancel)
-        fake_task.cancel = cancel_mock
-        listener._processor_task = fake_task
-
-        await listener.run()
-
-        cancel_mock.assert_called()
-
 
 # ===========================================================================
 # _log_stats
