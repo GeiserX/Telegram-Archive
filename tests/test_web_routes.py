@@ -759,6 +759,21 @@ class TestStatsEndpoint(_WebTestBase):
         for blob in (
             {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5},
             {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5, "per_chat_message_counts": {}},
+            # Malformed cached values must behave like an absent map, not 500.
+            {
+                "chats": 900,
+                "messages": 4242,
+                "media_files": 77,
+                "total_size_mb": 1234.5,
+                "per_chat_message_counts": None,
+            },
+            {
+                "chats": 900,
+                "messages": 4242,
+                "media_files": 77,
+                "total_size_mb": 1234.5,
+                "per_chat_message_counts": [1],
+            },
         ):
             self.mock_db.get_cached_statistics = AsyncMock(return_value=dict(blob))
             async with self._client() as client:
