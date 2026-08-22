@@ -97,12 +97,12 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `🐳 **Dev images published!**
-              
+
               - \`drumsergio/telegram-archive:dev\`
               - \`drumsergio/telegram-archive-viewer:dev\`
-              
+
               The dev/test instance will pick up these changes automatically (Portainer GitOps).
-              
+
               To test locally:
               \`\`\`bash
               docker pull drumsergio/telegram-archive:dev

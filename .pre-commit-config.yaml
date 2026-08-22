@@ -1,3 +1,8 @@
+# Vendored viewer assets are byte-exact copies verified against a sha256
+# manifest (tests/test_vendored_assets.py) — any fixer that touches them
+# breaks the manifest, so every mutating hook excludes them.
+exclude: '^src/web/static/vendor/'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

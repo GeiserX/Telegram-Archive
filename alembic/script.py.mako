@@ -25,4 +25,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade database schema."""
     ${downgrades if downgrades else "pass"}
-

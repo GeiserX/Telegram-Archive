@@ -29,12 +29,12 @@
 SELECT setval('reactions_id_seq', COALESCE((SELECT MAX(id) FROM reactions), 0) + 1, false);
 
 -- Verify the fix
-SELECT 
+SELECT
     'Current sequence value' as info,
-    last_value as value 
+    last_value as value
 FROM reactions_id_seq
 UNION ALL
-SELECT 
+SELECT
     'Max ID in reactions table' as info,
-    COALESCE(MAX(id), 0) as value 
+    COALESCE(MAX(id), 0) as value
 FROM reactions;

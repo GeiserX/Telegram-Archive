@@ -1042,10 +1042,10 @@ This release includes contributions from **[@yarikoptic](https://github.com/yari
 - **Better error messages for permission issues** (#54, #55) - Authentication setup now provides clear troubleshooting guidance when encountering permission errors (common with Podman or Docker UID mismatches):
   ```
   PERMISSION ERROR - Unable to write to session directory
-  
+
   For Podman users:
     Add --userns=keep-id to your run command
-  
+
   For Docker users:
     mkdir -p data && sudo chown -R 1000:1000 data
   ```
@@ -1513,13 +1513,13 @@ This release introduces **real-time message sync**, **zero-footprint mass operat
    ```bash
    # 1. Normalize media paths (REQUIRED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.migrate_media_paths
-   
+
    # 2. Update file sizes for accurate stats (REQUIRED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.update_media_sizes
-   
+
    # 3. Detect albums for grid display (HIGHLY RECOMMENDED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.detect_albums
-   
+
    # 4. Deduplicate media files (HIGHLY RECOMMENDED)
    docker run --rm -e DB_TYPE=postgresql ... python -m scripts.deduplicate_media
    ```
@@ -1747,7 +1747,7 @@ v5.0.0 changes media folder naming to use marked IDs consistently. While the bac
    DB_HOST=your-postgres-container
    DB_PASS=your-password
    BACKUP_PATH=/path/to/backups
-   
+
    # 1. Media path migration (HIGHLY RECOMMENDED)
    docker run --rm \
      -e DB_TYPE=postgresql \
@@ -1760,7 +1760,7 @@ v5.0.0 changes media folder naming to use marked IDs consistently. While the bac
      -v $BACKUP_PATH:/data/backups \
      drumsergio/telegram-archive:latest \
      python -m scripts.migrate_media_paths
-   
+
    # 2. Update file sizes (HIGHLY RECOMMENDED)
    docker run --rm \
      -e DB_TYPE=postgresql \
@@ -1773,7 +1773,7 @@ v5.0.0 changes media folder naming to use marked IDs consistently. While the bac
      -v $BACKUP_PATH:/data/backups \
      drumsergio/telegram-archive:latest \
      python -m scripts.update_media_sizes
-   
+
    # 3. Detect albums (optional but recommended)
    docker run --rm \
      -e DB_TYPE=postgresql \

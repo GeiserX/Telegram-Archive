@@ -1267,7 +1267,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "python-socks", extras = ["asyncio"], specifier = ">=2.7.1" },
     { name = "pywebpush", specifier = ">=2.3.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.10" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.14" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
     { name = "telethon", specifier = ">=1.37.0" },
     { name = "uvicorn", specifier = ">=0.32.0" },
