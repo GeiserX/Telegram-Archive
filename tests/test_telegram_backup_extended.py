@@ -780,6 +780,37 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
 
         self.backup.db.delete_chat_and_related_data.assert_awaited_once()
 
+    def test_archived_only_excluded_chat_is_also_deleted(self):
+        """Exclusion must mean the same thing in both Telegram folders: the
+        excluded set was built from the regular dialog list only, so a chat
+        living only in the archived folder was skipped but never purged."""
+        user_entity = self._make_entity(User, 100, bot=False)
+        dialog = self._make_dialog(user_entity)
+
+        self.backup.config.global_exclude_ids = {100}
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [dialog]])
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+        _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_awaited_once()
+        args = self.backup.db.delete_chat_and_related_data.await_args.args
+        self.assertEqual(args[0], 100)
+
+    def test_archived_only_unexcluded_chat_is_not_deleted(self):
+        """Control: the archived pass must never delete a chat that is merely
+        filtered out, only ones in an explicit exclude list."""
+        user_entity = self._make_entity(User, 100, bot=False)
+        dialog = self._make_dialog(user_entity)
+
+        self.backup.config.global_exclude_ids = set()
+        self.backup._get_dialogs = AsyncMock(side_effect=[[], [dialog]])
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+        _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_not_awaited()
+
     def test_delete_chat_exception_does_not_crash(self):
         """Exception during chat deletion should be caught."""
         user_entity = self._make_entity(User, 100, bot=False)
@@ -1053,6 +1084,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         """Remote message with different edit_date triggers update."""
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 1, 1)})
         remote_msg = MagicMock()
+        remote_msg.id = 1
         remote_msg.edit_date = datetime(2024, 6, 15)
         remote_msg.message = "updated text"
         self.backup.client.get_messages = AsyncMock(return_value=[remote_msg])
@@ -1070,6 +1102,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         """
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 6, 15, 12, 0)})
         remote_msg = MagicMock()
+        remote_msg.id = 1
         remote_msg.edit_date = datetime(2024, 6, 15, 12, 0, tzinfo=UTC)
         remote_msg.message = "same text"
         self.backup.client.get_messages = AsyncMock(return_value=[remote_msg])
@@ -1083,6 +1116,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         """Message with no edit_date does not trigger update."""
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: None})
         remote_msg = MagicMock()
+        remote_msg.id = 1
         remote_msg.edit_date = None
         self.backup.client.get_messages = AsyncMock(return_value=[remote_msg])
         entity = MagicMock()
@@ -1098,6 +1132,57 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         entity = MagicMock()
 
         _run(self.backup._sync_deletions_and_edits(100, entity))
+
+    def _remote(self, message_id, edit_date=None, text=""):
+        msg = MagicMock()
+        msg.id = message_id
+        msg.edit_date = edit_date
+        msg.message = text
+        msg.reactions = None
+        return msg
+
+    def test_omitted_id_never_shifts_pairs_or_deletes(self):
+        """Telethon buffers one entry per RETURNED message and Telegram may
+        omit invalid ids entirely (non-channel path) — the old positional zip
+        then overwrote message 2's archived text with message 3's and treated
+        the tail as untouched. An omission must delete NOTHING and every
+        surviving pair must be keyed by id."""
+        self.backup.db.get_messages_sync_data = AsyncMock(
+            return_value={1: datetime(2024, 1, 1), 2: datetime(2024, 1, 1), 3: datetime(2024, 1, 1)}
+        )
+        # id 2 omitted from the response entirely; 3 arrives edited.
+        response = [self._remote(1), self._remote(3, edit_date=datetime(2024, 6, 15), text="three edited")]
+        self.backup.client.get_messages = AsyncMock(return_value=response)
+        entity = MagicMock()
+
+        with self.assertLogs("src.telegram_backup", level="WARNING") as captured:
+            _run(self.backup._sync_deletions_and_edits(100, entity))
+
+        self.backup.db.delete_message.assert_not_awaited()
+        self.backup.db.mark_message_deleted.assert_not_awaited()
+        self.backup.db.update_message_text.assert_awaited_once_with(
+            100, 3, "three edited", datetime(2024, 6, 15), account_id=1
+        )
+        assert any("misaligned" in line for line in captured.output)
+
+    def test_scrambled_full_length_response_pairs_by_id(self):
+        """Same length, order not preserved: the id check must reject the
+        positional pairing and every edit must land on its own id."""
+        self.backup.db.get_messages_sync_data = AsyncMock(
+            return_value={1: datetime(2024, 1, 1), 2: datetime(2024, 1, 1)}
+        )
+        response = [
+            self._remote(2, edit_date=datetime(2024, 6, 1), text="two edited"),
+            self._remote(1, edit_date=datetime(2024, 6, 2), text="one edited"),
+        ]
+        self.backup.client.get_messages = AsyncMock(return_value=response)
+        entity = MagicMock()
+
+        _run(self.backup._sync_deletions_and_edits(100, entity))
+
+        self.backup.db.delete_message.assert_not_awaited()
+        calls = {call.args[1]: call.args[2] for call in self.backup.db.update_message_text.await_args_list}
+        assert calls == {1: "one edited", 2: "two edited"}
 
 
 # ===========================================================================
@@ -1244,6 +1329,7 @@ class TestFillGaps(unittest.TestCase):
 
     def test_single_chat_with_gaps_fills_them(self):
         """Gap detected in a chat triggers _fill_gap_range."""
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[(10, 20, 10)])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
         self.backup._fill_gap_range = AsyncMock(return_value=5)
@@ -1256,6 +1342,7 @@ class TestFillGaps(unittest.TestCase):
 
     def test_no_gaps_found(self):
         """Chat with no gaps produces empty summary."""
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
 
@@ -1284,6 +1371,7 @@ class TestFillGaps(unittest.TestCase):
     def test_detect_gaps_error_counts_as_error(self):
         """Exception in detect_message_gaps counts as error."""
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(side_effect=Exception("db fail"))
 
         summary = _run(self.backup._fill_gaps(chat_id=100))
@@ -1293,6 +1381,7 @@ class TestFillGaps(unittest.TestCase):
     def test_fill_gap_range_error_counts_as_error(self):
         """Exception in _fill_gap_range counts as error."""
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[(10, 20, 10)])
         self.backup._fill_gap_range = AsyncMock(side_effect=Exception("range fail"))
 
@@ -1311,6 +1400,7 @@ class TestFillGaps(unittest.TestCase):
         )
         self.backup.config.should_backup_chat = MagicMock(side_effect=[True, False])
         self.backup.client.get_entity = AsyncMock(return_value=MagicMock())
+        self.backup.db.get_earliest_message_id = AsyncMock(return_value=1)
         self.backup.db.detect_message_gaps = AsyncMock(return_value=[])
 
         summary = _run(self.backup._fill_gaps(chat_id=None))
@@ -2864,72 +2954,6 @@ class TestConnectWalPragmaSuccess(unittest.TestCase):
 
 
 # ===========================================================================
-# backup_all has_synced_before (lines 333-334)
-# ===========================================================================
-
-
-class TestBackupAllHasSyncedBefore(unittest.TestCase):
-    """Test backup_all has_synced_before detection (lines 333-334)."""
-
-    def setUp(self):
-        self.backup = _make_backup()
-        self.backup.config.whitelist_mode = False
-        self.backup.config.priority_chat_ids = set()
-        self.backup.config.verify_media = False
-        self.backup.config.media_path = "/tmp/media"
-        self.backup.config.global_include_ids = set()
-        self.backup.config.private_include_ids = set()
-        self.backup.config.groups_include_ids = set()
-        self.backup.config.channels_include_ids = set()
-        self.backup.config.global_exclude_ids = set()
-        self.backup.config.private_exclude_ids = set()
-        self.backup.config.groups_exclude_ids = set()
-        self.backup.config.channels_exclude_ids = set()
-        self.backup.config.should_backup_chat = MagicMock(return_value=True)
-        self.backup.client.start = AsyncMock()
-        self.backup.client.get_me = AsyncMock(return_value=MagicMock(first_name="T", id=1))
-        self.backup.db.set_metadata = AsyncMock()
-        self.backup.db.backfill_is_outgoing = AsyncMock()
-        self.backup.db.calculate_and_store_statistics = AsyncMock(
-            return_value={"chats": 1, "messages": 10, "media_files": 0, "total_size_mb": 0}
-        )
-        self.backup._backup_dialog = AsyncMock(return_value=5)
-        self.backup._backup_folders = AsyncMock()
-        self.backup._backup_forum_topics = AsyncMock()
-        self.backup._get_marked_id = MagicMock(side_effect=lambda e: getattr(e, "_test_id", 100))
-        self.backup._get_chat_name = MagicMock(return_value="TestChat")
-
-    def _make_entity(self, test_id):
-        entity = MagicMock(spec=User)
-        entity._test_id = test_id
-        entity.id = test_id
-        entity.first_name = "User"
-        entity.last_name = None
-        entity.username = None
-        entity.phone = None
-        entity.bot = False
-        return entity
-
-    def _make_dialog(self, entity):
-        d = MagicMock()
-        d.entity = entity
-        d.date = datetime(2024, 6, 1)
-        return d
-
-    def test_has_synced_before_set_when_last_message_id_positive(self):
-        """has_synced_before is True when at least one chat has last_message_id > 0."""
-        entity = self._make_entity(100)
-        dialog = self._make_dialog(entity)
-        self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
-        self.backup.db.get_last_message_id = AsyncMock(return_value=42)
-
-        _run(self.backup.backup_all())
-
-        # The path is hit; backup proceeds normally
-        self.backup._backup_dialog.assert_awaited()
-
-
-# ===========================================================================
 # backup_all chat appears in both regular and archived (line 349)
 # ===========================================================================
 
@@ -3828,6 +3852,28 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         self.backup._process_media = AsyncMock(return_value=None)
         _run(self.backup._retry_pending_media_downloads())
         self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
+
+    def test_increment_when_message_is_gone(self):
+        """A deleted message is the one provably PERMANENT failure — without
+        counting it, the row re-requests the id from Telegram on every run
+        forever and the cap never retires it."""
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        self.backup._process_media = AsyncMock()
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
+        self.backup._process_media.assert_not_awaited()
+
+    def test_increment_when_message_lost_its_media(self):
+        """A message that still exists but no longer carries media is equally
+        permanent for this pending row."""
+        bare_msg = MagicMock()
+        bare_msg.id = 10
+        bare_msg.media = None
+        self.backup.client.get_messages = AsyncMock(return_value=[bare_msg])
+        self.backup._process_media = AsyncMock()
+        _run(self.backup._retry_pending_media_downloads())
+        self.backup.db.increment_media_download_attempts.assert_awaited_once_with("f1", account_id=1)
+        self.backup._process_media.assert_not_awaited()
 
     def test_no_increment_on_success(self):
         """A successful re-download does not bump the counter (row leaves the pending set)."""

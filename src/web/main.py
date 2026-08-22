@@ -36,7 +36,7 @@ from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import ChatScope, parse_entitlement_column
 from ..db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
-from ..realtime import RealtimeListener
+from ..realtime import RealtimeListener, resolve_internal_push_secret
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -2317,9 +2317,9 @@ async def get_messages(
     if before_date:
         try:
             parsed_before_date = datetime.fromisoformat(before_date.replace("Z", "+00:00"))
-            # Strip timezone for DB compatibility
+            # Message.date is naive UTC — convert the instant, never just relabel it
             if parsed_before_date.tzinfo:
-                parsed_before_date = parsed_before_date.replace(tzinfo=None)
+                parsed_before_date = parsed_before_date.astimezone(UTC).replace(tzinfo=None)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid before_date format. Use ISO 8601.")
 
@@ -2589,7 +2589,15 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         # Filter per-chat stats to only chats the user can access
         user_chat_ids = await _visible_chat_id_set(user)
         per_chat = stats.get("per_chat_message_counts", {})
-        if user_chat_ids is not None and per_chat:
+        if not isinstance(per_chat, dict):
+            # A malformed cached blob (null, a list) must scope to zeros like
+            # an absent map — not crash the restricted request with a 500.
+            per_chat = {}
+        if user_chat_ids is not None:
+            # ACL-driven, never data-driven: an absent or empty per-chat map
+            # (startup calculation failed, or a pre-8.0 cached blob) must scope
+            # a restricted viewer to zeros, not fail open to the archive-wide
+            # numbers this block exists to hide.
             # JSON keys are strings after json.loads(), user_chat_ids are ints
             stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if int(k) in user_chat_ids}
             # Recompute aggregates from visible chats only
@@ -2828,7 +2836,7 @@ async def internal_push(request: Request):
 
     # Require a shared secret for non-loopback private/Docker networks. Loopback
     # stays usable for single-container/local setups.
-    push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+    push_secret = resolve_internal_push_secret(getattr(db.db_manager, "database_url", None) if db else None)
     if not is_loopback and not push_secret:
         logger.warning(f"Rejected /internal/push from {client_host}: INTERNAL_PUSH_SECRET is required")
         raise HTTPException(status_code=403, detail="INTERNAL_PUSH_SECRET required")
@@ -3382,9 +3390,13 @@ async def create_token(request: Request, user: UserContext = Depends(require_mas
     expires_at = None
     if data.get("expires_at"):
         try:
-            expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+            expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expires_at format. Use ISO 8601.")
+        # Expiry is compared against naive UTC — convert the instant, never just relabel it
+        if expires_at.tzinfo:
+            expires_at = expires_at.astimezone(UTC)
+        expires_at = expires_at.replace(tzinfo=None)
 
     # A share token is ALWAYS scoped: no refs, no token.
     if not allowed_chat_refs or not isinstance(allowed_chat_refs, list):

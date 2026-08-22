@@ -64,6 +64,15 @@ _FAILURE_TTL_SECONDS = 300.0
 _MAX_FAILURE_ENTRIES = 1024
 _recent_failures: dict[tuple[int, str], float] = {}
 
+# Collapse duplicate concurrent generations: a cold gallery grid (or a reload
+# during first render) fires many requests for the same missing thumbnail, and
+# each one would decode the same source again — the semaphore caps how many run
+# at once, not how many run. The first request generates; every concurrent
+# duplicate waits on the same per-destination lock and then finds the finished
+# file (or the cached failure). Entries are removed as soon as the generation
+# settles, so the dict stays bounded by in-flight distinct thumbnails.
+_inflight_tasks: dict[str, asyncio.Task] = {}
+
 
 def _failure_cached(key: tuple[int, str]) -> bool:
     """True when this (size, source) failed recently enough to skip retrying."""
@@ -308,6 +317,37 @@ async def ensure_thumbnail(
     if _failure_cached(failure_key):
         return None
 
+    dest_key = str(dest)
+    # ONE generation task per destination, shared by every concurrent caller.
+    # The work runs in its own task so no waiter's cancellation can reach it
+    # (a lock-based version had exactly that hole: a cancelled waiter popped
+    # the map entry while the owner still generated, letting the next request
+    # start a duplicate — and cancelling mid-executor released the semaphore
+    # while the worker thread kept decoding). The entry is removed only when
+    # the task settles, by the task's own done-callback.
+    task = _inflight_tasks.get(dest_key)
+    if task is None:
+        task = asyncio.create_task(_generate_shared(source, dest, size, is_vid, failure_key))
+        _inflight_tasks[dest_key] = task
+        task.add_done_callback(lambda _t, key=dest_key: _inflight_tasks.pop(key, None))
+    # shield: cancelling a waiter stops the WAIT, never the shared work.
+    ok = await asyncio.shield(task)
+    if not ok:
+        return None
+    return dest, resolved_folder
+
+
+async def _generate_shared(source: Path, dest: Path, size: int, is_vid: bool, failure_key: tuple) -> bool:
+    """The single shared generation for one destination.
+
+    A duplicate that awaited the task finds the owner's result: the file for
+    a success, the failure cache for a failure. Either way the wait replaces
+    a second decode of the same source.
+    """
+    if dest.exists():
+        return True
+    if _failure_cached(failure_key):
+        return False
     sem = _video_semaphore if is_vid else _generation_semaphore
     async with sem:
         loop = asyncio.get_running_loop()
@@ -315,5 +355,4 @@ async def ensure_thumbnail(
         ok = await loop.run_in_executor(None, gen_fn, source, dest, size)
     if not ok:
         _record_failure(failure_key)
-        return None
-    return dest, resolved_folder
+    return ok

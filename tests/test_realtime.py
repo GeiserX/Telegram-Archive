@@ -10,11 +10,14 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from src.realtime import (
     NotificationType,
     RealtimeListener,
     RealtimeNotifier,
     _json_serializer,
+    resolve_internal_push_secret,
 )
 
 
@@ -955,8 +958,10 @@ class TestListenPostgres:
         mock_conn.remove_listener.assert_awaited_once()
         mock_conn.close.assert_awaited_once()
 
-    async def test_listen_postgres_handles_cancelled_error(self):
-        """_listen_postgres breaks on CancelledError (lines 238-239)."""
+    async def test_listen_postgres_propagates_cancelled_error(self):
+        """CancelledError must escape, never turn into a normal exit — a task
+        that swallows it reads as cleanly finished to stop() and to any future
+        asyncio.timeout/TaskGroup wrapper (see TestListenPostgresShutdownDiscipline)."""
         mock_db = MagicMock()
         mock_db._is_sqlite = False
         mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
@@ -968,7 +973,7 @@ class TestListenPostgres:
         mock_asyncpg = MagicMock()
         mock_asyncpg.connect = AsyncMock(side_effect=asyncio.CancelledError)
 
-        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}), pytest.raises(asyncio.CancelledError):
             await listener._listen_postgres()
 
 
@@ -996,3 +1001,172 @@ class TestNotifierAccountIdPayload:
             await notifier.notify(NotificationType.PIN, 789, {"msg_id": 5})
 
         assert mock_http.call_args[0][0]["account_id"] is None
+
+
+class TestListenPostgresShutdownDiscipline:
+    """stop() must terminate promptly and honestly even on a wedged connection.
+
+    The old loop caught CancelledError and ``break``-ed — the task finished
+    NORMALLY instead of cancelled — and its finally awaited remove_listener()
+    and close() unbounded, so a dead TCP socket hung viewer shutdown past its
+    grace period into SIGKILL.
+    """
+
+    def _listener(self):
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+        return listener
+
+    async def test_cancellation_is_reraised_not_swallowed(self):
+        listener = self._listener()
+        mock_conn = AsyncMock()
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+            task = asyncio.create_task(listener._listen_postgres())
+            # Let it connect and enter the keepalive sleep.
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if mock_conn.add_listener.await_count:
+                    break
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert task.cancelled(), "the listen task must end CANCELLED, not as a normal exit"
+        mock_conn.close.assert_awaited_once()
+
+    async def test_stop_completes_when_close_hangs(self):
+        listener = self._listener()
+
+        async def hang(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        mock_conn = AsyncMock()
+        mock_conn.remove_listener = AsyncMock(side_effect=hang)
+        mock_conn.close = AsyncMock(side_effect=hang)
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        with (
+            patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
+            patch("src.realtime._TEARDOWN_TIMEOUT_SECONDS", 0.05),
+        ):
+            listener._task = asyncio.create_task(listener._listen_postgres())
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if mock_conn.add_listener.await_count:
+                    break
+            # A wedged socket must not hang shutdown: 2s is the tripwire, the
+            # bounded teardown finishes in ~0.1s. asyncio.wait — NOT wait_for —
+            # because wait_for cancels stop() on timeout, stop()'s own
+            # CancelledError guard swallows that cancel, and wait_for then
+            # returns "success": a tripwire that cannot fire.
+            stop_task = asyncio.ensure_future(listener.stop())
+            done, pending = await asyncio.wait([stop_task], timeout=2)
+            assert stop_task in done, "stop() hung on the wedged connection"
+            # Retrieve stop()'s outcome and pin the teardown contract: both
+            # calls must have been attempted (bounded), not skipped outright.
+            await stop_task
+            mock_conn.remove_listener.assert_awaited_once()
+            mock_conn.close.assert_awaited_once()
+            for task in pending:
+                task.cancel()
+
+
+class TestResolveInternalPushSecret:
+    """The stock two-container SQLite stack must live-update with ZERO config:
+    the secret the viewer demands from non-loopback pushers is auto-shared
+    through the volume both containers already mount — the same trust boundary
+    the secret protects. Explicit env always wins; any trouble means None,
+    which keeps the old locked-down behavior."""
+
+    def _clear_env(self, monkeypatch):
+        monkeypatch.delenv("INTERNAL_PUSH_SECRET", raising=False)
+
+    def test_explicit_env_always_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INTERNAL_PUSH_SECRET", "operator-chosen")
+        url = f"sqlite:///{tmp_path / 'db.sqlite'}"
+        assert resolve_internal_push_secret(url) == "operator-chosen"
+        assert not (tmp_path / ".push-secret").exists()
+
+    def test_sqlite_url_creates_file_and_both_sides_agree(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        sender_url = f"sqlite+aiosqlite:///{tmp_path / 'db.sqlite'}"
+        viewer_url = f"sqlite:///{tmp_path / 'db.sqlite'}"
+
+        sender_secret = resolve_internal_push_secret(sender_url)
+        viewer_secret = resolve_internal_push_secret(viewer_url)
+
+        assert sender_secret and sender_secret == viewer_secret
+        secret_file = tmp_path / ".push-secret"
+        assert secret_file.exists()
+        assert (secret_file.stat().st_mode & 0o777) == 0o600
+        assert secret_file.read_text().strip() == sender_secret
+
+    def test_existing_file_from_the_other_container_is_read_and_healed(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        secret_file = tmp_path / ".push-secret"
+        secret_file.write_text("already-minted\n")
+        secret_file.chmod(0o644)
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "already-minted"
+        # A permissive mode is hygiene-healed, never refused (that would
+        # silently kill realtime for the operator who hand-made the file).
+        assert (secret_file.stat().st_mode & 0o777) == 0o600
+
+    def test_symlinked_secret_file_is_refused(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        (tmp_path / "decoy").write_text("stolen-token\n")
+        (tmp_path / ".push-secret").symlink_to(tmp_path / "decoy")
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    def test_empty_existing_file_resolves_to_none(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        (tmp_path / ".push-secret").write_text("")
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    def test_publish_race_loser_adopts_the_winners_token(self, tmp_path, monkeypatch):
+        """The mint is atomic: a reader can never see a half-written file, and
+        the container that loses the link race adopts the winner's token."""
+        self._clear_env(monkeypatch)
+        secret_file = tmp_path / ".push-secret"
+        real_link = os.link
+
+        def other_container_wins(src, dst, **kwargs):
+            secret_file.write_text("winner-token")
+            secret_file.chmod(0o600)
+            raise FileExistsError(dst)
+
+        with patch("src.realtime.os.link", side_effect=other_container_wins):
+            assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "winner-token"
+        assert os.link is real_link  # patch scope sanity
+        # The loser's private sibling never lingers on the shared volume.
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".push-secret.")] == []
+
+    def test_non_sqlite_memory_and_mock_urls_resolve_to_none(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        assert resolve_internal_push_secret("postgresql+asyncpg://u:p@host/db") is None
+        assert resolve_internal_push_secret("sqlite+aiosqlite://") is None
+        assert resolve_internal_push_secret(None) is None
+        assert resolve_internal_push_secret(MagicMock()) is None
+
+    def test_unwritable_directory_keeps_the_old_locked_down_behavior(self, tmp_path, monkeypatch):
+        # os.open is mocked (not a chmod-0500 directory) so the test also
+        # holds when the suite runs as root, which ignores directory modes.
+        self._clear_env(monkeypatch)
+        with patch("src.realtime.os.open", side_effect=PermissionError):
+            assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") is None
+
+    async def test_managerless_init_resolves_secret_from_database_url_env(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'db.sqlite'}")
+        monkeypatch.delenv("DB_TYPE", raising=False)
+        notifier = RealtimeNotifier()
+        await notifier.init()
+        assert notifier._push_secret is not None
+        assert (tmp_path / ".push-secret").read_text().strip() == notifier._push_secret
