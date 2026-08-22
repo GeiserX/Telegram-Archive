@@ -2798,15 +2798,15 @@ class TelegramBackup:
 
         peer = message.fwd_from.from_id
 
-        # Handle different Peer types
-        if hasattr(peer, "user_id"):
-            return peer.user_id
-        if hasattr(peer, "channel_id"):
-            return peer.channel_id
-        if hasattr(peer, "chat_id"):
-            return peer.chat_id
-
-        return None
+        # Store the MARKED id (user_id, -chat_id, -100<channel_id>) — the
+        # convention every other persisted id in this project follows and the
+        # id the user can actually look up. Returning the raw channel/chat id
+        # dropped it into the user-id numeric space, indistinguishable from a
+        # user forward and matching nothing the user knows.
+        try:
+            return get_peer_id(peer)
+        except TypeError:
+            return None
 
     def _text_with_entities_to_string(self, text_obj) -> str:
         """
