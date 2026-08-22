@@ -244,3 +244,64 @@ class TestPaginationRealEngine:
         async with real_adapter.db_manager.engine.connect() as conn:
             names = await conn.run_sync(lambda c: {ix["name"] for ix in sa.inspect(c).get_indexes("messages")})
         assert "idx_messages_text_trgm" not in names
+
+
+class TestPageLimitCountsMessagesRealEngine:
+    """LIMIT must deliver LIMIT distinct messages.
+
+    A message can carry several media rows (a JSON import writes
+    import_{chat}_{msg} beside the live {chat}_{msg}_{type} row), and the old
+    join-then-LIMIT shape returned 50 JOIN rows holding far fewer distinct
+    messages — the measured case: 10 three-media heads turned a page of 50
+    into 30 messages."""
+
+    async def _seed(self, real_adapter, chat_id):
+        await _seed_chat(real_adapter, chat_id)
+        for n in range(1, 61):
+            await real_adapter.insert_message(_message(chat_id, n, offset_minutes=n), account_id=1)
+        for n in range(51, 61):
+            for media_id, downloaded in (
+                # msg 60 isolates the downloaded-preference: both live rows
+                # pending, only the import row downloaded.
+                (f"{chat_id}_{n}_photo", 0 if n == 60 else 1),
+                (f"import_{chat_id}_{n}", 1),
+                (f"{chat_id}_{n}_video", 0 if n == 60 else 1),
+            ):
+                await real_adapter.insert_media(
+                    {
+                        "id": media_id,
+                        "message_id": n,
+                        "chat_id": chat_id,
+                        "type": "photo",
+                        "file_path": f"{chat_id}/{media_id}.jpg",
+                        "file_name": f"{media_id}.jpg",
+                        "file_size": 1,
+                        "mime_type": "image/jpeg",
+                        "downloaded": downloaded,
+                    },
+                    account_id=1,
+                )
+
+    async def test_page_of_50_returns_50_distinct_messages(self, real_adapter):
+        await self._seed(real_adapter, 900100)
+
+        page = await real_adapter.get_messages_paginated(900100, limit=50)
+
+        ids = [m["id"] for m in page]
+        assert len(ids) == 50, f"page shortfall: {len(ids)}"
+        assert len(set(ids)) == 50
+        assert ids == list(range(60, 10, -1)), "newest-first contract broken"
+
+    async def test_multi_row_media_attaches_one_deterministic_row(self, real_adapter):
+        await self._seed(real_adapter, 900101)
+
+        page = await real_adapter.get_messages_paginated(900101, limit=50)
+        by_id = {m["id"]: m for m in page}
+
+        # msg 60: its plain photo row is NOT downloaded — the downloaded
+        # import row must win.
+        assert by_id[60]["media"]["id"] == "import_900101_60"
+        # msg 59: all three downloaded — lowest media id wins (digits < letters).
+        assert by_id[59]["media"]["id"] == "900101_59_photo"
+        # A message without media stays None.
+        assert by_id[20]["media"] is None

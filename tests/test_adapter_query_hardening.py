@@ -498,10 +498,14 @@ async def _seed_media_chat(adapter: DatabaseAdapter, messages: int, media_per_me
 
 @pytest.mark.asyncio
 async def test_message_page_reads_the_media_table_once(sqlite_adapter):
-    """The page already outer-joins media; the selectin loader read it again.
+    """Exactly ONE purposeful media read per page: the batched attach.
 
-    Nothing in src/ reads Message.media_items, so that second read built a full
-    set of Media ORM objects per page and threw them away.
+    History, both directions guarded: the page once outer-joined media AND
+    selectin-loaded it a second time (a full set of ORM objects thrown away);
+    later the join itself proved wrong — LIMIT counted the multiplied join
+    rows, shrinking the page (TestPageLimitCountsMessagesRealEngine). Media
+    now arrives via one batched query keyed by the page's message ids, and
+    the page statement reads no media at all.
     """
     await _seed_media_chat(sqlite_adapter, messages=6)
 
@@ -509,14 +513,18 @@ async def test_message_page_reads_the_media_table_once(sqlite_adapter):
         messages = await sqlite_adapter.get_messages_paginated(CHAT_ID, limit=5)
 
     assert messages, "the page must still carry its messages"
-    assert any(message.get("media") for message in messages), "media must still be joined in"
+    assert any(message.get("media") for message in messages), "media must still be attached"
 
-    eager_reads = [
-        statement
-        for statement in recorder.statements
-        if statement.startswith("SELECT media.") and "JOIN" not in statement and "messages" not in statement
+    media_reads = [statement for statement in recorder.statements if "FROM media" in statement]
+    assert len(media_reads) == 1, f"exactly one media read expected: {media_reads}"
+    assert "message_id IN" in media_reads[0], "the media read must be keyed by the page ids"
+
+    page_reads = [
+        statement for statement in recorder.statements if "FROM messages" in statement and "LIMIT" in statement
     ]
-    assert eager_reads == [], f"the media table is still being read a second time: {eager_reads}"
+    assert page_reads and all("media" not in statement for statement in page_reads), (
+        "the page statement must not touch media — LIMIT would count join rows again"
+    )
 
 
 # ---------------------------------------------------------------------------
