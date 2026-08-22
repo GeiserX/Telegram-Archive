@@ -520,4 +520,9 @@ def test_013_downgrade_restores_positive_folders():
         _run(conn, migration_013.downgrade)
         assert _file_path(conn, "m1") == "/data/media/123/photo.jpg"
         assert _file_path(conn, "m2") == "/data/media/456/doc.pdf"
+        # LOSSY by design: m3 was born with the marked folder (never migrated),
+        # but the downgrade cannot tell it apart from a row 013 rewrote — both
+        # collapse to the raw-id folder. Pinned so the rollback's real
+        # behavior is documented rather than assumed.
+        assert _file_path(conn, "m3") == "/data/media/123/video.mp4"
         assert _file_path(conn, "m4") == "/data/media/789/voice.ogg"
