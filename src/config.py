@@ -637,6 +637,16 @@ class Config:
         # applied and the rest are blocked (counted, logged).
         self.mass_operation_threshold = int(os.getenv("MASS_OPERATION_THRESHOLD", "10"))
         self.mass_operation_window_seconds = int(os.getenv("MASS_OPERATION_WINDOW_SECONDS", "30"))
+        # Non-positive values do not degrade — they invert the protection: a
+        # zero/negative window prunes each operation before it is counted (the
+        # limiter never fires again), and a non-positive threshold blocks every
+        # operation after the first. This knob guards the archive against mass
+        # deletion mirroring, so a typo fails loudly (DELETION_MODE convention)
+        # instead of silently disarming it.
+        if self.mass_operation_threshold < 1:
+            raise ValueError("MASS_OPERATION_THRESHOLD must be >= 1")
+        if self.mass_operation_window_seconds < 1:
+            raise ValueError("MASS_OPERATION_WINDOW_SECONDS must be >= 1")
         # DEPRECATED: parsed for compatibility, consumed by nothing.
         self.mass_operation_buffer_delay = float(os.getenv("MASS_OPERATION_BUFFER_DELAY", "2.0"))
 
