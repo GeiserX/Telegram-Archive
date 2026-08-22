@@ -449,11 +449,12 @@ class TelegramListener:
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
 
-        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite)
-        from .db import get_db_manager
-
-        db_manager_instance = await get_db_manager()
-        self._notifier = RealtimeNotifier(db_manager_instance)
+        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite).
+        # Bound to THIS listener's own manager — never re-resolved from the
+        # process global: a cron backup starting inside connect()'s await
+        # window reassigns that global with a fresh engine, and its run-end
+        # dispose() would then tear the pool down under the notifier.
+        self._notifier = RealtimeNotifier(self.db.db_manager)
         await self._notifier.init()
         logger.info("Real-time notifier initialized")
 
