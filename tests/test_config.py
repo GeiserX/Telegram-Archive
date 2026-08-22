@@ -2084,6 +2084,14 @@ class TestNamedNumericEnvParsing(unittest.TestCase):
         self.assertIn("my.telegram.org", message)
         self.assertNotIn("invalid literal", message)
 
+    def test_unicode_digit_api_id_gets_the_same_named_error(self):
+        """ "²".isdigit() is True yet int("²") raises — an isdigit() pre-check
+        would let it through to the bare crash this fix removes."""
+        with self.assertRaises(ValueError) as ctx:
+            self._config(TELEGRAM_API_ID="²")
+        self.assertIn("TELEGRAM_API_ID", str(ctx.exception))
+        self.assertNotIn("invalid literal", str(ctx.exception))
+
     def test_blank_numeric_value_falls_back_to_default(self):
         config = self._config(MAX_MEDIA_SIZE_MB="", BATCH_SIZE="   ")
         self.assertEqual(config.max_media_size_mb, 100)

@@ -369,12 +369,19 @@ class Config:
         # placeholder) used to crash as a bare "invalid literal for int()"
         # BEFORE validate_credentials could say anything useful.
         raw_api_id = (os.getenv("TELEGRAM_API_ID") or "").strip()
-        if raw_api_id and not raw_api_id.isdigit():
-            raise ValueError(
-                "TELEGRAM_API_ID must be the numeric API ID from https://my.telegram.org/apps "
-                "(it looks like a placeholder or typo is still in place)"
-            )
-        self.api_id = int(raw_api_id) if raw_api_id else None
+        if raw_api_id:
+            # try/except rather than isdigit(): Unicode digits like "²" pass
+            # isdigit() but still crash int(), and the whole point is that NO
+            # value reaches a bare "invalid literal" crash.
+            try:
+                self.api_id = int(raw_api_id)
+            except ValueError:
+                raise ValueError(
+                    "TELEGRAM_API_ID must be the numeric API ID from https://my.telegram.org/apps "
+                    "(it looks like a placeholder or typo is still in place)"
+                ) from None
+        else:
+            self.api_id = None
         self.api_hash = os.getenv("TELEGRAM_API_HASH")
         self.phone = os.getenv("TELEGRAM_PHONE")
 
