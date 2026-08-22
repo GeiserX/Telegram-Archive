@@ -599,3 +599,44 @@ class TestGetSessionRollback:
 
         mock_session.rollback.assert_awaited_once()
         mock_session.commit.assert_not_awaited()
+
+
+class TestDatabaseTimeoutWiring:
+    """DATABASE_TIMEOUT is documented as THE knob for 'database is locked' —
+    it must actually reach PRAGMA busy_timeout. The old hardcoded 60000ms
+    equalled the knob's default, which is what kept the dead wire invisible."""
+
+    def test_busy_timeout_parses_seconds_to_milliseconds(self):
+        from src.db.base import _busy_timeout_ms
+
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "300"}):
+            assert _busy_timeout_ms() == 300000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "2.5"}):
+            assert _busy_timeout_ms() == 2500
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DATABASE_TIMEOUT", None)
+            assert _busy_timeout_ms() == 60000
+
+    def test_busy_timeout_rejects_garbage_and_nonpositive(self):
+        from src.db.base import _busy_timeout_ms
+
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "forever"}):
+            assert _busy_timeout_ms() == 60000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "0"}):
+            assert _busy_timeout_ms() == 60000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "-5"}):
+            assert _busy_timeout_ms() == 60000
+
+    @pytest.mark.asyncio
+    async def test_configured_timeout_reaches_the_live_connection(self, tmp_path):
+        from sqlalchemy import text as sa_text
+
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "5"}):
+            manager = DatabaseManager(f"sqlite:///{tmp_path / 'timeout.db'}")
+            await manager.init()
+        try:
+            async with manager.get_session() as session:
+                value = (await session.execute(sa_text("PRAGMA busy_timeout"))).scalar()
+            assert value == 5000
+        finally:
+            await manager.close()

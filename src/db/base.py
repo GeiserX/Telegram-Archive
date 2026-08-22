@@ -19,6 +19,18 @@ from .models import Base
 logger = logging.getLogger(__name__)
 
 
+def _busy_timeout_ms() -> int:
+    """DATABASE_TIMEOUT (seconds) as PRAGMA busy_timeout milliseconds."""
+    raw = os.getenv("DATABASE_TIMEOUT", "60.0")
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return 60000
+    if seconds <= 0:
+        return 60000
+    return int(seconds * 1000)
+
+
 class DatabaseManager:
     """
     Manages async database connections for SQLite and PostgreSQL.
@@ -219,6 +231,15 @@ class DatabaseManager:
         if that fails the database still works in the default journal mode.
         """
 
+        # DATABASE_TIMEOUT is documented (README, .env.example) as THE knob for
+        # "database is locked", but it never reached this pragma — the 60s
+        # default happening to equal the old hardcoded 60000ms kept that
+        # invisible. Seconds in, milliseconds out; invalid or non-positive
+        # values keep the old default. Read from the environment like every
+        # other configuration value (the manager is URL-driven, not
+        # Config-driven, so importing Config here would invert the layers).
+        busy_timeout_ms = _busy_timeout_ms()
+
         @event.listens_for(self.engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
@@ -233,8 +254,7 @@ class DatabaseManager:
                     "This is expected for viewer containers with read-only mounts."
                 )
             try:
-                # 60 second busy timeout
-                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
                 # 64MB cache for better performance
                 cursor.execute("PRAGMA cache_size=-64000")
             except Exception:
