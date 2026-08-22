@@ -743,6 +743,33 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertEqual(data["messages"], 100)
         self.assertNotIn("media_files", data)
 
+    async def test_stats_scope_fails_closed_when_per_chat_map_is_missing(self):
+        """A restricted viewer with a cached blob that lacks (or has an empty)
+        per_chat_message_counts must get zeros — not the archive-wide chats,
+        messages, media_files and total_size_mb the scope exists to hide."""
+        web_main.AUTH_ENABLED = True
+        token = "sv2"
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
+        )
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            [{"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"}]
+        )
+        self.mock_db.get_metadata = AsyncMock(return_value=None)
+        for blob in (
+            {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5},
+            {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5, "per_chat_message_counts": {}},
+        ):
+            self.mock_db.get_cached_statistics = AsyncMock(return_value=dict(blob))
+            async with self._client() as client:
+                resp = await client.get("/api/stats", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["chats"], 0, blob)
+            self.assertEqual(data["messages"], 0, blob)
+            self.assertNotIn("media_files", data, blob)
+            self.assertNotIn("total_size_mb", data, blob)
+
     async def test_backup_in_progress_true_when_metadata_is_one(self):
         """get_stats sets backup_in_progress=True when metadata key is '1'."""
         self.mock_db.get_cached_statistics = AsyncMock(return_value={})
