@@ -1177,31 +1177,33 @@ class TestExtractForwardFromId(unittest.TestCase):
         self.assertIsNone(self.backup._extract_forward_from_id(msg))
 
     def test_returns_user_id_from_peer_user(self):
-        """Returns user_id when forward peer is a PeerUser."""
+        """A user forward stores the user id — already the marked form."""
+        from telethon.tl.types import PeerUser
+
         msg = MagicMock()
         msg.fwd_from = MagicMock()
-        peer = MagicMock(spec=["user_id"])
-        peer.user_id = 12345
-        msg.fwd_from.from_id = peer
+        msg.fwd_from.from_id = PeerUser(user_id=12345)
         self.assertEqual(self.backup._extract_forward_from_id(msg), 12345)
 
-    def test_returns_channel_id_from_peer_channel(self):
-        """Returns channel_id when forward peer is a PeerChannel."""
-        msg = MagicMock()
-        msg.fwd_from = MagicMock()
-        peer = MagicMock(spec=["channel_id"])
-        peer.channel_id = 99999
-        msg.fwd_from.from_id = peer
-        self.assertEqual(self.backup._extract_forward_from_id(msg), 99999)
+    def test_returns_marked_id_from_peer_channel(self):
+        """A channel forward stores the MARKED -100... id, the convention
+        every other persisted id follows — the raw channel_id landed in the
+        user-id numeric space and matched nothing the user can look up."""
+        from telethon.tl.types import PeerChannel
 
-    def test_returns_chat_id_from_peer_chat(self):
-        """Returns chat_id when forward peer is a PeerChat."""
         msg = MagicMock()
         msg.fwd_from = MagicMock()
-        peer = MagicMock(spec=["chat_id"])
-        peer.chat_id = 77777
-        msg.fwd_from.from_id = peer
-        self.assertEqual(self.backup._extract_forward_from_id(msg), 77777)
+        msg.fwd_from.from_id = PeerChannel(channel_id=99999)
+        self.assertEqual(self.backup._extract_forward_from_id(msg), -1000000099999)
+
+    def test_returns_marked_id_from_peer_chat(self):
+        """A basic-group forward stores the marked negative chat id."""
+        from telethon.tl.types import PeerChat
+
+        msg = MagicMock()
+        msg.fwd_from = MagicMock()
+        msg.fwd_from.from_id = PeerChat(chat_id=77777)
+        self.assertEqual(self.backup._extract_forward_from_id(msg), -77777)
 
     def test_returns_none_for_unknown_peer_type(self):
         """Returns None when peer has no recognized ID attribute."""
