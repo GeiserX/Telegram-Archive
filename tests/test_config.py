@@ -1830,3 +1830,52 @@ class TestMultiAccountConfig(unittest.TestCase):
         self.assertNotIn("very-private-label", text)
         self.assertNotIn("10001", text)
         self.assertIn("index=1", text)
+
+
+class TestSchedulerConfigValidation(unittest.TestCase):
+    """VIEWER_TIMEZONE and STATS_CALCULATION_HOUR are validated at construction.
+
+    Stored verbatim, a misspelled tz name or an out-of-range hour raised inside
+    the stats scheduler's hourly catch-all — logged, slept, and retried forever
+    while the viewer kept serving first-launch counts.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.env_patcher = patch.dict(
+            os.environ, {"BACKUP_PATH": self.temp_dir, "DATABASE_DIR": self.temp_dir}, clear=True
+        )
+        self.env_patcher.start()
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **env):
+        with patch.dict(os.environ, env):
+            return Config()
+
+    def test_misspelled_timezone_falls_back_to_utc_with_warning(self):
+        with self.assertLogs("src.config", level="WARNING") as captured:
+            config = self._config(VIEWER_TIMEZONE="Europe/Madird")
+        self.assertEqual(config.viewer_timezone, "UTC")
+        self.assertTrue(any("VIEWER_TIMEZONE" in line for line in captured.output))
+
+    def test_valid_timezone_is_kept(self):
+        config = self._config(VIEWER_TIMEZONE="Europe/Madrid")
+        self.assertEqual(config.viewer_timezone, "Europe/Madrid")
+
+    def test_hour_out_of_range_falls_back_to_default(self):
+        with self.assertLogs("src.config", level="WARNING") as captured:
+            config = self._config(STATS_CALCULATION_HOUR="24")
+        self.assertEqual(config.stats_calculation_hour, 3)
+        self.assertTrue(any("STATS_CALCULATION_HOUR" in line for line in captured.output))
+
+    def test_hour_not_a_number_falls_back_to_default(self):
+        with self.assertLogs("src.config", level="WARNING"):
+            config = self._config(STATS_CALCULATION_HOUR="midnight")
+        self.assertEqual(config.stats_calculation_hour, 3)
+
+    def test_hour_bounds_are_accepted(self):
+        self.assertEqual(self._config(STATS_CALCULATION_HOUR="0").stats_calculation_hour, 0)
+        self.assertEqual(self._config(STATS_CALCULATION_HOUR="23").stats_calculation_hour, 23)
