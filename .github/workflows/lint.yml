@@ -37,3 +37,27 @@ jobs:
 
       - name: Ruff format check
         run: uv run --no-sync ruff format --check .
+
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # The hygiene hooks (check-yaml/toml, large-files, whitespace, EOF,
+      # merge-conflict) used to run only on machines where someone had run
+      # `pre-commit install` — a fork PR bypassed every one of them. Hook
+      # versions are pinned by .pre-commit-config.yaml; pre-commit itself is
+      # pinned here for the same hermeticity the ruff job documents above.
+      - name: Run pre-commit on all files
+        run: uvx pre-commit@4.6.2 run --all-files --show-diff-on-failure

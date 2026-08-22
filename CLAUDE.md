@@ -22,10 +22,10 @@ You assist developers working on telegram-archive.
 ## Repository & Infrastructure
 
 - **License:** GPL-3.0
-- **CI/CD:** 
+- **CI/CD:**
 - **Commits:** Follow [Conventional Commits](https://conventionalcommits.org) format
 - **Versioning:** Follow [Semantic Versioning](https://semver.org) (semver)
-- **CI/CD:** 
+- **CI/CD:**
 
 ## AI Behavior Rules
 
