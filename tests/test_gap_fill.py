@@ -807,6 +807,30 @@ class TestLeadingHoleReporting:
         assert result["details"][0]["leading_missing"] == 499
         backup._fill_gap_range.assert_not_awaited()
 
+    async def test_probe_failure_counts_as_error_not_silent_skip(self):
+        """A failed probe means leading-hole reporting was skipped for a
+        scanned chat — the summary must say so, or the final log claims a
+        completeness it does not have (review finding)."""
+        db = AsyncMock()
+        db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(side_effect=RuntimeError("db hiccup"))
+        db.detect_message_gaps = AsyncMock(return_value=[])
+
+        client = AsyncMock()
+        entity = MagicMock()
+        entity.title = "Probe-failed chat"
+        client.get_entity = AsyncMock(return_value=entity)
+
+        backup = _make_backup_instance(db_mock=db, client_mock=client)
+        backup._fill_gap_range = AsyncMock()
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["errors"] == 1
+        assert result["chats_with_leading_holes"] == 0
+        backup._fill_gap_range.assert_not_awaited()
+
     async def test_small_lead_below_threshold_is_not_a_hole(self):
         """Telegram ids start at 1 but service messages can eat the first few:
         a lead smaller than the gap threshold is normal, not a hole."""

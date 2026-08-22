@@ -2343,7 +2343,11 @@ class TelegramBackup:
                     leading_missing = earliest - 1
                     summary["chats_with_leading_holes"] += 1
             except Exception as e:
-                logger.debug(f"Gap-fill: could not probe the leading range: {type(e).__name__}")
+                # A failed probe means leading-hole reporting was SKIPPED for a
+                # scanned chat — that is an error the summary must carry, or the
+                # final log claims completeness it does not have.
+                summary["errors"] += 1
+                logger.warning(f"Gap-fill: could not probe the leading range: {type(e).__name__}")
 
             if not gaps and not leading_missing:
                 continue
