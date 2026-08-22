@@ -320,6 +320,14 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `MASS_OPERATION_THRESHOLD` | `10` | B | Max operations per chat before rate limiting triggers |
 | `MASS_OPERATION_WINDOW_SECONDS` | `30` | B | Sliding window for counting operations (seconds) |
 | `MASS_OPERATION_BUFFER_DELAY` | `2.0` | B | Deprecated compatibility setting; operations are rate-limited, not buffered |
+| **Event Webhook** | | | |
+| `EVENT_WEBHOOK_ENABLED` | `false` | B | **Master switch** — fire an HTTP request when the listener applies an edit/deletion. Opt-in only. See [Event Webhook](#event-webhook) below |
+| `EVENT_WEBHOOK_URL` | — | B | Target URL (`http://` or `https://`). Required when enabled; treated as a secret and never logged |
+| `EVENT_WEBHOOK_METHOD` | `POST` | B | `POST` or `PUT` |
+| `EVENT_WEBHOOK_HEADERS` | `{}` | B | JSON object of extra headers (auth tokens etc.). Its `Content-Type` drives auto-escaping; defaults to `application/json; charset=utf-8` |
+| `EVENT_WEBHOOK_EVENTS` | both | B | Comma list: `message_edited`, `message_deleted` |
+| `EVENT_WEBHOOK_CHAT_IDS` | — | B | Comma-separated marked chat ids to fire for; empty = all chats the listener processes |
+| `EVENT_WEBHOOK_BODY_TEMPLATE` | JSON body | B | Custom body with `{placeholder}` / `{placeholder\|filter}` substitution; empty = default JSON body |
 | **Database** | | | See [Database Configuration](#database-configuration) below |
 | `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
 | `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |
@@ -475,6 +483,50 @@ The client runs with `flood_sleep_threshold=0` so every rate limit surfaces in t
 #### FloodWaits while fetching the dialog list
 
 The same raise-immediately behavior applied to `get_dialogs()` too, with a worse failure mode than media downloads: Telethon paginates dialogs internally in ~100-per-page chunks, and a FloodWait on any one page aborted the *entire* call rather than just that page. The retry then re-ran `get_dialogs()` from scratch — re-walking every already-successful earlier page before re-tripping the same later page's FloodWait again. For an account with enough dialogs to reliably need that many pages, this never converged: retrying more, or spacing scheduled runs further apart, made no difference, since it wasn't cumulative throttling wearing off but the same deterministic wall being re-hit every attempt (issue #295). Dialog fetches now absorb short per-page floods in place the same way media downloads do: pauses up to `DIALOG_FLOOD_SLEEP_THRESHOLD` seconds (default 60) happen inside `get_dialogs()`, which then resumes pagination instead of restarting it. `DIALOG_FLOOD_SLEEP_THRESHOLD=0` restores the old behavior.
+
+### Event Webhook
+
+Get an HTTP ping the moment the real-time listener archives a message **edit** or **deletion** — point it at [ntfy](https://ntfy.sh), Gotify, Apprise, a Slack/Discord webhook, or anything you run yourself:
+
+```yaml
+ENABLE_LISTENER: "true"          # the webhook fires from the listener
+LISTEN_DELETIONS: "true"         # required for message_deleted events (off by default!)
+EVENT_WEBHOOK_ENABLED: "true"
+EVENT_WEBHOOK_URL: "https://ntfy.sh"   # or your own service
+# ntfy's JSON endpoint needs a topic in the body — shape it with a template
+# (any service that accepts the default JSON body can skip this line):
+EVENT_WEBHOOK_BODY_TEMPLATE: '{"topic":"my-archive","title":"{event} in {chat_title}","message":"{text}"}'
+```
+
+**How it works:** the webhook fires immediately after the listener commits the change to the archive — near-instant, edit and deletion events only. Deleted text is included in **both** `DELETION_MODE=soft` and `hard` (the content is snapshotted inside the deleting transaction, before it is destroyed).
+
+**Placeholders** available in `EVENT_WEBHOOK_BODY_TEMPLATE`:
+
+| Placeholder | `message_edited` | `message_deleted` |
+|---|---|---|
+| `{event}` | `message_edited` | `message_deleted` |
+| `{chat_id}` / `{message_id}` / `{account_id}` | always present (integers) | always present (integers) |
+| `{chat_title}` | archive chat title (private chats: name/username) | same — works even for events Telegram delivers without a peer |
+| `{sender_id}` / `{sender_name}` | from the archived row | from the archived row |
+| `{date}` | edit time (ISO-8601) | deletion time (ISO-8601) |
+| `{text}` | new text | the deleted text |
+| `{old_text}` / `{new_text}` | pre-/post-edit text | blank |
+| `{media_type}` | e.g. `photo`, `video`; blank if none | same |
+
+**Template rules:** only `{name}` and `{name|filter}` are substituted (letters/digits/underscores); every other brace passes through untouched, so a literal JSON template needs no escaping. Unknown or missing placeholders render blank. Substituted values are inserted in **one pass and never re-expanded** — message text containing `{event}` stays literal. `{{event}}` renders as `{` + value + `}`.
+
+**Filters and auto-escaping:** each placeholder is escaped for the declared `Content-Type` — JSON string escaping for `application/json` (default), percent-encoding for `application/x-www-form-urlencoded`, raw otherwise. Override per placeholder with `{text|jsonescape}`, `{text|urlencode}` or `{text|raw}` (with `raw`, body validity is on you).
+
+**Custom body example** (ntfy JSON publishing):
+
+```yaml
+EVENT_WEBHOOK_URL: "https://ntfy.sh"
+EVENT_WEBHOOK_BODY_TEMPLATE: '{"topic":"my-archive","title":"{event} in {chat_title}","message":"{text}"}'
+```
+
+**Delivery contract:** `POST`/`PUT`, 5-second timeout, up to 3 attempts (transport errors, HTTP 429 and 5xx retry; other statuses are treated as permanent), redirects are **not** followed, and beyond 100 in-flight deliveries new events are dropped (counted in listener stats). There is no persistence or redelivery — the archive itself is the system of record; a failed webhook only loses the ping.
+
+**Two caveats, loudly:** sweep-detected changes (`SYNC_DELETIONS_EDITS`) never fire the webhook — only the real-time listener does. And deletion events require `LISTEN_DELETIONS=true`, which is **off by default**; startup logs a warning for any selected event that can never fire under the current flags. The body carries message content by design — point the URL only at services you control.
 
 ### Group → supergroup migrations
 

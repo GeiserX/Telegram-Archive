@@ -20,6 +20,9 @@ BASE_ENV = {
     "TELEGRAM_API_HASH": "test@value/here",
     "TELEGRAM_PHONE": "+1234567890",
     "BACKUP_PATH": tempfile.mkdtemp(prefix="ta_test_boolvocab_"),
+    # EVENT_WEBHOOK_ENABLED=true force-disables itself when the URL is absent
+    # (side-channel warn+disable rule), which would break the read-back assert.
+    "EVENT_WEBHOOK_URL": "https://hooks.example.test/x",
 }
 
 # Every boolean flag with its documented default (attr, env name, default).
@@ -41,6 +44,7 @@ FLAGS = [
     ("listen_deletions", "LISTEN_DELETIONS", False),
     ("listen_reactions", "LISTEN_REACTIONS", False),
     ("follow_chat_migrations", "FOLLOW_CHAT_MIGRATIONS", False),
+    ("event_webhook_enabled", "EVENT_WEBHOOK_ENABLED", False),
 ]
 
 

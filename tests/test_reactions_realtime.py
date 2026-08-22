@@ -212,7 +212,7 @@ async def test_reaction_only_edit_does_not_create_phantom(adapter):
     """#219 e2e: a reaction-only edit (unchanged text, newer edit_date) must not
     bump edit_date, so the viewer never shows a phantom 'edited' marker."""
     reaction_edit = datetime(2026, 7, 18, 12, 30)
-    outcome = await adapter.update_message_text(CHAT_ID, MSG_ID, "hi", reaction_edit, account_id=1)
+    outcome, _ = await adapter.update_message_text(CHAT_ID, MSG_ID, "hi", reaction_edit, account_id=1)
     assert outcome == "noop"
     async with adapter.db_manager.async_session_factory() as session:
         msg = (

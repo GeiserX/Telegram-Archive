@@ -1083,6 +1083,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
     def test_edited_message_updated_in_db(self):
         """Remote message with different edit_date triggers update."""
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 1, 1)})
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         remote_msg = MagicMock()
         remote_msg.id = 1
         remote_msg.edit_date = datetime(2024, 6, 15)
@@ -1150,6 +1151,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         self.backup.db.get_messages_sync_data = AsyncMock(
             return_value={1: datetime(2024, 1, 1), 2: datetime(2024, 1, 1), 3: datetime(2024, 1, 1)}
         )
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         # id 2 omitted from the response entirely; 3 arrives edited.
         response = [self._remote(1), self._remote(3, edit_date=datetime(2024, 6, 15), text="three edited")]
         self.backup.client.get_messages = AsyncMock(return_value=response)
@@ -1171,6 +1173,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         self.backup.db.get_messages_sync_data = AsyncMock(
             return_value={1: datetime(2024, 1, 1), 2: datetime(2024, 1, 1)}
         )
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         response = [
             self._remote(2, edit_date=datetime(2024, 6, 1), text="two edited"),
             self._remote(1, edit_date=datetime(2024, 6, 2), text="one edited"),

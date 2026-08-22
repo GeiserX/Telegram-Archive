@@ -1257,10 +1257,55 @@ class DatabaseAdapter:
             row = result.first()
             return row[0] if row else None
 
+    async def _deletion_snapshot(self, session, account_id: int, chat_id: int, message_id: int) -> dict | None:
+        """Snapshot the fields the event webhook needs, inside the deleting transaction.
+
+        Runs before the row is destroyed (hard delete) or tombstoned (soft
+        delete), so deleted text is available in BOTH deletion modes. Returns
+        None when the message was never archived. media_type comes from the
+        media table because Message lost its media columns in v6.0.0.
+
+        The row is locked (FOR UPDATE; a no-op on SQLite, whose writers
+        serialize anyway) so concurrent deletions of the same message
+        serialize against this snapshot: the loser re-reads the committed
+        state (tombstoned, or gone) instead of also seeing is_deleted=0 and
+        firing a duplicate message_deleted webhook.
+        """
+        result = await session.execute(
+            select(Message)
+            .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
+            .with_for_update()
+        )
+        message = result.scalar_one_or_none()
+        if message is None:
+            return None
+        media_result = await session.execute(
+            select(Media.type)
+            .where(and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id))
+            .order_by(Media.id)
+            .limit(1)
+        )
+        media_row = media_result.first()
+        return {
+            "text": message.text,
+            "sender_id": message.sender_id,
+            "sender_name": message.sender_name,
+            "date": message.date,
+            "is_deleted": message.is_deleted,
+            "media_type": media_row[0] if media_row else None,
+        }
+
     @retry_on_locked()
-    async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> None:
-        """Delete a specific message and its media."""
+    async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> dict | None:
+        """Delete a specific message and its media.
+
+        Returns a pre-deletion snapshot of the row (see _deletion_snapshot) so
+        the listener can fire the event webhook with the destroyed content, or
+        None when the message was never archived. The four DELETEs still run
+        unconditionally — orphan-cleanup behavior is unchanged.
+        """
         async with self.db_manager.async_session_factory() as session:
+            snapshot = await self._deletion_snapshot(session, account_id, chat_id, message_id)
             # Delete previous versions
             await session.execute(
                 delete(MessageVersion).where(
@@ -1295,14 +1340,23 @@ class DatabaseAdapter:
             )
             await session.commit()
             logger.debug(f"Deleted message {message_id}")
+            return snapshot
 
     @retry_on_locked()
     async def mark_message_deleted(
         self, chat_id: int, message_id: int, deleted_at: datetime | None = None, *, account_id: int
-    ) -> None:
-        """Mark a message as deleted on Telegram while keeping archive content."""
+    ) -> dict | None:
+        """Mark a message as deleted on Telegram while keeping archive content.
+
+        Returns a pre-tombstone snapshot of the row (see _deletion_snapshot),
+        or None when the message was never archived. The snapshot's is_deleted
+        reflects the state BEFORE this call, so callers can detect a re-mark
+        and keep webhook delivery exactly-once; the idempotent UPDATE and
+        deleted_at coalesce semantics are unchanged.
+        """
         deleted_at = _strip_tz(deleted_at) or utcnow_naive()
         async with self.db_manager.async_session_factory() as session:
+            snapshot = await self._deletion_snapshot(session, account_id, chat_id, message_id)
             result = await session.execute(
                 update(Message)
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
@@ -1316,6 +1370,7 @@ class DatabaseAdapter:
                 logger.debug(f"Marked message {message_id} as deleted")
             else:
                 logger.debug(f"Soft-delete no-op: message {message_id} not in archive")
+            return snapshot
 
     async def resolve_message_chat_id(self, message_id: int, *, account_id: int) -> int | None:
         """
@@ -1374,25 +1429,29 @@ class DatabaseAdapter:
     @retry_on_locked()
     async def update_message_text(
         self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None, *, account_id: int
-    ) -> str:
+    ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
-        Returns the outcome so callers can keep honest counters and only
-        broadcast edits that actually changed the archive:
+        Returns ``(outcome, prior)`` so callers can keep honest counters and
+        only broadcast edits that actually changed the archive. ``outcome`` is
         ``"applied"`` | ``"noop"`` (already current / older evidence) |
-        ``"not_found"`` (message not archived).
+        ``"not_found"`` (message not archived). ``prior`` is a snapshot of the
+        superseded row ({text, sender_id, sender_name}) on "applied", captured
+        in the same transaction so the event webhook gets race-free old text;
+        None otherwise.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
             message = await self._load_message_for_update(session, account_id, chat_id, message_id)
             if message is None:
                 logger.debug("Edit no-op: message not found in archive")
-                return "not_found"
+                return "not_found", None
 
             if not self._should_apply_edit_text(message, new_text, edit_date):
                 logger.debug("Edit no-op: message already current")
-                return "noop"
+                return "noop", None
 
+            prior = {"text": message.text, "sender_id": message.sender_id, "sender_name": message.sender_name}
             if message.text != new_text:
                 await self._record_message_version(
                     session=session,
@@ -1409,7 +1468,7 @@ class DatabaseAdapter:
             )
             await session.commit()
             logger.debug("Updated archived message text")
-            return "applied"
+            return "applied", prior
 
     async def sender_has_message_in_chats(
         self, sender_id: int, chat_ids: Iterable[int], *, account_id: int | None = None
