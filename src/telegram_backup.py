@@ -2783,6 +2783,64 @@ class TelegramBackup:
             # Don't fail the backup if pinned sync fails
             logger.debug(f"  → Could not sync pinned messages: {e}")
 
+    _FORWARD_NAME_CACHE_LIMIT = 10_000
+
+    async def _resolve_forward_source_name(self, peer) -> str | None:
+        """Resolve a forward source's display name: run cache, local DB, then API.
+
+        The sweep path deliberately avoids per-message entity resolution — one
+        API request per message is the dominant flood risk on forward-heavy
+        channels, and Telethon's get_entity has NO full-entity memory cache,
+        so 10,000 forwards used to cost 10,000 requests per run, again on
+        every later run. Each distinct source now costs at most one lookup per
+        run; negative results are cached too, so one unresolvable source costs
+        one request, not one per message.
+        """
+        try:
+            marked_id = get_peer_id(peer)
+        except TypeError:
+            return None
+        cache = getattr(self, "_forward_name_cache", None)
+        if cache is None:
+            cache = self._forward_name_cache = {}
+        if marked_id in cache:
+            return cache[marked_id]
+
+        name: str | None = None
+        try:
+            if marked_id > 0:
+                row = await self.db.get_user_by_id(marked_id)
+                if row:
+                    name = (
+                        f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+                        or (row.get("username") or "").strip()
+                        or None
+                    )
+            else:
+                row = await self.db.get_chat_by_id(marked_id, account_id=self.account_id)
+                if row:
+                    name = (row.get("title") or "").strip() or None
+        except Exception:
+            name = None
+
+        if name is None:
+            try:
+                fwd_entity = await call_with_flood_retry(self.client.get_entity, peer)
+                if hasattr(fwd_entity, "title"):
+                    name = (fwd_entity.title or "").strip() or None
+                elif hasattr(fwd_entity, "first_name"):
+                    value = fwd_entity.first_name or ""
+                    if fwd_entity.last_name:
+                        value += " " + fwd_entity.last_name
+                    name = value.strip() or None
+            except Exception:
+                # Can't resolve - will fall back to ID in viewer
+                name = None
+
+        if len(cache) < self._FORWARD_NAME_CACHE_LIMIT:
+            cache[marked_id] = name
+        return name
+
     def _extract_forward_from_id(self, message: Message) -> int | None:
         """
         Extract forward sender ID safely handling different Peer types.
@@ -2977,19 +3035,9 @@ class TelegramBackup:
             if fwd.from_name:
                 message_data["raw_data"]["forward_from_name"] = fwd.from_name
             elif fwd.from_id:
-                # Try to resolve the name from the entity
-                try:
-                    fwd_entity = await call_with_flood_retry(self.client.get_entity, fwd.from_id)
-                    if hasattr(fwd_entity, "title"):
-                        message_data["raw_data"]["forward_from_name"] = fwd_entity.title
-                    elif hasattr(fwd_entity, "first_name"):
-                        name = fwd_entity.first_name or ""
-                        if fwd_entity.last_name:
-                            name += " " + fwd_entity.last_name
-                        message_data["raw_data"]["forward_from_name"] = name.strip()
-                except Exception:
-                    # Can't resolve - will fall back to ID in viewer
-                    pass
+                forward_name = await self._resolve_forward_source_name(fwd.from_id)
+                if forward_name:
+                    message_data["raw_data"]["forward_from_name"] = forward_name
 
         # Capture channel post author (signature) if available
         if hasattr(message, "post_author") and message.post_author:
