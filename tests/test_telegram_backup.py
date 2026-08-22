@@ -1795,17 +1795,34 @@ class TestProcessMessage(unittest.TestCase):
 
         self.assertEqual(result["reactions"][0]["emoji"], "custom_12345")
 
-    def test_reply_to_text_truncated(self):
-        """Reply text is truncated to 100 characters."""
+    def test_quote_reply_excerpt_stored_and_truncated(self):
+        """A quote-reply's excerpt (MessageReplyHeader.quote_text — the field
+        Telethon actually has; the old code read a non-existent .message via a
+        MagicMock-only test) is stored, truncated to Telegram's 100-char
+        preview."""
+        from telethon.tl.types import MessageReplyHeader
+
         msg = self._make_message(11)
         msg.reply_to_msg_id = 5
-        msg.reply_to = MagicMock()
-        msg.reply_to.message = "a" * 200
-        msg.reply_to.forum_topic = False
+        msg.reply_to = MessageReplyHeader(reply_to_msg_id=5, quote=True, quote_text="a" * 200)
 
         result = self._run(self.backup._process_message(msg, 100))
 
         self.assertEqual(len(result["reply_to_text"]), 100)
+        self.assertEqual(result["reply_to_text"], "a" * 100)
+
+    def test_plain_reply_stores_no_excerpt(self):
+        """A non-quote reply carries no quote_text: reply_to_text stays None and
+        the viewer's read-time backfill supplies the target's text instead."""
+        from telethon.tl.types import MessageReplyHeader
+
+        msg = self._make_message(12)
+        msg.reply_to_msg_id = 5
+        msg.reply_to = MessageReplyHeader(reply_to_msg_id=5)
+
+        result = self._run(self.backup._process_message(msg, 100))
+
+        self.assertIsNone(result["reply_to_text"])
 
     def test_forward_from_id_resolves_channel_title(self):
         """Forward from channel resolves title via get_entity."""

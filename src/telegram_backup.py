@@ -3026,13 +3026,17 @@ class TelegramBackup:
         if hasattr(message, "post_author") and message.post_author:
             message_data["raw_data"]["post_author"] = message.post_author
 
-        # Get reply text if this is a reply
+        # Quote-reply excerpt. MessageReplyHeader has NO ``message`` attribute
+        # (the old hasattr guard could never fire, so reply_to_text was always
+        # None from the sweep): its text field is ``quote_text``, set exactly
+        # when the sender quoted part of the target. That excerpt is what the
+        # official clients render and it cannot be reconstructed at read time
+        # — the viewer's backfill can only fetch the target's FULL text.
         if message.reply_to_msg_id and message.reply_to:
-            reply_msg = message.reply_to
-            if hasattr(reply_msg, "message"):
-                # Truncate to first 100 chars like Telegram does
-                reply_text = (reply_msg.message or "")[:100]
-                message_data["reply_to_text"] = reply_text
+            quote_text = getattr(message.reply_to, "quote_text", None)
+            if quote_text:
+                # Truncate to first 100 chars like Telegram's own preview
+                message_data["reply_to_text"] = quote_text[:100]
 
         # Handle media
         if message.media:
