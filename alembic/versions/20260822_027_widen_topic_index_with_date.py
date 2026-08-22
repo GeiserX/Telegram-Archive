@@ -3,12 +3,14 @@
 GET /api/chats/{chat_id}/topics aggregates count and max(date) per topic over
 every message row of the chat. Grouped on coalesce(reply_to_top_id, 1) the
 planner needed a temp b-tree and a heap lookup per row (raw_data included);
-grouped on the raw column with this index carrying date, the whole aggregate
-is a covering index scan: measured 17.4 ms -> 2.4 ms at 60k rows on SQLite,
-with the NULL bucket folded into the General topic in Python instead of SQL.
+grouped on the raw column with this index carrying account_id and date, the
+whole aggregate is a covering index scan on the account-scoped path the
+viewer always takes: measured 19.0 ms -> 1.3 ms at 60k rows on SQLite
+(unscoped legacy calls keep a covering scan with a temp b-tree), with the
+NULL bucket folded into the General topic in Python instead of SQL.
 
 The index keeps its name across the widening, so idempotency is keyed on the
-COLUMN LIST, not existence: a create_all() database already has the 3-column
+COLUMN LIST, not existence: a create_all() database already has the 4-column
 shape from the model declaration, an upgraded database has the 2-column one.
 Guarded both directions — the entrypoint stamping ladder tops out at 018 and
 relies on every later migration being idempotent.
@@ -31,7 +33,7 @@ depends_on: str | Sequence[str] | None = None
 
 TABLE_NAME = "messages"
 INDEX_NAME = "idx_messages_topic"
-NEW_COLUMNS = ["chat_id", "reply_to_top_id", "date"]
+NEW_COLUMNS = ["chat_id", "account_id", "reply_to_top_id", "date"]
 OLD_COLUMNS = ["chat_id", "reply_to_top_id"]
 
 

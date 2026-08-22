@@ -70,11 +70,14 @@ async def _build():
 
 @pytest_asyncio.fixture
 async def built():
-    return await _build()
+    adapter, engine = await _build()
+    try:
+        yield adapter, engine
+    finally:
+        await engine.dispose()
 
 
-async def test_aggregate_is_a_covering_index_scan(built):
-    adapter, engine = built
+async def _aggregate_plans(adapter, engine, **kwargs):
     captured: list[tuple[str, tuple]] = []
 
     def _capture(conn, cursor, statement, parameters, context, executemany):
@@ -82,18 +85,37 @@ async def test_aggregate_is_a_covering_index_scan(built):
 
     event.listen(engine.sync_engine, "before_cursor_execute", _capture)
     try:
-        await adapter.get_forum_topics(CHAT_ID)
+        await adapter.get_forum_topics(CHAT_ID, **kwargs)
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", _capture)
 
     agg_sql = [(s, p) for s, p in captured if "group by" in s.lower()]
     assert agg_sql, "the aggregate statement was not captured"
+    plans = []
     async with engine.connect() as conn:
         for statement, parameters in agg_sql:
             result = await conn.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}", parameters)
-            plan = " | ".join(str(row[-1]) for row in result.fetchall())
-            assert "COVERING INDEX idx_messages_topic" in plan, f"not covering: {plan}"
-            assert "TEMP B-TREE" not in plan.upper(), f"temp b-tree grouping: {plan}"
+            plans.append(" | ".join(str(row[-1]) for row in result.fetchall()))
+    return plans
+
+
+async def test_scoped_aggregate_is_a_covering_index_seek(built):
+    """The viewer always passes account_id — this is the production path,
+    and it must be a fully covering two-equality seek (review finding: the
+    account-less index shape left the scoped path doing heap lookups)."""
+    adapter, engine = built
+    for plan in await _aggregate_plans(adapter, engine, account_id=1):
+        assert "COVERING INDEX idx_messages_topic" in plan, f"not covering: {plan}"
+        assert "account_id=?" in plan, f"account not in the seek: {plan}"
+        assert "TEMP B-TREE" not in plan.upper(), f"temp b-tree grouping: {plan}"
+
+
+async def test_unscoped_aggregate_never_touches_the_heap(built):
+    """Legacy unscoped calls keep a covering scan (a temp b-tree regroup is
+    acceptable there — no heap rows are dragged in either way)."""
+    adapter, engine = built
+    for plan in await _aggregate_plans(adapter, engine):
+        assert "COVERING INDEX idx_messages_topic" in plan, f"not covering: {plan}"
 
 
 async def test_null_bucket_folds_into_general_and_order_is_preserved(built):

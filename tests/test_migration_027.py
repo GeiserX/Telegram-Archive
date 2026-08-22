@@ -2,7 +2,7 @@
 
 The index keeps its name across the widening, so the guards key on the COLUMN
 LIST: an upgraded database carries the 2-column shape, a create_all() database
-already has the 3-column shape from the model declaration and must no-op. The
+already has the 4-column shape from the model declaration and must no-op. The
 entrypoint stamping ladder tops out at 018 and relies on exactly this.
 """
 
@@ -58,20 +58,20 @@ def test_upgrade_widens_the_old_shape_and_is_idempotent():
         _create_messages_table(conn, ["chat_id", "reply_to_top_id"])
 
         _run(conn, migration_027.upgrade)
-        assert _index_columns(conn) == ["chat_id", "reply_to_top_id", "date"]
+        assert _index_columns(conn) == ["chat_id", "account_id", "reply_to_top_id", "date"]
 
         _run(conn, migration_027.upgrade)  # re-run must be a no-op
-        assert _index_columns(conn) == ["chat_id", "reply_to_top_id", "date"]
+        assert _index_columns(conn) == ["chat_id", "account_id", "reply_to_top_id", "date"]
 
 
 def test_upgrade_noop_on_create_all_shape():
-    """Simulates create_all(): the model already declares the 3-column index."""
+    """Simulates create_all(): the model already declares the 4-column index."""
     engine = sa.create_engine("sqlite://")
     with engine.connect() as conn:
-        _create_messages_table(conn, ["chat_id", "reply_to_top_id", "date"])
+        _create_messages_table(conn, ["chat_id", "account_id", "reply_to_top_id", "date"])
 
         _run(conn, migration_027.upgrade)  # must not raise or churn
-        assert _index_columns(conn) == ["chat_id", "reply_to_top_id", "date"]
+        assert _index_columns(conn) == ["chat_id", "account_id", "reply_to_top_id", "date"]
 
 
 def test_upgrade_creates_index_when_absent():
@@ -80,7 +80,7 @@ def test_upgrade_creates_index_when_absent():
         _create_messages_table(conn)
 
         _run(conn, migration_027.upgrade)
-        assert _index_columns(conn) == ["chat_id", "reply_to_top_id", "date"]
+        assert _index_columns(conn) == ["chat_id", "account_id", "reply_to_top_id", "date"]
 
 
 def test_upgrade_noop_when_messages_table_absent():
@@ -93,7 +93,7 @@ def test_upgrade_noop_when_messages_table_absent():
 def test_downgrade_restores_the_old_shape_and_is_idempotent():
     engine = sa.create_engine("sqlite://")
     with engine.connect() as conn:
-        _create_messages_table(conn, ["chat_id", "reply_to_top_id", "date"])
+        _create_messages_table(conn, ["chat_id", "account_id", "reply_to_top_id", "date"])
 
         _run(conn, migration_027.downgrade)
         assert _index_columns(conn) == ["chat_id", "reply_to_top_id"]
@@ -112,4 +112,4 @@ def test_roundtrip_upgrade_downgrade_upgrade():
         assert _index_columns(conn) == ["chat_id", "reply_to_top_id"]
 
         _run(conn, migration_027.upgrade)
-        assert _index_columns(conn) == ["chat_id", "reply_to_top_id", "date"]
+        assert _index_columns(conn) == ["chat_id", "account_id", "reply_to_top_id", "date"]
