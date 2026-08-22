@@ -75,6 +75,28 @@ class TestUpdateSyncStatusRealEngine:
         await real_adapter.update_sync_status(900002, 1234, 7, account_id=1)
         assert await real_adapter.get_last_message_id(900002, account_id=1) == 1234
 
+    async def test_cursor_never_moves_backwards(self, real_adapter):
+        """last_message_id is a high-water mark: the backup reads it as min_id for
+        the next incremental pass, so importing an older export — which calls
+        update_sync_status with that export's smaller max id — must not drag the
+        checkpoint down and re-fetch everything above it from Telegram."""
+        await _seed_chat(real_adapter, 900009)
+
+        await real_adapter.update_sync_status(900009, 500, 10, account_id=1)
+        await real_adapter.update_sync_status(900009, 400, 5, account_id=1)
+        assert await real_adapter.get_last_message_id(900009, account_id=1) == 500
+
+        # Forward motion still moves the mark, and the count kept accumulating.
+        await real_adapter.update_sync_status(900009, 600, 5, account_id=1)
+        assert await real_adapter.get_last_message_id(900009, account_id=1) == 600
+        async with real_adapter.db_manager.async_session_factory() as session:
+            row = (
+                (await session.execute(SyncStatus.__table__.select().where(SyncStatus.chat_id == 900009)))
+                .mappings()
+                .one()
+            )
+        assert row["message_count"] == 20
+
 
 class TestMessageUpsertConflictRealEngine:
     """insert_message's conflict branch on both dialects."""
