@@ -2055,3 +2055,59 @@ class TestEventWebhookConfig(unittest.TestCase):
         self.assertNotIn(self.URL, joined)
         self.assertNotIn("secret-token-path", joined)
         self.assertIn("EVENT_WEBHOOK enabled", joined)
+
+
+class TestNamedNumericEnvParsing(unittest.TestCase):
+    """Numeric env knobs fail BY NAME (the bool-vocabulary convention extended):
+    a bare int() crash read "invalid literal for int() with base 10" and left
+    the user guessing which of ~20 variables carried the typo. Blank means
+    default (compose's ${VAR:-} injects empty strings for unset variables)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **extra):
+        env = _get_base_env(self.temp_dir) | extra
+        with patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def test_placeholder_api_id_fails_with_an_actionable_named_error(self):
+        """.env.example ships your_api_id_here; the crash must name the
+        variable and point at my.telegram.org, not read like a Python bug."""
+        with self.assertRaises(ValueError) as ctx:
+            self._config(TELEGRAM_API_ID="your_api_id_here")
+        message = str(ctx.exception)
+        self.assertIn("TELEGRAM_API_ID", message)
+        self.assertIn("my.telegram.org", message)
+        self.assertNotIn("invalid literal", message)
+
+    def test_blank_numeric_value_falls_back_to_default(self):
+        config = self._config(MAX_MEDIA_SIZE_MB="", BATCH_SIZE="   ")
+        self.assertEqual(config.max_media_size_mb, 100)
+        self.assertEqual(config.batch_size, 100)
+
+    def test_garbage_int_names_the_variable(self):
+        with self.assertRaisesRegex(ValueError, "BATCH_SIZE"):
+            self._config(BATCH_SIZE="lots")
+
+    def test_garbage_float_names_the_variable(self):
+        with self.assertRaisesRegex(ValueError, "REACTION_DEBOUNCE_SECONDS"):
+            self._config(REACTION_DEBOUNCE_SECONDS="fast")
+
+    def test_nonfinite_float_names_the_variable(self):
+        with self.assertRaisesRegex(ValueError, "REACTION_DEBOUNCE_SECONDS"):
+            self._config(REACTION_DEBOUNCE_SECONDS="nan")
+
+    def test_valid_values_still_parse(self):
+        config = self._config(MAX_MEDIA_SIZE_MB="250", REACTION_DEBOUNCE_SECONDS="2.5")
+        self.assertEqual(config.max_media_size_mb, 250)
+        self.assertEqual(config.reaction_debounce_seconds, 2.5)
+
+    def test_database_timeout_keeps_the_never_abort_contract(self):
+        """#378 made src/db/base.py tolerate garbage here; the backup
+        container must not crash where the viewer shrugs."""
+        config = self._config(DATABASE_TIMEOUT="forever")
+        self.assertEqual(config.database_timeout, 60.0)
