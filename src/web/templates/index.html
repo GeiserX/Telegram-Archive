@@ -2366,6 +2366,11 @@
                 }
 
                 const sortedLoadedMessages = () => [...messages.value].sort(compareMessagesDesc)
+                // Bumped by upsertMessages when an existing row's media changes in
+                // place: sortedMessages never reads media, so that merge is invisible
+                // to it — this counter is what lets the GIF watcher see a video that
+                // appeared because its download finished after the row arrived.
+                const mediaRevision = ref(0)
                 // Pagination state: page/hasMore (refs, rendered) + oldestMessageCursor/loadFailureStreak
                 // (plain lets, never rendered). They move together: ONLY resetMessagePagination() may
                 // reset them; ONLY updateOldestMessageCursor() may advance the cursor (history pages,
@@ -2603,6 +2608,7 @@
                                 typeof oldValue === 'object' && typeof newValue === 'object' &&
                                 JSON.stringify(oldValue) === JSON.stringify(newValue)) continue
                             existingMsg[field] = newValue
+                            if (field === 'media') mediaRevision.value++
                         }
                     }
                     if (added.length > 0) {
@@ -4370,12 +4376,15 @@
                 }, { flush: 'post' })
 
                 // Observe newly rendered GIFs. Watches sortedMessages (the same
-                // source updateFloatingDate uses above): it recomputes on every
-                // list change, so this fires exactly as often as the old
-                // deep watcher on `messages` — without re-traversing every
-                // loaded message object, its media and its raw_data per new
-                // message just to re-collect reactive dependencies.
-                watch(sortedMessages, () => {
+                // source updateFloatingDate uses above) PLUS mediaRevision:
+                // list changes cover new rows, and the revision counter covers
+                // an existing row whose media was merged in place — invisible
+                // to sortedMessages, but it renders a fresh <video> all the
+                // same. Together they fire exactly as often as the old deep
+                // watcher on `messages` — without re-traversing every loaded
+                // message object, its media and its raw_data per new message
+                // just to re-collect reactive dependencies.
+                watch([sortedMessages, mediaRevision], () => {
                     nextTick(() => {
                         if (!gifObserver) setupGifObserver()
                         document.querySelectorAll('.gif-video').forEach(video => {

@@ -4327,10 +4327,57 @@ def test_gif_observer_watcher_is_shallow_and_ordered():
     eagerly — the same placement rule updateFloatingDate's watcher documents).
     """
     html = INDEX_HTML.read_text()
-    assert "deep: true" not in html, "a deep watcher crept back into the page"
+    assert not re.search(r"deep\s*:\s*true", html), "a deep watcher crept back into the page"
     gif_watch = re.search(
-        r"watch\(sortedMessages, \(\) => \{\s*nextTick\(\(\) => \{\s*if \(!gifObserver\) setupGifObserver\(\)",
+        r"watch\(\[sortedMessages, mediaRevision\], \(\) => \{\s*nextTick\(\(\) => \{\s*"
+        r"if \(!gifObserver\) setupGifObserver\(\)\s*"
+        r"document\.querySelectorAll\('\.gif-video'\)\.forEach\(video => \{\s*"
+        r"gifObserver\.observe\(video\)",
         html,
     )
-    assert gif_watch, "gif observer watcher must watch sortedMessages shallowly"
+    assert gif_watch, "gif observer watcher must watch [sortedMessages, mediaRevision] shallowly"
     assert html.index("const sortedMessages") < gif_watch.start(), "watcher declared before its source"
+    assert html.index("const mediaRevision") < gif_watch.start(), "watcher declared before its source"
+
+
+def test_in_place_media_merge_bumps_the_gif_watchers_revision():
+    """sortedMessages never reads media, so upsertMessages merging a finished
+    download into an EXISTING row is invisible to it — the revision counter is
+    the only thing that lets the GIF watcher observe that new <video>. It must
+    bump on a real media change and stay put for unrelated or identical
+    updates, or the watcher either misses GIFs or fires on every poll."""
+    html = INDEX_HTML.read_text()
+    prelude = """
+const messages = { value: [] }
+const mediaRevision = { value: 0 }
+const messageWindowIsContiguous = { value: true }
+const appendKeepsWindowContiguous = () => true
+const messageIdKey = (msg) => (msg && msg.id != null ? String(msg.id) : null)
+"""
+    epilogue = """
+(() => {
+    messages.value = [{ id: 1, text: 'clip', media: null, reactions: [] }]
+    const after = []
+
+    upsertMessages([{ id: 1, text: 'clip', media: { type: 'animation', url: '/m/1' }, reactions: [] }])
+    after.push(mediaRevision.value)   // media arrived -> 1
+
+    upsertMessages([{ id: 1, text: 'clip edited', media: { type: 'animation', url: '/m/1' }, reactions: [] }])
+    after.push(mediaRevision.value)   // structurally identical media -> still 1
+
+    upsertMessages([{ id: 2, text: 'new row', media: null, reactions: [] }])
+    after.push(mediaRevision.value)   // new row, no merge -> still 1
+
+    upsertMessages([{ id: 1, text: 'clip edited', media: { type: 'animation', url: '/m/1?v=2' }, reactions: [] }])
+    after.push(mediaRevision.value)   // media really changed -> 2
+
+    console.log(JSON.stringify(after))
+})();
+"""
+    out = _run_setup_program(
+        html,
+        ("const upsertMessages = (incomingMessages, { updateExisting = true } = {}) =>",),
+        prelude,
+        epilogue,
+    )
+    assert out == [1, 1, 1, 2], out
