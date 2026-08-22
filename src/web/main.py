@@ -36,7 +36,7 @@ from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import ChatScope, parse_entitlement_column
 from ..db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename
-from ..realtime import RealtimeListener
+from ..realtime import RealtimeListener, resolve_internal_push_secret
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -2819,7 +2819,7 @@ async def internal_push(request: Request):
 
     # Require a shared secret for non-loopback private/Docker networks. Loopback
     # stays usable for single-container/local setups.
-    push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+    push_secret = resolve_internal_push_secret(getattr(db.db_manager, "database_url", None) if db else None)
     if not is_loopback and not push_secret:
         logger.warning(f"Rejected /internal/push from {client_host}: INTERNAL_PUSH_SECRET is required")
         raise HTTPException(status_code=403, detail="INTERNAL_PUSH_SECRET required")

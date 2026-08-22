@@ -14,12 +14,64 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_database_directory(database_url: str | None) -> str | None:
+    """The directory holding the SQLite database file, or None for anything else."""
+    if not isinstance(database_url, str) or not database_url.startswith("sqlite"):
+        return None
+    _, sep, path = database_url.partition(":///")
+    if not sep or not path or path.startswith(":memory:"):
+        return None
+    return os.path.dirname(os.path.abspath(path)) or None
+
+
+def resolve_internal_push_secret(database_url: str | None) -> str | None:
+    """INTERNAL_PUSH_SECRET, or a secret auto-shared through the SQLite volume.
+
+    The stock two-container SQLite stack POSTs pushes across the Docker
+    network, and the viewer refuses secretless non-loopback pushes (co-tenant
+    spoof protection) — so with no secret configured, the advertised realtime
+    sync silently degraded to refresh-to-see. Both containers already share
+    the SQLite file's directory, which is exactly the trust boundary the
+    secret protects: a 0600 token file next to the database gives the same
+    protection with zero configuration. An explicit env value always wins;
+    any filesystem trouble returns None, which keeps the old locked-down
+    behavior.
+    """
+    explicit = os.getenv("INTERNAL_PUSH_SECRET")
+    if explicit:
+        return explicit
+    directory = _sqlite_database_directory(database_url)
+    if directory is None:
+        return None
+    secret_path = os.path.join(directory, ".push-secret")
+    try:
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # The other container won the creation race, or an earlier run made it.
+        try:
+            with open(secret_path) as handle:
+                value = handle.read().strip()
+            return value or None
+        except OSError:
+            return None
+    except OSError:
+        return None
+    try:
+        value = secrets.token_hex(32)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(value)
+        return value
+    except OSError:
+        return None
 
 
 def _json_serializer(obj):
@@ -95,6 +147,7 @@ class RealtimeNotifier:
         self._db_manager = db_manager
         self._is_postgresql = False
         self._http_endpoint: str | None = None
+        self._push_secret: str | None = None
         self._pg_connection = None
         self._initialized = False
 
@@ -116,6 +169,7 @@ class RealtimeNotifier:
             viewer_host = os.getenv("VIEWER_HOST", "localhost")
             viewer_port = os.getenv("VIEWER_PORT", "8080")
             self._http_endpoint = f"http://{viewer_host}:{viewer_port}/internal/push"
+            self._push_secret = resolve_internal_push_secret(getattr(self._db_manager, "database_url", None))
             logger.info(f"Realtime notifier: Using HTTP webhook ({self._http_endpoint})")
 
         self._initialized = True
@@ -182,7 +236,7 @@ class RealtimeNotifier:
             return
 
         headers: dict[str, str] = {}
-        push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+        push_secret = self._push_secret or os.getenv("INTERNAL_PUSH_SECRET")
         if push_secret:
             headers["Authorization"] = f"Bearer {push_secret}"
 

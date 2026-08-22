@@ -15,6 +15,7 @@ from src.realtime import (
     RealtimeListener,
     RealtimeNotifier,
     _json_serializer,
+    resolve_internal_push_secret,
 )
 
 
@@ -996,3 +997,56 @@ class TestNotifierAccountIdPayload:
             await notifier.notify(NotificationType.PIN, 789, {"msg_id": 5})
 
         assert mock_http.call_args[0][0]["account_id"] is None
+
+
+class TestResolveInternalPushSecret:
+    """The stock two-container SQLite stack must live-update with ZERO config:
+    the secret the viewer demands from non-loopback pushers is auto-shared
+    through the volume both containers already mount — the same trust boundary
+    the secret protects. Explicit env always wins; any trouble means None,
+    which keeps the old locked-down behavior."""
+
+    def _clear_env(self, monkeypatch):
+        monkeypatch.delenv("INTERNAL_PUSH_SECRET", raising=False)
+
+    def test_explicit_env_always_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("INTERNAL_PUSH_SECRET", "operator-chosen")
+        url = f"sqlite:///{tmp_path / 'db.sqlite'}"
+        assert resolve_internal_push_secret(url) == "operator-chosen"
+        assert not (tmp_path / ".push-secret").exists()
+
+    def test_sqlite_url_creates_file_and_both_sides_agree(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        sender_url = f"sqlite+aiosqlite:///{tmp_path / 'db.sqlite'}"
+        viewer_url = f"sqlite:///{tmp_path / 'db.sqlite'}"
+
+        sender_secret = resolve_internal_push_secret(sender_url)
+        viewer_secret = resolve_internal_push_secret(viewer_url)
+
+        assert sender_secret and sender_secret == viewer_secret
+        secret_file = tmp_path / ".push-secret"
+        assert secret_file.exists()
+        assert (secret_file.stat().st_mode & 0o777) == 0o600
+        assert secret_file.read_text().strip() == sender_secret
+
+    def test_existing_file_from_the_other_container_is_read(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        (tmp_path / ".push-secret").write_text("already-minted\n")
+        assert resolve_internal_push_secret(f"sqlite:///{tmp_path / 'db.sqlite'}") == "already-minted"
+
+    def test_non_sqlite_memory_and_mock_urls_resolve_to_none(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        assert resolve_internal_push_secret("postgresql+asyncpg://u:p@host/db") is None
+        assert resolve_internal_push_secret("sqlite+aiosqlite://") is None
+        assert resolve_internal_push_secret(None) is None
+        assert resolve_internal_push_secret(MagicMock()) is None
+
+    def test_unwritable_directory_keeps_the_old_locked_down_behavior(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            assert resolve_internal_push_secret(f"sqlite:///{locked / 'db.sqlite'}") is None
+        finally:
+            locked.chmod(0o700)
