@@ -8,7 +8,7 @@ import logging
 import os
 from urllib.parse import quote_plus
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -187,15 +187,27 @@ async def _migrate_table(source: DatabaseManager, target: DatabaseManager, model
 
         logger.info(f"  {table_name}: migrating {total_records} records...")
 
-        # Stream records in batches
-        offset = 0
-        while offset < total_records:
-            # Read batch from source
-            result = await src_session.execute(select(model).offset(offset).limit(batch_size))
+        # Stream records in primary-key keyset order. LIMIT/OFFSET over an
+        # unordered scan let a source that changed mid-copy (or a planner that
+        # varied its scan order) shift a later window and silently skip rows;
+        # an ordered cursor can never lose a row that existed when the copy
+        # started. Still run the copy with the backup container stopped: rows
+        # written behind the cursor after their batch was read are not re-read.
+        pk_columns = list(model.__mapper__.primary_key)
+        last_key = None
+        while True:
+            stmt = select(model).order_by(*pk_columns).limit(batch_size)
+            if last_key is not None:
+                if len(pk_columns) == 1:
+                    stmt = stmt.where(pk_columns[0] > last_key[0])
+                else:
+                    stmt = stmt.where(tuple_(*pk_columns) > last_key)
+            result = await src_session.execute(stmt)
             records = result.scalars().all()
 
             if not records:
                 break
+            last_key = tuple(getattr(records[-1], column.key) for column in pk_columns)
 
             # Write batch to target
             async with target.get_session() as tgt_session:
@@ -206,10 +218,11 @@ async def _migrate_table(source: DatabaseManager, target: DatabaseManager, model
                 await tgt_session.commit()
 
             total += len(records)
-            offset += batch_size
 
             if total % 10000 == 0:
                 logger.info(f"    {table_name}: {total}/{total_records} migrated")
+            if len(records) < batch_size:
+                break
 
     logger.info(f"  {table_name}: {total} records migrated")
     return total
