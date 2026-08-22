@@ -208,7 +208,7 @@ class Message(Base):
         # Index for reply lookups
         Index("idx_messages_reply_to", "chat_id", "reply_to_msg_id"),
         # v6.2.0: Index for topic message lookups in forum chats
-        Index("idx_messages_topic", "chat_id", "reply_to_top_id"),
+        Index("idx_messages_topic", "chat_id", "account_id", "reply_to_top_id", "date"),
         # PostgreSQL-only (#295-perf): the viewer's text search is
         # Message.text.ilike('%term%') - a leading wildcard, which a B-tree
         # can't serve at all, so every search was a full sequential scan

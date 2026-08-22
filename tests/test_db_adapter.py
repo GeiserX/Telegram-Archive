@@ -2319,20 +2319,23 @@ class TestGetForumTopics:
         topic.is_hidden = 0
         topic.date = datetime(2025, 1, 1)
 
-        row = MagicMock()
-        row.ForumTopic = topic
-        row.message_count = 42
-        row.last_message_date = datetime(2025, 6, 1)
-
-        mock_result = MagicMock()
-        mock_result.__iter__ = MagicMock(return_value=iter([row]))
-        mock_session.execute.return_value = mock_result
+        # Two queries since the covering-index rewrite: the raw aggregate
+        # (NULL topic rows fold into General here), then the topic rows.
+        agg_result = MagicMock()
+        agg_result.__iter__ = MagicMock(
+            return_value=iter([(None, 30, datetime(2025, 5, 1)), (1, 12, datetime(2025, 6, 1))])
+        )
+        topics_result = MagicMock()
+        topics_result.scalars.return_value = [topic]
+        mock_session.execute.side_effect = [agg_result, topics_result]
 
         result = await adapter.get_forum_topics(-1001234)
         assert len(result) == 1
         assert result[0]["id"] == 1
         assert result[0]["title"] == "General"
+        # 30 pre-forum NULL-topic messages + 12 explicit General messages
         assert result[0]["message_count"] == 42
+        assert result[0]["last_message_date"] == datetime(2025, 6, 1)
 
     @pytest.mark.asyncio
     async def test_returns_zero_message_count_for_empty_topic(self):
@@ -2352,17 +2355,15 @@ class TestGetForumTopics:
         topic.is_hidden = 0
         topic.date = None
 
-        row = MagicMock()
-        row.ForumTopic = topic
-        row.message_count = None
-        row.last_message_date = None
-
-        mock_result = MagicMock()
-        mock_result.__iter__ = MagicMock(return_value=iter([row]))
-        mock_session.execute.return_value = mock_result
+        agg_result = MagicMock()
+        agg_result.__iter__ = MagicMock(return_value=iter([]))
+        topics_result = MagicMock()
+        topics_result.scalars.return_value = [topic]
+        mock_session.execute.side_effect = [agg_result, topics_result]
 
         result = await adapter.get_forum_topics(-1001234)
         assert result[0]["message_count"] == 0
+        assert result[0]["last_message_date"] is None
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_no_topics(self):
