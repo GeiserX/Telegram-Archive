@@ -2457,9 +2457,36 @@ class TelegramBackup:
                 # Fetch current state from Telegram
                 remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
 
-                for msg_id, remote_msg in zip(batch_ids, remote_messages):
+                # Telethon buffers one entry per RETURNED message, and its own
+                # comment warns Telegram "may decide to not send" invalid ids at
+                # all on the non-channel path — one omission shifts every later
+                # position, and a positional zip would overwrite message A's
+                # text with message B's or hard-delete a live message. Trust
+                # positions only when the response provably lines up; otherwise
+                # key by id and treat unmatched ids as unknown — a destructive
+                # write never rides an ambiguous signal.
+                aligned = len(remote_messages) == len(batch_ids) and all(
+                    remote_msg is None or remote_msg.id == msg_id
+                    for msg_id, remote_msg in zip(batch_ids, remote_messages)
+                )
+                if aligned:
+                    pairs = list(zip(batch_ids, remote_messages))
+                else:
+                    remote_by_id = {m.id: m for m in remote_messages if m is not None}
+                    pairs = [(msg_id, remote_by_id.get(msg_id)) for msg_id in batch_ids]
+                    unmatched = len(batch_ids) - sum(1 for _, m in pairs if m is not None)
+                    logger.warning(
+                        f"  → Sync response misaligned for a batch ({unmatched} of {len(batch_ids)} ids "
+                        "unmatched) — treating the unmatched ids as unknown this run, no deletions for them"
+                    )
+
+                for msg_id, remote_msg in pairs:
                     # Check for deletion
                     if remote_msg is None:
+                        if not aligned:
+                            # Ambiguous: the id was omitted from a misaligned
+                            # response, not confirmed deleted. Retry next run.
+                            continue
                         if getattr(self.config, "deletion_mode", "hard") == "soft":
                             # mark_message_deleted defaults deleted_at to now(UTC); this path
                             # doesn't broadcast, so no need to pass an explicit timestamp.
