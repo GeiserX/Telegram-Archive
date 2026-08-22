@@ -4,6 +4,85 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.2.0] - 2026-08-22
+
+The largest maintenance release to date: one headline feature (the outbound event webhook, [#336](https://github.com/GeiserX/Telegram-Archive/issues/336)) on top of a systematic sweep of the whole codebase — capture, database, viewer, importers, CI and operations. Every change below shipped through its own reviewed PR.
+
+### Added
+
+- **Outbound event webhook — get pinged the instant a message is edited or deleted.** Opt-in via `EVENT_WEBHOOK_ENABLED`: the real-time listener fires an HTTP request the moment it commits an edit or deletion, with a fully templated body (`{placeholder}` / `{placeholder|filter}` substitution, auto-escaped for the declared Content-Type), per-chat filtering, custom method and headers — point it at ntfy, Gotify, Slack, Discord or anything you run. Deleted text is included in **both** `DELETION_MODE=soft` and `hard`: the row is snapshotted inside the deleting transaction, before destruction. Delivery is fire-and-forget with bounded retry (3 attempts, 5s timeout, no redirects, 100 in-flight cap); the URL is treated as a capability secret and never logged. Sweep-detected changes deliberately do not fire it, and startup warns about flag combinations under which a selected event can never fire. ([#336](https://github.com/GeiserX/Telegram-Archive/issues/336), [#388](https://github.com/GeiserX/Telegram-Archive/pull/388))
+- **Tap a #hashtag or $cashtag to see everything using it.** Hashtags and cashtags in archived messages are now links that run a scoped search. ([#321](https://github.com/GeiserX/Telegram-Archive/pull/321))
+- **Link previews are archived with the message.** The preview Telegram rendered (title, description, site name, image) is captured alongside the text, so a link that later dies keeps its preview in the archive. ([#323](https://github.com/GeiserX/Telegram-Archive/pull/323))
+- **A dead archiver no longer looks healthy.** The backup container exposes a real liveness signal tied to the scheduler actually ticking, instead of "the process exists". ([#327](https://github.com/GeiserX/Telegram-Archive/pull/327))
+- **Gap-fill reports history missing before the earliest archived message.** Leading holes — history that predates the first archived message — are detected and reported (never auto-fetched), and probe errors are counted honestly. ([#363](https://github.com/GeiserX/Telegram-Archive/pull/363))
+
+### Fixed
+
+**Capture correctness**
+
+- Quoted-reply excerpts are captured with the message instead of being dropped. ([#362](https://github.com/GeiserX/Telegram-Archive/pull/362))
+- A peerless deletion event can never tombstone a channel message by id collision again. ([#326](https://github.com/GeiserX/Telegram-Archive/pull/326))
+- Whitelist mode no longer wipes every other chat's `archived` flag with a fabricated `0`. ([#334](https://github.com/GeiserX/Telegram-Archive/pull/334))
+- The deletion/edit sync pairs Telegram's response by message id, never by list position, so a partial response can no longer mis-attribute edits. ([#373](https://github.com/GeiserX/Telegram-Archive/pull/373))
+- The incremental-backup cursor is monotonic — a stale sweep can no longer move it backwards and re-open a window that was already captured. ([#366](https://github.com/GeiserX/Telegram-Archive/pull/366))
+- A message that vanishes mid-download finally counts against the media retry cap instead of retrying forever. ([#360](https://github.com/GeiserX/Telegram-Archive/pull/360))
+- Gap-fill sees bot conversations. ([#351](https://github.com/GeiserX/Telegram-Archive/pull/351))
+- `MAX_MEDIA_SIZE_MB` caps full-resolution photos too, and `0` (or negative) means "no limit" instead of "skip every file". ([#354](https://github.com/GeiserX/Telegram-Archive/pull/354), [#361](https://github.com/GeiserX/Telegram-Archive/pull/361))
+- A failed chat-list refresh no longer silently stops all real-time capture. ([#339](https://github.com/GeiserX/Telegram-Archive/pull/339))
+- Imports stop rewriting captured chats, speak the system's chat-type vocabulary, and a partial export can no longer amputate older history. ([#355](https://github.com/GeiserX/Telegram-Archive/pull/355), [#335](https://github.com/GeiserX/Telegram-Archive/pull/335))
+- HTML imports no longer shift every message by the exporter's timezone, and offset-bearing datetimes everywhere are converted to UTC instead of relabelled. ([#364](https://github.com/GeiserX/Telegram-Archive/pull/364), [#365](https://github.com/GeiserX/Telegram-Archive/pull/365))
+
+**Database & migrations**
+
+- The SQLite→PostgreSQL migration can no longer silently lose rows mid-copy: the batched read is keyset-ordered, and the script says plainly that the backup container must be stopped during the copy. ([#368](https://github.com/GeiserX/Telegram-Archive/pull/368))
+- A failed media-sharding relocate no longer leaves archived media unopenable — relocation is transactional with a content-hash adoption guard and an orphan sweep at migration start. ([#371](https://github.com/GeiserX/Telegram-Archive/pull/371))
+- Deleting a chat purges its push subscriptions and serializes concurrent deletes (`FOR UPDATE`), and excluding a chat purges it no matter which folder it lives in. ([#357](https://github.com/GeiserX/Telegram-Archive/pull/357), [#356](https://github.com/GeiserX/Telegram-Archive/pull/356))
+- Media verification never destroys a file before its replacement exists, and verification streams the table instead of materialising it. ([#325](https://github.com/GeiserX/Telegram-Archive/pull/325), [#332](https://github.com/GeiserX/Telegram-Archive/pull/332))
+- The crash-loop guards in migrations 007–013 have regression tripwires, and `DB_TYPE` letter-case can no longer skip migrations. ([#347](https://github.com/GeiserX/Telegram-Archive/pull/347), [#346](https://github.com/GeiserX/Telegram-Archive/pull/346))
+
+**Viewer & web**
+
+- Clicking the playing audio track no longer shows someone else's conversation in a forum, and audio errors surface instead of failing silently. ([#367](https://github.com/GeiserX/Telegram-Archive/pull/367))
+- A restricted viewer can no longer see archive-wide totals when the stats cache is thin — stats fail closed. ([#369](https://github.com/GeiserX/Telegram-Archive/pull/369))
+- Share-token verification no longer freezes the viewer's event loop. ([#324](https://github.com/GeiserX/Telegram-Archive/pull/324))
+- All frontend assets are vendored — no CDN can ship script into an archive session — and the shipped debug page is gone, along with exception text in route logs. ([#342](https://github.com/GeiserX/Telegram-Archive/pull/342), [#322](https://github.com/GeiserX/Telegram-Archive/pull/322))
+- WebSocket connections and per-socket subscriptions are capped, and the realtime notifier rides the listener's own engine instead of a process-global. ([#341](https://github.com/GeiserX/Telegram-Archive/pull/341), [#358](https://github.com/GeiserX/Telegram-Archive/pull/358))
+- A broken media volume reports what it is instead of "Database temporarily unavailable". ([#353](https://github.com/GeiserX/Telegram-Archive/pull/353))
+- A GIF that finishes downloading mid-session starts playing without a reload. ([#359](https://github.com/GeiserX/Telegram-Archive/pull/359))
+
+**Operations, Docker & CI**
+
+- `docker stop` ends in a clean shutdown instead of SIGKILL, and container logs rotate instead of filling the disk. ([#328](https://github.com/GeiserX/Telegram-Archive/pull/328))
+- A late backup tick runs instead of being silently dropped. ([#331](https://github.com/GeiserX/Telegram-Archive/pull/331))
+- Every documented `.env` variable actually reaches the containers, and real-time pushes reach the viewer on the stock SQLite compose stack. ([#333](https://github.com/GeiserX/Telegram-Archive/pull/333), [#343](https://github.com/GeiserX/Telegram-Archive/pull/343))
+- The backup image stops shipping a 182 MB C toolchain, and the viewer image ships only what the viewer can import. ([#352](https://github.com/GeiserX/Telegram-Archive/pull/352), [#338](https://github.com/GeiserX/Telegram-Archive/pull/338))
+- CI publishes the multi-arch images it set up QEMU for, and a dispatch republish rebuilds the tagged commit instead of re-stamping a version onto main. ([#337](https://github.com/GeiserX/Telegram-Archive/pull/337), [#340](https://github.com/GeiserX/Telegram-Archive/pull/340))
+- The viewer's shutdown no longer hangs into SIGKILL on a dead database socket. ([#372](https://github.com/GeiserX/Telegram-Archive/pull/372))
+
+### Performance
+
+- Opening a big forum's topic list stops aggregating every message row: the widened covering index takes the scoped aggregate from 19.0 ms to 1.3 ms at 60k rows. ([#370](https://github.com/GeiserX/Telegram-Archive/pull/370))
+- A cold gallery grid decodes each missing thumbnail once, not once per concurrent request, and gallery pages stop sorting every media row in the chat. ([#348](https://github.com/GeiserX/Telegram-Archive/pull/348), [#349](https://github.com/GeiserX/Telegram-Archive/pull/349))
+- Video thumbnails warm at capture time instead of first view. ([#350](https://github.com/GeiserX/Telegram-Archive/pull/350))
+- Media hashing and thumbnailing leave the event loop; per-message reaction locks and sender re-upserts that were guaranteed no-ops are skipped. ([#329](https://github.com/GeiserX/Telegram-Archive/pull/329), [#330](https://github.com/GeiserX/Telegram-Archive/pull/330))
+- A new realtime message stops re-walking every loaded message object in the viewer. ([#359](https://github.com/GeiserX/Telegram-Archive/pull/359))
+
+### Test infrastructure
+
+- The suite's dark branches got lit: shared-store dedup matching, the viewer lifespan restart path, and real EXPLAIN-plan assertions for the new indexes. ([#344](https://github.com/GeiserX/Telegram-Archive/pull/344), [#345](https://github.com/GeiserX/Telegram-Archive/pull/345), [#312](https://github.com/GeiserX/Telegram-Archive/pull/312))
+
+### Fixed (review-cycle hardening, merged after the sweep)
+
+- The realtime viewer listener re-raises cancellation instead of swallowing it, and its teardown is bounded — a dead database socket can no longer hang viewer shutdown into SIGKILL. ([#372](https://github.com/GeiserX/Telegram-Archive/pull/372))
+- Chat-action handlers carry precise types, forward ids use marked form everywhere, and `VIEWER_TIMEZONE`/`STATS_CALCULATION_HOUR` validate at construction. ([#374](https://github.com/GeiserX/Telegram-Archive/pull/374), [#375](https://github.com/GeiserX/Telegram-Archive/pull/375), [#376](https://github.com/GeiserX/Telegram-Archive/pull/376))
+- A premium-flood answer (`FloodPremiumWaitError`) pauses the reaction re-sweep and the connect retry exactly like a plain flood, in every catch site including the fallback fetch. ([#377](https://github.com/GeiserX/Telegram-Archive/pull/377))
+- `DATABASE_TIMEOUT` finally reaches SQLite's `busy_timeout` — and `nan`/`inf`/sub-millisecond values can neither abort startup nor silently disable the wait. ([#378](https://github.com/GeiserX/Telegram-Archive/pull/378))
+- Dead capture code removed, and the mass-operation story now matches what actually runs; non-positive limiter settings fail loudly instead of silently disarming the mass-deletion guard. ([#379](https://github.com/GeiserX/Telegram-Archive/pull/379), [#380](https://github.com/GeiserX/Telegram-Archive/pull/380))
+- The stock two-container SQLite stack live-updates with zero config: the internal push secret is auto-shared through the volume both containers already mount, published atomically behind a private-file read contract. ([#381](https://github.com/GeiserX/Telegram-Archive/pull/381))
+- Push notifications reuse the sender-name the listener already resolved, and forwarded-source names are resolved once per source per run with FIFO eviction at the cache cap. ([#382](https://github.com/GeiserX/Telegram-Archive/pull/382), [#383](https://github.com/GeiserX/Telegram-Archive/pull/383))
+- The hygiene pre-commit hooks run in CI (tokenless, read-only job), so a fork PR can no longer bypass them. ([#384](https://github.com/GeiserX/Telegram-Archive/pull/384))
+- A media row whose file vanished before download still gets its retry row, parallel downloads pay the flood-limited auth export once per DC instead of once per file (and a cancelled build closes every sender), and gallery pages count messages — not media rows — against the page LIMIT. ([#385](https://github.com/GeiserX/Telegram-Archive/pull/385), [#386](https://github.com/GeiserX/Telegram-Archive/pull/386), [#387](https://github.com/GeiserX/Telegram-Archive/pull/387))
+
 ## [8.1.0] - 2026-08-19
 
 ### Added
