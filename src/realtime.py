@@ -14,6 +14,8 @@ import contextlib
 import json
 import logging
 import os
+import secrets
+import stat
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
@@ -24,6 +26,96 @@ logger = logging.getLogger(__name__)
 # Teardown bound for the LISTEN connection: close() on a dead TCP socket waits
 # for the server's ack until the OS timeout, and stop() awaits the listen task.
 _TEARDOWN_TIMEOUT_SECONDS = 5.0
+
+
+def _sqlite_database_directory(database_url: str | None) -> str | None:
+    """The directory holding the SQLite database file, or None for anything else."""
+    if not isinstance(database_url, str) or not database_url.startswith("sqlite"):
+        return None
+    _, sep, path = database_url.partition(":///")
+    if not sep or not path or path.startswith(":memory:"):
+        return None
+    return os.path.dirname(os.path.abspath(path)) or None
+
+
+def resolve_internal_push_secret(database_url: str | None) -> str | None:
+    """INTERNAL_PUSH_SECRET, or a secret auto-shared through the SQLite volume.
+
+    The stock two-container SQLite stack POSTs pushes across the Docker
+    network, and the viewer refuses secretless non-loopback pushes (co-tenant
+    spoof protection) — so with no secret configured, the advertised realtime
+    sync silently degraded to refresh-to-see. Both containers already share
+    the SQLite file's directory, which is exactly the trust boundary the
+    secret protects: a 0600 token file next to the database gives the same
+    protection with zero configuration. An explicit env value always wins;
+    any filesystem trouble returns None, which keeps the old locked-down
+    behavior.
+    """
+    explicit = os.getenv("INTERNAL_PUSH_SECRET")
+    if explicit:
+        return explicit
+    directory = _sqlite_database_directory(database_url)
+    if directory is None:
+        return None
+    secret_path = os.path.join(directory, ".push-secret")
+    value = _read_secret_file(secret_path)
+    if value is not None:
+        return value
+    # Mint and publish ATOMICALLY: write a private sibling, fsync, then link it
+    # into place. A create-then-write of the final path had a window in which
+    # the other container read an empty file, cached no secret, and sent
+    # unauthenticated pushes the viewer 403'd — both containers start together
+    # under compose, so that race was likely, not theoretical.
+    tmp_path = f"{secret_path}.{os.getpid()}.tmp"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        value = secrets.token_hex(32)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_path, secret_path)
+            return value
+        except FileExistsError:
+            # The other container published first — adopt its token.
+            return _read_secret_file(secret_path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+    except OSError:
+        return None
+
+
+def _read_secret_file(secret_path: str) -> str | None:
+    """Read the shared token, enforcing a private-regular-file contract.
+
+    Symlinks and non-regular files are refused (a planted link could exfiltrate
+    or spoof the bearer token). A permissive mode is healed to 0600 rather than
+    refused — the volume is the trust boundary, the chmod is hygiene, and
+    refusing service over it would silently kill realtime for the operator.
+    """
+    try:
+        fd = os.open(secret_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        # Missing file, or a symlink (ELOOP) — either way, no token from here.
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_mode & 0o077:
+            with contextlib.suppress(OSError):
+                os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "r") as handle:
+            fd = None  # fdopen owns it now
+            return handle.read().strip() or None
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _json_serializer(obj):
@@ -99,6 +191,7 @@ class RealtimeNotifier:
         self._db_manager = db_manager
         self._is_postgresql = False
         self._http_endpoint: str | None = None
+        self._push_secret: str | None = None
         self._pg_connection = None
         self._initialized = False
 
@@ -120,6 +213,10 @@ class RealtimeNotifier:
             viewer_host = os.getenv("VIEWER_HOST", "localhost")
             viewer_port = os.getenv("VIEWER_PORT", "8080")
             self._http_endpoint = f"http://{viewer_host}:{viewer_port}/internal/push"
+            # Managerless mode (viewer-side HTTP) still deserves the shared
+            # token when DATABASE_URL names the SQLite file directly.
+            database_url = getattr(self._db_manager, "database_url", None) or os.getenv("DATABASE_URL")
+            self._push_secret = resolve_internal_push_secret(database_url)
             logger.info(f"Realtime notifier: Using HTTP webhook ({self._http_endpoint})")
 
         self._initialized = True
@@ -186,7 +283,7 @@ class RealtimeNotifier:
             return
 
         headers: dict[str, str] = {}
-        push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+        push_secret = self._push_secret or os.getenv("INTERNAL_PUSH_SECRET")
         if push_secret:
             headers["Authorization"] = f"Bearer {push_secret}"
 

@@ -1384,6 +1384,39 @@ class TestInternalPushEdgeCases(_WebTestBase):
                 resp = await client.post("/internal/push", json={"type": "test"})
         self.assertEqual(resp.status_code, 403)
 
+    async def test_internal_push_accepts_the_volume_shared_secret(self):
+        """The stock SQLite stack: no env secret anywhere, both sides derive
+        the same token from the file next to the database — a Docker-network
+        push with that bearer is accepted, a wrong bearer still 403s."""
+        import tempfile
+
+        from src.realtime import resolve_internal_push_secret
+
+        mock_listener = MagicMock()
+        mock_listener.handle_http_push = AsyncMock()
+        web_main.realtime_listener = mock_listener
+        with tempfile.TemporaryDirectory() as tmp:
+            viewer_url = f"sqlite:///{tmp}/db.sqlite"
+            web_main.db.db_manager.database_url = viewer_url
+            sender_secret = None
+            with patch.dict(os.environ, {}, clear=True):
+                sender_secret = resolve_internal_push_secret(f"sqlite+aiosqlite:///{tmp}/db.sqlite")
+                transport = ASGITransport(app=web_main.app, client=("172.18.0.2", 12345))
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    ok = await client.post(
+                        "/internal/push",
+                        json={"type": "test"},
+                        headers={"Authorization": f"Bearer {sender_secret}"},
+                    )
+                    bad = await client.post(
+                        "/internal/push",
+                        json={"type": "test"},
+                        headers={"Authorization": "Bearer forged-by-cotenant"},
+                    )
+        self.assertIsNotNone(sender_secret)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(bad.status_code, 403)
+
 
 # ============================================================================
 # Notification settings edge cases
