@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -863,9 +864,12 @@ class Config:
             logger.warning(f"{message} - event webhook disabled")
             self.event_webhook_enabled = False
 
-        # LAN targets (ntfy, Gotify, Apprise) are plain http, so both schemes pass.
-        if not self.event_webhook_url.lower().startswith(("http://", "https://")):
-            _disable("EVENT_WEBHOOK_URL must start with http:// or https://")
+        # LAN targets (ntfy, Gotify, Apprise) are plain http, so both schemes
+        # pass — but a bare scheme ("https://") must not: parse and require a
+        # hostname, or the sender would fire doomed requests forever.
+        parsed = urllib.parse.urlparse(self.event_webhook_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            _disable("EVENT_WEBHOOK_URL must be an http:// or https:// URL with a hostname")
             return
         if self.event_webhook_method not in {"POST", "PUT"}:
             _disable("EVENT_WEBHOOK_METHOD must be POST or PUT")

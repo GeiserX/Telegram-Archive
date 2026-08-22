@@ -493,6 +493,9 @@ ENABLE_LISTENER: "true"          # the webhook fires from the listener
 LISTEN_DELETIONS: "true"         # required for message_deleted events (off by default!)
 EVENT_WEBHOOK_ENABLED: "true"
 EVENT_WEBHOOK_URL: "https://ntfy.sh"   # or your own service
+# ntfy's JSON endpoint needs a topic in the body — shape it with a template
+# (any service that accepts the default JSON body can skip this line):
+EVENT_WEBHOOK_BODY_TEMPLATE: '{"topic":"my-archive","title":"{event} in {chat_title}","message":"{text}"}'
 ```
 
 **How it works:** the webhook fires immediately after the listener commits the change to the archive — near-instant, edit and deletion events only. Deleted text is included in **both** `DELETION_MODE=soft` and `hard` (the content is snapshotted inside the deleting transaction, before it is destroyed).

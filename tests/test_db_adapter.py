@@ -886,6 +886,10 @@ class TestMessageOperations:
         assert mock_session.execute.await_count == 5
         mock_session.commit.assert_awaited_once()
         assert snapshot is None
+        # The snapshot SELECT locks the row (FOR UPDATE) so concurrent
+        # deletions serialize instead of both seeing the pre-deletion state.
+        snapshot_stmt = mock_session.execute.await_args_list[0].args[0]
+        assert snapshot_stmt._for_update_arg is not None
 
     @pytest.mark.asyncio
     async def test_get_chat_id_for_message_returns_id(self):

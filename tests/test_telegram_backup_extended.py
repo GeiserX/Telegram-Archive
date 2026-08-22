@@ -1151,6 +1151,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         self.backup.db.get_messages_sync_data = AsyncMock(
             return_value={1: datetime(2024, 1, 1), 2: datetime(2024, 1, 1), 3: datetime(2024, 1, 1)}
         )
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         # id 2 omitted from the response entirely; 3 arrives edited.
         response = [self._remote(1), self._remote(3, edit_date=datetime(2024, 6, 15), text="three edited")]
         self.backup.client.get_messages = AsyncMock(return_value=response)

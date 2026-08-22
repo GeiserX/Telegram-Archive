@@ -1264,11 +1264,17 @@ class DatabaseAdapter:
         delete), so deleted text is available in BOTH deletion modes. Returns
         None when the message was never archived. media_type comes from the
         media table because Message lost its media columns in v6.0.0.
+
+        The row is locked (FOR UPDATE; a no-op on SQLite, whose writers
+        serialize anyway) so concurrent deletions of the same message
+        serialize against this snapshot: the loser re-reads the committed
+        state (tombstoned, or gone) instead of also seeing is_deleted=0 and
+        firing a duplicate message_deleted webhook.
         """
         result = await session.execute(
-            select(Message).where(
-                and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id)
-            )
+            select(Message)
+            .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
+            .with_for_update()
         )
         message = result.scalar_one_or_none()
         if message is None:
@@ -1276,6 +1282,7 @@ class DatabaseAdapter:
         media_result = await session.execute(
             select(Media.type)
             .where(and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id))
+            .order_by(Media.id)
             .limit(1)
         )
         media_row = media_result.first()

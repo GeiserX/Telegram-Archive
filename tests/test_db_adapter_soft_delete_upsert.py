@@ -888,3 +888,23 @@ async def test_delete_message_returns_snapshot_including_media_type(sqlite_adapt
     assert missing is None
     async with sqlite_adapter.db_manager.async_session_factory() as session:
         assert await session.get(Message, (1, 300, 61)) is None
+
+
+@pytest.mark.asyncio
+async def test_deletion_snapshot_media_type_is_deterministic_across_rows(sqlite_adapter):
+    """A message with several media rows must report the same media_type on
+    every delivery — the snapshot orders by Media.id before LIMIT 1."""
+    await sqlite_adapter.insert_message(
+        {"id": 62, "chat_id": 300, "date": datetime(2026, 6, 26, 18, 0), "text": "album head"}, account_id=1
+    )
+    await sqlite_adapter.insert_media(
+        {"id": "300_62_video", "message_id": 62, "chat_id": 300, "type": "video"}, account_id=1
+    )
+    await sqlite_adapter.insert_media(
+        {"id": "300_62_photo", "message_id": 62, "chat_id": 300, "type": "photo"}, account_id=1
+    )
+
+    snapshot = await sqlite_adapter.mark_message_deleted(300, 62, datetime(2026, 6, 26, 18, 5), account_id=1)
+
+    # Lexicographic Media.id order: "300_62_photo" < "300_62_video".
+    assert snapshot["media_type"] == "photo"

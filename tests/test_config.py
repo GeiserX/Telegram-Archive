@@ -1975,6 +1975,15 @@ class TestEventWebhookConfig(unittest.TestCase):
         self.assertIn("EVENT_WEBHOOK_URL", joined)
         self.assertNotIn("ftp://files.example.test", joined)
 
+    def test_bare_scheme_without_hostname_disables(self):
+        """ "https://" satisfies a prefix check but names no host — the sender
+        would fire doomed requests forever. Hostname is required."""
+        for url in ("https://", "http://", "https:///path"):
+            with self.assertLogs("src.config", level="WARNING") as logs:
+                config = self._config(EVENT_WEBHOOK_URL=url)
+            self.assertFalse(config.event_webhook_enabled)
+            self.assertTrue(any("EVENT_WEBHOOK_URL" in line for line in logs.output))
+
     def test_bad_method_disables(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
             config = self._config(EVENT_WEBHOOK_METHOD="PATCH")
