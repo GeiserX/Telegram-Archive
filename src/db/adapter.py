@@ -2685,6 +2685,14 @@ class DatabaseAdapter:
         (this stage) that set is empty; phase 5 owns the layout decision.
         """
         async with self.db_manager.async_session_factory() as session:
+            # Serialize concurrent deletions of the same chat: on PostgreSQL two
+            # READ COMMITTED transactions deleting different accounts' copies
+            # could each still see the other's not-yet-committed Chat row in the
+            # final-copy probe below and BOTH skip the push-subscription purge.
+            # Locking every account's row first makes the second deleter wait,
+            # so its probe sees the truth. SQLite ignores FOR UPDATE (it has a
+            # single writer, which serializes the same race by construction).
+            await session.execute(select(Chat.id).where(Chat.id == chat_id).with_for_update())
             # Delete previous versions
             await session.execute(
                 delete(MessageVersion).where(
