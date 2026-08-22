@@ -3004,31 +3004,22 @@ class DatabaseAdapter:
         """
         async with self.db_manager.async_session_factory() as session:
             # Build query with joins - v6.0.0: join on composite key
+            # No Media join here: a message can carry SEVERAL media rows (a
+            # JSON import writes import_{chat}_{msg} beside the live
+            # {chat}_{msg}_{type} row), and LIMIT applied to the multiplied
+            # join meant a page of 50 could deliver far fewer distinct
+            # messages — measured 50 rows / 30 messages with 10 three-media
+            # heads. Media is batch-attached below from the page's id set,
+            # the same shape versions and reactions already use. The User
+            # join stays: users.id is unique, so it cannot multiply.
             stmt = (
                 select(
                     Message,
                     User.first_name,
                     User.last_name,
                     User.username,
-                    Media.id.label("media_id"),
-                    Media.type.label("media_type"),
-                    Media.file_path.label("media_file_path"),
-                    Media.file_name.label("media_file_name"),
-                    Media.file_size.label("media_file_size"),
-                    Media.mime_type.label("media_mime_type"),
-                    Media.width.label("media_width"),
-                    Media.height.label("media_height"),
-                    Media.duration.label("media_duration"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
-                .outerjoin(
-                    Media,
-                    and_(
-                        Media.account_id == Message.account_id,
-                        Media.message_id == Message.id,
-                        Media.chat_id == Message.chat_id,
-                    ),
-                )
                 .where(Message.chat_id == chat_id)
             )
 
@@ -3082,27 +3073,16 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             messages = []
 
+            # account_id is carried beside each row (not in the API dict — the
+            # response stays ref-addressed) so the media attach below can match
+            # per (account, message) even in unscoped mode.
+            row_accounts: list[int] = []
             for row in result:
                 msg = self._message_to_dict(row.Message)
                 msg["first_name"] = row.first_name
                 msg["last_name"] = row.last_name
                 msg["username"] = row.username
-
-                # v6.0.0: Media as nested object
-                if row.media_type:
-                    msg["media"] = {
-                        "id": row.media_id,
-                        "type": row.media_type,
-                        "file_path": row.media_file_path,
-                        "file_name": row.media_file_name,
-                        "file_size": row.media_file_size,
-                        "mime_type": row.media_mime_type,
-                        "width": row.media_width,
-                        "height": row.media_height,
-                        "duration": row.media_duration,
-                    }
-                else:
-                    msg["media"] = None
+                msg["media"] = None
 
                 # Parse raw_data JSON
                 if msg.get("raw_data"):
@@ -3112,14 +3092,53 @@ class DatabaseAdapter:
                         logger.debug("Malformed raw_data JSON for a message row; substituting empty dict")
                         msg["raw_data"] = {}
 
+                row_accounts.append(row.Message.account_id)
                 messages.append(msg)
 
             if after_id is not None:
                 # Selected oldest-first for the LIMIT; restore the newest-first contract.
                 messages.reverse()
+                row_accounts.reverse()
 
             version_counts = {msg["id"]: 0 for msg in messages}
             page_message_ids = [msg["id"] for msg in messages]
+
+            # v6.0.0 media as a nested object — batched for the page. When a
+            # message carries several media rows, ONE is attached
+            # deterministically: a downloaded row beats a pending one, then
+            # the lowest media id wins (the old join order was arbitrary).
+            if page_message_ids:
+                media_stmt = (
+                    select(Media)
+                    .where(
+                        and_(
+                            Media.chat_id == chat_id,
+                            Media.message_id.in_(page_message_ids),
+                        )
+                    )
+                    .order_by(Media.message_id, Media.downloaded.desc(), Media.id)
+                )
+                if account_id is not None:
+                    media_stmt = media_stmt.where(Media.account_id == account_id)
+                media_result = await session.execute(media_stmt)
+                media_by_key: dict[tuple[int, int], dict[str, Any]] = {}
+                for media_row in media_result.scalars():
+                    key = (media_row.account_id, media_row.message_id)
+                    if key in media_by_key:
+                        continue
+                    media_by_key[key] = {
+                        "id": media_row.id,
+                        "type": media_row.type,
+                        "file_path": media_row.file_path,
+                        "file_name": media_row.file_name,
+                        "file_size": media_row.file_size,
+                        "mime_type": media_row.mime_type,
+                        "width": media_row.width,
+                        "height": media_row.height,
+                        "duration": media_row.duration,
+                    }
+                for account, msg in zip(row_accounts, messages, strict=True):
+                    msg["media"] = media_by_key.get((account, msg["id"]))
             if page_message_ids:
                 count_stmt = (
                     select(MessageVersion.message_id, func.count(MessageVersion.id).label("version_count"))

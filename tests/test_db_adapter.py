@@ -2070,11 +2070,33 @@ class TestGetMessagesPaginated:
         adapter = DatabaseAdapter(db_manager)
 
         row = self._make_message_row(msg_id=20, media_type="photo")
+        row.Message.account_id = 1
         mock_result = MagicMock()
         mock_result.__iter__ = MagicMock(return_value=iter([row]))
-        mock_session.execute.return_value = mock_result
 
-        adapter.get_reactions = AsyncMock(return_value=[])
+        # Media is batch-attached from the page's id set (second query) since
+        # the join-multiplication fix — one deterministic row per message.
+        media_row = MagicMock()
+        media_row.account_id = 1
+        media_row.message_id = 20
+        media_row.id = "100_20_photo"
+        media_row.type = "photo"
+        media_row.file_path = "/path/photo.jpg"
+        media_row.file_name = "photo.jpg"
+        media_row.file_size = 1000
+        media_row.mime_type = "image/jpeg"
+        media_row.width = 100
+        media_row.height = 100
+        media_row.duration = None
+        media_result = MagicMock()
+        media_result.scalars.return_value = [media_row]
+
+        versions_result = MagicMock()
+        versions_result.__iter__ = MagicMock(return_value=iter([]))
+        reactions_result = MagicMock()
+        reactions_result.scalars.return_value = []
+
+        mock_session.execute.side_effect = [mock_result, media_result, versions_result, reactions_result]
 
         result = await adapter.get_messages_paginated(chat_id=100)
         assert result[0]["media"] is not None
@@ -2236,6 +2258,11 @@ class TestGetMessagesPaginated:
         mock_result = MagicMock()
         mock_result.__iter__ = MagicMock(return_value=iter([row]))
 
+        # Second execute since the join-multiplication fix: the batched media
+        # attach for the page (none here).
+        media_result = MagicMock()
+        media_result.scalars.return_value = []
+
         version_count_result = MagicMock()
         version_count_result.__iter__ = MagicMock(return_value=iter([]))
 
@@ -2250,7 +2277,13 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
-        mock_session.execute.side_effect = [mock_result, version_count_result, reply_result, reactions_result]
+        mock_session.execute.side_effect = [
+            mock_result,
+            media_result,
+            version_count_result,
+            reply_result,
+            reactions_result,
+        ]
 
         result = await adapter.get_messages_paginated(chat_id=100)
         assert result[0]["reply_to_text"] == "Original message text"[:100]
