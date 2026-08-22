@@ -1171,14 +1171,19 @@ class TestDeleteChatOperations:
     async def test_delete_chat_issues_eight_deletes(self):
         """delete_chat_and_related_data deletes versions, media, reactions, messages, sync, topics, folder members, and chat."""
         db_manager, mock_session = _make_mock_db_manager()
+        # State the probe result explicitly instead of leaning on AsyncMock's
+        # truthy default: the chat is still present in another account.
+        mock_session.execute.return_value.first.return_value = ("other-account-copy",)
         adapter = DatabaseAdapter(db_manager)
 
         await adapter.delete_chat_and_related_data(100, account_id=1)
 
-        # 8 deletes: versions, media, reactions, messages, sync_status,
-        # forum_topics, chat_folder_members (explicit - SQLite runs with
-        # foreign_keys off, so their CASCADEs never fire), chat
-        assert mock_session.execute.await_count == 8
+        # 1 cross-account row lock + 8 deletes: versions, media, reactions,
+        # messages, sync_status, forum_topics, chat_folder_members (explicit -
+        # SQLite runs with foreign_keys off, so their CASCADEs never fire),
+        # chat — plus the push-subscription orphan probe (still present in
+        # another account, so no purge delete fires here).
+        assert mock_session.execute.await_count == 10
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -3582,3 +3587,117 @@ class TestCalculateAndStoreStatisticsStorage:
             assert stats["total_size_mb"] == 4.0
         finally:
             await db_manager.close()
+
+
+class TestDeleteChatPushSubscriptionPurge:
+    """Chat-scoped push subscriptions die with the LAST account's copy of the
+    chat — never earlier (ids collide across accounts and the table carries no
+    account column), and global subscriptions (chat_id NULL) never die here."""
+
+    async def _real_adapter(self):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from src.db.base import DatabaseManager
+        from src.db.models import Base, Chat, PushSubscription
+
+        engine = create_async_engine(
+            "sqlite+aiosqlite://",
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        db_manager = DatabaseManager.__new__(DatabaseManager)
+        db_manager.engine = engine
+        db_manager.database_url = "sqlite+aiosqlite://"
+        db_manager._is_sqlite = True
+        db_manager.async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with db_manager.async_session_factory() as session:
+            session.add(Chat(account_id=1, id=-100200, type="channel", title="A1 copy"))
+            session.add(Chat(account_id=2, id=-100200, type="channel", title="A2 copy"))
+            session.add(Chat(account_id=1, id=-100300, type="channel", title="Other chat"))
+            session.add(PushSubscription(endpoint="https://push.example/one", p256dh="k", auth="a", chat_id=-100200))
+            session.add(PushSubscription(endpoint="https://push.example/other", p256dh="k", auth="a", chat_id=-100300))
+            session.add(PushSubscription(endpoint="https://push.example/global", p256dh="k", auth="a", chat_id=None))
+            await session.commit()
+
+        return DatabaseAdapter(db_manager), db_manager
+
+    async def _endpoints(self, db_manager):
+        from sqlalchemy import select as sa_select
+
+        from src.db.models import PushSubscription
+
+        async with db_manager.async_session_factory() as session:
+            rows = await session.execute(sa_select(PushSubscription.endpoint))
+            return {row[0] for row in rows}
+
+    @pytest.mark.asyncio
+    async def test_subscription_survives_while_another_account_has_the_chat(self):
+        adapter, db_manager = await self._real_adapter()
+        try:
+            await adapter.delete_chat_and_related_data(-100200, account_id=1)
+
+            assert await self._endpoints(db_manager) == {
+                "https://push.example/one",
+                "https://push.example/other",
+                "https://push.example/global",
+            }
+        finally:
+            await db_manager.engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_subscription_dies_with_the_last_copy(self):
+        adapter, db_manager = await self._real_adapter()
+        try:
+            await adapter.delete_chat_and_related_data(-100200, account_id=1)
+            await adapter.delete_chat_and_related_data(-100200, account_id=2)
+
+            assert await self._endpoints(db_manager) == {
+                "https://push.example/other",
+                "https://push.example/global",
+            }
+        finally:
+            await db_manager.engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_deletion_locks_the_chat_rows_before_deleting(self):
+        """The cross-account row lock must be the FIRST statement of the
+        transaction — taken after any delete it no longer serializes two
+        concurrent deleters, and on PostgreSQL both could skip the purge."""
+        from sqlalchemy import event
+
+        adapter, db_manager = await self._real_adapter()
+        try:
+            statements = []
+
+            def _capture(conn, cursor, statement, parameters, context, executemany):
+                statements.append(statement)
+
+            event.listen(db_manager.engine.sync_engine, "before_cursor_execute", _capture)
+            try:
+                await adapter.delete_chat_and_related_data(-100200, account_id=1)
+            finally:
+                event.remove(db_manager.engine.sync_engine, "before_cursor_execute", _capture)
+
+            first_delete = next(i for i, s in enumerate(statements) if s.lstrip().upper().startswith("DELETE"))
+            lock_selects = [
+                i for i, s in enumerate(statements) if s.lstrip().upper().startswith("SELECT") and "chats" in s.lower()
+            ]
+            assert lock_selects and lock_selects[0] < first_delete, statements
+
+            # The same statement compiled for PostgreSQL carries the actual
+            # row lock; SQLite strips FOR UPDATE because its single writer
+            # already serializes the race.
+            from sqlalchemy import select as sa_select
+            from sqlalchemy.dialects import postgresql
+
+            from src.db.models import Chat
+
+            locked = sa_select(Chat.id).where(Chat.id == -100200).with_for_update()
+            assert "FOR UPDATE" in str(locked.compile(dialect=postgresql.dialect()))
+        finally:
+            await db_manager.engine.dispose()
