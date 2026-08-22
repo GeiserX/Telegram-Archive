@@ -1358,17 +1358,6 @@ class TelegramBackup:
                 if priority_count > 0:
                     logger.info(f"📌 {priority_count} priority chat(s) will be processed first")
 
-            # Detect whether we've already completed at least one full backup run
-            # (i.e. some chats have a non-zero last_message_id recorded)
-            has_synced_before = False
-            for dialog in filtered_dialogs:
-                if (
-                    await self.db.get_last_message_id(self._get_marked_id(dialog.entity), account_id=self.account_id)
-                    > 0
-                ):
-                    has_synced_before = True
-                    break
-
             # Whitelist mode resolves entities without any dialog listing
             # (#95: the full fetch can hang), so archived-folder membership
             # comes from one batched GetPeerDialogs pass over exactly the

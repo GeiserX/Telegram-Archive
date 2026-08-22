@@ -289,16 +289,6 @@ def _message_version_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _newer_edit_date(current: datetime | None, incoming: datetime | None) -> bool:
-    current = _strip_tz(current)
-    incoming = _strip_tz(incoming)
-    if incoming is None:
-        return False
-    if current is None:
-        return True
-    return incoming > current
-
-
 def retry_on_locked(
     max_retries: int = 5, initial_delay: float = 0.1, max_delay: float = 2.0, backoff_factor: float = 2.0
 ):
