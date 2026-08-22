@@ -305,6 +305,7 @@ class TestFillGaps:
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002])
         db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001, -1002))
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -323,6 +324,7 @@ class TestFillGaps:
     async def test_fill_gaps_with_specific_chat_id(self):
         """When chat_id is provided, only that chat should be scanned."""
         db = AsyncMock()
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -346,6 +348,7 @@ class TestFillGaps:
         This tests the critical `if chat_id is not None` fix (vs `if chat_id`).
         """
         db = AsyncMock()
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -385,6 +388,7 @@ class TestFillGaps:
             return accessible_entity
 
         client.get_entity = AsyncMock(side_effect=fake_get_entity)
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         backup = _make_backup_instance(db_mock=db, client_mock=client)
@@ -401,6 +405,7 @@ class TestFillGaps:
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001])
         db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(
             return_value=[
                 (50, 100, 50),
@@ -435,6 +440,7 @@ class TestFillGaps:
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001, -1002])
         db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001, -1002))
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(
             side_effect=[
                 [],  # chat -1001: no gaps
@@ -467,6 +473,7 @@ class TestFillGaps:
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=[-1001])
         db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
 
         client = AsyncMock()
@@ -707,6 +714,7 @@ class TestGapFillBotClassification:
         db = AsyncMock()
         db.get_chats_with_messages = AsyncMock(return_value=with_messages)
         db.get_chats_for_folder_resolution = AsyncMock(return_value=resolution_rows)
+        db.get_earliest_message_id = AsyncMock(return_value=1)
         db.detect_message_gaps = AsyncMock(return_value=[])
         client = AsyncMock()
         entity = MagicMock()
@@ -759,3 +767,87 @@ class TestGapFillBotClassification:
 
         assert result["chats_scanned"] == 0
         client.get_entity.assert_not_awaited()
+
+
+class TestLeadingHoleReporting:
+    """History missing BEFORE the earliest archived id is invisible to LAG();
+    it is reported in the summary and never auto-fetched (hidden-history
+    groups make it unfetchable; partial imports can make it enormous)."""
+
+    async def test_earliest_message_id_real_sql(self):
+        adapter, engine = await _create_in_memory_adapter()
+        try:
+            await _insert_chat(adapter, chat_id=-1001)
+            await _insert_messages(adapter, chat_id=-1001, msg_ids=[500, 501, 502])
+            assert await adapter.get_earliest_message_id(-1001, account_id=1) == 500
+            assert await adapter.get_earliest_message_id(-9999, account_id=1) == 0
+        finally:
+            await engine.dispose()
+
+    async def test_leading_hole_is_reported_not_fetched(self):
+        db = AsyncMock()
+        db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(return_value=500)
+        db.detect_message_gaps = AsyncMock(return_value=[])
+
+        client = AsyncMock()
+        entity = MagicMock()
+        entity.title = "Head-missing chat"
+        client.get_entity = AsyncMock(return_value=entity)
+
+        backup = _make_backup_instance(db_mock=db, client_mock=client)
+        backup._fill_gap_range = AsyncMock()
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_with_leading_holes"] == 1
+        assert result["chats_with_gaps"] == 0
+        assert result["details"][0]["leading_hole_before_id"] == 500
+        assert result["details"][0]["leading_missing"] == 499
+        backup._fill_gap_range.assert_not_awaited()
+
+    async def test_probe_failure_counts_as_error_not_silent_skip(self):
+        """A failed probe means leading-hole reporting was skipped for a
+        scanned chat — the summary must say so, or the final log claims a
+        completeness it does not have (review finding)."""
+        db = AsyncMock()
+        db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(side_effect=RuntimeError("db hiccup"))
+        db.detect_message_gaps = AsyncMock(return_value=[])
+
+        client = AsyncMock()
+        entity = MagicMock()
+        entity.title = "Probe-failed chat"
+        client.get_entity = AsyncMock(return_value=entity)
+
+        backup = _make_backup_instance(db_mock=db, client_mock=client)
+        backup._fill_gap_range = AsyncMock()
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["errors"] == 1
+        assert result["chats_with_leading_holes"] == 0
+        backup._fill_gap_range.assert_not_awaited()
+
+    async def test_small_lead_below_threshold_is_not_a_hole(self):
+        """Telegram ids start at 1 but service messages can eat the first few:
+        a lead smaller than the gap threshold is normal, not a hole."""
+        db = AsyncMock()
+        db.get_chats_with_messages = AsyncMock(return_value=[-1001])
+        db.get_chats_for_folder_resolution = AsyncMock(return_value=_resolution_rows(-1001))
+        db.get_earliest_message_id = AsyncMock(return_value=20)
+        db.detect_message_gaps = AsyncMock(return_value=[])
+
+        client = AsyncMock()
+        entity = MagicMock()
+        entity.title = "Nearly-complete chat"
+        client.get_entity = AsyncMock(return_value=entity)
+
+        backup = _make_backup_instance(db_mock=db, client_mock=client)
+
+        result = await backup._fill_gaps(chat_id=None)
+
+        assert result["chats_with_leading_holes"] == 0
+        assert result["details"] == []

@@ -289,16 +289,6 @@ def _message_version_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _newer_edit_date(current: datetime | None, incoming: datetime | None) -> bool:
-    current = _strip_tz(current)
-    incoming = _strip_tz(incoming)
-    if incoming is None:
-        return False
-    if current is None:
-        return True
-    return incoming > current
-
-
 def retry_on_locked(
     max_retries: int = 5, initial_delay: float = 0.1, max_delay: float = 2.0, backoff_factor: float = 2.0
 ):
@@ -2461,6 +2451,20 @@ class DatabaseAdapter:
             row = result.scalar_one_or_none()
             return row if row else 0
 
+    async def get_earliest_message_id(self, chat_id: int, *, account_id: int) -> int:
+        """Smallest archived message id for one account's copy of a chat (0 when empty).
+
+        One indexed MIN() probe — the leading-hole check in gap-fill calls it
+        once per scanned chat.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(func.min(Message.id)).where(
+                and_(Message.account_id == account_id, Message.chat_id == chat_id)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return row if row else 0
+
     @retry_on_locked()
     async def update_sync_status(
         self, chat_id: int, last_message_id: int, message_count: int, *, account_id: int
@@ -2481,7 +2485,10 @@ class DatabaseAdapter:
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["account_id", "chat_id"],
                     set_={
-                        "last_message_id": stmt.excluded.last_message_id,
+                        # High-water mark: the backup reads this as min_id for the
+                        # next incremental pass, so it must never move backwards
+                        # (an older export import supplies a smaller max id).
+                        "last_message_id": func.max(SyncStatus.last_message_id, stmt.excluded.last_message_id),
                         "last_sync_date": stmt.excluded.last_sync_date,
                         "message_count": SyncStatus.message_count + stmt.excluded.message_count,
                     },
@@ -2491,7 +2498,8 @@ class DatabaseAdapter:
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["account_id", "chat_id"],
                     set_={
-                        "last_message_id": stmt.excluded.last_message_id,
+                        # Same high-water clamp; PostgreSQL spells two-arg max GREATEST.
+                        "last_message_id": func.greatest(SyncStatus.last_message_id, stmt.excluded.last_message_id),
                         "last_sync_date": stmt.excluded.last_sync_date,
                         "message_count": SyncStatus.message_count + stmt.excluded.message_count,
                     },
@@ -2675,6 +2683,14 @@ class DatabaseAdapter:
         (this stage) that set is empty; phase 5 owns the layout decision.
         """
         async with self.db_manager.async_session_factory() as session:
+            # Serialize concurrent deletions of the same chat: on PostgreSQL two
+            # READ COMMITTED transactions deleting different accounts' copies
+            # could each still see the other's not-yet-committed Chat row in the
+            # final-copy probe below and BOTH skip the push-subscription purge.
+            # Locking every account's row first makes the second deleter wait,
+            # so its probe sees the truth. SQLite ignores FOR UPDATE (it has a
+            # single writer, which serializes the same race by construction).
+            await session.execute(select(Chat.id).where(Chat.id == chat_id).with_for_update())
             # Delete previous versions
             await session.execute(
                 delete(MessageVersion).where(
@@ -2708,6 +2724,15 @@ class DatabaseAdapter:
             )
             # Delete chat
             await session.execute(delete(Chat).where(and_(Chat.account_id == account_id, Chat.id == chat_id)))
+
+            # Push subscriptions are viewer-side and carry no account column,
+            # so a chat-scoped subscription is orphaned only when NO account
+            # still has this chat. Checked after the Chat delete above, inside
+            # the same transaction; global subscriptions (chat_id NULL) are
+            # untouched by construction.
+            remaining = await session.execute(select(Chat.id).where(Chat.id == chat_id).limit(1))
+            if remaining.first() is None:
+                await session.execute(delete(PushSubscription).where(PushSubscription.chat_id == chat_id))
 
             await session.commit()
             logger.info("Deleted chat and all related data from database")
@@ -3653,38 +3678,40 @@ class DatabaseAdapter:
         None account_id = unscoped until phase 4.
         """
         async with self.db_manager.async_session_factory() as session:
-            # Subquery for message counts and last message date per topic.
-            # Messages with reply_to_top_id=NULL are treated as General topic (id=1),
-            # since pre-v6.2.0 messages and pre-forum messages lack topic assignment
-            # and Telegram's client displays them under General.
-            effective_topic_id = func.coalesce(Message.reply_to_top_id, 1).label("effective_topic_id")
+            # Aggregate on the RAW topic column so idx_messages_topic
+            # (chat_id, reply_to_top_id, date) can drive a covering scan —
+            # grouping on coalesce(reply_to_top_id, 1) forced a temp b-tree
+            # and dragged every message row (raw_data included) off the heap:
+            # 17.4ms -> 2.4ms at 60k rows, and O(index slice) memory. The
+            # NULL bucket (pre-v6.2.0 and pre-forum messages, which Telegram
+            # shows under General) is folded into topic 1 in Python below.
             msg_where = [Message.chat_id == chat_id]
             if account_id is not None:
                 msg_where.append(Message.account_id == account_id)
-            msg_subq = (
+            agg_stmt = (
                 select(
-                    effective_topic_id,
-                    func.count(Message.id).label("message_count"),
+                    Message.reply_to_top_id,
+                    func.count().label("message_count"),
                     func.max(Message.date).label("last_message_date"),
                 )
                 .where(and_(*msg_where))
-                .group_by(effective_topic_id)
-                .subquery()
+                .group_by(Message.reply_to_top_id)
             )
+            message_counts: dict[int, int] = {}
+            last_dates: dict[int, Any] = {}
+            for topic_id, message_count, last_date in await session.execute(agg_stmt):
+                key = 1 if topic_id is None else topic_id
+                message_counts[key] = message_counts.get(key, 0) + message_count
+                if last_date is not None and (key not in last_dates or last_date > last_dates[key]):
+                    last_dates[key] = last_date
 
-            stmt = (
-                select(ForumTopic, msg_subq.c.message_count, msg_subq.c.last_message_date)
-                .outerjoin(msg_subq, ForumTopic.id == msg_subq.c.effective_topic_id)
-                .where(ForumTopic.chat_id == chat_id)
-                .order_by(ForumTopic.is_pinned.desc(), msg_subq.c.last_message_date.desc().nullslast())
-            )
+            topic_stmt = select(ForumTopic).where(ForumTopic.chat_id == chat_id)
             if account_id is not None:
-                stmt = stmt.where(ForumTopic.account_id == account_id)
+                topic_stmt = topic_stmt.where(ForumTopic.account_id == account_id)
 
-            result = await session.execute(stmt)
+            result = await session.execute(topic_stmt)
             topics = []
-            for row in result:
-                topic = row.ForumTopic
+            for topic in result.scalars():
                 topics.append(
                     {
                         "id": topic.id,
@@ -3697,10 +3724,20 @@ class DatabaseAdapter:
                         "is_pinned": topic.is_pinned,
                         "is_hidden": topic.is_hidden,
                         "date": topic.date,
-                        "message_count": row.message_count or 0,
-                        "last_message_date": row.last_message_date,
+                        "message_count": message_counts.get(topic.id, 0),
+                        "last_message_date": last_dates.get(topic.id),
                     }
                 )
+            # Same order the SQL used to produce: pinned first, then newest
+            # last-message first with never-posted topics at the end.
+            topics.sort(
+                key=lambda entry: (
+                    bool(entry["is_pinned"]),
+                    entry["last_message_date"] is not None,
+                    entry["last_message_date"] or datetime.min,
+                ),
+                reverse=True,
+            )
             return topics
 
     # ========== Chat Folder Operations (v6.2.0) ==========

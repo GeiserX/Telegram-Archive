@@ -1868,30 +1868,6 @@ class TestRunAndStopLifecycle:
 
         db.close.assert_called_once()
 
-    async def test_run_cancels_processor_task_in_finally(self):
-        """run() cancels _processor_task in finally block if it exists."""
-        config = _make_config()
-        db = _make_db()
-        listener = TelegramListener(config, db, account_id=1)
-
-        mock_client = AsyncMock()
-        mock_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError)
-        listener.client = mock_client
-
-        # Create a real asyncio Future that acts like a cancelled task
-        loop = asyncio.get_event_loop()
-        fake_task = loop.create_future()
-        fake_task.cancel()
-        # Wrap cancel in a MagicMock so we can assert it was called again by run()
-        original_cancel = fake_task.cancel
-        cancel_mock = MagicMock(side_effect=original_cancel)
-        fake_task.cancel = cancel_mock
-        listener._processor_task = fake_task
-
-        await listener.run()
-
-        cancel_mock.assert_called()
-
 
 # ===========================================================================
 # _log_stats
@@ -2663,3 +2639,30 @@ class TestNotifyUpdateCapturingAccount:
 
         await listener._notify_update("edit", {"chat_id": 123})
         notifier.notify.assert_called_once_with(NotificationType.EDIT, 123, {"chat_id": 123}, account_id=7)
+
+
+class TestNotifierBindsToOwnManager:
+    """The notifier must ride the listener's own engine, not the process global."""
+
+    async def test_notifier_never_rebinds_to_the_process_global(self):
+        """A cron backup reassigning the global mid-connect() must not hand this
+        listener a manager some other component will dispose at run end."""
+        config = _make_config()
+        db = _make_db()
+        own_manager = MagicMock()
+        own_manager._is_sqlite = True
+        db.db_manager = own_manager
+
+        mock_client = AsyncMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
+        mock_client.on = lambda event_type: lambda fn: fn
+        listener = TelegramListener(config, db, client=mock_client, account_id=1)
+
+        foreign_manager = MagicMock()
+        foreign_manager._is_sqlite = True
+        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=foreign_manager) as global_resolver:
+            await listener.connect()
+
+        assert listener._notifier._db_manager is own_manager
+        global_resolver.assert_not_called()

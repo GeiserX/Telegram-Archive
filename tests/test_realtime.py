@@ -10,6 +10,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from src.realtime import (
     NotificationType,
     RealtimeListener,
@@ -956,8 +958,10 @@ class TestListenPostgres:
         mock_conn.remove_listener.assert_awaited_once()
         mock_conn.close.assert_awaited_once()
 
-    async def test_listen_postgres_handles_cancelled_error(self):
-        """_listen_postgres breaks on CancelledError (lines 238-239)."""
+    async def test_listen_postgres_propagates_cancelled_error(self):
+        """CancelledError must escape, never turn into a normal exit — a task
+        that swallows it reads as cleanly finished to stop() and to any future
+        asyncio.timeout/TaskGroup wrapper (see TestListenPostgresShutdownDiscipline)."""
         mock_db = MagicMock()
         mock_db._is_sqlite = False
         mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
@@ -969,7 +973,7 @@ class TestListenPostgres:
         mock_asyncpg = MagicMock()
         mock_asyncpg.connect = AsyncMock(side_effect=asyncio.CancelledError)
 
-        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}), pytest.raises(asyncio.CancelledError):
             await listener._listen_postgres()
 
 
@@ -997,6 +1001,82 @@ class TestNotifierAccountIdPayload:
             await notifier.notify(NotificationType.PIN, 789, {"msg_id": 5})
 
         assert mock_http.call_args[0][0]["account_id"] is None
+
+
+class TestListenPostgresShutdownDiscipline:
+    """stop() must terminate promptly and honestly even on a wedged connection.
+
+    The old loop caught CancelledError and ``break``-ed — the task finished
+    NORMALLY instead of cancelled — and its finally awaited remove_listener()
+    and close() unbounded, so a dead TCP socket hung viewer shutdown past its
+    grace period into SIGKILL.
+    """
+
+    def _listener(self):
+        mock_db = MagicMock()
+        mock_db._is_sqlite = False
+        mock_db.database_url = "postgresql+asyncpg://user:pass@localhost/db"
+        listener = RealtimeListener(db_manager=mock_db, callback=AsyncMock())
+        listener._is_postgresql = True
+        listener._running = True
+        return listener
+
+    async def test_cancellation_is_reraised_not_swallowed(self):
+        listener = self._listener()
+        mock_conn = AsyncMock()
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        with patch.dict("sys.modules", {"asyncpg": mock_asyncpg}):
+            task = asyncio.create_task(listener._listen_postgres())
+            # Let it connect and enter the keepalive sleep.
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if mock_conn.add_listener.await_count:
+                    break
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert task.cancelled(), "the listen task must end CANCELLED, not as a normal exit"
+        mock_conn.close.assert_awaited_once()
+
+    async def test_stop_completes_when_close_hangs(self):
+        listener = self._listener()
+
+        async def hang(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        mock_conn = AsyncMock()
+        mock_conn.remove_listener = AsyncMock(side_effect=hang)
+        mock_conn.close = AsyncMock(side_effect=hang)
+        mock_asyncpg = MagicMock()
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+
+        with (
+            patch.dict("sys.modules", {"asyncpg": mock_asyncpg}),
+            patch("src.realtime._TEARDOWN_TIMEOUT_SECONDS", 0.05),
+        ):
+            listener._task = asyncio.create_task(listener._listen_postgres())
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if mock_conn.add_listener.await_count:
+                    break
+            # A wedged socket must not hang shutdown: 2s is the tripwire, the
+            # bounded teardown finishes in ~0.1s. asyncio.wait — NOT wait_for —
+            # because wait_for cancels stop() on timeout, stop()'s own
+            # CancelledError guard swallows that cancel, and wait_for then
+            # returns "success": a tripwire that cannot fire.
+            stop_task = asyncio.ensure_future(listener.stop())
+            done, pending = await asyncio.wait([stop_task], timeout=2)
+            assert stop_task in done, "stop() hung on the wedged connection"
+            # Retrieve stop()'s outcome and pin the teardown contract: both
+            # calls must have been attempted (bounded), not skipped outright.
+            await stop_task
+            mock_conn.remove_listener.assert_awaited_once()
+            mock_conn.close.assert_awaited_once()
+            for task in pending:
+                task.cancel()
 
 
 class TestResolveInternalPushSecret:

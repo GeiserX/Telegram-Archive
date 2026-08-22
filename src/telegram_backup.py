@@ -995,6 +995,24 @@ class TelegramBackup:
             await self.client.disconnect()
             logger.info("Disconnected from Telegram")
 
+    def _is_explicitly_excluded(self, chat_id: int, entity) -> bool:
+        """True when the user put this chat in an exclude list (not merely filtered out).
+
+        THE single copy of the predicate: the regular and archived dialog
+        passes must agree, or exclusion means "purge" in one Telegram folder
+        and "keep forever" in the other.
+        """
+        is_bot = isinstance(entity, User) and entity.bot
+        is_user = isinstance(entity, User) and not entity.bot
+        is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
+        is_channel = isinstance(entity, Channel) and not entity.megagroup
+        return (
+            chat_id in self.config.global_exclude_ids
+            or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
+            or (is_group and chat_id in self.config.groups_exclude_ids)
+            or (is_channel and chat_id in self.config.channels_exclude_ids)
+        )
+
     async def backup_all(self):
         """
         Perform backup of all configured chats.
@@ -1263,15 +1281,7 @@ class TelegramBackup:
                     is_group = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
                     is_channel = isinstance(entity, Channel) and not entity.megagroup
 
-                    # Check if chat is explicitly in an exclude list (not just filtered out)
-                    is_explicitly_excluded = (
-                        chat_id in self.config.global_exclude_ids
-                        or ((is_user or is_bot) and chat_id in self.config.private_exclude_ids)
-                        or (is_group and chat_id in self.config.groups_exclude_ids)
-                        or (is_channel and chat_id in self.config.channels_exclude_ids)
-                    )
-
-                    if is_explicitly_excluded:
+                    if self._is_explicitly_excluded(chat_id, entity):
                         # Chat is explicitly excluded - mark for deletion
                         explicitly_excluded_chat_ids.add(chat_id)
                     elif self.config.should_backup_chat(chat_id, is_user, is_group, is_channel, is_bot):
@@ -1281,6 +1291,19 @@ class TelegramBackup:
                         # Adopted after a group→supergroup migration (#228): in
                         # scope even though it is not in any user include list.
                         filtered_dialogs.append(dialog)
+
+                # The SAME exclusion must purge a chat wherever it lives:
+                # this set was built from the regular dialog list only, so a
+                # chat the user had archived in Telegram was skipped by the
+                # archived loop below but never deleted — exclusion silently
+                # meant "keep everything" for exactly those chats, and the
+                # storage the user tried to reclaim never was.
+                for dialog in archived_dialogs:
+                    chat_id = self._get_marked_id(dialog.entity)
+                    if chat_id not in explicitly_excluded_chat_ids and self._is_explicitly_excluded(
+                        chat_id, dialog.entity
+                    ):
+                        explicitly_excluded_chat_ids.add(chat_id)
 
                 # Fetch explicitly included chats that weren't in dialogs
                 # This handles cases where chats don't appear in the dialog list
@@ -1357,17 +1380,6 @@ class TelegramBackup:
                 priority_count = sum(1 for d in filtered_dialogs if self._get_marked_id(d.entity) in priority_ids)
                 if priority_count > 0:
                     logger.info(f"📌 {priority_count} priority chat(s) will be processed first")
-
-            # Detect whether we've already completed at least one full backup run
-            # (i.e. some chats have a non-zero last_message_id recorded)
-            has_synced_before = False
-            for dialog in filtered_dialogs:
-                if (
-                    await self.db.get_last_message_id(self._get_marked_id(dialog.entity), account_id=self.account_id)
-                    > 0
-                ):
-                    has_synced_before = True
-                    break
 
             # Whitelist mode resolves entities without any dialog listing
             # (#95: the full fetch can hang), so archived-folder membership
@@ -1831,10 +1843,18 @@ class TelegramBackup:
                     msg = msg_map.get(msg_id)
 
                     if not msg:
+                        # The message is gone on Telegram — the one provably
+                        # permanent failure. Count it, or this row re-requests
+                        # the id on every run forever and never converges on
+                        # MEDIA_MAX_DOWNLOAD_ATTEMPTS (#212's cap).
+                        await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                         skipped += 1
                         continue
 
                     if not msg.media:
+                        # Still exists but no longer carries media: equally
+                        # permanent for this pending row.
+                        await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                         skipped += 1
                         continue
 
@@ -2273,6 +2293,7 @@ class TelegramBackup:
         summary = {
             "chats_scanned": 0,
             "chats_with_gaps": 0,
+            "chats_with_leading_holes": 0,
             "total_gaps": 0,
             "total_recovered": 0,
             "errors": 0,
@@ -2328,40 +2349,70 @@ class TelegramBackup:
                 summary["errors"] += 1
                 continue
 
-            if not gaps:
+            # A hole BEFORE the earliest archived id is structurally invisible
+            # to detect_message_gaps: LAG() has no predecessor row for the
+            # first id, so the leading range never appears. Report it — never
+            # auto-fetch it: hidden-history groups make the range unfetchable
+            # (auto-fill would hammer it every run), and a partial import can
+            # make it enormous. The summary carries the numbers; the operator
+            # decides what a missing head is worth.
+            leading_missing = 0
+            earliest = 0
+            try:
+                earliest = await self.db.get_earliest_message_id(cid, account_id=self.account_id)
+                if isinstance(earliest, int) and earliest > 1 and (earliest - 1) > threshold:
+                    leading_missing = earliest - 1
+                    summary["chats_with_leading_holes"] += 1
+            except Exception as e:
+                # A failed probe means leading-hole reporting was SKIPPED for a
+                # scanned chat — that is an error the summary must carry, or the
+                # final log claims completeness it does not have.
+                summary["errors"] += 1
+                logger.warning(f"Gap-fill: could not probe the leading range: {type(e).__name__}")
+
+            if not gaps and not leading_missing:
                 continue
 
-            summary["chats_with_gaps"] += 1
             chat_recovered = 0
+            if gaps:
+                summary["chats_with_gaps"] += 1
 
-            logger.info(f"Gap-fill: chat has {len(gaps)} gap(s)")
+                logger.info(f"Gap-fill: chat has {len(gaps)} gap(s)")
 
-            for gap_start, gap_end, gap_size in gaps:
-                logger.info(f"  → Filling gap (size {gap_size})")
-                try:
-                    recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
-                    chat_recovered += recovered
-                    logger.info(f"    Recovered {recovered} messages")
-                except Exception as e:
-                    logger.error(f"    Error filling gap (size {gap_size}): {type(e).__name__}")
-                    summary["errors"] += 1
+                for gap_start, gap_end, gap_size in gaps:
+                    logger.info(f"  → Filling gap (size {gap_size})")
+                    try:
+                        recovered = await self._fill_gap_range(entity, cid, gap_start, gap_end)
+                        chat_recovered += recovered
+                        logger.info(f"    Recovered {recovered} messages")
+                    except Exception as e:
+                        logger.error(f"    Error filling gap (size {gap_size}): {type(e).__name__}")
+                        summary["errors"] += 1
 
             summary["total_gaps"] += len(gaps)
             summary["total_recovered"] += chat_recovered
-            summary["details"].append(
-                {
-                    "chat_id": cid,
-                    "chat_name": chat_name,
-                    "gaps": len(gaps),
-                    "recovered": chat_recovered,
-                }
-            )
+            detail = {
+                "chat_id": cid,
+                "chat_name": chat_name,
+                "gaps": len(gaps),
+                "recovered": chat_recovered,
+            }
+            if leading_missing:
+                detail["leading_hole_before_id"] = earliest
+                detail["leading_missing"] = leading_missing
+            summary["details"].append(detail)
 
         status = "complete" if summary["errors"] == 0 else "complete with errors"
         logger.info(
             f"Gap-fill {status}: {summary['chats_scanned']} chats scanned, "
             f"{summary['total_gaps']} gaps found, {summary['total_recovered']} messages recovered"
             + (f", {summary['errors']} error(s)" if summary["errors"] else "")
+            + (
+                f"; {summary['chats_with_leading_holes']} chat(s) have history missing before "
+                "their earliest archived message (reported only, never auto-fetched)"
+                if summary["chats_with_leading_holes"]
+                else ""
+            )
         )
 
         return summary
@@ -2395,9 +2446,36 @@ class TelegramBackup:
                 # Fetch current state from Telegram
                 remote_messages = await call_with_flood_retry(self.client.get_messages, entity, ids=batch_ids)
 
-                for msg_id, remote_msg in zip(batch_ids, remote_messages):
+                # Telethon buffers one entry per RETURNED message, and its own
+                # comment warns Telegram "may decide to not send" invalid ids at
+                # all on the non-channel path — one omission shifts every later
+                # position, and a positional zip would overwrite message A's
+                # text with message B's or hard-delete a live message. Trust
+                # positions only when the response provably lines up; otherwise
+                # key by id and treat unmatched ids as unknown — a destructive
+                # write never rides an ambiguous signal.
+                aligned = len(remote_messages) == len(batch_ids) and all(
+                    remote_msg is None or remote_msg.id == msg_id
+                    for msg_id, remote_msg in zip(batch_ids, remote_messages)
+                )
+                if aligned:
+                    pairs = list(zip(batch_ids, remote_messages))
+                else:
+                    remote_by_id = {m.id: m for m in remote_messages if m is not None}
+                    pairs = [(msg_id, remote_by_id.get(msg_id)) for msg_id in batch_ids]
+                    unmatched = len(batch_ids) - sum(1 for _, m in pairs if m is not None)
+                    logger.warning(
+                        f"  → Sync response misaligned for a batch ({unmatched} of {len(batch_ids)} ids "
+                        "unmatched) — treating the unmatched ids as unknown this run, no deletions for them"
+                    )
+
+                for msg_id, remote_msg in pairs:
                     # Check for deletion
                     if remote_msg is None:
+                        if not aligned:
+                            # Ambiguous: the id was omitted from a misaligned
+                            # response, not confirmed deleted. Retry next run.
+                            continue
                         if getattr(self.config, "deletion_mode", "hard") == "soft":
                             # mark_message_deleted defaults deleted_at to now(UTC); this path
                             # doesn't broadcast, so no need to pass an explicit timestamp.
@@ -2679,7 +2757,7 @@ class TelegramBackup:
             try:
                 result = await self.client(GetMessagesReactionsRequest(peer=entity, id=chunk))
                 updates = getattr(result, "updates", []) or []
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "getMessagesReactions")
                 return
             except Exception as e:
@@ -2719,7 +2797,7 @@ class TelegramBackup:
             await self._resweep_pace()
             try:
                 msgs = await self.client.get_messages(entity, ids=chunk)
-            except FloodWaitError as e:
+            except (FloodWaitError, FloodPremiumWaitError) as e:
                 self._register_resweep_flood(e.seconds, chat_id, skip_n + i, "get_messages")
                 return
             except Exception as e:
@@ -2798,15 +2876,15 @@ class TelegramBackup:
 
         peer = message.fwd_from.from_id
 
-        # Handle different Peer types
-        if hasattr(peer, "user_id"):
-            return peer.user_id
-        if hasattr(peer, "channel_id"):
-            return peer.channel_id
-        if hasattr(peer, "chat_id"):
-            return peer.chat_id
-
-        return None
+        # Store the MARKED id (user_id, -chat_id, -100<channel_id>) — the
+        # convention every other persisted id in this project follows and the
+        # id the user can actually look up. Returning the raw channel/chat id
+        # dropped it into the user-id numeric space, indistinguishable from a
+        # user forward and matching nothing the user knows.
+        try:
+            return get_peer_id(peer)
+        except TypeError:
+            return None
 
     def _text_with_entities_to_string(self, text_obj) -> str:
         """
@@ -2995,13 +3073,17 @@ class TelegramBackup:
         if hasattr(message, "post_author") and message.post_author:
             message_data["raw_data"]["post_author"] = message.post_author
 
-        # Get reply text if this is a reply
+        # Quote-reply excerpt. MessageReplyHeader has NO ``message`` attribute
+        # (the old hasattr guard could never fire, so reply_to_text was always
+        # None from the sweep): its text field is ``quote_text``, set exactly
+        # when the sender quoted part of the target. That excerpt is what the
+        # official clients render and it cannot be reconstructed at read time
+        # — the viewer's backfill can only fetch the target's FULL text.
         if message.reply_to_msg_id and message.reply_to:
-            reply_msg = message.reply_to
-            if hasattr(reply_msg, "message"):
-                # Truncate to first 100 chars like Telegram does
-                reply_text = (reply_msg.message or "")[:100]
-                message_data["reply_to_text"] = reply_text
+            quote_text = getattr(message.reply_to, "quote_text", None)
+            if quote_text:
+                # Truncate to first 100 chars like Telegram's own preview
+                message_data["reply_to_text"] = quote_text[:100]
 
         # Handle media
         if message.media:
