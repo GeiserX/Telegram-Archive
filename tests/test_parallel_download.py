@@ -855,3 +855,126 @@ class TestFetchMediaBytes(_PatchHelpers, unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSenderReuseAndConcurrency(_PatchHelpers, _TmpDirMixin, unittest.IsolatedAsyncioTestCase):
+    """Sender setup must not scale with the number of files.
+
+    exportAuthorization is flood-limited and its FloodWait lands in the
+    caller's single retry budget — paying it once per FILE (the old shape)
+    actively spent the budget meant for the transfer. The negotiated key is
+    now cached per DC for the downloader's lifetime, and sibling connects run
+    concurrently (one RTT, not n)."""
+
+    def _patch_foreign_sender(self, client: FakeClient) -> None:
+        def _connect_sender_stub(_self: ParallelDownloader, dc_id: int, auth_key: Any) -> Any:
+            async def _inner() -> FakeSender:
+                s = client.make_sender()
+                s.dc_id = dc_id
+                s.connected = True
+                return s
+
+            return _inner()
+
+        self._patch_object(ParallelDownloader, "_connect_sender", _connect_sender_stub)
+
+    async def test_foreign_dc_exports_auth_once_across_files(self) -> None:
+        blob = os.urandom(524288 * 4)
+        client = ForeignDCClient(blob, home_dc=2)
+        self._patch_object(utils, "get_input_location", lambda m: (4, object()))
+        self._patch_foreign_sender(client)
+
+        dl = ParallelDownloader(client, connections=3, part_size=524288)
+        await dl.download_media(_make_message(len(blob)), str(self.tmp / "one.bin"))
+        await dl.download_media(_make_message(len(blob)), str(self.tmp / "two.bin"))
+
+        self.assertEqual(_read(str(self.tmp / "two.bin")), blob)
+        self.assertEqual(len(client.export_calls), 1, "the second file must reuse the negotiated key")
+
+    async def test_stale_cached_key_re_exports_and_recovers(self) -> None:
+        blob = os.urandom(524288 * 2)
+        client = ForeignDCClient(blob, home_dc=2)
+        self._patch_object(utils, "get_input_location", lambda m: (4, object()))
+
+        stale = object()
+
+        def _connect_sender_stub(_self: ParallelDownloader, dc_id: int, auth_key: Any) -> Any:
+            async def _inner() -> FakeSender:
+                if auth_key is stale:
+                    raise ConnectionError("key no longer accepted")
+                s = client.make_sender()
+                s.dc_id = dc_id
+                s.connected = True
+                return s
+
+            return _inner()
+
+        self._patch_object(ParallelDownloader, "_connect_sender", _connect_sender_stub)
+
+        dl = ParallelDownloader(client, connections=2, part_size=524288)
+        dl._dc_auth_keys[4] = stale
+
+        await dl.download_media(_make_message(len(blob)), str(self.tmp / "healed.bin"))
+
+        self.assertEqual(_read(str(self.tmp / "healed.bin")), blob)
+        self.assertEqual(len(client.export_calls), 1, "a stale key falls back to one fresh export")
+        self.assertNotIn(stale, dl._dc_auth_keys.values())
+
+    async def test_sibling_connects_run_concurrently(self) -> None:
+        """Two sibling connects must overlap: each waits for the other to have
+        STARTED before completing — sequential builds would deadlock here (the
+        1s guard turns that into a failure instead of a hang)."""
+        blob = os.urandom(524288 * 2)
+        client = FakeClient(blob)
+        self._patch_object(utils, "get_input_location", lambda m: (client.session.dc_id, object()))
+
+        started = asyncio.Event()
+        both_started = asyncio.Event()
+        starts = {"n": 0}
+
+        def _connect_sender_stub(_self: ParallelDownloader, dc_id: int, auth_key: Any) -> Any:
+            async def _inner() -> FakeSender:
+                starts["n"] += 1
+                if starts["n"] >= 2:
+                    both_started.set()
+                started.set()
+                await asyncio.wait_for(both_started.wait(), timeout=1)
+                s = client.make_sender()
+                s.dc_id = dc_id
+                s.connected = True
+                return s
+
+            return _inner()
+
+        self._patch_object(ParallelDownloader, "_connect_sender", _connect_sender_stub)
+
+        dl = ParallelDownloader(client, connections=2, part_size=524288)
+        await dl.download_media(_make_message(len(blob)), str(self.tmp / "concurrent.bin"))
+        self.assertEqual(_read(str(self.tmp / "concurrent.bin")), blob)
+
+    async def test_partial_build_failure_closes_the_connected_siblings(self) -> None:
+        blob = os.urandom(524288 * 2)
+        client = FakeClient(blob)
+        self._patch_object(utils, "get_input_location", lambda m: (client.session.dc_id, object()))
+
+        calls = {"n": 0}
+
+        def _connect_sender_stub(_self: ParallelDownloader, dc_id: int, auth_key: Any) -> Any:
+            async def _inner() -> FakeSender:
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise ConnectionError("second connect refused")
+                s = client.make_sender()
+                s.dc_id = dc_id
+                s.connected = True
+                return s
+
+            return _inner()
+
+        self._patch_object(ParallelDownloader, "_connect_sender", _connect_sender_stub)
+
+        dl = ParallelDownloader(client, connections=2, part_size=524288)
+        with self.assertRaises(ParallelDownloadUnavailable):
+            await dl.download_media(_make_message(len(blob)), str(self.tmp / "fail.bin"))
+
+        self.assertTrue(all(s.disconnected for s in client.created_senders), "connected sibling leaked")

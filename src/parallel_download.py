@@ -150,6 +150,10 @@ class ParallelDownloader:
         # metadata. A ceiling caps how many chunks (and how large a
         # pre-allocation) one transfer can request before we fall back.
         self._max_file_size = int(max_file_size) if max_file_size and max_file_size > 0 else None
+        # Negotiated auth key per foreign DC, kept for the downloader's
+        # lifetime: exportAuthorization is flood-limited and paying it once
+        # per FILE was the dominant spend of the caller's flood budget.
+        self._dc_auth_keys: dict = {}
 
     async def download_media(self, message, file) -> str:
         """Download ``message``'s media to path ``file`` and return ``file``.
@@ -282,28 +286,39 @@ class ParallelDownloader:
         senders: list[MTProtoSender] = []
         try:
             if dc_id is None or dc_id == home_dc:
-                target_dc = home_dc
-                auth_key = client.session.auth_key
-                for _ in range(n):
-                    senders.append(await self._connect_sender(target_dc, auth_key))
-            else:
-                first = await self._connect_sender(dc_id, None)
-                senders.append(first)
-                # Hold the borrow lock while mutating the shared init request,
-                # mirroring Telethon's own _create_exported_sender. Restore the
-                # original query afterwards so concurrent users of _init_request
-                # never observe our transient ImportAuthorizationRequest.
-                async with client._borrow_sender_lock:
-                    saved_query = client._init_request.query
-                    try:
-                        auth = await client(ExportAuthorizationRequest(dc_id))
-                        client._init_request.query = ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes)
-                        await first.send(InvokeWithLayerRequest(LAYER, client._init_request))
-                    finally:
-                        client._init_request.query = saved_query
-                auth_key = first.auth_key
-                for _ in range(n - 1):
-                    senders.append(await self._connect_sender(dc_id, auth_key))
+                senders.extend(await self._connect_many(home_dc, client.session.auth_key, n))
+                return senders
+
+            cached_key = self._dc_auth_keys.get(dc_id)
+            if cached_key is not None:
+                try:
+                    senders.extend(await self._connect_many(dc_id, cached_key, n))
+                    return senders
+                except ParallelDownloadUnavailable, FloodWaitError, FileReferenceExpiredError:
+                    raise
+                except Exception:
+                    # The cached key went stale: drop it and fall through to a
+                    # fresh export, exactly like a first encounter with the DC.
+                    self._dc_auth_keys.pop(dc_id, None)
+
+            first = await self._connect_sender(dc_id, None)
+            senders.append(first)
+            # Hold the borrow lock while mutating the shared init request,
+            # mirroring Telethon's own _create_exported_sender. Restore the
+            # original query afterwards so concurrent users of _init_request
+            # never observe our transient ImportAuthorizationRequest.
+            async with client._borrow_sender_lock:
+                saved_query = client._init_request.query
+                try:
+                    auth = await client(ExportAuthorizationRequest(dc_id))
+                    client._init_request.query = ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes)
+                    await first.send(InvokeWithLayerRequest(LAYER, client._init_request))
+                finally:
+                    client._init_request.query = saved_query
+            auth_key = first.auth_key
+            senders.extend(await self._connect_many(dc_id, auth_key, n - 1))
+            # Cache only after every sibling connected with it.
+            self._dc_auth_keys[dc_id] = auth_key
             return senders
         except ParallelDownloadUnavailable:
             await self._close_senders(senders)
@@ -316,6 +331,25 @@ class ParallelDownloader:
                 # them, rather than masking them as a generic fallback.
                 raise
             raise ParallelDownloadUnavailable(f"failed to establish parallel senders: {exc}") from exc
+
+    async def _connect_many(self, dc_id, auth_key, count: int) -> list[MTProtoSender]:
+        """Connect ``count`` senders concurrently — setup costs one RTT, not ``count``.
+
+        All-or-nothing: on any failure the siblings that DID connect are closed
+        before the first error propagates, so no connection leaks past a
+        failed build."""
+        if count <= 0:
+            return []
+        results = await asyncio.gather(
+            *(self._connect_sender(dc_id, auth_key) for _ in range(count)),
+            return_exceptions=True,
+        )
+        failures = [r for r in results if isinstance(r, BaseException)]
+        connected = [r for r in results if not isinstance(r, BaseException)]
+        if failures:
+            await self._close_senders(connected)
+            raise failures[0]
+        return connected
 
     async def _connect_sender(self, dc_id, auth_key) -> MTProtoSender:
         client = self._client
