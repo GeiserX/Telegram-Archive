@@ -5,6 +5,7 @@ Supports both SQLite and PostgreSQL with proper configuration for each.
 """
 
 import logging
+import math
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -20,15 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 def _busy_timeout_ms() -> int:
-    """DATABASE_TIMEOUT (seconds) as PRAGMA busy_timeout milliseconds."""
+    """DATABASE_TIMEOUT (seconds) as PRAGMA busy_timeout milliseconds.
+
+    A knob must never abort startup: garbage, non-finite ("nan"/"inf" parse as
+    real floats and would raise in int()) and non-positive values fall back to
+    the 60s default, and a positive sub-millisecond value clamps to 1ms —
+    busy_timeout=0 would silently disable the wait, the opposite of what a
+    tiny-but-positive timeout asks for.
+    """
     raw = os.getenv("DATABASE_TIMEOUT", "60.0")
     try:
         seconds = float(raw)
     except ValueError:
         return 60000
-    if seconds <= 0:
+    if not math.isfinite(seconds) or seconds <= 0:
         return 60000
-    return int(seconds * 1000)
+    return max(1, int(seconds * 1000))
 
 
 class DatabaseManager:

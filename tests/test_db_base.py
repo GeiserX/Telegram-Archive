@@ -627,6 +627,21 @@ class TestDatabaseTimeoutWiring:
         with patch.dict(os.environ, {"DATABASE_TIMEOUT": "-5"}):
             assert _busy_timeout_ms() == 60000
 
+    def test_busy_timeout_survives_nonfinite_and_subms_values(self):
+        """ "nan"/"inf" parse as real floats — the old int() conversion raised
+        (ValueError/OverflowError) and aborted init(); a positive value under
+        1ms became busy_timeout=0, silently disabling the wait entirely."""
+        from src.db.base import _busy_timeout_ms
+
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "nan"}):
+            assert _busy_timeout_ms() == 60000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "inf"}):
+            assert _busy_timeout_ms() == 60000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "-inf"}):
+            assert _busy_timeout_ms() == 60000
+        with patch.dict(os.environ, {"DATABASE_TIMEOUT": "0.0001"}):
+            assert _busy_timeout_ms() == 1  # clamped, never 0 (= wait disabled)
+
     @pytest.mark.asyncio
     async def test_configured_timeout_reaches_the_live_connection(self, tmp_path):
         from sqlalchemy import text as sa_text
