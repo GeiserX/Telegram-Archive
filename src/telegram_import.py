@@ -256,7 +256,12 @@ def _build_service_text(msg: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-_HTML_DATE_OFFSET = re.compile(r"^UTC([+-]\d{2}:\d{2})$")
+# Real UTC offsets only (-12:00 .. +14:00): a malformed token like UTC+24:00
+# would make fromisoformat raise (losing the date entirely, worse than the old
+# naive fallback) and UTC+02:60 would be silently normalized to +03:00 —
+# anything unmatched degrades to the old behavior instead: offset dropped,
+# wall-clock kept naive.
+_HTML_DATE_OFFSET = re.compile(r"^UTC([+-](?:0\d|1[0-3]):[0-5]\d|[+-]14:00)$")
 
 
 def parse_html_date(date_str: str) -> str | None:

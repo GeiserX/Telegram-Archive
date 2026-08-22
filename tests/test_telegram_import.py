@@ -985,6 +985,17 @@ class TestParseHtmlDate(unittest.TestCase):
     def test_unrecognised_third_token_is_dropped(self):
         self.assertEqual(parse_html_date("15.01.2024 10:30:00 CEST"), "2024-01-15T10:30:00")
 
+    def test_invalid_offsets_degrade_to_naive(self):
+        """UTC+24:00 would make fromisoformat raise (date LOST) and UTC+02:60
+        would silently normalize to +03:00 (timestamp changed) — both must
+        degrade to the old behavior: token dropped, wall-clock kept naive."""
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+24:00"), "2024-01-15T10:30:00")
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+02:60"), "2024-01-15T10:30:00")
+
+    def test_extreme_but_real_offsets_are_kept(self):
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC+14:00"), "2024-01-15T10:30:00+14:00")
+        self.assertEqual(parse_html_date("15.01.2024 10:30:00 UTC-12:00"), "2024-01-15T10:30:00-12:00")
+
     def test_empty_string(self):
         self.assertIsNone(parse_html_date(""))
 
