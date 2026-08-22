@@ -456,8 +456,16 @@ class TestBackupCheckpointing(unittest.TestCase):
         self.db.update_sync_status.assert_not_awaited()
 
     def test_checkpoint_tracks_max_message_id(self):
-        """Checkpoint should pass the highest message ID seen so far."""
-        messages = [self._make_message(10), self._make_message(20)]
+        """Checkpoint passes the highest message id SEEN, not the last one.
+
+        _backup_dialog iterates with reverse=True (oldest-to-newest), so the
+        [20, 10] fixture is deliberately ADVERSARIAL, not realistic: with the
+        ascending ids every fixture used before, max(seen, id) and a plain
+        "last id wins" assignment are indistinguishable, and this test — named
+        for the high-water-mark invariant — certified nothing. A regression to
+        running_max_id = message.id would rewind the cursor and re-fetch an
+        already-archived range."""
+        messages = [self._make_message(20), self._make_message(10)]
 
         async def fake_iter(*args, **kwargs):
             for m in messages:
