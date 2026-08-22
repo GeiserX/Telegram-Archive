@@ -299,6 +299,12 @@ class ParallelDownloader:
                 except Exception:
                     # The cached key went stale: drop it and fall through to a
                     # fresh export, exactly like a first encounter with the DC.
+                    # Deliberately includes ConnectionError — Telethon surfaces
+                    # a dead imported key as a connection-level failure, so
+                    # "preserve on transport errors" would wedge a dead key in
+                    # the cache with no heal path; the price of guessing wrong
+                    # on a transient blip is one bounded re-export, and the
+                    # file still completes in parallel either way.
                     self._dc_auth_keys.pop(dc_id, None)
 
             first = await self._connect_sender(dc_id, None)
@@ -323,12 +329,18 @@ class ParallelDownloader:
         except ParallelDownloadUnavailable:
             await self._close_senders(senders)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
+            # BaseException, not Exception: a cancelled download (task teardown,
+            # shutdown) otherwise skipped this cleanup and leaked every sender
+            # connected so far — `first` included.
             await self._close_senders(senders)
             if isinstance(exc, (FloodWaitError, FileReferenceExpiredError)):
                 # Surface flood (single budget) and stale-reference (refresh
                 # loop) unchanged so the caller's existing handling governs
                 # them, rather than masking them as a generic fallback.
+                raise
+            if not isinstance(exc, Exception):
+                # CancelledError and friends propagate unchanged.
                 raise
             raise ParallelDownloadUnavailable(f"failed to establish parallel senders: {exc}") from exc
 

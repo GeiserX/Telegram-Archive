@@ -622,6 +622,45 @@ class TestSenderLifecycle(_PatchHelpers, _TmpDirMixin, unittest.IsolatedAsyncioT
             await dl._build_senders(client.session.dc_id, 2)
         self.assertTrue(closed)  # cleanup ran on the ParallelDownloadUnavailable path
 
+    async def test_build_senders_closes_first_on_cancellation(self) -> None:
+        """Cancellation mid-build (task teardown) must close every sender
+        connected so far — the old `except Exception` skipped CancelledError
+        and leaked `first` with its live socket."""
+        client = ForeignDCClient(b"x" * 100, home_dc=2)
+        first_sender = client.make_sender()
+        first_sender.connected = True
+
+        def _connect(_self: ParallelDownloader, dc_id: int, auth_key: Any) -> Any:
+            async def _inner() -> Any:
+                return first_sender
+
+            return _inner()
+
+        self._patch_object(ParallelDownloader, "_connect_sender", _connect)
+        closed: list[Any] = []
+
+        async def _track_close(_self: ParallelDownloader, senders: Any) -> None:
+            closed.extend(senders)
+
+        self._patch_object(ParallelDownloader, "_close_senders", _track_close)
+
+        export_started = asyncio.Event()
+
+        async def _hang_forever(request: Any) -> Any:
+            export_started.set()
+            await asyncio.Event().wait()
+
+        client.__class__ = type("HangingClient", (ForeignDCClient,), {})
+        client.__class__.__call__ = lambda self, request: _hang_forever(request)
+
+        dl = ParallelDownloader(client, connections=2, part_size=524288)
+        task = asyncio.ensure_future(dl._build_senders(4, 2))
+        await asyncio.wait_for(export_started.wait(), timeout=2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertIn(first_sender, closed)  # first was closed, not leaked
+
     async def test_close_senders_swallows_disconnect_errors(self) -> None:
         dl = ParallelDownloader(FakeClient(b"x"), connections=4, part_size=524288)
 
