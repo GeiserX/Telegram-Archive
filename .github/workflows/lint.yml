@@ -40,9 +40,15 @@ jobs:
 
   pre-commit:
     runs-on: ubuntu-latest
+    # Hooks are repo-defined code; the job only reads the tree, so it gets no
+    # write scopes and no persisted token for them to reach.
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
