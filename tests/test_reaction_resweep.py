@@ -430,6 +430,22 @@ class TestResweepPacing:
         assert b._resweep_flood_until is not None
         assert CHAT not in b._resweep_cycle_done
 
+    async def test_premium_flood_on_fallback_also_pauses(self):
+        # The paired catch must cover the fallback branch too: get_messages
+        # answering FloodPremiumWaitError registers the cooldown exactly like
+        # a FloodWaitError there — reverting the fallback's premium half must
+        # fail this test even while the raw-path test above stays green.
+        b = _backup()
+        b.db.get_message_ids_since = AsyncMock(return_value=[1])
+        b.client.side_effect = RuntimeError("peer unsupported")  # raw path → genuine non-flood error
+        b.client.get_messages = AsyncMock(side_effect=FloodPremiumWaitError(request=None, capture=60))
+
+        await b._resweep_reactions(MagicMock(), CHAT)
+
+        b.client.get_messages.assert_awaited_once()  # the fallback WAS taken
+        assert b._resweep_flood_until is not None
+        assert CHAT not in b._resweep_cycle_done
+
     async def test_resweep_resumes_within_run_after_cooldown(self, monkeypatch):
         # #224 follow-up: a FloodWait pauses the re-sweep, and once wall-clock
         # passes the server-requested window the SAME run resumes — full
