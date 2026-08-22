@@ -157,7 +157,7 @@ def _build_all(listen_reactions=True, listen_edits=True, listen_new_messages=Tru
     """
     db = AsyncMock()
     db.reconcile_reactions = AsyncMock(return_value="reconciled")
-    db.update_message_text = AsyncMock(return_value="applied")
+    db.update_message_text = AsyncMock(return_value=("applied", None))
     db.insert_message = AsyncMock()
     config = _config(listen_reactions)
     config.listen_edits = listen_edits
@@ -195,7 +195,7 @@ class TestEditVectorReactions:
         # A reaction-only edit leaves text unchanged, so update_message_text is a
         # noop and the handler early-returns; reactions must be buffered BEFORE that.
         listener, handlers, db = _build_all()
-        db.update_message_text = AsyncMock(return_value="noop")
+        db.update_message_text = AsyncMock(return_value=("noop", None))
         asyncio.run(handlers["on_message_edited"](_edit_event(reactions=_reactions(("👍", 2)))))
         assert listener._reaction_pending[(TRACKED, 42)] == [{"emoji": "👍", "count": 2}]
 

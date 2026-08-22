@@ -133,7 +133,7 @@ class TestMessagesAreAccountIsolated:
         for account_id in BOTH_ACCOUNTS:
             await real_adapter.insert_message(_message(-100702, 502, text="original"), account_id=account_id)
         for account_id in BOTH_ACCOUNTS:
-            outcome = await real_adapter.update_message_text(
+            outcome, _ = await real_adapter.update_message_text(
                 -100702, 502, "rewritten", BASE_DATE + timedelta(hours=2), account_id=account_id
             )
             assert outcome == "applied"
@@ -153,7 +153,7 @@ class TestMessagesAreAccountIsolated:
         await _seed_chat(real_adapter, -100703)
         await real_adapter.insert_message(_message(-100703, 503, text="only mine"), account_id=DEFAULT_ACCOUNT_ID)
 
-        outcome = await real_adapter.update_message_text(
+        outcome, _ = await real_adapter.update_message_text(
             -100703, 503, "hijacked", BASE_DATE + timedelta(hours=1), account_id=OTHER_ACCOUNT
         )
         assert outcome == "not_found"

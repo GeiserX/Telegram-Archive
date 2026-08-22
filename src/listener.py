@@ -38,6 +38,7 @@ from .avatar_utils import get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
+from .event_webhook import EventWebhookSender
 from .message_utils import (
     _photo_size_bytes,
     build_media_filename,
@@ -328,9 +329,16 @@ class TelegramListener:
             "reactions_applied": 0,
             "bursts_intercepted": 0,
             "operations_discarded": 0,
+            "webhook_sent": 0,
+            "webhook_failed": 0,
+            "webhook_dropped": 0,
             "errors": 0,
             "start_time": None,
         }
+
+        # Outbound event webhook (#336): fires on listener-applied edits and
+        # deletions. Inert unless EVENT_WEBHOOK_ENABLED with a valid URL.
+        self._event_webhook = EventWebhookSender(self.config, self.stats)
 
         # Log safety settings
         logger.info("=" * 70)
@@ -630,13 +638,50 @@ class TelegramListener:
         mode = getattr(self.config, "deletion_mode", "hard")
         return "soft" if mode == "soft" else "hard"
 
+    async def _webhook_chat_title(self, chat_id: int) -> str:
+        """Archive-sourced chat title for webhook contexts.
+
+        Sourced from the archive, not the event, so it works for peerless
+        deletions where event.get_chat() is impossible. Private chats compose
+        a display name from first/last/username; "" = blank-per-missing rule.
+        """
+        chat = await self.db.get_chat_by_id(chat_id, account_id=self.account_id)
+        if not chat:
+            return ""
+        if chat.get("title"):
+            return chat["title"]
+        name = " ".join(p for p in (chat.get("first_name"), chat.get("last_name")) if p)
+        if chat.get("username"):
+            name = f"{name} (@{chat['username']})" if name else chat["username"]
+        return name
+
+    async def _fire_event_webhook(self, event: str, chat_id: int, **fields) -> None:
+        """Build the context and hand off to the sender; never raises into a handler."""
+        try:
+            if not self._event_webhook.wants(event, chat_id):
+                return
+            context = {
+                "event": event,
+                "chat_id": chat_id,
+                "account_id": self.account_id,
+                "chat_title": await self._webhook_chat_title(chat_id),
+                **fields,
+            }
+            self._event_webhook.fire(event, context)
+        except Exception as e:
+            # PII rule: exception class name only — no chat ids, no content.
+            logger.debug("Event webhook fire skipped: %s", type(e).__name__)
+
     async def _apply_message_deletion(self, chat_id: int, message_id: int) -> None:
         """Apply a Telegram deletion event according to DELETION_MODE."""
         deletion_mode = self._get_deletion_mode()
 
         if deletion_mode == "soft":
             deleted_at = utcnow_naive()
-            await self.db.mark_message_deleted(chat_id, message_id, deleted_at=deleted_at, account_id=self.account_id)
+            prior = await self.db.mark_message_deleted(
+                chat_id, message_id, deleted_at=deleted_at, account_id=self.account_id
+            )
+            event_date = deleted_at
             logger.debug("🗑️ Deletion marked")
             await self._notify_update(
                 "delete",
@@ -647,14 +692,30 @@ class TelegramListener:
                     "deleted_at": deleted_at.isoformat(),
                 },
             )
-            return
+        else:
+            prior = await self.db.delete_message(chat_id, message_id, account_id=self.account_id)
+            # Telegram delete events carry no timestamp; observation time it is.
+            event_date = utcnow_naive()
+            logger.debug("🗑️ Deletion applied")
+            await self._notify_update(
+                "delete",
+                {"chat_id": chat_id, "message_id": message_id, "deletion_mode": "hard"},
+            )
 
-        await self.db.delete_message(chat_id, message_id, account_id=self.account_id)
-        logger.debug("🗑️ Deletion applied")
-        await self._notify_update(
-            "delete",
-            {"chat_id": chat_id, "message_id": message_id, "deletion_mode": "hard"},
-        )
+        # Fire the event webhook post-commit. prior=None means never archived;
+        # a truthy prior is_deleted means an already-tombstoned re-mark — both
+        # skipped so delivery stays exactly-once per archived message.
+        if prior is not None and not prior.get("is_deleted"):
+            await self._fire_event_webhook(
+                "message_deleted",
+                chat_id,
+                message_id=message_id,
+                sender_id=prior.get("sender_id"),
+                sender_name=prior.get("sender_name"),
+                date=event_date,
+                text=prior.get("text"),
+                media_type=prior.get("media_type"),
+            )
 
     def _should_process_chat(self, chat_id: int) -> bool:
         """
@@ -994,7 +1055,7 @@ class TelegramListener:
                 # Apply the edit immediately; count and broadcast only when the
                 # archive actually changed, so stats stay honest and the viewer
                 # never displays text the archive rejected as stale.
-                outcome = await self.db.update_message_text(
+                outcome, prior = await self.db.update_message_text(
                     chat_id=chat_id,
                     message_id=message.id,
                     new_text=new_text,
@@ -1018,6 +1079,19 @@ class TelegramListener:
                         "new_text": new_text,
                         "edit_date": edit_date.isoformat() if edit_date else None,
                     },
+                )
+
+                await self._fire_event_webhook(
+                    "message_edited",
+                    chat_id,
+                    message_id=message.id,
+                    sender_id=(prior or {}).get("sender_id") or message.sender_id,
+                    sender_name=(prior or {}).get("sender_name"),
+                    date=edit_date,
+                    text=new_text,
+                    new_text=new_text,
+                    old_text=(prior or {}).get("text"),
+                    media_type=self._get_media_type(message.media) if message.media else None,
                 )
 
             except Exception as e:
@@ -1622,6 +1696,13 @@ class TelegramListener:
                 await self._flush_reactions()
             except Exception as e:
                 logger.debug(f"Final reaction flush failed: {type(e).__name__}")
+
+            # Cancel in-flight event webhooks: fire-and-forget semantics mean
+            # shutdown never waits out delivery retries (#336).
+            try:
+                await self._event_webhook.aclose()
+            except Exception as e:
+                logger.debug(f"Event webhook close failed: {type(e).__name__}")
 
             # Stop the protector
             await self._protector.stop()

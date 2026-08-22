@@ -3,10 +3,12 @@ Configuration management for Telegram Backup Automation.
 Loads and validates settings from environment variables.
 """
 
+import json
 import logging
 import os
 import re
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -598,6 +600,26 @@ class Config:
         )
 
         # =====================================================================
+        # OUTBOUND EVENT WEBHOOK (issue #336)
+        # =====================================================================
+        # Fires an HTTP request when the real-time listener applies a message
+        # edit or deletion. Validation rule: the webhook is a side-channel, so
+        # a misconfigured EVENT_WEBHOOK_* value logs ONE warning naming the
+        # variable and the expected format (never echoing the value — the URL
+        # is a capability secret) and force-disables the webhook; the archiver
+        # never aborts for it. The sole exception is the master bool, which
+        # follows the repo-wide _parse_bool_env vocabulary (raises on garbage).
+        self.event_webhook_enabled = _parse_bool_env("EVENT_WEBHOOK_ENABLED", False)
+        self.event_webhook_url = os.getenv("EVENT_WEBHOOK_URL", "").strip()
+        self.event_webhook_method = os.getenv("EVENT_WEBHOOK_METHOD", "POST").strip().upper()
+        self.event_webhook_headers: dict[str, str] = {}
+        self.event_webhook_events: set[str] = {"message_edited", "message_deleted"}
+        self.event_webhook_chat_ids: set[int] = set()
+        self.event_webhook_body_template = os.getenv("EVENT_WEBHOOK_BODY_TEMPLATE", "")
+        if self.event_webhook_enabled:
+            self._validate_event_webhook()
+
+        # =====================================================================
         # GROUP → SUPERGROUP MIGRATION FOLLOWING (issue #228)
         # =====================================================================
         # When a basic group is upgraded to a supergroup it is assigned a brand
@@ -758,6 +780,23 @@ class Config:
             logger.info(
                 f"  Mass operation protection: block if >{self.mass_operation_threshold} ops in {self.mass_operation_window_seconds}s"
             )
+        if self.event_webhook_enabled:
+            # Never log the URL, at any level: Slack/Discord/ntfy URLs are
+            # bearer capabilities (deliberate deviation from the proxy
+            # DEBUG-endpoint precedent above).
+            restriction = (
+                f", restricted to {len(self.event_webhook_chat_ids)} chat(s)" if self.event_webhook_chat_ids else ""
+            )
+            logger.info(
+                f"EVENT_WEBHOOK enabled - {self.event_webhook_method} on {', '.join(sorted(self.event_webhook_events))}{restriction}"
+            )
+            if not self.enable_listener:
+                logger.warning("  EVENT_WEBHOOK_ENABLED has no effect: ENABLE_LISTENER=false")
+            else:
+                if "message_deleted" in self.event_webhook_events and not self.listen_deletions:
+                    logger.warning("  message_deleted webhooks will never fire: LISTEN_DELETIONS=false")
+                if "message_edited" in self.event_webhook_events and not self.listen_edits:
+                    logger.warning("  message_edited webhooks will never fire: LISTEN_EDITS=false")
         if self.follow_chat_migrations:
             logger.info(
                 "FOLLOW_CHAT_MIGRATIONS enabled - will adopt the new supergroup id after a group→supergroup migration"
@@ -812,6 +851,59 @@ class Config:
         if not id_str or not id_str.strip():
             return set()
         return {int(id.strip()) for id in id_str.split(",") if id.strip()}
+
+    def _validate_event_webhook(self) -> None:
+        """Validate EVENT_WEBHOOK_* sub-options; on any problem warn + disable (#336).
+
+        Warnings name the variable and the expected format but never echo the
+        configured value: the URL is a bearer capability and headers may hold
+        auth tokens. Runs only when EVENT_WEBHOOK_ENABLED=true.
+        """
+
+        def _disable(message: str) -> None:
+            logger.warning(f"{message} - event webhook disabled")
+            self.event_webhook_enabled = False
+
+        # LAN targets (ntfy, Gotify, Apprise) are plain http, so both schemes
+        # pass — but a bare scheme ("https://") must not: parse and require a
+        # hostname, or the sender would fire doomed requests forever.
+        parsed = urllib.parse.urlparse(self.event_webhook_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            _disable("EVENT_WEBHOOK_URL must be an http:// or https:// URL with a hostname")
+            return
+        if self.event_webhook_method not in {"POST", "PUT"}:
+            _disable("EVENT_WEBHOOK_METHOD must be POST or PUT")
+            return
+        headers_raw = os.getenv("EVENT_WEBHOOK_HEADERS", "").strip()
+        if headers_raw:
+            try:
+                parsed = json.loads(headers_raw)
+            except json.JSONDecodeError:
+                _disable("EVENT_WEBHOOK_HEADERS must be valid JSON")
+                return
+            if not isinstance(parsed, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+            ):
+                _disable("EVENT_WEBHOOK_HEADERS must be a JSON object of string values")
+                return
+            self.event_webhook_headers = parsed
+        # The declared Content-Type drives per-placeholder auto-escaping; when
+        # absent, declare the default template's actual content type.
+        if not any(k.lower() == "content-type" for k in self.event_webhook_headers):
+            self.event_webhook_headers["Content-Type"] = "application/json; charset=utf-8"
+        events_raw = os.getenv("EVENT_WEBHOOK_EVENTS", "").strip()
+        if events_raw:
+            requested = {part.strip().lower() for part in events_raw.split(",") if part.strip()}
+            if not requested or not requested <= {"message_edited", "message_deleted"}:
+                _disable("EVENT_WEBHOOK_EVENTS entries must be message_edited and/or message_deleted")
+                return
+            self.event_webhook_events = requested
+        chat_ids_raw = os.getenv("EVENT_WEBHOOK_CHAT_IDS", "")
+        try:
+            self.event_webhook_chat_ids = self._parse_id_list(chat_ids_raw)
+        except ValueError:
+            _disable("EVENT_WEBHOOK_CHAT_IDS must be comma-separated integer chat ids")
+            return
 
     def _parse_topic_skip_list(self, skip_str: str) -> dict[int, set[int]]:
         """Parse SKIP_TOPIC_IDS into {chat_id: {topic_id, ...}}.
