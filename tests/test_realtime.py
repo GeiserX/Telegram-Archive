@@ -723,6 +723,32 @@ class TestRealtimeListenerPgCallback(unittest.TestCase):
         # Should not raise
         listener._pg_callback(None, 0, "telegram_updates", '{"type": "test"}')
 
+    def test_pg_callback_drops_beyond_the_in_flight_cap(self):
+        """asyncpg invokes this synchronously per NOTIFY — without a bound the
+        producer's rate is the viewer's memory growth rate. At the cap the
+        notification is dropped and counted, never queued unbounded."""
+        mock_cb = AsyncMock()
+        listener = RealtimeListener(callback=mock_cb)
+        listener._callback_tasks = {MagicMock() for _ in range(listener._MAX_CALLBACK_TASKS)}
+
+        with patch("src.realtime.asyncio.create_task") as mock_task:
+            listener._pg_callback(None, 0, "telegram_updates", '{"type": "new_message"}')
+
+        mock_task.assert_not_called()
+        assert listener._callbacks_dropped == 1
+        assert len(listener._callback_tasks) == listener._MAX_CALLBACK_TASKS
+
+    def test_pg_callback_below_cap_still_schedules(self):
+        mock_cb = AsyncMock()
+        listener = RealtimeListener(callback=mock_cb)
+        listener._callback_tasks = {MagicMock() for _ in range(listener._MAX_CALLBACK_TASKS - 1)}
+
+        with patch("src.realtime.asyncio.create_task") as mock_task:
+            listener._pg_callback(None, 0, "telegram_updates", '{"type": "new_message"}')
+
+        mock_task.assert_called_once()
+        assert listener._callbacks_dropped == 0
+
 
 class TestRealtimeListenerHttpPush:
     """Tests for RealtimeListener.handle_http_push."""
