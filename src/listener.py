@@ -444,11 +444,12 @@ class TelegramListener:
         # Load tracked chat IDs from database
         await self._load_tracked_chats()
 
-        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite)
-        from .db import get_db_manager
-
-        db_manager_instance = await get_db_manager()
-        self._notifier = RealtimeNotifier(db_manager_instance)
+        # Initialize real-time notifier (auto-detects PostgreSQL vs SQLite).
+        # Bound to THIS listener's own manager — never re-resolved from the
+        # process global: a cron backup starting inside connect()'s await
+        # window reassigns that global with a fresh engine, and its run-end
+        # dispose() would then tear the pool down under the notifier.
+        self._notifier = RealtimeNotifier(self.db.db_manager)
         await self._notifier.init()
         logger.info("Real-time notifier initialized")
 
@@ -1430,7 +1431,12 @@ class TelegramListener:
                         if entity:
                             chat_data = {
                                 "id": chat_id,
-                                "type": "channel" if hasattr(entity, "broadcast") else "group",
+                                # _get_chat_type, not hasattr(entity, "broadcast"):
+                                # Telethon's Channel always CARRIES broadcast (False
+                                # on a megagroup), so the hasattr test relabelled
+                                # every supergroup as a broadcast channel and folder
+                                # sync then filed it under the wrong folder flag.
+                                "type": self._get_chat_type(entity),
                                 "title": getattr(entity, "title", None),
                                 "username": getattr(entity, "username", None),
                             }

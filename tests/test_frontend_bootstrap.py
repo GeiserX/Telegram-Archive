@@ -1873,6 +1873,166 @@ const scenario = async (pages) => {
             body.index("scrollToMessage(track.id)"),
         )
 
+    @unittest.skipUnless(NODE, "node is required to execute the navigation chain")
+    def test_playbar_jump_lands_in_the_forum_tracks_own_topic(self) -> None:
+        """selectChat short-circuits a forum chat into its topics list without
+        touching selectedChat, so the old jump windowed WHATEVER pane was left
+        behind — an unrelated slice of another chat positioned by a message id
+        that means nothing there. The real navigation chain is executed here:
+        the window load must only ever fire with the pane on the track's chat
+        and topic, and a vanished topic must bail instead of windowing."""
+        prelude = """
+const selectedChat = { value: null }
+const selectedPaneTopic = { value: null }
+const messages = { value: [] }
+const messageSearchQuery = { value: '' }
+const chatStats = { value: null }
+const pinnedMessages = { value: [] }
+const currentPinnedIndex = { value: 0 }
+const showPinnedOnly = { value: false }
+const showMediaGallery = { value: false }
+const loading = { value: false }
+const navStack = { value: [] }
+const chats = { value: [] }
+const topics = { value: [] }
+const audioTrack = { value: null }
+const audioError = { value: '' }
+let chatVersion = 0
+let galleryReturnState = null
+let TOPICS_BY_REF = {}
+const WINDOW_LOADS = []
+const SCROLLS = []
+const stopMessageRefresh = () => {}
+const startMessageRefresh = () => {}
+const resetMessagePagination = () => {}
+const setupMessagesScrollObserver = () => {}
+const scrollToBottom = () => {}
+const nextTick = async () => {}
+const loadMessages = async () => {}
+const loadChatStats = async () => {}
+const loadPinnedMessages = async () => {}
+const getChatName = (chat) => chat.title || ''
+const navigateTo = (entry) => { navStack.value.push(entry) }
+const loadTopics = async (ref) => { topics.value = TOPICS_BY_REF[ref] || [] }
+const findMessageElement = () => null
+const scrollToMessage = (id) => { SCROLLS.push(id) }
+const loadMessagesAroundId = async (messageId) => {
+    WINDOW_LOADS.push({
+        messageId,
+        chatId: selectedChat.value?.id ?? null,
+        topicId: activeTopicId(),
+    })
+}
+"""
+        epilogue = """
+(async () => {
+    const forumChat = { id: -1001111, ref: 'refA', title: 'Forum A', is_forum: true }
+    const plainChat = { id: -1002222, ref: 'refB', title: 'Plain B' }
+    const otherChat = { id: -1003333, ref: 'refC', title: 'Plain C' }
+    chats.value = [forumChat, plainChat, otherChat]
+
+    const reset = () => {
+        WINDOW_LOADS.length = 0
+        navStack.value = []
+        topics.value = []
+        selectedPaneTopic.value = null
+    }
+
+    // 1. The bead's trigger: track from a forum topic, pane on another chat.
+    reset()
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }, { id: 7, title: 'Topic 7' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const forumJump = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
+
+    // 2. The track's topic no longer exists: bail on the topics list, and SAY so.
+    reset()
+    audioError.value = ''
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const vanishedTopic = { loads: [...WINDOW_LOADS], error: audioError.value }
+
+    // 2b. A General-topic track whose captured topics lack a General row:
+    // General always exists conceptually — the jump synthesizes it.
+    reset()
+    audioError.value = ''
+    TOPICS_BY_REF = { refA: [{ id: 7, title: 'Topic 7' }] }
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 4243, chatId: -1001111, topicId: null }
+    await focusAudioTrackMessage()
+    const generalSynthesized = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
+
+    // 3. Same forum chat, pane scoped to a different topic.
+    reset()
+    TOPICS_BY_REF = { refA: [{ id: 1, title: 'General' }, { id: 7, title: 'Topic 7' }] }
+    selectedChat.value = forumChat
+    selectedPaneTopic.value = { id: 1, title: 'General' }
+    audioTrack.value = { id: 4242, chatId: -1001111, topicId: 7 }
+    await focusAudioTrackMessage()
+    const topicSwitch = { loads: [...WINDOW_LOADS], paneTopic: selectedPaneTopic.value?.id ?? null }
+
+    // 4. A plain chat switch keeps working exactly as before.
+    reset()
+    selectedChat.value = plainChat
+    audioTrack.value = { id: 99, chatId: -1003333, topicId: null }
+    await focusAudioTrackMessage()
+    const plainSwitch = { loads: [...WINDOW_LOADS] }
+
+    console.log(JSON.stringify({ forumJump, vanishedTopic, generalSynthesized, topicSwitch, plainSwitch }))
+})();
+"""
+        out = _run_setup_program(
+            self.html,
+            (
+                "const GENERAL_TOPIC_ID = ",
+                "const activeTopicId = () => {",
+                "const openForumTopics = async (chat) =>",
+                "const selectTopic = async (chat, topic) =>",
+                "const selectChat = async (chat) =>",
+            ),
+            prelude,
+            # focusAudioTrackMessage is followed by audioEngine listener wiring,
+            # not a 16-space const, so _setup_slice would swallow it — lift the
+            # function by exact brace match and define it just before the driver.
+            _setup_function(self.html, "const focusAudioTrackMessage = async () =>") + "\n" + epilogue,
+        )
+
+        # The window load fired exactly once, with the pane on the track's chat
+        # AND topic — never on the chat the user happened to be reading.
+        self.assertEqual(
+            out["forumJump"]["loads"],
+            [{"messageId": 4242, "chatId": -1001111, "topicId": 7}],
+        )
+        self.assertEqual(out["forumJump"]["paneTopic"], 7)
+
+        # Vanished topic: no window load at all — the user is left on the
+        # topics list with an error surfaced, not on an unrelated pane.
+        self.assertEqual(out["vanishedTopic"]["loads"], [])
+        self.assertTrue(out["vanishedTopic"]["error"], "the bail must be surfaced, not silent")
+
+        # Missing General row: synthesized, jump lands in topic 1.
+        self.assertEqual(
+            out["generalSynthesized"]["loads"],
+            [{"messageId": 4243, "chatId": -1001111, "topicId": 1}],
+        )
+        self.assertEqual(out["generalSynthesized"]["paneTopic"], 1)
+
+        # Same chat, wrong topic pane: re-navigates into the track's topic.
+        self.assertEqual(
+            out["topicSwitch"]["loads"],
+            [{"messageId": 4242, "chatId": -1001111, "topicId": 7}],
+        )
+        self.assertEqual(out["topicSwitch"]["paneTopic"], 7)
+
+        # A non-forum switch is untouched by all of this.
+        self.assertEqual(
+            out["plainSwitch"]["loads"],
+            [{"messageId": 99, "chatId": -1003333, "topicId": None}],
+        )
+
 
 # --- Directional, on-demand audio queue (#266) ---------------------------------
 
@@ -4316,3 +4476,68 @@ class TestAudioBubbleDownloadKeepsFixedSize(unittest.TestCase):
         icon_start = bubble.index("🎵")
         icon_span = bubble[bubble.rindex("<span", 0, icon_start) : icon_start]
         self.assertIn("shrink-0", icon_span)
+
+
+def test_gif_observer_watcher_is_shallow_and_ordered():
+    """The GIF re-observe watcher rides sortedMessages (shallow): the old
+    watch(messages, ..., {deep: true}) re-traversed every loaded message
+    object — nested media, raw_data, reactions — on every arriving message,
+    and the dependency sets themselves grew with history depth. It must also
+    stay declared AFTER sortedMessages (watchers evaluate their source
+    eagerly — the same placement rule updateFloatingDate's watcher documents).
+    """
+    html = INDEX_HTML.read_text()
+    assert not re.search(r"deep\s*:\s*true", html), "a deep watcher crept back into the page"
+    gif_watch = re.search(
+        r"watch\(\[sortedMessages, mediaRevision\], \(\) => \{\s*nextTick\(\(\) => \{\s*"
+        r"if \(!gifObserver\) setupGifObserver\(\)\s*"
+        r"document\.querySelectorAll\('\.gif-video'\)\.forEach\(video => \{\s*"
+        r"gifObserver\.observe\(video\)",
+        html,
+    )
+    assert gif_watch, "gif observer watcher must watch [sortedMessages, mediaRevision] shallowly"
+    assert html.index("const sortedMessages") < gif_watch.start(), "watcher declared before its source"
+    assert html.index("const mediaRevision") < gif_watch.start(), "watcher declared before its source"
+
+
+def test_in_place_media_merge_bumps_the_gif_watchers_revision():
+    """sortedMessages never reads media, so upsertMessages merging a finished
+    download into an EXISTING row is invisible to it — the revision counter is
+    the only thing that lets the GIF watcher observe that new <video>. It must
+    bump on a real media change and stay put for unrelated or identical
+    updates, or the watcher either misses GIFs or fires on every poll."""
+    html = INDEX_HTML.read_text()
+    prelude = """
+const messages = { value: [] }
+const mediaRevision = { value: 0 }
+const messageWindowIsContiguous = { value: true }
+const appendKeepsWindowContiguous = () => true
+const messageIdKey = (msg) => (msg && msg.id != null ? String(msg.id) : null)
+"""
+    epilogue = """
+(() => {
+    messages.value = [{ id: 1, text: 'clip', media: null, reactions: [] }]
+    const after = []
+
+    upsertMessages([{ id: 1, text: 'clip', media: { type: 'animation', url: '/m/1' }, reactions: [] }])
+    after.push(mediaRevision.value)   // media arrived -> 1
+
+    upsertMessages([{ id: 1, text: 'clip edited', media: { type: 'animation', url: '/m/1' }, reactions: [] }])
+    after.push(mediaRevision.value)   // structurally identical media -> still 1
+
+    upsertMessages([{ id: 2, text: 'new row', media: null, reactions: [] }])
+    after.push(mediaRevision.value)   // new row, no merge -> still 1
+
+    upsertMessages([{ id: 1, text: 'clip edited', media: { type: 'animation', url: '/m/1?v=2' }, reactions: [] }])
+    after.push(mediaRevision.value)   // media really changed -> 2
+
+    console.log(JSON.stringify(after))
+})();
+"""
+    out = _run_setup_program(
+        html,
+        ("const upsertMessages = (incomingMessages, { updateExisting = true } = {}) =>",),
+        prelude,
+        epilogue,
+    )
+    assert out == [1, 1, 1, 2], out

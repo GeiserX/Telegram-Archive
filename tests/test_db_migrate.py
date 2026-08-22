@@ -681,3 +681,89 @@ class TestVerifyMigrationPathVariants:
             second_call_url = MockDM.call_args_list[1][0][0]
             assert "pghost:5433" in second_call_url
             assert "pguser" in second_call_url
+
+
+# ============================================================
+# _migrate_table: keyset pagination against real engines
+# ============================================================
+
+
+class TestMigrateTableKeysetRealEngine:
+    """_migrate_table executed against two real SQLite databases.
+
+    The old LIMIT/OFFSET over an unordered scan silently skipped a
+    not-yet-copied row whenever an ALREADY-COPIED row vanished mid-copy —
+    every later window shifted back by one. The keyset cursor keeps every
+    surviving row: the covered scenario deletes a row that was already
+    copied, and all 25 originals still land. (A row deleted BEFORE its batch
+    is read is simply gone from the source — no pagination scheme copies it.)
+    """
+
+    async def _manager(self, path):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from src.db.base import DatabaseManager
+        from src.db.models import Base
+
+        url = f"sqlite+aiosqlite:///{path}"
+        engine = create_async_engine(url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        manager = DatabaseManager.__new__(DatabaseManager)
+        manager.engine = engine
+        manager.database_url = url
+        manager._is_sqlite = True
+        manager.async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_mid_copy_deletion_skips_no_surviving_row(self, tmp_path):
+        from sqlalchemy import select
+
+        from src.db.models import Metadata
+
+        source = await self._manager(tmp_path / "src.db")
+        target = await self._manager(tmp_path / "tgt.db")
+        try:
+            async with source.get_session() as session:
+                for n in range(1, 26):
+                    session.add(Metadata(key=f"m{n:02d}", value=str(n)))
+                await session.commit()
+
+            class ChurningTarget:
+                """Duck-typed target manager: after the first batch commits, an
+                already-copied source row is deleted — the exact churn that made
+                OFFSET windows shift and drop an uncopied row."""
+
+                def __init__(self, inner, source_manager):
+                    self._inner = inner
+                    self._source = source_manager
+                    self.batches = 0
+
+                def get_session(self):
+                    outer = self
+
+                    @asynccontextmanager
+                    async def _ctx():
+                        async with outer._inner.get_session() as session:
+                            yield session
+                        outer.batches += 1
+                        if outer.batches == 1:
+                            async with outer._source.get_session() as src:
+                                row = await src.get(Metadata, "m01")
+                                await src.delete(row)
+                                await src.commit()
+
+                    return _ctx()
+
+            churning = ChurningTarget(target, source)
+            migrated = await _migrate_table(source, churning, Metadata, batch_size=10)
+
+            async with target.get_session() as session:
+                keys = sorted((await session.execute(select(Metadata.key))).scalars().all())
+            assert keys == [f"m{n:02d}" for n in range(1, 26)]
+            assert migrated == 25
+            assert churning.batches == 3
+        finally:
+            await source.engine.dispose()
+            await target.engine.dispose()

@@ -2639,3 +2639,30 @@ class TestNotifyUpdateCapturingAccount:
 
         await listener._notify_update("edit", {"chat_id": 123})
         notifier.notify.assert_called_once_with(NotificationType.EDIT, 123, {"chat_id": 123}, account_id=7)
+
+
+class TestNotifierBindsToOwnManager:
+    """The notifier must ride the listener's own engine, not the process global."""
+
+    async def test_notifier_never_rebinds_to_the_process_global(self):
+        """A cron backup reassigning the global mid-connect() must not hand this
+        listener a manager some other component will dispose at run end."""
+        config = _make_config()
+        db = _make_db()
+        own_manager = MagicMock()
+        own_manager._is_sqlite = True
+        db.db_manager = own_manager
+
+        mock_client = AsyncMock()
+        mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", phone="+1"))
+        mock_client.on = lambda event_type: lambda fn: fn
+        listener = TelegramListener(config, db, client=mock_client, account_id=1)
+
+        foreign_manager = MagicMock()
+        foreign_manager._is_sqlite = True
+        with patch("src.db.get_db_manager", new_callable=AsyncMock, return_value=foreign_manager) as global_resolver:
+            await listener.connect()
+
+        assert listener._notifier._db_manager is own_manager
+        global_resolver.assert_not_called()

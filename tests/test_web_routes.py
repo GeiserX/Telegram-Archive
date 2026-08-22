@@ -480,6 +480,27 @@ class TestMessagesEndpoint(_WebTestBase):
         self.assertIsNotNone(call_kwargs["before_date"])
         self.assertEqual(call_kwargs["before_id"], 500)
 
+    async def test_offset_cursor_converts_to_naive_utc(self):
+        """A +02:00 cursor names an instant: 12:00+02:00 IS 10:00 UTC. Relabelling it
+        naive asked the DB for messages before 12:00 UTC — two re-delivered hours."""
+        self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages?before_date=2025-06-15T12:00:00%2B02:00&before_id=500")
+        self.assertEqual(resp.status_code, 200)
+        call_kwargs = self.mock_db.get_messages_paginated.call_args.kwargs
+        self.assertEqual(call_kwargs["before_date"], datetime(2025, 6, 15, 10, 0, 0))
+        self.assertIsNone(call_kwargs["before_date"].tzinfo)
+
+    async def test_z_cursor_stays_the_same_instant(self):
+        """Z and naive coincide — the conversion must not move a UTC cursor."""
+        self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
+        async with self._client() as client:
+            resp = await client.get("/api/chats/1/messages?before_date=2025-06-15T12:00:00Z&before_id=500")
+        self.assertEqual(resp.status_code, 200)
+        call_kwargs = self.mock_db.get_messages_paginated.call_args.kwargs
+        self.assertEqual(call_kwargs["before_date"], datetime(2025, 6, 15, 12, 0, 0))
+        self.assertIsNone(call_kwargs["before_date"].tzinfo)
+
     async def test_passes_jump_window_cursor_params(self):
         """get_messages forwards a lone before_id and after_id to db (#213 jump window)."""
         self.mock_db.get_messages_paginated = AsyncMock(return_value=[])
@@ -742,6 +763,48 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertEqual(data["chats"], 1)
         self.assertEqual(data["messages"], 100)
         self.assertNotIn("media_files", data)
+
+    async def test_stats_scope_fails_closed_when_per_chat_map_is_missing(self):
+        """A restricted viewer with a cached blob that lacks (or has an empty)
+        per_chat_message_counts must get zeros — not the archive-wide chats,
+        messages, media_files and total_size_mb the scope exists to hide."""
+        web_main.AUTH_ENABLED = True
+        token = "sv2"
+        web_main._sessions[token] = web_main.SessionData(
+            username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
+        )
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
+            [{"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"}]
+        )
+        self.mock_db.get_metadata = AsyncMock(return_value=None)
+        for blob in (
+            {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5},
+            {"chats": 900, "messages": 4242, "media_files": 77, "total_size_mb": 1234.5, "per_chat_message_counts": {}},
+            # Malformed cached values must behave like an absent map, not 500.
+            {
+                "chats": 900,
+                "messages": 4242,
+                "media_files": 77,
+                "total_size_mb": 1234.5,
+                "per_chat_message_counts": None,
+            },
+            {
+                "chats": 900,
+                "messages": 4242,
+                "media_files": 77,
+                "total_size_mb": 1234.5,
+                "per_chat_message_counts": [1],
+            },
+        ):
+            self.mock_db.get_cached_statistics = AsyncMock(return_value=dict(blob))
+            async with self._client() as client:
+                resp = await client.get("/api/stats", cookies={"viewer_auth": token})
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["chats"], 0, blob)
+            self.assertEqual(data["messages"], 0, blob)
+            self.assertNotIn("media_files", data, blob)
+            self.assertNotIn("total_size_mb", data, blob)
 
     async def test_backup_in_progress_true_when_metadata_is_one(self):
         """get_stats sets backup_in_progress=True when metadata key is '1'."""
@@ -1503,6 +1566,22 @@ class TestAdminTokensEndpoint(_MasterTestBase):
         self.assertIn("token", data)
         self.assertIsNotNone(data["token"])
         self.assertEqual(data["allowed_chat_refs"], ["tokRefA000000000001A", "tokRefB000000000002A"])
+
+    async def test_create_token_offset_expiry_converts_to_naive_utc(self):
+        """Expiry is enforced against utcnow_naive(); a +02:00 expiry relabelled naive
+        would keep the token alive two hours past what the admin asked for."""
+        async with self._client() as client:
+            resp = await client.post(
+                "/api/admin/tokens",
+                json={
+                    "allowed_chat_refs": ["tokRefA000000000001A"],
+                    "expires_at": "2026-09-01T12:00:00+02:00",
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        stored = self.mock_db.create_viewer_token.call_args.kwargs["expires_at"]
+        self.assertEqual(stored, datetime(2026, 9, 1, 10, 0, 0))
+        self.assertIsNone(stored.tzinfo)
 
     async def test_update_token_not_found(self):
         """update_token returns 404 when token not found."""
