@@ -1307,6 +1307,24 @@ class TestGetMaxMediaSizeBytes(unittest.TestCase):
             config = Config()
             self.assertEqual(config.get_max_media_size_bytes(), 50 * 1024 * 1024)
 
+    def test_zero_means_no_limit(self):
+        """0 disables the cap — the meaning it carries everywhere else in this
+        config. It used to mean 'skip every file with a nonzero size'."""
+        import sys
+
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "MAX_MEDIA_SIZE_MB": "0"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.get_max_media_size_bytes(), sys.maxsize)
+
+    def test_negative_means_no_limit(self):
+        import sys
+
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "MAX_MEDIA_SIZE_MB": "-5"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.get_max_media_size_bytes(), sys.maxsize)
+
 
 class TestSetupLogging(unittest.TestCase):
     """Test setup_logging function (lines 618-625)."""

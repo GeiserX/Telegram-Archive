@@ -6,6 +6,7 @@ Loads and validates settings from environment variables.
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -1148,7 +1149,15 @@ class Config:
         return self.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
 
     def get_max_media_size_bytes(self) -> int:
-        """Get maximum media file size in bytes."""
+        """Maximum media file size in bytes; 0 (or negative) means no limit.
+
+        0 disabling the cap is the meaning 0 already carries across this
+        config surface (DOWNLOAD_TIMEOUT_SECONDS, MEDIA_FLOOD_SLEEP_THRESHOLD,
+        WHITELIST_RESOLVE_DIALOG_LIMIT). It used to mean "skip every file
+        with a nonzero size" — silently, at DEBUG level.
+        """
+        if self.max_media_size_mb <= 0:
+            return sys.maxsize
         return self.max_media_size_mb * 1024 * 1024
 
     def should_download_media_for_chat(self, chat_id: int) -> bool:
