@@ -613,6 +613,20 @@ async def iter_messages_with_flood_retry(client, entity, *, min_id=0, **kwargs):
             await _reconnect_before_retry(client, "iter_messages")
 
 
+def _failed_media_row(media_id: str, media_type: str, message_id: int, chat_id: int) -> dict:
+    """The value-less media row a failed download leaves behind.
+
+    downloaded=0 is what makes the failure retryable: the pending-media drain
+    only sees rows, so a failure that leaves none is permanently silent."""
+    return {
+        "id": media_id,
+        "type": media_type,
+        "message_id": message_id,
+        "chat_id": chat_id,
+        "downloaded": False,
+    }
+
+
 class TelegramBackup:
     """Main class for managing Telegram backups."""
 
@@ -3560,7 +3574,12 @@ class TelegramBackup:
                     account_id=self.account_id,
                 )
                 if not shared_file_path and not os.path.lexists(file_path):
-                    return None
+                    # A download that yields no file must still leave a row:
+                    # the retry drain only sees downloaded=0 rows, so returning
+                    # None here made this failure shape permanently silent
+                    # while the sibling exception path was retried every cycle.
+                    logger.warning("Media download did not produce a file; recorded for retry")
+                    return _failed_media_row(media_id, media_type, message.id, chat_id)
 
                 # Backup-specific post-processing: update file_size from disk
                 if not shared_file_path:
@@ -3584,8 +3603,9 @@ class TelegramBackup:
                         file_path,
                     )
                     if not file_path or not os.path.exists(file_path):
-                        logger.warning("Media download did not produce a file")
-                        return None
+                        # Same retryable row as the dedup branch above.
+                        logger.warning("Media download did not produce a file; recorded for retry")
+                        return _failed_media_row(media_id, media_type, message.id, chat_id)
                     logger.debug(f"Downloaded media: {file_name}")
 
                 # Update file_size and compute hash from disk
@@ -3626,13 +3646,7 @@ class TelegramBackup:
 
         except Exception as e:
             logger.error(f"Error downloading media: {describe_exception(e)}")
-            return {
-                "id": media_id,
-                "type": media_type,
-                "message_id": message.id,
-                "chat_id": chat_id,
-                "downloaded": False,
-            }
+            return _failed_media_row(media_id, media_type, message.id, chat_id)
 
     def _should_parallelize(self, message, file_size: int) -> bool:
         """Decide whether this file should use the parallel chunked path.
