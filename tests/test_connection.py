@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodPremiumWaitError, FloodWaitError
 
 from src import connection
 from src.connection import TelegramConnection
@@ -737,3 +737,30 @@ async def test_async_context_manager_exit():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.asyncio
+async def test_connection_flood_retry_covers_premium_flood_too():
+    """FloodPremiumWaitError is NOT a FloodWaitError subclass — the lone catch
+    turned a premium flood on get_me into a hard connect() failure with no
+    retry, while every other flood-aware site in the codebase treats the pair
+    as one class of error."""
+    calls = {"n": 0}
+
+    async def flaky_api():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FloodPremiumWaitError(request=None, capture=1)
+        return "ok"
+
+    async def no_sleep(seconds):
+        return None
+
+    with (
+        patch.object(connection.asyncio, "sleep", no_sleep),
+        patch("src.connection.random.uniform", return_value=1.0),
+    ):
+        result = await connection._call_with_flood_retry(flaky_api)
+
+    assert result == "ok"
+    assert calls["n"] == 2
