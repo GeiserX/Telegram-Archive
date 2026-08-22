@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -642,8 +643,18 @@ class Config:
         self.display_chat_ids = self._parse_id_list(os.getenv("DISPLAY_CHAT_IDS", ""))
 
         # Timezone configuration for viewer display
-        # Defaults to Europe/Madrid if not specified
-        self.viewer_timezone = os.getenv("VIEWER_TIMEZONE", "Europe/Madrid")
+        # Defaults to Europe/Madrid if not specified. Validated HERE: the
+        # stats scheduler builds ZoneInfo(viewer_timezone) inside a retry
+        # loop whose catch-all would otherwise log-and-sleep every hour,
+        # forever, on a misspelled tz name (the request path already falls
+        # back to UTC; the scheduler had no such defence).
+        viewer_timezone = os.getenv("VIEWER_TIMEZONE", "Europe/Madrid")
+        try:
+            ZoneInfo(viewer_timezone)
+        except ZoneInfoNotFoundError, ValueError, KeyError:
+            logger.warning(f"VIEWER_TIMEZONE {viewer_timezone!r} is not a known timezone; falling back to UTC")
+            viewer_timezone = "UTC"
+        self.viewer_timezone = viewer_timezone
 
         # Viewer notifications (internal use, prefer PUSH_NOTIFICATIONS)
         self.enable_notifications = _parse_bool_env("ENABLE_NOTIFICATIONS", False)
@@ -663,8 +674,18 @@ class Config:
 
         # Stats calculation schedule
         # Daily calculation of statistics (chat counts, message counts, etc.)
-        # Default: 03:00 (3am) in the configured viewer timezone
-        self.stats_calculation_hour = int(os.getenv("STATS_CALCULATION_HOUR", "3"))
+        # Default: 03:00 (3am) in the configured viewer timezone. Documented
+        # as 0-23 and validated here for the same reason as the timezone:
+        # now.replace(hour=24) raises inside the scheduler's hourly catch-all.
+        stats_hour_raw = os.getenv("STATS_CALCULATION_HOUR", "3")
+        try:
+            stats_hour = int(stats_hour_raw)
+        except ValueError:
+            stats_hour = -1
+        if not 0 <= stats_hour <= 23:
+            logger.warning(f"STATS_CALCULATION_HOUR {stats_hour_raw!r} is not an hour in 0-23; using 3")
+            stats_hour = 3
+        self.stats_calculation_hour = stats_hour
 
         # Show stats in viewer UI
         # When disabled, hides the stats dropdown next to "Telegram Archive" title
