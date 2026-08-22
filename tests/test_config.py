@@ -2055,3 +2055,72 @@ class TestEventWebhookConfig(unittest.TestCase):
         self.assertNotIn(self.URL, joined)
         self.assertNotIn("secret-token-path", joined)
         self.assertIn("EVENT_WEBHOOK enabled", joined)
+
+
+class TestFilterIdNormalization(unittest.TestCase):
+    """Capture-side twin of the viewer's DISPLAY_CHAT_IDS auto-correction: a
+    filter id copied without the -100 marked prefix silently matched nothing —
+    for exclude/skip lists the dangerous direction, since capture continued
+    while the startup log confirmed the configured intent by count."""
+
+    MARKED = -1000000000123
+    BARE = 123
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **extra):
+        env = _get_base_env(self.temp_dir) | extra
+        with patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def test_bare_exclude_id_is_corrected_and_the_decision_flips(self):
+        config = self._config(CHAT_TYPES="channels", GLOBAL_EXCLUDE_CHAT_IDS=str(self.BARE))
+        # Before: the bare id matches nothing — the excluded channel captures.
+        self.assertTrue(config.should_backup_chat(self.MARKED, False, False, True))
+
+        corrected, unresolved = config.normalize_filter_ids({self.MARKED})
+
+        self.assertEqual((corrected, unresolved), (1, 0))
+        self.assertEqual(config.global_exclude_ids, {self.MARKED})
+        self.assertFalse(config.should_backup_chat(self.MARKED, False, False, True))
+
+    def test_skip_topic_keys_are_corrected_with_topics_preserved(self):
+        config = self._config(SKIP_TOPIC_IDS=f"{self.BARE}:7,{self.BARE}:9")
+        self.assertFalse(config.should_skip_topic(self.MARKED, 7))
+
+        corrected, unresolved = config.normalize_filter_ids({self.MARKED})
+
+        self.assertEqual(corrected, 1)
+        self.assertEqual(config.skip_topic_ids, {self.MARKED: {7, 9}})
+        self.assertTrue(config.should_skip_topic(self.MARKED, 7))
+
+    def test_unarchived_ids_are_kept_untouched(self):
+        config = self._config(CHAT_TYPES="channels", SKIP_MEDIA_CHAT_IDS="456")
+        corrected, unresolved = config.normalize_filter_ids({self.MARKED})
+        self.assertEqual((corrected, unresolved), (0, 1))
+        self.assertEqual(config.skip_media_chat_ids, {456})
+
+    def test_whitelist_membership_and_mode_survive_correction(self):
+        config = self._config(CHAT_IDS=str(self.BARE))
+        self.assertTrue(config.whitelist_mode)
+        corrected, _ = config.normalize_filter_ids({self.MARKED})
+        self.assertEqual(corrected, 1)
+        self.assertTrue(config.whitelist_mode)
+        self.assertEqual(config.chat_ids, {self.MARKED})
+
+    def test_account_scoped_view_corrects_both_surfaces(self):
+        """Workers read the mutable sets AND the frozen decision filters —
+        normalization must rewrite both or they'd disagree."""
+        config = self._config(CHAT_TYPES="channels", SKIP_MEDIA_CHAT_IDS=str(self.BARE), DOWNLOAD_MEDIA="true")
+        scoped = config.for_account(1)
+        self.assertTrue(scoped.should_download_media_for_chat(self.MARKED))
+
+        corrected, _ = scoped.normalize_filter_ids({self.MARKED})
+
+        self.assertEqual(corrected, 1)
+        self.assertEqual(scoped.skip_media_chat_ids, {self.MARKED})  # mutable surface
+        self.assertFalse(scoped.should_download_media_for_chat(self.MARKED))  # frozen surface

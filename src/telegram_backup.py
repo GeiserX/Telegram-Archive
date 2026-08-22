@@ -1070,6 +1070,27 @@ class TelegramBackup:
             # ever persisted and this stays empty (warning-only behaviour).
             await self._load_followed_migrations()
 
+            # Auto-correct filter ids missing the -100 marked prefix, against
+            # this account's archived chats — the capture-side twin of the
+            # viewer's DISPLAY_CHAT_IDS normalization. Runs before any
+            # filtering below so a corrected exclude applies THIS run; an id
+            # whose chat is not archived yet corrects on the next run (same
+            # convergence the viewer accepted). Counts only, never ids (PII).
+            try:
+                archived_ids = {c["id"] for c in await self.db.get_all_chats(account_id=self.account_id)}
+                corrected, unresolved = self.config.normalize_filter_ids(archived_ids)
+                if corrected:
+                    logger.warning(
+                        f"Capture filters: auto-corrected {corrected} id entr{'y' if corrected == 1 else 'ies'} "
+                        "to marked (channel/supergroup) format"
+                    )
+                if unresolved:
+                    logger.info(f"Capture filters: {unresolved} configured id entr(y/ies) not in the archive yet")
+            except Exception as e:
+                # MagicMock configs in tests land here too; normalization is
+                # strictly best-effort and must never block a backup.
+                logger.debug("Filter id normalization skipped: %s", type(e).__name__)
+
             # Whitelist mode: skip expensive get_dialogs() and fetch only the
             # specified chats directly.  For accounts with many dialogs the full
             # dialog fetch can hang indefinitely (see #95).

@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -190,6 +190,41 @@ class AccountConfig:
     session_path: str
 
 
+# The eleven id-carrying filter fields (chat_types is a vocabulary, not ids).
+# Shared by Config and AccountScopedConfig normalization below.
+_FILTER_ID_SET_FIELDS = (
+    "chat_ids",
+    "global_include_ids",
+    "global_exclude_ids",
+    "private_include_ids",
+    "private_exclude_ids",
+    "groups_include_ids",
+    "groups_exclude_ids",
+    "channels_include_ids",
+    "channels_exclude_ids",
+    "priority_chat_ids",
+    "skip_media_chat_ids",
+)
+
+
+def _normalize_id_set_attrs(config_like, existing_ids: set) -> tuple[int, int]:
+    """Auto-correct every id-set filter attribute on config_like; counts only."""
+    from .message_utils import normalize_configured_chat_ids
+
+    corrected_total = 0
+    unresolved_total = 0
+    for name in _FILTER_ID_SET_FIELDS:
+        current = getattr(config_like, name)
+        if not current:
+            continue
+        normalized, corrected, unresolved = normalize_configured_chat_ids(set(current), existing_ids)
+        if corrected:
+            setattr(config_like, name, set(normalized))
+        corrected_total += corrected
+        unresolved_total += unresolved
+    return corrected_total, unresolved_total
+
+
 @dataclass(frozen=True)
 class AccountFilters:
     """The effective capture-filter set one account sweeps and listens with (8.1, #313).
@@ -319,6 +354,28 @@ class AccountScopedConfig:
         if not self._base.download_media:
             return False
         return chat_id not in self.filters.skip_media_chat_ids
+
+    def normalize_filter_ids(self, existing_ids: set) -> tuple[int, int]:
+        """Auto-correct this account's filter ids against its archived chats.
+
+        The viewer's _normalize_display_chat_ids twin for the capture side: a
+        bare id copied without the -100 marked prefix otherwise silently
+        matches nothing — for exclude/skip lists that is the dangerous
+        direction, capture continuing while startup logs confirm the intent.
+        Rewrites both surfaces workers read — the mutable set attributes AND
+        the frozen per-account decision filters — plus the shared
+        SKIP_TOPIC_IDS keys on the base config. Returns (corrected,
+        unresolved) counts; ids are never logged.
+        """
+        corrected, unresolved = _normalize_id_set_attrs(self, existing_ids)
+        if corrected:
+            self.whitelist_mode = len(self.chat_ids) > 0
+            self.filters = replace(
+                self.filters,
+                **{name: frozenset(getattr(self, name)) for name in _FILTER_ID_SET_FIELDS},
+            )
+        topic_corrected, topic_unresolved = self._base._normalize_skip_topic_keys(existing_ids)
+        return corrected + topic_corrected, unresolved + topic_unresolved
 
 
 class Config:
@@ -1115,6 +1172,35 @@ class Config:
     def for_account(self, index: int) -> AccountScopedConfig:
         """The config view the capture workers of account ``index`` receive."""
         return AccountScopedConfig(self, index, self.filters_for(index))
+
+    def normalize_filter_ids(self, existing_ids: set) -> tuple[int, int]:
+        """Legacy single-account twin of AccountScopedConfig.normalize_filter_ids."""
+        corrected, unresolved = _normalize_id_set_attrs(self, existing_ids)
+        if corrected:
+            self.whitelist_mode = len(self.chat_ids) > 0
+        topic_corrected, topic_unresolved = self._normalize_skip_topic_keys(existing_ids)
+        return corrected + topic_corrected, unresolved + topic_unresolved
+
+    def _normalize_skip_topic_keys(self, existing_ids: set) -> tuple[int, int]:
+        """Auto-correct SKIP_TOPIC_IDS chat keys (shared across accounts)."""
+        if not self.skip_topic_ids:
+            return 0, 0
+        rebuilt: dict[int, set[int]] = {}
+        corrected = 0
+        unresolved = 0
+        for old_key, topics in self.skip_topic_ids.items():
+            new_key = old_key
+            if old_key not in existing_ids:
+                marked_key = -1000000000000 - old_key
+                if old_key > 0 and marked_key in existing_ids:
+                    new_key = marked_key
+                    corrected += 1
+                else:
+                    unresolved += 1
+            rebuilt.setdefault(new_key, set()).update(topics)
+        if corrected:
+            self.skip_topic_ids = rebuilt
+        return corrected, unresolved
 
     def should_skip_topic(self, chat_id: int, topic_id: int | None) -> bool:
         """Check if a specific topic in a chat should be skipped.
