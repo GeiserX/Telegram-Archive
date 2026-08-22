@@ -21,6 +21,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Teardown bound for the LISTEN connection: close() on a dead TCP socket waits
+# for the server's ack until the OS timeout, and stop() awaits the listen task.
+_TEARDOWN_TIMEOUT_SECONDS = 5.0
+
 
 def _json_serializer(obj):
     """Custom JSON serializer for datetime objects."""
@@ -287,19 +291,30 @@ class RealtimeListener:
                     await asyncio.sleep(1)
 
             except asyncio.CancelledError:
-                break
+                # Re-raise so the task actually ends CANCELLED: swallowing it
+                # made stop()'s await return as a normal exit and would leave
+                # a future asyncio.timeout/TaskGroup wrapper blind to its own
+                # cancellation.
+                raise
             except Exception as e:
                 logger.error(f"PostgreSQL LISTEN error: {e}")
                 await asyncio.sleep(5)  # Retry after 5 seconds
             finally:
                 # Always tear down the connection, even when CancelledError or
                 # another exception interrupts the "keep connection alive" loop --
-                # otherwise a flapping DB leaks one connection per retry.
+                # otherwise a flapping DB leaks one connection per retry. The
+                # teardown is BOUNDED: on a wedged connection — the very case
+                # the retry loop exists for — an unbounded close() blocks until
+                # the OS gives up the socket, and stop() awaits this task, so
+                # viewer shutdown would hang past its grace period into SIGKILL.
                 if conn is not None:
                     with contextlib.suppress(Exception):
-                        await conn.remove_listener("telegram_updates", self._pg_callback)
+                        await asyncio.wait_for(
+                            conn.remove_listener("telegram_updates", self._pg_callback),
+                            timeout=_TEARDOWN_TIMEOUT_SECONDS,
+                        )
                     with contextlib.suppress(Exception):
-                        await conn.close()
+                        await asyncio.wait_for(conn.close(), timeout=_TEARDOWN_TIMEOUT_SECONDS)
 
     def _pg_callback(self, connection, pid, channel, payload):
         """Handle PostgreSQL notification."""
