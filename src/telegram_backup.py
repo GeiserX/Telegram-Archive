@@ -2482,7 +2482,7 @@ class TelegramBackup:
                     if remote_edit_date and remote_edit_date != local_edit_date:
                         # Update text and edit_date; count only edits the archive
                         # actually accepted (the adapter re-checks under lock).
-                        outcome = await self.db.update_message_text(
+                        outcome, _ = await self.db.update_message_text(
                             chat_id, msg_id, remote_msg.message, remote_msg.edit_date, account_id=self.account_id
                         )
                         if outcome == "applied":

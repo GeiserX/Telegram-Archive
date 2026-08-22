@@ -1083,6 +1083,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
     def test_edited_message_updated_in_db(self):
         """Remote message with different edit_date triggers update."""
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: datetime(2024, 1, 1)})
+        self.backup.db.update_message_text = AsyncMock(return_value=("applied", None))
         remote_msg = MagicMock()
         remote_msg.edit_date = datetime(2024, 6, 15)
         remote_msg.message = "updated text"

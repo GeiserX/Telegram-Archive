@@ -1830,3 +1830,132 @@ class TestMultiAccountConfig(unittest.TestCase):
         self.assertNotIn("very-private-label", text)
         self.assertNotIn("10001", text)
         self.assertIn("index=1", text)
+
+
+class TestEventWebhookConfig(unittest.TestCase):
+    """EVENT_WEBHOOK_* parsing (#336): warn + force-disable, never abort.
+
+    The webhook is a side-channel, so every sub-option failure logs one
+    warning naming the variable (never echoing the value — the URL is a
+    capability secret) and disables the webhook; only the master bool follows
+    the raise-on-garbage vocabulary (covered by test_config_bool_vocab).
+    """
+
+    URL = "https://hooks.example.test/secret-token-path"
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _config(self, **extra):
+        env = _get_base_env(self.temp_dir) | {"EVENT_WEBHOOK_ENABLED": "true", "EVENT_WEBHOOK_URL": self.URL} | extra
+        with patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def test_disabled_by_default_and_inert(self):
+        with patch.dict(os.environ, _get_base_env(self.temp_dir), clear=True):
+            config = Config()
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertEqual(config.event_webhook_url, "")
+
+    def test_enabled_defaults(self):
+        config = self._config()
+        self.assertTrue(config.event_webhook_enabled)
+        self.assertEqual(config.event_webhook_method, "POST")
+        self.assertEqual(config.event_webhook_events, {"message_edited", "message_deleted"})
+        self.assertEqual(config.event_webhook_chat_ids, set())
+        self.assertEqual(config.event_webhook_body_template, "")
+        # The default template's content type is declared when none is given.
+        self.assertEqual(config.event_webhook_headers, {"Content-Type": "application/json; charset=utf-8"})
+
+    def test_missing_url_disables(self):
+        env = _get_base_env(self.temp_dir) | {"EVENT_WEBHOOK_ENABLED": "true"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertLogs("src.config", level="WARNING") as logs,
+        ):
+            config = Config()
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_URL" in line for line in logs.output))
+
+    def test_bad_scheme_disables_without_echoing_value(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_URL="ftp://files.example.test/x")
+        self.assertFalse(config.event_webhook_enabled)
+        joined = "\n".join(logs.output)
+        self.assertIn("EVENT_WEBHOOK_URL", joined)
+        self.assertNotIn("ftp://files.example.test", joined)
+
+    def test_bad_method_disables(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_METHOD="PATCH")
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_METHOD" in line for line in logs.output))
+
+    def test_headers_bad_json_disables(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_HEADERS="{not json")
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_HEADERS" in line for line in logs.output))
+
+    def test_headers_non_string_values_disable(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_HEADERS='{"X-Retry": 3}')
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_HEADERS" in line for line in logs.output))
+
+    def test_headers_kept_and_content_type_not_overridden(self):
+        config = self._config(
+            EVENT_WEBHOOK_HEADERS='{"Authorization": "Bearer test@value/here", "content-type": "text/plain"}'
+        )
+        self.assertTrue(config.event_webhook_enabled)
+        self.assertEqual(
+            config.event_webhook_headers,
+            {"Authorization": "Bearer test@value/here", "content-type": "text/plain"},
+        )
+
+    def test_events_subset_and_normalization(self):
+        config = self._config(EVENT_WEBHOOK_EVENTS=" Message_Deleted ")
+        self.assertEqual(config.event_webhook_events, {"message_deleted"})
+
+    def test_unknown_event_disables(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_EVENTS="message_deleted,message_pinned")
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_EVENTS" in line for line in logs.output))
+
+    def test_chat_ids_parsed(self):
+        config = self._config(EVENT_WEBHOOK_CHAT_IDS="-1001, -1002")
+        self.assertEqual(config.event_webhook_chat_ids, {-1001, -1002})
+
+    def test_garbage_chat_ids_disable(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(EVENT_WEBHOOK_CHAT_IDS="-1001,abc")
+        self.assertFalse(config.event_webhook_enabled)
+        self.assertTrue(any("EVENT_WEBHOOK_CHAT_IDS" in line for line in logs.output))
+
+    def test_combination_warnings(self):
+        """Startup names the exact reason a selected event can never fire."""
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            self._config()  # ENABLE_LISTENER unset -> false
+        self.assertTrue(any("ENABLE_LISTENER=false" in line for line in logs.output))
+
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            self._config(ENABLE_LISTENER="true")  # LISTEN_DELETIONS defaults false
+        joined = "\n".join(logs.output)
+        self.assertIn("message_deleted webhooks will never fire", joined)
+
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false")
+        joined = "\n".join(logs.output)
+        self.assertIn("message_edited webhooks will never fire", joined)
+
+    def test_startup_log_never_contains_url(self):
+        with self.assertLogs("src.config", level="INFO") as logs:
+            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true")
+        joined = "\n".join(logs.output)
+        self.assertNotIn(self.URL, joined)
+        self.assertNotIn("secret-token-path", joined)
+        self.assertIn("EVENT_WEBHOOK enabled", joined)

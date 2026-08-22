@@ -877,12 +877,15 @@ class TestMessageOperations:
         """delete_message issues deletes for versions, media, reactions, message and commits."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
+        # Webhook snapshot (#336) probes the row first; no row -> snapshot None.
+        mock_session.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
 
-        await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
+        snapshot = await adapter.delete_message(chat_id=100, message_id=42, account_id=1)
 
-        # 4 deletes: versions, media, reactions, message
-        assert mock_session.execute.await_count == 4
+        # 1 snapshot select + 4 deletes: versions, media, reactions, message
+        assert mock_session.execute.await_count == 5
         mock_session.commit.assert_awaited_once()
+        assert snapshot is None
 
     @pytest.mark.asyncio
     async def test_get_chat_id_for_message_returns_id(self):
@@ -967,7 +970,7 @@ class TestMessageOperations:
         # _record_message_version runs inside a SAVEPOINT (session.begin_nested)
         mock_session.begin_nested = MagicMock(return_value=AsyncMock())
 
-        outcome = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1), account_id=1)
+        outcome, _ = await adapter.update_message_text(100, 42, "edited text", datetime(2025, 6, 1), account_id=1)
 
         assert outcome == "applied"
         assert mock_session.execute.await_count == 4
@@ -978,10 +981,14 @@ class TestMessageOperations:
         """mark_message_deleted stores a soft-delete marker."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
+        # Webhook snapshot (#336) probes the row first; no row -> snapshot None.
+        mock_session.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
 
-        await adapter.mark_message_deleted(100, 42, datetime(2025, 6, 1), account_id=1)
+        snapshot = await adapter.mark_message_deleted(100, 42, datetime(2025, 6, 1), account_id=1)
 
-        mock_session.execute.assert_awaited_once()
+        # 1 snapshot select + 1 soft-delete UPDATE
+        assert mock_session.execute.await_count == 2
+        assert snapshot is None
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio

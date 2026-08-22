@@ -342,7 +342,7 @@ async def test_update_message_text_same_text_is_noop_and_does_not_bump_edit_date
     )
 
     reaction_edit_date = datetime(2026, 6, 26, 10, 15)
-    outcome = await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date, account_id=1)
+    outcome, _ = await sqlite_adapter.update_message_text(300, 28, "original", reaction_edit_date, account_id=1)
 
     message = await _get_message(sqlite_adapter, 28, 300)
     versions = await _get_versions(sqlite_adapter, 28, 300)
@@ -716,13 +716,22 @@ async def test_update_message_text_reports_outcome(sqlite_adapter):
         {"id": 50, "chat_id": 300, "date": datetime(2026, 6, 26, 9, 0), "text": "original"}, account_id=1
     )
 
-    applied = await sqlite_adapter.update_message_text(300, 50, "edited", datetime(2026, 6, 26, 9, 5), account_id=1)
-    noop = await sqlite_adapter.update_message_text(300, 50, "edited", datetime(2026, 6, 26, 9, 5), account_id=1)
-    missing = await sqlite_adapter.update_message_text(300, 999, "x", datetime(2026, 6, 26, 9, 5), account_id=1)
+    applied, applied_prior = await sqlite_adapter.update_message_text(
+        300, 50, "edited", datetime(2026, 6, 26, 9, 5), account_id=1
+    )
+    noop, noop_prior = await sqlite_adapter.update_message_text(
+        300, 50, "edited", datetime(2026, 6, 26, 9, 5), account_id=1
+    )
+    missing, missing_prior = await sqlite_adapter.update_message_text(
+        300, 999, "x", datetime(2026, 6, 26, 9, 5), account_id=1
+    )
 
     assert applied == "applied"
+    assert applied_prior == {"text": "original", "sender_id": None, "sender_name": None}
     assert noop == "noop"
+    assert noop_prior is None
     assert missing == "not_found"
+    assert missing_prior is None
 
 
 @pytest.mark.asyncio
@@ -776,7 +785,7 @@ async def test_version_record_failure_does_not_abort_message_update(sqlite_adapt
 
     monkeypatch.setattr(sqlite_adapter, "_insert_message_version_stmt", _broken_stmt)
 
-    outcome = await sqlite_adapter.update_message_text(300, 53, "edited", datetime(2026, 6, 26, 12, 5), account_id=1)
+    outcome, _ = await sqlite_adapter.update_message_text(300, 53, "edited", datetime(2026, 6, 26, 12, 5), account_id=1)
 
     message = await _get_message(sqlite_adapter, 53, 300)
     versions = await _get_versions(sqlite_adapter, 53, 300)
@@ -805,3 +814,77 @@ async def test_unchanged_reupsert_is_a_semantic_noop(sqlite_adapter):
     assert message.text == "stable"
     assert message.edit_date == datetime(2026, 6, 26, 13, 5)
     assert versions == []
+
+
+# ---------------------------------------------------------------------------
+# Deletion snapshots for the event webhook (#336)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_message_deleted_returns_pre_tombstone_snapshot(sqlite_adapter):
+    """First mark returns is_deleted=0 (webhook fires); a re-mark returns 1
+    (webhook skips); a never-archived id returns None. Tombstone semantics
+    (coalesce, idempotent UPDATE) are covered by the tests above."""
+    await sqlite_adapter.insert_message(
+        {
+            "id": 60,
+            "chat_id": 300,
+            "date": datetime(2026, 6, 26, 16, 0),
+            "text": "doomed",
+            "sender_id": 501,
+            "sender_name": "Ana",
+        },
+        account_id=1,
+    )
+
+    first = await sqlite_adapter.mark_message_deleted(300, 60, datetime(2026, 6, 26, 16, 5), account_id=1)
+    again = await sqlite_adapter.mark_message_deleted(300, 60, datetime(2026, 6, 26, 16, 10), account_id=1)
+    missing = await sqlite_adapter.mark_message_deleted(300, 999, account_id=1)
+
+    assert first == {
+        "text": "doomed",
+        "sender_id": 501,
+        "sender_name": "Ana",
+        "date": datetime(2026, 6, 26, 16, 0),
+        "is_deleted": 0,
+        "media_type": None,
+    }
+    assert again["is_deleted"] == 1
+    assert again["text"] == "doomed"
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_delete_message_returns_snapshot_including_media_type(sqlite_adapter):
+    """Hard delete snapshots the row (text available WITHOUT soft mode) and
+    the media type from the media table, then still removes everything."""
+    await sqlite_adapter.insert_message(
+        {
+            "id": 61,
+            "chat_id": 300,
+            "date": datetime(2026, 6, 26, 17, 0),
+            "text": "hard-deleted",
+            "sender_id": 502,
+            "sender_name": "Bo",
+        },
+        account_id=1,
+    )
+    await sqlite_adapter.insert_media(
+        {"id": "300_61_photo", "message_id": 61, "chat_id": 300, "type": "photo"}, account_id=1
+    )
+
+    snapshot = await sqlite_adapter.delete_message(300, 61, account_id=1)
+    missing = await sqlite_adapter.delete_message(300, 999, account_id=1)
+
+    assert snapshot == {
+        "text": "hard-deleted",
+        "sender_id": 502,
+        "sender_name": "Bo",
+        "date": datetime(2026, 6, 26, 17, 0),
+        "is_deleted": 0,
+        "media_type": "photo",
+    }
+    assert missing is None
+    async with sqlite_adapter.db_manager.async_session_factory() as session:
+        assert await session.get(Message, (1, 300, 61)) is None
