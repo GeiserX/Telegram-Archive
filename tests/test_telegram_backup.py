@@ -1827,12 +1827,14 @@ class TestProcessMessage(unittest.TestCase):
         self.assertIsNone(result["reply_to_text"])
 
     def test_forward_from_id_resolves_channel_title(self):
-        """Forward from channel resolves title via get_entity."""
+        """Forward from a channel unknown locally resolves its title via get_entity."""
+        from telethon.tl.types import PeerChannel
+
         msg = self._make_message(12)
         msg.fwd_from = MagicMock()
         msg.fwd_from.from_name = None
-        msg.fwd_from.from_id = MagicMock(spec=["channel_id"])
-        msg.fwd_from.from_id.channel_id = 555
+        msg.fwd_from.from_id = PeerChannel(channel_id=555)
+        self.backup.db.get_chat_by_id = AsyncMock(return_value=None)
 
         fwd_entity = MagicMock()
         fwd_entity.title = "Forwarded Channel"
@@ -1844,12 +1846,14 @@ class TestProcessMessage(unittest.TestCase):
         self.assertEqual(result["raw_data"]["forward_from_name"], "Forwarded Channel")
 
     def test_forward_from_id_resolves_user_name(self):
-        """Forward from user resolves first+last name via get_entity."""
+        """Forward from a user unknown locally resolves first+last via get_entity."""
+        from telethon.tl.types import PeerUser
+
         msg = self._make_message(13)
         msg.fwd_from = MagicMock()
         msg.fwd_from.from_name = None
-        msg.fwd_from.from_id = MagicMock(spec=["user_id"])
-        msg.fwd_from.from_id.user_id = 777
+        msg.fwd_from.from_id = PeerUser(user_id=777)
+        self.backup.db.get_user_by_id = AsyncMock(return_value=None)
 
         fwd_entity = MagicMock(spec=["first_name", "last_name"])
         fwd_entity.first_name = "John"
@@ -2213,3 +2217,143 @@ class TestBackupDialogCursorAdvancesOnSkippedMessages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestForwardSourceNameResolution(unittest.TestCase):
+    """Forward sources resolve local-first with a per-run cache.
+
+    The sweep path forbids per-message entity resolution (its own comment:
+    one API request per message is avoidable flood risk), yet every forward
+    with a from_id paid a get_entity call — Telethon has no full-entity
+    memory cache, so a 10,000-forward channel cost 10,000 requests per run,
+    every run. Each distinct source now costs at most one lookup per run,
+    negative results included.
+    """
+
+    def setUp(self):
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.account_id = 1
+        self.backup.db = AsyncMock()
+        self.backup.db.get_user_by_id = AsyncMock(return_value=None)
+        self.backup.db.get_chat_by_id = AsyncMock(return_value=None)
+        self.backup.config = MagicMock()
+        self.backup.config.should_download_media_for_chat = MagicMock(return_value=False)
+        self.backup.client = AsyncMock()
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_local_users_table_wins_no_api_call(self):
+        from telethon.tl.types import PeerUser
+
+        self.backup.db.get_user_by_id = AsyncMock(return_value={"first_name": "Ada", "last_name": "Lovelace"})
+
+        name = self._run(self.backup._resolve_forward_source_name(PeerUser(user_id=42)))
+
+        self.assertEqual(name, "Ada Lovelace")
+        self.backup.client.get_entity.assert_not_awaited()
+        self.backup.db.get_user_by_id.assert_awaited_once_with(42)
+
+    def test_local_chats_table_wins_for_channels(self):
+        from telethon.tl.types import PeerChannel
+
+        self.backup.db.get_chat_by_id = AsyncMock(return_value={"title": "News Channel"})
+
+        name = self._run(self.backup._resolve_forward_source_name(PeerChannel(channel_id=99999)))
+
+        self.assertEqual(name, "News Channel")
+        self.backup.client.get_entity.assert_not_awaited()
+        self.backup.db.get_chat_by_id.assert_awaited_once_with(-1000000099999, account_id=1)
+
+    def test_one_api_call_per_distinct_source_per_run(self):
+        from telethon.tl.types import PeerChannel
+
+        entity = MagicMock(spec=["title"])
+        entity.title = "Aggregated"
+        self.backup.client.get_entity = AsyncMock(return_value=entity)
+
+        async def scenario():
+            results = []
+            for _ in range(500):
+                results.append(await self.backup._resolve_forward_source_name(PeerChannel(channel_id=777)))
+            return results
+
+        results = self._run(scenario())
+
+        self.assertEqual(results, ["Aggregated"] * 500)
+        self.backup.client.get_entity.assert_awaited_once()
+
+    def test_unresolvable_source_costs_one_request_not_one_per_message(self):
+        from telethon.tl.types import PeerUser
+
+        self.backup.client.get_entity = AsyncMock(side_effect=ValueError("no such user"))
+
+        async def scenario():
+            return [await self.backup._resolve_forward_source_name(PeerUser(user_id=314)) for _ in range(50)]
+
+        results = self._run(scenario())
+
+        self.assertEqual(results, [None] * 50)
+        self.backup.client.get_entity.assert_awaited_once()
+
+    def test_cache_at_capacity_evicts_fifo_instead_of_refusing_new_sources(self):
+        """Beyond the cap the cache must stay best-effort (FIFO eviction), not
+        go read-only: a refuse-at-cap policy made every message from source
+        10,001+ repeat the get_entity call — the per-message API pattern this
+        cache exists to prevent."""
+        from telethon.tl.types import PeerChannel
+
+        entity = MagicMock(spec=["title"])
+        entity.title = "Overflow"
+        self.backup.client.get_entity = AsyncMock(return_value=entity)
+        # The cache is lazily created on first resolve; pre-fill it to the cap
+        # with resolved entries. Id 0 is the oldest.
+        cache = self.backup._forward_name_cache = {
+            marked_id: f"cached-{marked_id}" for marked_id in range(self.backup._FORWARD_NAME_CACHE_LIMIT)
+        }
+
+        async def scenario():
+            return [await self.backup._resolve_forward_source_name(PeerChannel(channel_id=777)) for _ in range(5)]
+
+        results = self._run(scenario())
+
+        self.assertEqual(results, ["Overflow"] * 5)
+        # One lookup, then served from cache — the new source WAS admitted...
+        self.backup.client.get_entity.assert_awaited_once()
+        marked = next(k for k in cache if k not in range(self.backup._FORWARD_NAME_CACHE_LIMIT))
+        self.assertEqual(cache[marked], "Overflow")
+        # ...the oldest entry made room, and the cap still holds.
+        self.assertNotIn(0, cache)
+        self.assertIn(1, cache)
+        self.assertEqual(len(cache), self.backup._FORWARD_NAME_CACHE_LIMIT)
+
+    def test_process_message_stores_the_resolved_name(self):
+        from telethon.tl.types import PeerChannel
+
+        self.backup.db.get_chat_by_id = AsyncMock(return_value={"title": "Origin"})
+        msg = MagicMock()
+        msg.id = 7
+        msg.sender = None
+        msg.sender_id = 42
+        msg.date = datetime(2024, 1, 1)
+        msg.text = "fwd"
+        msg.reply_to_msg_id = None
+        msg.reply_to = None
+        msg.edit_date = None
+        msg.out = False
+        msg.media = None
+        msg.grouped_id = None
+        msg.post_author = None
+        msg.action = None
+        msg.fwd_from = MagicMock()
+        msg.fwd_from.from_name = None
+        msg.fwd_from.from_id = PeerChannel(channel_id=555)
+
+        result = self._run(self.backup._process_message(msg, 100))
+
+        self.assertEqual(result["raw_data"]["forward_from_name"], "Origin")
+        self.backup.client.get_entity.assert_not_awaited()

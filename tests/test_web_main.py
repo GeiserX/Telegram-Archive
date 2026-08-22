@@ -1186,3 +1186,60 @@ class TestSharedChatRealtimeResolution(unittest.IsolatedAsyncioTestCase):
                     {"type": "new_message", "chat_id": 42, "account_id": garbage, "data": {"message": {"id": 1}}}
                 )
             mock_bc.assert_not_awaited()
+
+
+@_skip_unless_web_main
+class TestPushSenderNamePrecedence(unittest.IsolatedAsyncioTestCase):
+    """The push path rides resolve_sender_display_name, fed from the payload
+    the listener already enriches with the API row shape — no per-notification
+    DB query on the common path, and no fourth hand-synced copy of the
+    precedence chain to drift from the app."""
+
+    def setUp(self):
+        self._saved_display = web_main.config.display_chat_ids
+        self._saved_push = web_main.push_manager
+        self._saved_db = web_main.db
+        web_main.config.display_chat_ids = set()
+        self.push = MagicMock()
+        self.push.is_enabled = True
+        self.push.notify_new_message = AsyncMock()
+        web_main.push_manager = self.push
+        web_main.db = AsyncMock()
+        web_main.db.get_chat_by_id = AsyncMock(
+            side_effect=lambda chat_id, **kwargs: _chat_row(chat_id, f"refPushName{chat_id:011d}")
+        )
+        web_main._broadcast_chat_cache.clear()
+
+    def tearDown(self):
+        web_main.config.display_chat_ids = self._saved_display
+        web_main.push_manager = self._saved_push
+        web_main.db = self._saved_db
+        web_main._broadcast_chat_cache.clear()
+
+    def _payload(self, message):
+        return {"type": "new_message", "chat_id": 100, "data": {"message": message}}
+
+    async def test_enriched_payload_needs_no_db_lookup(self):
+        await web_main.handle_realtime_notification(
+            self._payload(
+                {"id": 1, "sender_id": 42, "sender_name": "", "first_name": "Ada", "last_name": "L", "text": "hi"}
+            )
+        )
+
+        web_main.db.get_user_by_id.assert_not_awaited()
+        assert self.push.notify_new_message.await_args.kwargs["sender_name"] == "Ada L"
+
+    async def test_capture_time_snapshot_still_wins(self):
+        await web_main.handle_realtime_notification(
+            self._payload({"id": 1, "sender_id": 42, "sender_name": "Snapshot", "first_name": "Ada", "text": "hi"})
+        )
+
+        assert self.push.notify_new_message.await_args.kwargs["sender_name"] == "Snapshot"
+
+    async def test_bare_payload_falls_back_to_one_db_lookup(self):
+        web_main.db.get_user_by_id = AsyncMock(return_value={"first_name": "Grace", "last_name": "", "username": "gh"})
+
+        await web_main.handle_realtime_notification(self._payload({"id": 1, "sender_id": 42, "text": "hi"}))
+
+        web_main.db.get_user_by_id.assert_awaited_once_with(42)
+        assert self.push.notify_new_message.await_args.kwargs["sender_name"] == "Grace"

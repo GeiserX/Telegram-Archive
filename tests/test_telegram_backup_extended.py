@@ -2216,6 +2216,36 @@ class TestProcessMedia(unittest.TestCase):
         self.backup._get_media_size = MagicMock(return_value=100)
         self.backup._get_media_filename = MagicMock(return_value="test.jpg")
 
+    def test_no_file_download_leaves_a_retryable_row(self):
+        """A download that yields no file must leave a downloaded=0 row —
+        the pending-media drain only sees rows, so the old return None made
+        this failure shape permanently silent while the sibling exception
+        path was retried every cycle."""
+        msg = self._make_photo_message(21)
+        self._setup_photo_download()
+        # download_media returns None and writes nothing: no file appears.
+        self.backup.client.download_media = AsyncMock(return_value=None)
+
+        result = _run(self.backup._process_media(msg, 100))
+
+        self.assertIsNotNone(result, "the failure must leave a row behind")
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(result["id"], "100_21_photo")
+        self.assertEqual(result["message_id"], 21)
+        self.assertEqual(result["chat_id"], 100)
+
+    def test_no_file_download_leaves_a_retryable_row_with_dedup(self):
+        """Same guarantee on the deduplicated path."""
+        msg = self._make_photo_message(22)
+        self._setup_photo_download()
+        self.backup.config.deduplicate_media = True
+        with patch("src.telegram_backup.download_and_shard_media", AsyncMock(return_value=(None, None))):
+            result = _run(self.backup._process_media(msg, 100))
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(result["id"], "100_22_photo")
+
     def test_document_with_dimensions_and_duration(self):
         """Document with width, height, and duration stores metadata."""
         msg = _make_message(1)

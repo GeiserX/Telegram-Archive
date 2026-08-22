@@ -1,6 +1,6 @@
 /**
  * Service Worker for Telegram Archive Web Push Notifications.
- * 
+ *
  * This enables push notifications even when the browser tab is closed.
  * The service worker runs in the background and handles:
  * - Receiving push messages from the server
@@ -36,7 +36,7 @@ self.addEventListener('activate', (event) => {
 // Push event - handle incoming push notifications
 self.addEventListener('push', (event) => {
     console.log('[SW] Push received');
-    
+
     let payload = {
         title: 'Telegram Archive',
         body: 'New message received',
@@ -45,7 +45,7 @@ self.addEventListener('push', (event) => {
         tag: 'telegram-archive',
         data: {}
     };
-    
+
     try {
         if (event.data) {
             const data = event.data.json();
@@ -68,7 +68,7 @@ self.addEventListener('push', (event) => {
             payload.body = event.data.text();
         }
     }
-    
+
     const options = {
         body: payload.body,
         icon: payload.icon,
@@ -81,7 +81,7 @@ self.addEventListener('push', (event) => {
         silent: payload.silent,
         vibrate: [200, 100, 200]
     };
-    
+
     event.waitUntil(
         self.registration.showNotification(payload.title, options)
     );
@@ -90,12 +90,12 @@ self.addEventListener('push', (event) => {
 // Notification click event - handle user clicking on notification
 self.addEventListener('notificationclick', (event) => {
     console.log('[SW] Notification clicked');
-    
+
     const notification = event.notification;
     const data = notification.data || {};
-    
+
     notification.close();
-    
+
     // Determine the URL to open. The fallback builds the same ref-addressed
     // deep link the server sends in data.url — the chat's opaque ref, never
     // the chat id, so no chat id reaches browser history or access logs.
@@ -108,7 +108,7 @@ self.addEventListener('notificationclick', (event) => {
             url += `&msg=${encodeURIComponent(data.message_id)}`;
         }
     }
-    
+
     // `url` is relative; client.url is the absolute creation URL, so comparing them
     // directly was true every time and client.navigate() always ran — a full document
     // reload that threw away the loaded messages, the scroll position, any open

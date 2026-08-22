@@ -35,8 +35,8 @@ from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import ChatScope, parse_entitlement_column
 from ..db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
-from ..message_utils import describe_exception, media_display_filename
-from ..realtime import RealtimeListener
+from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
+from ..realtime import RealtimeListener, resolve_internal_push_secret
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -384,15 +384,24 @@ async def handle_realtime_notification(payload: dict):
             message = data.get("message", {})
             chat_title = chat.get("title") or "Telegram"
 
-            snapshot_name = message.get("sender_name")
-            sender_name = snapshot_name.strip() if isinstance(snapshot_name, str) else ""
-            if not sender_name and message.get("sender_id"):
-                sender = await db.get_user_by_id(message.get("sender_id")) if db else None
+            # One precedence rule for "who sent this row" — the shared helper,
+            # fed from the payload the listener already enriches with the API
+            # row shape (first/last/username), so the common path costs no DB
+            # query. The lookup below remains only for payloads that carry no
+            # user fields at all.
+            sender_name = resolve_sender_display_name(
+                message.get("sender_name"),
+                message.get("first_name"),
+                message.get("last_name"),
+                message.get("username"),
+            )
+            if sender_name is None and message.get("sender_id") and db:
+                sender = await db.get_user_by_id(message.get("sender_id"))
                 if sender:
-                    sender_name = (
-                        f"{sender.get('first_name') or ''} {sender.get('last_name') or ''}".strip()
-                        or sender.get("username", "")
+                    sender_name = resolve_sender_display_name(
+                        None, sender.get("first_name"), sender.get("last_name"), sender.get("username")
                     )
+            sender_name = sender_name or ""
 
             await push_manager.notify_new_message(
                 chat_id=chat_id,
@@ -2827,7 +2836,7 @@ async def internal_push(request: Request):
 
     # Require a shared secret for non-loopback private/Docker networks. Loopback
     # stays usable for single-container/local setups.
-    push_secret = os.getenv("INTERNAL_PUSH_SECRET")
+    push_secret = resolve_internal_push_secret(getattr(db.db_manager, "database_url", None) if db else None)
     if not is_loopback and not push_secret:
         logger.warning(f"Rejected /internal/push from {client_host}: INTERNAL_PUSH_SECRET is required")
         raise HTTPException(status_code=403, detail="INTERNAL_PUSH_SECRET required")
