@@ -40,11 +40,14 @@ from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
 from .event_webhook import EventWebhookSender
 from .message_utils import (
+    METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
     build_media_filename,
+    classify_extended_media,
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
+    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
     extract_reactions,
@@ -838,7 +841,10 @@ class TelegramListener:
             return "geo"
         elif isinstance(media, MessageMediaPoll):
             return "poll"
-        return None
+        # The nine kinds this ladder used to flatten to None (venue, dice,
+        # invoice, story, giveaways, live location, game, unsupported):
+        # metadata-only types with a typed viewer chip, never downloaded.
+        return classify_extended_media(media)
 
     def _get_media_filename(self, message, media_type: str, telegram_file_id: str | None = None) -> str:
         """Generate a filename for media."""
@@ -874,7 +880,7 @@ class TelegramListener:
         media = message.media
         media_type = self._get_media_type(media)
 
-        if not media_type or media_type in ("contact", "geo", "poll"):
+        if not media_type or media_type in METADATA_ONLY_MEDIA_TYPES:
             return None  # These don't have downloadable files
 
         try:
@@ -1274,6 +1280,11 @@ class TelegramListener:
                 if webpage_preview is not None:
                     message_data["raw_data"]["webpage"] = webpage_preview
 
+                # Extended media kinds: same raw_data shape the sweep writes.
+                extended_media = extract_extended_media_details(message.media)
+                if extended_media is not None:
+                    extended_kind, extended_details = extended_media
+                    message_data["raw_data"][extended_kind] = extended_details
                 # Forward origin pointer: pure metadata off the event, no API
                 # cost — the sweep writer captures the same key.
                 forward_origin = extract_forward_origin(message)
