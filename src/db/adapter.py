@@ -1618,14 +1618,28 @@ class DatabaseAdapter:
             result = await session.execute(self._message_versions_query(chat_id, start_date, end_date, account_id))
             return [self._message_version_to_dict(row) for row in result.scalars()]
 
-    async def iter_message_versions_for_export(self, chat_id: int, *, account_id: int | None = None):
+    async def iter_message_versions_for_export(
+        self,
+        chat_id: int,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ):
         """Stream a chat's message versions one by one (async generator).
 
         Mirrors get_messages_for_export so the export endpoint never
-        materializes an entire edit history in memory.
+        materializes an entire edit history in memory. The optional window
+        uses the export contract (>= from, < to) — deliberately NOT the shared
+        query's inclusive end_date, whose contract other callers own.
         """
         async with self.db_manager.async_session_factory() as session:
-            result = await session.stream(self._message_versions_query(chat_id, account_id=account_id))
+            stmt = self._message_versions_query(chat_id, account_id=account_id)
+            if from_date is not None:
+                stmt = stmt.where(MessageVersion.date >= from_date)
+            if to_date is not None:
+                stmt = stmt.where(MessageVersion.date < to_date)
+            result = await session.stream(stmt)
             async for row in result.scalars():
                 yield self._message_version_to_dict(row)
 
@@ -3621,7 +3635,13 @@ class DatabaseAdapter:
             }
 
     async def get_messages_for_export(
-        self, chat_id: int, include_media: bool = False, *, account_id: int | None = None
+        self,
+        chat_id: int,
+        include_media: bool = False,
+        *,
+        account_id: int | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
     ):
         """
         Get messages for export with user info.
@@ -3633,6 +3653,8 @@ class DatabaseAdapter:
         Args:
             chat_id: Chat ID to export
             include_media: If True, include media info from media table
+            from_date: naive-UTC inclusive lower bound on Message.date
+            to_date: naive-UTC EXCLUSIVE upper bound on Message.date
 
         Yields:
             Message dictionaries with user info
@@ -3685,6 +3707,10 @@ class DatabaseAdapter:
 
             if account_id is not None:
                 stmt = stmt.where(Message.account_id == account_id)
+            if from_date is not None:
+                stmt = stmt.where(Message.date >= from_date)
+            if to_date is not None:
+                stmt = stmt.where(Message.date < to_date)
 
             result = await session.stream(stmt)
             async for row in result:
