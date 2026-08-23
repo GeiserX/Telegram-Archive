@@ -46,7 +46,7 @@ from ..message_utils import (
     utcnow_naive,
 )
 from .base import DatabaseManager
-from .fts import PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, pg_tsquery
+from .fts import PG_TSQUERY_FROM_SEARCH, PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, search_has_words
 from .models import (
     DEFAULT_ACCOUNT_ID,
     Account,
@@ -3313,10 +3313,12 @@ class DatabaseAdapter:
             return text(
                 "messages.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH :fts_match)"
             ).bindparams(fts_match=match)
-        tsq = pg_tsquery(search)
-        if tsq is None:
+        if not search_has_words(search):
             return None
-        return text("messages.text_search @@ to_tsquery('simple', :fts_tsq)").bindparams(fts_tsq=tsq)
+        # The tsquery is built inside PostgreSQL from the same parser that
+        # built the index (see PG_TSQUERY_FROM_SEARCH) — the raw search
+        # string only ever travels as a bind parameter.
+        return text(f"messages.text_search @@ {PG_TSQUERY_FROM_SEARCH}").bindparams(fts_search=search)
 
     async def get_messages_paginated(
         self,

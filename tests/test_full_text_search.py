@@ -25,11 +25,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager
 from src.db.fts import (
+    PG_TSQUERY_FROM_SEARCH,
     SQLITE_CREATE_FTS,
     SQLITE_REBUILD,
     SQLITE_TRIGGERS,
     fts_match_query,
-    pg_tsquery,
+    search_has_words,
 )
 from src.db.models import Base, Chat, Message
 
@@ -82,12 +83,20 @@ async def _make_adapter(with_fts: bool) -> DatabaseAdapter:
 
 @pytest_asyncio.fixture
 async def adapter():
-    return await _make_adapter(with_fts=True)
+    instance = await _make_adapter(with_fts=True)
+    try:
+        yield instance
+    finally:
+        await instance.db_manager.engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def adapter_without_fts():
-    return await _make_adapter(with_fts=False)
+    instance = await _make_adapter(with_fts=False)
+    try:
+        yield instance
+    finally:
+        await instance.db_manager.engine.dispose()
 
 
 async def _search_ids(adapter_, query: str) -> list[int]:
@@ -113,6 +122,20 @@ async def test_word_and_prefix_matches(adapter):
 async def test_diacritics_fold(adapter):
     """remove_diacritics 2: searching 'cafe' finds 'Café'."""
     assert await _search_ids(adapter, "cafe") == [2]
+
+
+@pytest.mark.asyncio
+async def test_underscore_separates_like_the_tokenizer(adapter):
+    """unicode61 treats '_' as a separator (it is NOT \\w): 'foo_bar' is
+    indexed as foo,bar, so the query must become two required prefixes —
+    keeping it one quoted term silently narrowed the search to a phrase.
+    """
+    async with adapter.db_manager.async_session_factory() as session:
+        session.add(_msg(7, "prefix foo_bar suffix"))
+        session.add(_msg(8, "foo between bar"))
+        await session.commit()
+    assert await _search_ids(adapter, "foo_bar") == [7, 8]  # word-AND contract
+    assert await _search_ids(adapter, "foo") == [7, 8]
 
 
 @pytest.mark.asyncio
@@ -193,15 +216,42 @@ async def test_punctuation_only_search_falls_back_even_with_the_layer(adapter):
 def test_fts_match_query_shapes():
     assert fts_match_query("hola mundo") == '"hola"* "mundo"*'
     assert fts_match_query("covid-19") == '"covid"* "19"*'
+    assert fts_match_query("foo_bar") == '"foo"* "bar"*'  # '_' separates, like unicode61
     assert fts_match_query('a "b" OR (c)') == '"a"* "b"* "OR"* "c"*'
     assert fts_match_query("$$$") is None
     assert fts_match_query("") is None
 
 
-def test_pg_tsquery_shapes():
-    assert pg_tsquery("hola mundo") == "'hola':* & 'mundo':*"
-    assert pg_tsquery("covid-19") == "'covid':* & '19':*"
-    assert pg_tsquery("!!!") is None
+def test_search_word_gate():
+    assert search_has_words("hola") is True
+    assert search_has_words("covid-19") is True
+    assert search_has_words("___") is False  # underscores alone are not words
+    assert search_has_words("!!!") is False
+    assert search_has_words("") is False
+
+
+@pytest.mark.asyncio
+async def test_pg_predicate_delegates_tokenization_to_the_index_parser():
+    """The PG tsquery is built IN SQL from the index's own lexemes ('simple'
+    keeps token classes a Python split cannot predict: covid-19 indexes as
+    covid,'-19'; foo@bar.com is one email lexeme). The raw search string
+    must travel only as a bind parameter. Behavior was proven against
+    postgres:16-alpine; this locks the wiring.
+    """
+    adapter_ = await _make_adapter(with_fts=True)
+    adapter_.db_manager._is_sqlite = False
+    adapter_._is_sqlite = False
+    adapter_._fts_ready_cache = True
+    async with adapter_.db_manager.async_session_factory() as session:
+        predicate = await adapter_._text_search_predicate(session, "covid-19")
+        assert predicate is not None
+        compiled = str(predicate)
+        assert "to_tsvector('simple', :fts_search)" in compiled
+        assert "quote_literal(lexeme)" in compiled
+        assert predicate.compile().params["fts_search"] == "covid-19"
+        assert await adapter_._text_search_predicate(session, "___") is None
+    assert "to_tsvector('simple', :fts_search)" in PG_TSQUERY_FROM_SEARCH
+    await adapter_.db_manager.engine.dispose()
 
 
 @pytest.mark.asyncio

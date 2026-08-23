@@ -49,30 +49,42 @@ PG_ADD_COLUMN = (
 )
 PG_CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_messages_text_search ON messages USING GIN (text_search)"
 
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+# NOT \w+: unicode61 treats '_' as a separator (\w keeps it), so foo_bar is
+# indexed as foo,bar and the query must split the same way.
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def fts_match_query(search: str) -> str | None:
     """FTS5 MATCH string: every word as a quoted prefix term (``"tok"*``).
 
-    Word extraction (``\\w+``) mirrors unicode61's own alnum tokenization
-    ("covid-19" becomes the terms covid and 19 in the index, so it must
-    become two query terms too) and leaves nothing that FTS5's parser could
-    read as an operator. None when no word survives — callers fall back to
-    ILIKE for punctuation-only searches.
+    Word extraction mirrors unicode61's own tokenization ("covid-19" and
+    "foo_bar" are both two terms in the index, so each must become two
+    required query terms) and leaves nothing that FTS5's parser could read
+    as an operator. None when no word survives — callers fall back to ILIKE
+    for punctuation-only searches.
     """
     tokens = [f'"{word}"*' for word in _WORD_RE.findall(search or "")]
     return " ".join(tokens) or None
 
 
-def pg_tsquery(search: str) -> str | None:
-    """``to_tsquery('simple', ...)`` input: ``'tok':* & 'tok2':*``.
+def search_has_words(search: str) -> bool:
+    """Gate for the indexed path: does the search carry any word at all?"""
+    return _WORD_RE.search(search or "") is not None
 
-    Same word extraction as the FTS5 side so both engines agree on what a
-    query means; quoting each lexeme keeps tsquery syntax uninjectable.
-    """
-    tokens = [f"'{word}':*" for word in _WORD_RE.findall(search or "")]
-    return " & ".join(tokens) or None
+
+# PostgreSQL builds the query from ITS OWN parser's lexemes: 'simple' keeps
+# token classes \w+ cannot predict (covid-19 -> covid,'-19'; foo@bar.com is
+# ONE email lexeme), so a Python-side split produced prefixes like '19':*
+# that can never match the indexed '-19'. Aggregating quote_literal'd
+# lexemes from to_tsvector makes the query agree with the index for every
+# token class, keeps word-prefix AND semantics, and is injection-proof by
+# construction — the search string only ever travels as a bind parameter
+# into to_tsvector. (Verified against postgres:16-alpine: covid-19, email
+# and hostile-quote inputs all behave; see PR #404.)
+PG_TSQUERY_FROM_SEARCH = (
+    "(SELECT to_tsquery('simple', string_agg(quote_literal(lexeme) || ':*', ' & ')) "
+    "FROM unnest(to_tsvector('simple', :fts_search)))"
+)
 
 
 def install_fts_ddl_listener(metadata) -> None:
