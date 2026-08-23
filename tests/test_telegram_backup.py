@@ -1638,6 +1638,27 @@ class TestProcessMessage(unittest.TestCase):
         result = self._run(self.backup._process_message(msg, 100))
         self.assertEqual(result["is_outgoing"], 1)
 
+    def test_forward_origin_pointer_lands_in_raw_data(self):
+        """The sweep stores the origin pointer the viewer's tappable header reads."""
+        from types import SimpleNamespace
+
+        from telethon.tl.types import PeerChannel
+
+        msg = self._make_message(3)
+        msg.fwd_from = SimpleNamespace(
+            channel_post=777,
+            from_id=PeerChannel(channel_id=123),
+            saved_from_msg_id=None,
+            saved_from_peer=None,
+            date=None,
+            from_name=None,
+        )
+        result = self._run(self.backup._process_message(msg, 100))
+        self.assertEqual(
+            result["raw_data"]["forward_origin"],
+            {"chat_id": -1000000000123, "message_id": 777},
+        )
+
     def test_pinned_message_sets_flag(self):
         """Pinned message sets is_pinned=1."""
         msg = self._make_message(3)
@@ -2380,3 +2401,74 @@ class TestForwardSourceNameResolution(unittest.TestCase):
 
         self.assertEqual(result["raw_data"]["forward_from_name"], "Origin")
         self.backup.client.get_entity.assert_not_awaited()
+
+
+class TestExtractForwardOrigin(unittest.TestCase):
+    """The origin pointer official apps make tappable (#9t6.10.3)."""
+
+    def test_channel_forward_carries_marked_origin(self):
+        from telethon.tl.types import PeerChannel
+
+        class Fwd:
+            channel_post = 777
+            from_id = PeerChannel(channel_id=123)
+            saved_from_msg_id = None
+            saved_from_peer = None
+
+        class Msg:
+            fwd_from = Fwd()
+
+        from src.message_utils import extract_forward_origin
+
+        self.assertEqual(extract_forward_origin(Msg()), {"chat_id": -1000000000123, "message_id": 777})
+
+    def test_saved_from_fallback(self):
+        from telethon.tl.types import PeerChat
+
+        class Fwd:
+            channel_post = None
+            from_id = None
+            saved_from_msg_id = 55
+            saved_from_peer = PeerChat(chat_id=99)
+
+        class Msg:
+            fwd_from = Fwd()
+
+        from src.message_utils import extract_forward_origin
+
+        self.assertEqual(extract_forward_origin(Msg()), {"chat_id": -99, "message_id": 55})
+
+    def test_plain_forward_and_bare_mock_are_inert(self):
+        from src.message_utils import extract_forward_origin
+
+        class Fwd:
+            channel_post = None
+            from_id = None
+            saved_from_msg_id = None
+            saved_from_peer = None
+
+        class Msg:
+            fwd_from = Fwd()
+
+        self.assertIsNone(extract_forward_origin(Msg()))
+        no_fwd = MagicMock()
+        no_fwd.fwd_from = None
+        self.assertIsNone(extract_forward_origin(no_fwd))
+        # Bare MagicMock: truthy fwd_from with MagicMock fields must not
+        # fabricate a pointer (the isinstance guards are the inertness).
+        self.assertIsNone(extract_forward_origin(MagicMock()))
+
+    def test_peer_resolution_failure_degrades_to_none(self):
+        """A garbage from_id makes get_peer_id raise — capture must not fail."""
+        from src.message_utils import extract_forward_origin
+
+        class Fwd:
+            channel_post = 777
+            from_id = object()  # not a Peer: get_peer_id raises
+            saved_from_msg_id = None
+            saved_from_peer = None
+
+        class Msg:
+            fwd_from = Fwd()
+
+        self.assertIsNone(extract_forward_origin(Msg()))
