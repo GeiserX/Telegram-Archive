@@ -4541,3 +4541,31 @@ const messageIdKey = (msg) => (msg && msg.id != null ? String(msg.id) : null)
         epilogue,
     )
     assert out == [1, 1, 1, 2], out
+
+
+def test_parse_telegram_link_recognizes_both_forms_and_rejects_noise():
+    """t.me/c/<internal>/<msg> maps to the marked id (-100 prefix); public
+    t.me/<username>/<msg> maps by username; anything else is a plain search."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    cases = """
+(() => {
+    const results = [
+        parseTelegramLink('https://t.me/c/1234567890/42'),
+        parseTelegramLink('t.me/c/1234567890/42?single'),
+        parseTelegramLink('https://t.me/durov/100'),
+        parseTelegramLink('t.me/Some_Channel/7#comment'),
+        parseTelegramLink('hello world'),
+        parseTelegramLink('t.me/c/notanumber/42'),
+        parseTelegramLink(''),
+        parseTelegramLink(null),
+    ]
+    console.log(JSON.stringify(results))
+})();
+"""
+    out = _run_setup_program(html, ("const parseTelegramLink = ",), "", cases)
+    assert out[0] == {"markedId": -1001234567890, "username": None, "messageId": 42}
+    assert out[1] == {"markedId": -1001234567890, "username": None, "messageId": 42}
+    assert out[2] == {"markedId": None, "username": "durov", "messageId": 100}
+    assert out[3] == {"markedId": None, "username": "Some_Channel", "messageId": 7}
+    assert out[4] is None and out[5] is None and out[6] is None and out[7] is None
