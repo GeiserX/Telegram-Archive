@@ -3052,7 +3052,12 @@ def _parse_export_bound(value: str, param: str, *, exclusive_end: bool) -> datet
     if parsed.tzinfo:
         parsed = parsed.astimezone(UTC).replace(tzinfo=None)
     if exclusive_end and date_only:
-        parsed += timedelta(days=1)
+        try:
+            parsed += timedelta(days=1)
+        except OverflowError:
+            # to=9999-12-31 means "no upper bound" — clamp instead of 500ing
+            # on a valid ISO date.
+            parsed = datetime.max
     return parsed
 
 

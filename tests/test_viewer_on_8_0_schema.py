@@ -499,6 +499,11 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"to": "2026-03-01"})
             self.assertEqual(len(json.loads(resp.text)["messages"]), 30)
 
+            # The maximum ISO date means "no upper bound", not a 500.
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"to": "9999-12-31"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(len(json.loads(resp.text)["messages"]), 30)
+
             resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"from": "not-a-date"})
             self.assertEqual(resp.status_code, 400)
 
