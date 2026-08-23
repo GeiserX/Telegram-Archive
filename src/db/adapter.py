@@ -3283,10 +3283,15 @@ class DatabaseAdapter:
                     text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t").bindparams(t=SQLITE_FTS_TABLE)
                 )
             else:
+                # to_regclass resolves 'messages' through search_path exactly
+                # like the unqualified queries below do, so the probe answers
+                # for the table they will actually hit — a same-named table in
+                # another schema can neither fake the column nor hide it.
                 row = await session.execute(
                     text(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name='messages' AND column_name=:c"
+                        "SELECT 1 FROM pg_attribute "
+                        "WHERE attrelid = to_regclass('messages') "
+                        "AND attname = :c AND NOT attisdropped"
                     ).bindparams(c=PG_TSVECTOR_COLUMN)
                 )
             self._fts_ready_cache = row.first() is not None
