@@ -3082,11 +3082,51 @@ async def get_message_dates(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _parse_export_bound(value: str, param: str, *, exclusive_end: bool) -> datetime:
+    """Parse an export date bound to naive UTC (the #365 conversion contract).
+
+    A bare date (``2026-01-31``) as the end bound means "through that whole
+    day", so it becomes the NEXT midnight and the query compares with ``<``.
+    Offset-bearing datetimes are converted to UTC and stripped — Message.date
+    is naive UTC, so relabelling would shift the window by the client offset.
+    """
+    date_only = len(value) == 10
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {param} date. Use ISO 8601.") from None
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    if exclusive_end and date_only:
+        try:
+            parsed += timedelta(days=1)
+        except OverflowError:
+            # to=9999-12-31 means "no upper bound" — clamp instead of 500ing
+            # on a valid ISO date.
+            parsed = datetime.max
+    return parsed
+
+
 @app.get("/api/chats/{chat_ref}/export")
-async def export_chat(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
-    """Export chat history to JSON."""
+async def export_chat(
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    """Export chat history to JSON, optionally windowed by date.
+
+    ``from`` is inclusive; ``to`` is inclusive of the named day when given as
+    a bare date (internally an exclusive next-midnight bound) and exclusive
+    when given as a full timestamp. Both accept ISO 8601, tz-aware or naive.
+    """
     if user.no_download:
         raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    parsed_from = _parse_export_bound(from_date, "from", exclusive_end=False) if from_date else None
+    parsed_to = _parse_export_bound(to_date, "to", exclusive_end=True) if to_date else None
+    if parsed_from and parsed_to and parsed_from >= parsed_to:
+        raise HTTPException(status_code=400, detail="'from' must be before 'to'")
 
     try:
         chat_row = await db.get_chat_by_id(chat.chat_id, account_id=chat.account_id)
@@ -3103,9 +3143,16 @@ async def export_chat(chat: ChatContext = Depends(require_chat), user: UserConte
         async def iter_json():
             yield "{\n"
             yield f'  "chat": {json.dumps(_export_chat_metadata(chat_row), ensure_ascii=False, default=str)},\n'
+            if parsed_from or parsed_to:
+                # Record what this file contains — a windowed export must not
+                # masquerade as the full history.
+                window = {"from": from_date, "to": to_date}
+                yield f'  "filters": {json.dumps(window, ensure_ascii=False)},\n'
             yield '  "messages": [\n'
             first = True
-            async for msg in db.get_messages_for_export(chat.chat_id, account_id=chat.account_id):
+            async for msg in db.get_messages_for_export(
+                chat.chat_id, account_id=chat.account_id, from_date=parsed_from, to_date=parsed_to
+            ):
                 if not first:
                     yield ",\n"
                 first = False
@@ -3116,7 +3163,9 @@ async def export_chat(chat: ChatContext = Depends(require_chat), user: UserConte
             # so it must never be materialized into a single list/dumps here.
             yield '  "message_versions": [\n'
             first_version = True
-            async for version in db.iter_message_versions_for_export(chat.chat_id, account_id=chat.account_id):
+            async for version in db.iter_message_versions_for_export(
+                chat.chat_id, account_id=chat.account_id, from_date=parsed_from, to_date=parsed_to
+            ):
                 if not first_version:
                     yield ",\n"
                 first_version = False
