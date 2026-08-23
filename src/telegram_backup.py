@@ -62,6 +62,7 @@ from .message_utils import (
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
+    downloadable_media_payload,
     extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
@@ -3576,19 +3577,25 @@ class TelegramBackup:
         if adopted is not None:
             return adopted
 
-        # Get Telegram's file unique ID for deduplication
+        # Get Telegram's file unique ID for deduplication. Webpage previews
+        # keep their photo/document one level down — unwrap once so every
+        # sniffer below sees the real payload.
+        payload = downloadable_media_payload(media)
+        # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
+        # .document (one None), so hasattr would pick the empty photo branch
+        # for document-backed previews and lose the file id.
         telegram_file_id = None
-        if hasattr(media, "photo"):
-            telegram_file_id = str(getattr(media.photo, "id", None))
-        elif hasattr(media, "document"):
-            telegram_file_id = str(getattr(media.document, "id", None))
+        if getattr(payload, "photo", None):
+            telegram_file_id = str(getattr(payload.photo, "id", None))
+        elif getattr(payload, "document", None):
+            telegram_file_id = str(getattr(payload.document, "id", None))
 
         # Guard against inaccessible media producing "None" string IDs
         if telegram_file_id == "None":
             telegram_file_id = None
 
         # Check file size (estimated)
-        file_size = self._get_media_size(media)
+        file_size = self._get_media_size(payload)
         max_size = self.config.get_max_media_size_bytes()
 
         if file_size > max_size:
@@ -3694,7 +3701,7 @@ class TelegramBackup:
                 "content_hash": content_hash,
                 "downloaded": True,
                 "download_date": utcnow_naive(),
-                **extract_media_attributes(media),
+                **extract_media_attributes(payload),
                 "file_size": file_size,
             }
 
@@ -3832,6 +3839,13 @@ class TelegramBackup:
         # The nine kinds this ladder used to flatten to None (venue, dice,
         # invoice, story, giveaways, live location, game, unsupported):
         # metadata-only types with a typed viewer chip, never downloaded.
+        if type(media).__name__ == "MessageMediaWebPage":
+            webpage = getattr(media, "webpage", None)
+            if type(webpage).__name__ == "WebPage" and (
+                getattr(webpage, "photo", None) is not None or getattr(webpage, "document", None) is not None
+            ):
+                return "webpage"
+            return None  # card-only preview (raw_data.webpage): nothing to download
         return classify_extended_media(media)
 
     def _get_media_filename(self, message: Message, media_type: str, telegram_file_id: str = None) -> str:
@@ -3843,8 +3857,9 @@ class TelegramBackup:
         original_name = None
         mime_type = None
 
-        if hasattr(message.media, "document") and message.media.document:
-            doc = message.media.document
+        media_payload = downloadable_media_payload(message.media)
+        if hasattr(media_payload, "document") and media_payload.document:
+            doc = media_payload.document
             mime_type = getattr(doc, "mime_type", None)
 
             for attr in getattr(doc, "attributes", None) or ():

@@ -1411,7 +1411,7 @@
                                     <!-- Media (show if media exists, even if not yet downloaded).
                                          Extended kinds are metadata-only: the chip above is the whole
                                          rendering, so the pending-download placeholder must not show. -->
-                                    <div v-if="(msg.media?.file_path || msg.media?.type) && !getExtendedMediaChip(msg)"
+                                    <div v-if="(msg.media?.file_path || msg.media?.type) && msg.media?.type !== 'webpage' && !getExtendedMediaChip(msg)"
                                         class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
                                         <div v-if="!msg.media?.file_path && msg.media?.type"
@@ -1622,6 +1622,10 @@
                                             class="text-sm font-medium hover:underline break-words block">{{ msg.raw_data.webpage.title || msg.raw_data.webpage.display_url || msg.raw_data.webpage.url }}</a>
                                         <div v-else-if="msg.raw_data.webpage.title" class="text-sm font-medium break-words">{{ msg.raw_data.webpage.title }}</div>
                                         <div v-if="msg.raw_data.webpage.description" class="text-xs opacity-70 line-clamp-3 break-words whitespace-pre-wrap">{{ msg.raw_data.webpage.description }}</div>
+                                        <img v-if="msg.media?.type === 'webpage' && msg.media?.file_path"
+                                            :src="getMediaUrl(msg)" loading="lazy" alt=""
+                                            class="mt-1 rounded max-h-48 max-w-full object-cover"
+                                            @error="handleImageError($event, msg)">
                                     </div>
 
                                     <!-- Reactions -->
