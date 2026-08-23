@@ -1829,6 +1829,12 @@
                         <dd class="mt-1 font-mono text-white">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
                     </div>
                 </dl>
+                <div class="mt-4 flex justify-end">
+                    <button @click="copyMessageLink(senderInfoMessage)"
+                        class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        <i class="fa-solid fa-link mr-1"></i> Copy message link
+                    </button>
+                </div>
             </section>
         </div>
 
@@ -2862,6 +2868,16 @@
                         return
                     }
 
+                    // A pasted t.me link is a navigation, not a search.
+                    const telegramLink = parseTelegramLink(query)
+                    if (telegramLink) {
+                        searchQuery.value = ''
+                        searchResults.value = []
+                        searchLoading.value = false
+                        openTelegramLink(telegramLink)
+                        return
+                    }
+
                     searchLoading.value = true
                     searchDebounceTimer = setTimeout(async () => {
                         try {
@@ -3388,9 +3404,54 @@
                     await selectChat(targetChat)
                     if (messageId) {
                         await nextTick()
-                        scrollToMessage(messageId)
+                        // The #367-hardened jump: windows around the id even when the
+                        // message is far outside the loaded page. scrollToMessage only
+                        // worked for already-rendered rows — fine for a fresh push
+                        // notification, silently a no-op for a shared link to history.
+                        await loadMessagesAroundId(messageId)
                     }
                     return true
+                }
+
+                // ---- Deep links: stable per-message URLs + t.me recognition ----
+                // The shareable form is the push-notification contract the app
+                // already honors on load: /?chat=<ref>&msg=<id> (opaque ref, so
+                // chat ids stay out of URLs and browser history).
+                const parseTelegramLink = (text) => {
+                    const value = (text || '').trim()
+                    const c = /^(?:https?:\/\/)?t\.me\/c\/(\d+)\/(\d+)(?:[?#].*)?$/.exec(value)
+                    if (c) {
+                        // t.me/c/<internal>/<msg>: the internal id is the marked id
+                        // without its -100 prefix.
+                        return { markedId: -1000000000000 - parseInt(c[1], 10), username: null, messageId: parseInt(c[2], 10) }
+                    }
+                    const u = /^(?:https?:\/\/)?t\.me\/([A-Za-z][A-Za-z0-9_]{3,31})\/(\d+)(?:[?#].*)?$/.exec(value)
+                    if (u) {
+                        return { markedId: null, username: u[1], messageId: parseInt(u[2], 10) }
+                    }
+                    return null
+                }
+
+                const openTelegramLink = async (parsed) => {
+                    const chat = chats.value.find(c => parsed.markedId != null
+                        ? c.id === parsed.markedId
+                        : (c.username || '').toLowerCase() === parsed.username.toLowerCase())
+                    if (!chat) {
+                        showToast('That link points at a chat this archive does not hold')
+                        return false
+                    }
+                    return openNotificationTarget(chat.ref, parsed.messageId)
+                }
+
+                const copyMessageLink = async (msg) => {
+                    if (!selectedChat.value || !msg?.id) return
+                    const url = `${window.location.origin}/?chat=${encodeURIComponent(selectedChat.value.ref)}&msg=${msg.id}`
+                    try {
+                        await navigator.clipboard.writeText(url)
+                        showToast('Message link copied')
+                    } catch (e) {
+                        showToast(url)  // clipboard unavailable (http origin): show it instead
+                    }
                 }
 
                 // A notification click can arrive before initialization has loaded the
@@ -7700,6 +7761,7 @@
                     retryLoadTopics,
                     selectFolder,
                     showArchived,
+                    copyMessageLink,
                     showChangesFeed,
                     changesFeed,
                     changesNextBefore,
