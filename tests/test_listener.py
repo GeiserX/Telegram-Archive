@@ -451,6 +451,49 @@ class TestEventHandlers:
             "message_id": 777,
         }
 
+    def test_on_new_message_stores_raw_text_and_entities(self, listener_with_handlers, full_config):
+        """Formatted messages store the WIRE text + entities, never markdown markers."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        from datetime import datetime
+
+        from telethon.tl.types import MessageEntityBold
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 44
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, tzinfo=UTC)
+        msg.raw_text = "hola mundo"
+        msg.text = "**hola** mundo"  # Telethon's markdown parse mode output
+        msg.entities = [MessageEntityBold(offset=0, length=4)]
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        msg.fwd_from = None
+        event.message = msg
+
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+
+        asyncio.run(handler(event))
+
+        listener.db.insert_message.assert_called_once()
+        saved = listener.db.insert_message.call_args[0][0]
+        assert saved["text"] == "hola mundo"
+        assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 0, "length": 4}]
+
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
         """Test new message from untracked-but-included chat gets added to tracking."""
         listener, handlers = listener_with_handlers
@@ -581,6 +624,8 @@ class TestEventHandlers:
             new_text="Updated text",
             edit_date=msg.edit_date,
             account_id=1,
+            entities=None,
+            update_entities=True,
         )
 
     def test_on_message_edited_handles_none_text(self, listener_with_handlers):

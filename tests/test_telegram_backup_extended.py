@@ -1163,7 +1163,7 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
         self.backup.db.delete_message.assert_not_awaited()
         self.backup.db.mark_message_deleted.assert_not_awaited()
         self.backup.db.update_message_text.assert_awaited_once_with(
-            100, 3, "three edited", datetime(2024, 6, 15), account_id=1
+            100, 3, "three edited", datetime(2024, 6, 15), account_id=1, entities=None, update_entities=True
         )
         assert any("misaligned" in line for line in captured.output)
 

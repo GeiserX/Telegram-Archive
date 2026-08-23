@@ -70,8 +70,10 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    message_plain_text,
     resolve_shared_file_path,
     sender_display_name,
+    serialize_message_entities,
     service_action_type,
     service_message_text,
     utcnow_naive,
@@ -2541,7 +2543,13 @@ class TelegramBackup:
                         # Update text and edit_date; count only edits the archive
                         # actually accepted (the adapter re-checks under lock).
                         outcome, _ = await self.db.update_message_text(
-                            chat_id, msg_id, remote_msg.message, remote_msg.edit_date, account_id=self.account_id
+                            chat_id,
+                            msg_id,
+                            remote_msg.message,
+                            remote_msg.edit_date,
+                            account_id=self.account_id,
+                            entities=serialize_message_entities(getattr(remote_msg, "entities", None)),
+                            update_entities=True,
                         )
                         if outcome == "applied":
                             total_updated += 1
@@ -3065,7 +3073,7 @@ class TelegramBackup:
             "sender_id": message.sender_id,
             "sender_name": sender_display_name(sender),
             "date": message.date,
-            "text": message.text or "",
+            "text": message_plain_text(message),
             "reply_to_msg_id": message.reply_to_msg_id,
             "reply_to_top_id": reply_to_top_id,
             "reply_to_text": None,
@@ -3177,6 +3185,13 @@ class TelegramBackup:
             forward_origin = extract_forward_origin(message)
             if forward_origin:
                 message_data["raw_data"]["forward_origin"] = forward_origin
+
+        # Formatting entities (bold/italic/code/spoiler/blockquote/...): the
+        # raw text above is what their UTF-16 offsets index into. Without them
+        # spoilers arrive pre-revealed and code blocks flatten to body text.
+        message_entities = serialize_message_entities(getattr(message, "entities", None))
+        if message_entities:
+            message_data["raw_data"]["entities"] = message_entities
 
         # Capture channel post author (signature) if available
         if hasattr(message, "post_author") and message.post_author:
