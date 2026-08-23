@@ -1366,8 +1366,11 @@
                                         </div>
                                     </div>
 
-                                    <!-- Media (show if media exists, even if not yet downloaded) -->
-                                    <div v-if="msg.media?.file_path || msg.media?.type" class="mb-2 space-y-1">
+                                    <!-- Media (show if media exists, even if not yet downloaded).
+                                         Extended kinds are metadata-only: the chip above is the whole
+                                         rendering, so the pending-download placeholder must not show. -->
+                                    <div v-if="(msg.media?.file_path || msg.media?.type) && !getExtendedMediaChip(msg)"
+                                        class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
                                         <div v-if="!msg.media?.file_path && msg.media?.type"
                                             class="bg-gray-700/50 rounded-lg p-4 flex items-center gap-3 max-w-md">
