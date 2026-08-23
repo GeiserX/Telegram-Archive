@@ -4,6 +4,34 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.3.0] - 2026-08-23
+
+Fidelity and scale: the archive now keeps what official clients show — formatting, forward origins, link previews, the media kinds that used to vanish — searches it through a real text index, and survives gigabyte imports. Every change shipped through its own reviewed PR.
+
+### Added
+
+- **Real full-text search.** Searching a chat (or everything) uses a proper text index — SQLite FTS5 with trigger-maintained sync, PostgreSQL stored `tsvector` with a GIN index — with official-app word-prefix semantics and diacritics folding (`cafe` finds `Café`). Databases without the index layer, and punctuation-only searches, keep the old substring behavior. Query tokenization was proven against each engine's real parser, hostile input included. ([#404](https://github.com/GeiserX/Telegram-Archive/pull/404))
+- **Message formatting survives the archive.** Bold, italic, strikethrough, code, quotes, spoilers, custom links and the rest are captured as entities on both the sweep and the real-time listener — edits included — and the viewer renders them: spoilers blur until clicked, links are scheme-checked, malformed nesting is clipped safely. Formatting-only edits no longer masquerade as content edits. ([#402](https://github.com/GeiserX/Telegram-Archive/pull/402))
+- **Forwards keep their origin.** Who a message was forwarded from is stored — channel-post pointer included — and the viewer header links to the origin when it is archived, resolving it across pages and for metadata-only forwards. ([#400](https://github.com/GeiserX/Telegram-Archive/pull/400))
+- **Nine media kinds stop vanishing.** Venues, dice, invoices, stories, giveaways and their results, live locations, games and unsupported media render as labeled chips instead of empty bubbles; invoice amounts format by their currency's minor units. ([#401](https://github.com/GeiserX/Telegram-Archive/pull/401))
+- **Link-preview images download like any photo.** A webpage embed's image — photo- or document-backed — is fetched and rendered on the preview card instead of being silently dropped. ([#403](https://github.com/GeiserX/Telegram-Archive/pull/403))
+- **Gigabyte exports import, and interrupted imports resume.** `result.json` streams one message at a time (memory stays flat no matter the file size), progress checkpoints per chat, and re-running the same command on the same file skips finished chats and replays the interrupted one to a state identical to an uninterrupted run — no `--merge` needed. Truncated files fail loudly with progress preserved. ([#406](https://github.com/GeiserX/Telegram-Archive/pull/406))
+- **Imported media is adopted, not re-downloaded.** When the API sweep reaches a message whose file arrived via a Telegram Desktop import, it re-keys the imported record and reuses the on-disk file — no duplicate row, no duplicate download. `backfill-topics <chat_id>` restores forum topics on imported chats (exports carry no topic metadata) by resetting the sweep cursor and re-sweeping text-only with the footguns disabled. ([#405](https://github.com/GeiserX/Telegram-Archive/pull/405))
+- **Every message has a shareable link.** Copy a deep link to any archived message, and paste a `t.me` link into the search box to jump straight to the archived copy. ([#399](https://github.com/GeiserX/Telegram-Archive/pull/399))
+- **An archive status panel that answers "is it healthy right now".** Sync recency, media backlog, listener liveness and storage at a glance. ([#398](https://github.com/GeiserX/Telegram-Archive/pull/398))
+- **A what-changed feed.** The deletions and edits the archive preserved, browsable in one place. ([#397](https://github.com/GeiserX/Telegram-Archive/pull/397))
+
+### Fixed
+
+- The export command's advertised date-range flags actually filter the export stream. ([#396](https://github.com/GeiserX/Telegram-Archive/pull/396))
+- Chat filter ids missing the `-100` prefix auto-correct instead of silently matching nothing, and a numeric env-var typo names the variable instead of reading like a Python bug. ([#395](https://github.com/GeiserX/Telegram-Archive/pull/395), [#390](https://github.com/GeiserX/Telegram-Archive/pull/390))
+- Excluding the General topic actually excludes its messages — Telegram omits the topic marker for General, which used to bypass the filter. ([#394](https://github.com/GeiserX/Telegram-Archive/pull/394))
+- A notification burst can no longer grow the viewer's task set without bound. ([#391](https://github.com/GeiserX/Telegram-Archive/pull/391))
+- The importer no longer erases captured usernames and phone numbers: user updates write only the fields the import actually observed. ([#406](https://github.com/GeiserX/Telegram-Archive/pull/406))
+- Two tests that could never fail now can — the version-dedup ON CONFLICT clause and the max-message-id checkpoint are both mutation-gated. ([#393](https://github.com/GeiserX/Telegram-Archive/pull/393), [#392](https://github.com/GeiserX/Telegram-Archive/pull/392))
+
+Upgrading needs no manual steps: migration 028 (the search index) runs automatically and is safe to re-run; existing rows are indexed on first upgrade.
+
 ## [8.2.0] - 2026-08-22
 
 The largest maintenance release to date: one headline feature (the outbound event webhook, [#336](https://github.com/GeiserX/Telegram-Archive/issues/336)) on top of a systematic sweep of the whole codebase — capture, database, viewer, importers, CI and operations. Every change below shipped through its own reviewed PR.
