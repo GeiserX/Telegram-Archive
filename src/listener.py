@@ -47,6 +47,7 @@ from .message_utils import (
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
+    downloadable_media_payload,
     extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
@@ -846,6 +847,13 @@ class TelegramListener:
         # The nine kinds this ladder used to flatten to None (venue, dice,
         # invoice, story, giveaways, live location, game, unsupported):
         # metadata-only types with a typed viewer chip, never downloaded.
+        if type(media).__name__ == "MessageMediaWebPage":
+            webpage = getattr(media, "webpage", None)
+            if type(webpage).__name__ == "WebPage" and (
+                getattr(webpage, "photo", None) is not None or getattr(webpage, "document", None) is not None
+            ):
+                return "webpage"
+            return None  # card-only preview (raw_data.webpage): nothing to download
         return classify_extended_media(media)
 
     def _get_media_filename(self, message, media_type: str, telegram_file_id: str | None = None) -> str:
@@ -854,8 +862,9 @@ class TelegramListener:
         original_name = None
         mime_type = None
 
-        if hasattr(message.media, "document") and message.media.document:
-            doc = message.media.document
+        media_payload = downloadable_media_payload(message.media)
+        if hasattr(media_payload, "document") and media_payload.document:
+            doc = media_payload.document
             mime_type = getattr(doc, "mime_type", None)
             for attr in getattr(doc, "attributes", None) or ():
                 if hasattr(attr, "file_name") and attr.file_name:
@@ -886,12 +895,17 @@ class TelegramListener:
             return None  # These don't have downloadable files
 
         try:
-            # Get Telegram's file unique ID for deduplication
+            # Get Telegram's file unique ID for deduplication. Webpage previews
+            # keep their photo/document one level down — unwrap once.
+            payload = downloadable_media_payload(media)
+            # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
+            # .document (one None), so hasattr would pick the empty photo
+            # branch for document-backed previews and lose the file id.
             telegram_file_id = None
-            if hasattr(media, "photo"):
-                telegram_file_id = str(getattr(media.photo, "id", None))
-            elif hasattr(media, "document"):
-                telegram_file_id = str(getattr(media.document, "id", None))
+            if getattr(payload, "photo", None):
+                telegram_file_id = str(getattr(payload.photo, "id", None))
+            elif getattr(payload, "document", None):
+                telegram_file_id = str(getattr(payload.document, "id", None))
 
             # Guard against inaccessible media producing "None" string IDs
             if telegram_file_id == "None":
@@ -899,15 +913,15 @@ class TelegramListener:
 
             # Check file size
             file_size = 0
-            if hasattr(media, "document") and media.document:
-                file_size = getattr(media.document, "size", 0)
-            elif hasattr(media, "photo") and media.photo:
-                if hasattr(media.photo, "sizes") and media.photo.sizes:
+            if hasattr(payload, "document") and payload.document:
+                file_size = getattr(payload.document, "size", 0)
+            elif hasattr(payload, "photo") and payload.photo:
+                if hasattr(payload.photo, "sizes") and payload.photo.sizes:
                     # PhotoSizeProgressive (the full rendition) has no scalar
                     # .size, so max-by-getattr scored it 0 and a thumbnail won
                     # — the size gate then measured kilobytes for a photo of
                     # megabytes. _photo_size_bytes reads both shapes.
-                    file_size = max(_photo_size_bytes(s) for s in media.photo.sizes)
+                    file_size = max(_photo_size_bytes(s) for s in payload.photo.sizes)
 
             max_size = self.config.get_max_media_size_bytes()
             if file_size > max_size:
@@ -1333,7 +1347,7 @@ class TelegramListener:
                                 # Same metadata the scheduled sweep records (#263) — without it
                                 # live-captured voice notes had a NULL duration and rendered
                                 # without it while sweep-captured ones showed it.
-                                media_attributes = extract_media_attributes(message.media)
+                                media_attributes = extract_media_attributes(downloadable_media_payload(message.media))
                                 try:
                                     media_attributes["file_size"] = os.path.getsize(media_path)
                                 except OSError:
