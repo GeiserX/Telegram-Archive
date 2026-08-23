@@ -42,6 +42,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from ..message_utils import utcnow_naive
+from .fts import install_fts_ddl_listener
 
 # The account every row written before v8.0.0 belongs to. Migration 022 seeds it
 # and backfills every existing row to it, and it is the server-side default of
@@ -80,6 +81,12 @@ class Base(DeclarativeBase):
     """Base class for all models."""
 
     pass
+
+
+# The full-text layer (migration 028) is part of the schema contract but not
+# a model — create_all() databases must produce it too or the ORM and Alembic
+# schema authors diverge (test_schema_parity).
+install_fts_ddl_listener(Base.metadata)
 
 
 class Account(Base):

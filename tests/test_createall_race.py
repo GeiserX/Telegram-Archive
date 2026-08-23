@@ -194,7 +194,11 @@ async def test_a_genuinely_fresh_database_is_still_built(tmp_path: Path) -> None
 
     await open_with_manager(db_path)
 
-    assert table_names(db_path) == set(Base.metadata.tables)
+    built = table_names(db_path)
+    # create_all also installs the FTS layer (after_create listener) — model
+    # tables must all exist, and the layer must too (never silently absent).
+    assert {t for t in built if not t.startswith("messages_fts")} == set(Base.metadata.tables)
+    assert "messages_fts" in built
 
 
 async def test_an_empty_file_that_already_exists_is_still_built(tmp_path: Path) -> None:
@@ -205,7 +209,11 @@ async def test_an_empty_file_that_already_exists_is_still_built(tmp_path: Path) 
 
     await open_with_manager(db_path)
 
-    assert table_names(db_path) == set(Base.metadata.tables)
+    built = table_names(db_path)
+    # create_all also installs the FTS layer (after_create listener) — model
+    # tables must all exist, and the layer must too (never silently absent).
+    assert {t for t in built if not t.startswith("messages_fts")} == set(Base.metadata.tables)
+    assert "messages_fts" in built
 
 
 async def test_removing_the_guard_puts_the_tables_back(tmp_path: Path) -> None:
