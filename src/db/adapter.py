@@ -1150,44 +1150,27 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def upsert_user(self, user_data: dict[str, Any]) -> None:
-        """Insert or update a user record."""
-        async with self.db_manager.async_session_factory() as session:
-            values = {
-                "id": user_data["id"],
-                "username": user_data.get("username"),
-                "first_name": user_data.get("first_name"),
-                "last_name": user_data.get("last_name"),
-                "phone": user_data.get("phone"),
-                "is_bot": 1 if user_data.get("is_bot") else 0,
-                "updated_at": utcnow_naive(),
-            }
+        """Insert or update a user record.
 
-            if self._is_sqlite:
-                stmt = sqlite_insert(User).values(**values)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "username": stmt.excluded.username,
-                        "first_name": stmt.excluded.first_name,
-                        "last_name": stmt.excluded.last_name,
-                        "phone": stmt.excluded.phone,
-                        "is_bot": stmt.excluded.is_bot,
-                        "updated_at": utcnow_naive(),
-                    },
-                )
-            else:
-                stmt = pg_insert(User).values(**values)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "username": stmt.excluded.username,
-                        "first_name": stmt.excluded.first_name,
-                        "last_name": stmt.excluded.last_name,
-                        "phone": stmt.excluded.phone,
-                        "is_bot": stmt.excluded.is_bot,
-                        "updated_at": utcnow_naive(),
-                    },
-                )
+        Only keys PRESENT in ``user_data`` reach the conflict update — the
+        importer knows only {id, first_name}, and letting its absent keys
+        write NULLs erased the username/last_name/phone the live capture had
+        recorded (the same present-keys contract upsert_chat already keeps).
+        Callers that observe a removal (backup/listener build every key
+        explicitly) still clear a column by passing the key with None.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            values: dict[str, Any] = {"id": user_data["id"], "updated_at": utcnow_naive()}
+            for key in ("username", "first_name", "last_name", "phone"):
+                if key in user_data:
+                    values[key] = user_data.get(key)
+            if "is_bot" in user_data:
+                values["is_bot"] = 1 if user_data.get("is_bot") else 0
+
+            insert_fn = sqlite_insert if self._is_sqlite else pg_insert
+            stmt = insert_fn(User).values(**values)
+            update_set = {key: getattr(stmt.excluded, key) for key in values if key != "id"}
+            stmt = stmt.on_conflict_do_update(index_elements=["id"], set_=update_set)
 
             await session.execute(stmt)
             await session.commit()
@@ -2416,6 +2399,31 @@ class DatabaseAdapter:
             result = await session.execute(update(Chat).where(Chat.id == chat_id).values(last_synced_message_id=0))
             await session.commit()
             return result.rowcount or 0
+
+    async def has_media_for_message(self, chat_id: int, message_id: int, *, exclude_id: str, account_id: int) -> bool:
+        """True when any media row other than ``exclude_id`` covers the message.
+
+        The importer asks this before (re)creating an ``import_*`` row: when
+        the sweep already archived the message's media — including by
+        ADOPTING an earlier import run's row, which re-keys it — writing the
+        import row again would resurrect exactly the duplicate #405 removed.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Media.id)
+                    .where(
+                        and_(
+                            Media.account_id == account_id,
+                            Media.chat_id == chat_id,
+                            Media.message_id == message_id,
+                            Media.id != exclude_id,
+                        )
+                    )
+                    .limit(1)
+                )
+            ).first()
+            return row is not None
 
     async def adopt_import_media(
         self, chat_id: int, message_id: int, new_media_id: str, *, account_id: int

@@ -9,16 +9,20 @@ Both formats insert messages, users, and media into the existing database schema
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import shutil
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import ijson
+
 from .db import DatabaseAdapter, close_database, get_adapter, init_database
-from .db.models import DEFAULT_ACCOUNT_ID
+from .db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
 from .message_utils import build_media_filename, utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -580,6 +584,158 @@ def _parse_html_export(html_files: list[Path], export_path: Path) -> tuple[str, 
 
 
 # ---------------------------------------------------------------------------
+# Streaming export parser (9t6.5.48)
+# ---------------------------------------------------------------------------
+#
+# ``json.load`` held the whole export in memory (roughly 4x the file size as
+# Python objects), so a large account export could OOM the container before a
+# single row was written. This parser walks result.json ONCE with ijson and
+# hands out one chat at a time: the chat's scalar metadata plus a bounded
+# iterator over exactly that chat's messages. Peak memory becomes one message
+# (plus one chat's metadata), not one export.
+
+_SCALAR_EVENTS = {"string", "number", "integer", "double", "boolean", "null"}
+
+
+def _export_fingerprint(path: Path) -> str:
+    """Identity of the export file a resume marker is valid against.
+
+    Size plus a hash of the first MiB: cheap on multi-GB files, and any
+    re-export (different date range, different account, edited file) changes
+    at least one of the two. A mismatch simply invalidates the marker — the
+    import then starts fresh with the normal already-imported guard active.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        digest.update(handle.read(1024 * 1024))
+    return f"{path.stat().st_size}:{digest.hexdigest()}"
+
+
+def _drain(iterator: Iterator[Any]) -> None:
+    for _ in iterator:
+        pass
+
+
+def _check_meta_identity(meta: dict[str, Any] | None, identity: tuple[Any, Any] | None) -> None:
+    """Hard-fail if a chat's id/type surfaced only AFTER its messages.
+
+    ``json.load`` made key order irrelevant; a forward-only stream derives
+    the chat id from the fields seen BEFORE the messages array. Telegram
+    Desktop writes id/type first, but if an export ever did not, the rows
+    would land under a wrong id — corruption, not a warning. The parser
+    keeps mutating the yielded meta dict as trailing fields arrive, so
+    comparing it to the snapshot taken at derivation time catches exactly
+    that case.
+    """
+    if meta is None:
+        return
+    if (meta.get("id"), meta.get("type")) != identity:
+        raise ValueError(
+            "Chat id/type appeared after the chat's messages in the export — refusing to continue "
+            "because rows would be written under the wrong chat. Re-export the data or report this."
+        )
+
+
+def _bounded_messages(events, msgs_prefix: str):
+    """One chat's messages as a sub-stream of the shared event iterator.
+
+    Re-yields events until the ``end_array`` that closes exactly this chat's
+    ``messages`` array — nested arrays inside a message (``text_entities``)
+    carry longer prefixes, so they can never terminate it early — and feeds
+    them into ``ijson.items``, which builds one message dict at a time.
+    """
+
+    def bounded():
+        for event in events:
+            if event[0] == msgs_prefix and event[1] == "end_array":
+                return
+            yield event
+
+    return ijson.items(bounded(), msgs_prefix + ".item")
+
+
+def _stream_full_export_chats(events):
+    """Yield ``(meta, messages_iter)`` per chat of a full-account export.
+
+    ``meta`` is built from the chat's own fields via ``ObjectBuilder``; when
+    the ``messages`` key arrives the same event stream is handed to the
+    bounded sub-iterator instead. The caller must finish (or abandon) the
+    messages iterator before asking for the next chat — the generator drains
+    any remainder itself so the shared stream position is always correct.
+    Fields that appear AFTER the messages array still land in the (already
+    yielded) meta dict — the caller re-checks identity fields afterwards.
+    """
+    root = "chats.list.item"
+    msgs_prefix = root + ".messages"
+    builder = None
+    for prefix, event, value in events:
+        if builder is None:
+            if prefix == root and event == "start_map":
+                builder = ijson.ObjectBuilder()
+                builder.event(event, value)
+            elif prefix == "chats.list" and event == "end_array":
+                return
+        elif prefix == root and event == "map_key" and value == "messages":
+            next(events, None)  # consume (msgs_prefix, 'start_array', None)
+            messages = _bounded_messages(events, msgs_prefix)
+            yield builder.value, messages
+            _drain(messages)
+        elif prefix == root and event == "end_map":
+            builder = None
+        else:
+            builder.event(event, value)
+
+
+def _stream_export(fileobj):
+    """Walk either export shape once; yield ``("owner", id, None)`` at most
+    once, then ``("chat", meta, messages_iter)`` per chat.
+
+    Single-chat exports (top-level ``messages``) yield exactly one chat whose
+    meta holds the top-level scalars seen before the array; scalars after the
+    array still mutate that meta in place (checked by the caller). Full
+    exports read ``personal_information`` when it precedes ``chats`` — the
+    order Telegram Desktop writes — and warn once when it does not, matching
+    the old behavior for an export that lacks it entirely.
+    """
+    events = ijson.parse(fileobj, use_float=True)
+    meta: dict[str, Any] = {}
+    top_key: str | None = None
+    owner_builder = None
+    owner_seen = False
+    for prefix, event, value in events:
+        if owner_builder is not None:
+            owner_builder.event(event, value)
+            if prefix == "personal_information" and event == "end_map":
+                info = owner_builder.value
+                owner_builder = None
+                owner_seen = True
+                if isinstance(info, dict) and info.get("user_id") is not None:
+                    yield "owner", info.get("user_id"), None
+            continue
+        if prefix == "" and event == "map_key":
+            top_key = value
+            if value == "chats":
+                if not owner_seen:
+                    logger.warning(
+                        "personal_information not seen before chats — messages will carry no is_outgoing flag"
+                    )
+                yield from (("chat", m, it) for m, it in _stream_full_export_chats(events))
+                return
+            if value == "messages":
+                next(events, None)  # consume ('messages', 'start_array', None)
+                messages = _bounded_messages(events, "messages")
+                yield "chat", meta, messages
+                _drain(messages)
+                # Trailing top-level scalars (id/type after the array) still
+                # belong to this chat's meta; the caller re-checks identity.
+        elif prefix == "personal_information" and event == "start_map":
+            owner_builder = ijson.ObjectBuilder()
+            owner_builder.event(event, value)
+        elif prefix == top_key and event in _SCALAR_EVENTS:
+            meta[top_key] = value
+
+
+# ---------------------------------------------------------------------------
 # Main importer
 # ---------------------------------------------------------------------------
 
@@ -626,20 +782,25 @@ class TelegramImporter:
         result_file = _resolve_export_control_file(path, path / "result.json")
         html_files = _find_html_files(path)
 
+        summary: dict[str, Any] = {
+            "chats_imported": 0,
+            "chats_skipped": 0,
+            "total_messages": 0,
+            "total_media": 0,
+            "details": [],
+        }
+
         if result_file is not None:
             logger.info(f"Reading {result_file}...")
-            with open(result_file, encoding="utf-8") as f:
-                data = json.load(f)
-            chats = self._extract_chats(data)
-            # A full-account JSON export names its owner: with it, every
-            # message can carry an honest is_outgoing instead of leaving the
-            # column NULL for the viewer fallback to guess.
-            info = data.get("personal_information")
-            owner_raw = info.get("user_id") if isinstance(info, dict) else None
-            try:
-                self._owner_user_id = int(owner_raw or 0) or None
-            except TypeError, ValueError:
-                self._owner_user_id = None
+            await self._run_json_streaming(
+                result_file=result_file,
+                export_root=path,
+                chat_id_override=chat_id_override,
+                dry_run=dry_run,
+                skip_media=skip_media,
+                merge=merge,
+                summary=summary,
+            )
         elif html_files:
             logger.info(f"Detected HTML export format ({len(html_files)} file(s))")
             if not chat_id_override:
@@ -649,47 +810,164 @@ class TelegramImporter:
                     "(e.g., -c 123456789 for a private chat, -c -1001234567890 for a supergroup)."
                 )
             chat_name, messages = _parse_html_export(html_files, path)
-            chats = [{"name": chat_name, "type": "html_export", "id": 0, "messages": messages}]
-        else:
-            raise FileNotFoundError(
-                f"No result.json or messages.html found in {path}. Expected a Telegram Desktop export directory."
-            )
-
-        if not chats:
-            raise ValueError("No chats found in export file")
-
-        summary: dict[str, Any] = {"chats_imported": 0, "total_messages": 0, "total_media": 0, "details": []}
-
-        for chat_data in chats:
-            chat_id = (
-                chat_id_override
-                if chat_id_override
-                else derive_chat_id(chat_data.get("id", 0), chat_data.get("type", "personal_chat"))
-            )
-
-            if chat_id == 0:
-                logger.warning("Skipping a chat entry with no ID")
-                continue
-
             result = await self._import_chat(
-                chat_data=chat_data,
-                chat_id=chat_id,
+                chat_data={"name": chat_name, "type": "html_export", "id": 0},
+                chat_id=chat_id_override,
+                messages=messages,
+                total=len(messages),
                 export_path=path,
                 dry_run=dry_run,
                 skip_media=skip_media,
                 merge=merge,
             )
-
             summary["chats_imported"] += 1
             summary["total_messages"] += result["messages"]
             summary["total_media"] += result["media"]
             summary["details"].append(result)
-
-            if chat_id_override and len(chats) > 1:
-                logger.info("--chat-id provided with multi-chat export; only importing first chat")
-                break
+        else:
+            raise FileNotFoundError(
+                f"No result.json or messages.html found in {path}. Expected a Telegram Desktop export directory."
+            )
 
         return summary
+
+    async def _run_json_streaming(
+        self,
+        result_file: Path,
+        export_root: Path,
+        chat_id_override: int | None,
+        dry_run: bool,
+        skip_media: bool,
+        merge: bool,
+        summary: dict[str, Any],
+    ) -> None:
+        """Stream result.json chat by chat, resuming an interrupted import.
+
+        Resume model: every write the importer performs is an idempotent
+        upsert, so the recovery unit is the CHAT — completed chats are
+        recorded in a metadata marker (keyed to this export's fingerprint)
+        and skipped, the chat the previous run was inside is REPLAYED from
+        its start (an exact replay performs zero message writes), and
+        ``sync_status`` only ever runs at chat completion, so its counters
+        end up identical to an uninterrupted import. A finished import
+        clears the marker.
+        """
+        marker_key = account_metadata_key("import_progress", self.account_id)
+        fingerprint = _export_fingerprint(result_file)
+        completed: set[int] = set()
+        started_chat: int | None = None
+        resume_matched = False
+        if not dry_run:
+            marker = await self._load_import_marker(marker_key)
+            if marker and marker.get("fingerprint") == fingerprint:
+                completed = {int(c) for c in marker.get("completed", [])}
+                started_chat = marker.get("started")
+                resume_matched = True
+                if completed or started_chat is not None:
+                    logger.info(f"Resuming interrupted import: {len(completed)} chat(s) already complete")
+
+        any_chat_seen = False
+        prev_meta: dict[str, Any] | None = None
+        prev_identity: tuple[Any, Any] | None = None
+
+        with open(result_file, "rb") as handle:
+            stream = _stream_export(handle)
+            try:
+                for item in stream:
+                    if item[0] == "owner":
+                        # A full-account export names its owner: with it, every
+                        # message can carry an honest is_outgoing instead of
+                        # leaving the column NULL for the viewer fallback.
+                        try:
+                            self._owner_user_id = int(item[1] or 0) or None
+                        except TypeError, ValueError:
+                            self._owner_user_id = None
+                        continue
+                    _, chat_meta, messages = item
+                    # The PREVIOUS chat's meta may only now be complete (fields
+                    # after the messages array mutate it in place) — its
+                    # identity must not have changed under us.
+                    _check_meta_identity(prev_meta, prev_identity)
+                    any_chat_seen = True
+                    chat_id = (
+                        chat_id_override
+                        if chat_id_override
+                        else derive_chat_id(chat_meta.get("id", 0), chat_meta.get("type", "personal_chat"))
+                    )
+                    prev_meta = chat_meta
+                    prev_identity = (chat_meta.get("id"), chat_meta.get("type"))
+
+                    if chat_id == 0:
+                        logger.warning("Skipping a chat entry with no ID")
+                        continue
+                    if chat_id in completed:
+                        summary["chats_skipped"] += 1
+                        continue
+
+                    resuming = resume_matched and started_chat == chat_id
+                    if not dry_run:
+                        started_chat = chat_id
+                        await self._save_import_marker(marker_key, fingerprint, completed, chat_id)
+
+                    result = await self._import_chat(
+                        chat_data=chat_meta,
+                        chat_id=chat_id,
+                        messages=messages,
+                        total=None,
+                        export_path=export_root,
+                        dry_run=dry_run,
+                        skip_media=skip_media,
+                        merge=merge,
+                        resuming=resuming,
+                    )
+
+                    summary["chats_imported"] += 1
+                    summary["total_messages"] += result["messages"]
+                    summary["total_media"] += result["media"]
+                    summary["details"].append(result)
+
+                    if not dry_run:
+                        completed.add(chat_id)
+                        await self._save_import_marker(marker_key, fingerprint, completed, None)
+
+                    if chat_id_override:
+                        if next(stream, None) is not None:
+                            logger.info("--chat-id provided with multi-chat export; only importing first chat")
+                        break
+            except ijson.JSONError as exc:
+                # Progress up to the last completed chat is already in the
+                # marker, so fixing the file and re-running resumes there.
+                raise ValueError(
+                    f"Export file is truncated or invalid JSON ({type(exc).__name__}) — "
+                    "already-completed chats are saved; re-run the import to resume after fixing the file"
+                ) from exc
+        _check_meta_identity(prev_meta, prev_identity)
+
+        if not any_chat_seen:
+            raise ValueError("No chats found in export file")
+
+        if not dry_run:
+            # Clean completion: clear the marker so an unrelated future import
+            # of a DIFFERENT export never inherits this one's skip set.
+            await self.db.set_metadata(marker_key, "")
+
+    async def _load_import_marker(self, marker_key: str) -> dict[str, Any] | None:
+        raw = await self.db.get_metadata(marker_key)
+        if not raw:
+            return None
+        try:
+            marker = json.loads(raw)
+        except TypeError, ValueError:
+            return None
+        return marker if isinstance(marker, dict) else None
+
+    async def _save_import_marker(
+        self, marker_key: str, fingerprint: str, completed: set[int], started: int | None
+    ) -> None:
+        await self.db.set_metadata(
+            marker_key,
+            json.dumps({"fingerprint": fingerprint, "completed": sorted(completed), "started": started}),
+        )
 
     def _extract_chats(self, data: dict) -> list[dict]:
         """Extract chat list from either single-chat or full-account export."""
@@ -705,19 +983,30 @@ class TelegramImporter:
         self,
         chat_data: dict,
         chat_id: int,
+        messages: Iterator[dict] | list[dict],
+        total: int | None,
         export_path: Path,
         dry_run: bool,
         skip_media: bool,
         merge: bool,
+        resuming: bool = False,
     ) -> dict[str, Any]:
-        """Import a single chat from export data."""
+        """Import a single chat; ``messages`` may be a one-pass stream.
+
+        ``total`` is known only for materialized inputs (HTML); ``resuming``
+        marks the chat a previous interrupted run was inside — its partial
+        rows are the importer's own output, so the already-imported guard
+        must not fire and the replay converges through the upserts.
+        """
         chat_name = chat_data.get("name", "Unknown")
         export_type = chat_data.get("type", "personal_chat")
-        messages = chat_data.get("messages", [])
 
-        logger.info(f"Importing chat (type: {export_type}) - {len(messages)} messages")
+        if total is None:
+            logger.info(f"Importing chat (type: {export_type})")
+        else:
+            logger.info(f"Importing chat (type: {export_type}) - {total} messages")
 
-        if not merge and not dry_run:
+        if not merge and not dry_run and not resuming:
             existing = await self.db.get_chat_stats(chat_id, account_id=self.account_id)
             if existing and existing.get("messages", 0) > 0:
                 raise ValueError(
@@ -874,7 +1163,8 @@ class TelegramImporter:
                     media_count += await self._flush_batch(batch, media_batch)
                 batch.clear()
                 media_batch.clear()
-                logger.info(f"  Progress: {msg_count}/{len(messages)} messages")
+                denominator = f"/{total}" if total is not None else ""
+                logger.info(f"  Progress: {msg_count}{denominator} messages")
 
         if batch and not dry_run:
             media_count += await self._flush_batch(batch, media_batch)
@@ -921,6 +1211,16 @@ class TelegramImporter:
         for m in media:
             source = m.pop("_source")
             dest = m.pop("_dest")
+
+            # The sweep may already have archived this message's media under
+            # its own id — including by ADOPTING an earlier run's import row
+            # (#405 re-keys it). Re-creating the import row would resurrect
+            # the duplicate adoption exists to prevent, so any other media
+            # row for the message wins and this one stands aside.
+            if await self.db.has_media_for_message(
+                m["chat_id"], m["message_id"], exclude_id=m["id"], account_id=self.account_id
+            ):
+                continue
 
             dest_path = Path(dest)
             # SECURITY-REVIEW: Re-check the untrusted import destination before filesystem writes.

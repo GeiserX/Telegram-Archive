@@ -737,6 +737,17 @@ docker compose exec telegram-backup python -m src fill-gaps
 > **Imported media is adopted, not re-downloaded.** When a normal API backup
 > later reaches a message whose file arrived via import, the archive re-keys
 > the imported record to the sweep's name and reuses the on-disk file.
+>
+> **Big exports stream, and an interrupted import resumes.** `result.json` is
+> parsed one message at a time (memory stays flat no matter the export size),
+> and progress is checkpointed per chat: if an import crashes or is stopped,
+> re-running the same command on the same file skips the chats that finished
+> and replays the one it was inside — no `--merge` needed, and counters end
+> up exactly as if it had never been interrupted. The checkpoint is tied to
+> that exact file: if you replace the export (a re-export can contain newer
+> messages for already-imported chats), the fresh file starts over and
+> overlaps need `--merge` as usual. HTML exports don't resume — they are
+> single-chat and small enough not to need it.
 
 ## Data Storage
 
