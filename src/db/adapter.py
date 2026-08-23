@@ -1605,6 +1605,121 @@ class DatabaseAdapter:
             MessageVersion.id.asc(),
         )
 
+    async def get_recent_changes(
+        self,
+        *,
+        since: datetime | None = None,
+        before: datetime | None = None,
+        limit: int = 50,
+        scope: ChatScope | None = None,
+    ) -> list[dict[str, Any]]:
+        """The what-changed feed: deletions and edits the archive captured.
+
+        The archive's differentiator is that it KEEPS what disappeared; this
+        is the query that finally lists it. Two streams share one shape:
+
+        * ``deleted`` — soft-deleted messages (``is_deleted=1``), dated by
+          ``deleted_at``, carrying the text the archive kept.
+        * ``edited`` — ``message_versions`` rows, dated by ``captured_at``
+          (when the archive observed the supersession), carrying the old text
+          plus the message's CURRENT text.
+
+        Newest first. ``before`` is an exclusive keyset cursor over the
+        per-row date: pass the last row's ``date`` back to page. Rows sharing
+        that exact microsecond with the cursor are skipped — this is a review
+        feed, not an export, and the export path is the lossless one.
+        Entitlements ride ``scope.sql_predicates()`` against the joined chat
+        row, the same compiled rules as the chat list — a restricted viewer's
+        feed touches only their rows. Hard deletions cannot appear: their
+        content no longer exists (DELETION_MODE=soft is what feeds this).
+        """
+        per_stream = max(1, min(int(limit), 200))
+
+        def _chat_fields(row) -> dict[str, Any]:
+            name = row.title or " ".join(p for p in (row.first_name, row.last_name) if p) or row.username or ""
+            return {"ref": row.ref, "title": name, "type": row.chat_type}
+
+        async with self.db_manager.async_session_factory() as session:
+            deleted_stmt = (
+                select(
+                    Message.id.label("message_id"),
+                    Message.deleted_at.label("date"),
+                    Message.text,
+                    Message.sender_name,
+                    Chat.ref,
+                    Chat.title,
+                    Chat.first_name,
+                    Chat.last_name,
+                    Chat.username,
+                    Chat.type.label("chat_type"),
+                )
+                .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
+                .where(Message.is_deleted == 1, Message.deleted_at.isnot(None))
+            )
+            edited_stmt = (
+                select(
+                    MessageVersion.message_id,
+                    MessageVersion.captured_at.label("date"),
+                    MessageVersion.text.label("old_text"),
+                    Message.text.label("new_text"),
+                    Message.sender_name,
+                    Chat.ref,
+                    Chat.title,
+                    Chat.first_name,
+                    Chat.last_name,
+                    Chat.username,
+                    Chat.type.label("chat_type"),
+                )
+                .join(
+                    Message,
+                    and_(
+                        Message.account_id == MessageVersion.account_id,
+                        Message.chat_id == MessageVersion.chat_id,
+                        Message.id == MessageVersion.message_id,
+                    ),
+                )
+                .join(Chat, and_(Chat.account_id == MessageVersion.account_id, Chat.id == MessageVersion.chat_id))
+            )
+            if since is not None:
+                deleted_stmt = deleted_stmt.where(Message.deleted_at >= since)
+                edited_stmt = edited_stmt.where(MessageVersion.captured_at >= since)
+            if before is not None:
+                deleted_stmt = deleted_stmt.where(Message.deleted_at < before)
+                edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
+            if scope is not None:
+                for predicate in scope.sql_predicates():
+                    deleted_stmt = deleted_stmt.where(predicate)
+                    edited_stmt = edited_stmt.where(predicate)
+            deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
+            edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
+
+            changes: list[dict[str, Any]] = []
+            for row in (await session.execute(deleted_stmt)).all():
+                changes.append(
+                    {
+                        "kind": "deleted",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "text": row.text,
+                    }
+                )
+            for row in (await session.execute(edited_stmt)).all():
+                changes.append(
+                    {
+                        "kind": "edited",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "old_text": row.old_text,
+                        "new_text": row.new_text,
+                    }
+                )
+            changes.sort(key=lambda c: c["date"] or "", reverse=True)
+            return changes[:per_stream]
+
     async def get_message_versions_by_date_range(
         self,
         chat_id: int | None = None,
