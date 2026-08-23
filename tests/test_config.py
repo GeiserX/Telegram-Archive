@@ -661,6 +661,31 @@ class TestSkipTopicIds(unittest.TestCase):
             config = Config()
             self.assertFalse(config.should_skip_topic(-1001234567890, None))
 
+    def test_excluding_general_catches_messages_without_topic_metadata(self):
+        """chat:1 must actually fire: General-topic messages carry NO reply_to
+        (Telegram omits top_msg_id for General), so extract_topic_id yields
+        None for every one of them — and the old None short-circuit meant the
+        natural General exclusion never skipped a single message while the
+        topic sidebar claimed it did. The filter now mirrors the archive's own
+        General bucket, coalesce(reply_to_top_id, 1)."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "SKIP_TOPIC_IDS": "-1001234567890:1",
+            "BACKUP_PATH": self.temp_dir,
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            # None (no reply_to) = the General bucket -> skipped for this chat.
+            self.assertTrue(config.should_skip_topic(-1001234567890, None))
+            # Explicit topic 1 (a reply within General) skips too.
+            self.assertTrue(config.should_skip_topic(-1001234567890, 1))
+            # Other chats' General is untouched.
+            self.assertFalse(config.should_skip_topic(-1009999999999, None))
+            # An unrelated topic in the same chat stays included. (None with
+            # a skip set NOT containing 1 is pinned by
+            # test_should_skip_topic_none_topic above.)
+            self.assertFalse(config.should_skip_topic(-1001234567890, 2))
+
     def test_should_skip_topic_empty_config(self):
         """should_skip_topic returns False when SKIP_TOPIC_IDS is not set."""
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}

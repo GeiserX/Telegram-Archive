@@ -1186,11 +1186,21 @@ class Config:
         Returns:
             True if this topic should be skipped, False otherwise
         """
-        if topic_id is None or not self.skip_topic_ids:
+        if not self.skip_topic_ids:
             return False
         skip_set = self.skip_topic_ids.get(chat_id)
         if skip_set is None:
             return False
+        if topic_id is None:
+            # General-topic messages carry NO reply_to metadata (Telegram sets
+            # top_msg_id "except for the 'General' topic"), so the natural
+            # exclusion spelling chat:1 could never fire — while the topic
+            # SIDEBAR honored it, signalling an exclusion that wasn't
+            # happening. The archive's own General bucket is
+            # coalesce(reply_to_top_id, 1); the filter mirrors it: excluding
+            # topic 1 excludes exactly the messages the viewer files under
+            # General.
+            return 1 in skip_set
         return topic_id in skip_set
 
     def _get_required_env(self, key: str, value_type: type):
