@@ -731,7 +731,16 @@ def extract_topic_id(message: object) -> int | None:
     reply_to.reply_to_msg_id is used as a fallback.
 
     Returns None for non-forum messages or messages without reply_to.
+
+    A topic-creation service message carries NO reply_to either, but it is
+    not General: in Telegram forums a topic's id IS the id of its creation
+    service message, so it identifies itself. Without this, excluding General
+    (which is caught via the None bucket) would also drop every topic's
+    creation record.
     """
+    action = getattr(message, "action", None)
+    if action is not None and type(action).__name__ == "MessageActionTopicCreate":
+        return message.id
     if not message.reply_to or not getattr(message.reply_to, "forum_topic", False):
         return None
     topic_id = getattr(message.reply_to, "reply_to_top_id", None)

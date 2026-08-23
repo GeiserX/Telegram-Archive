@@ -446,7 +446,7 @@ Find a chat's ID by forwarding a message to [@userinfobot](https://t.me/userinfo
 SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337,-1009876543210:7
 ```
 
-> Note: The topic-creating service message (1 per topic) may still be backed up since it lacks `reply_to` metadata. This does not affect user-generated content.
+> Note: Excluding topic `1` (General) works by catching messages with no topic metadata — Telegram omits `reply_to` on General-topic messages, and the archive files exactly those under General. The topic-creating service message (1 per topic) of OTHER topics may still be backed up since it also lacks `reply_to` metadata.
 
 ### Real-time Listener
 

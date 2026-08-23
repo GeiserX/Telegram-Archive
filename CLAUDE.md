@@ -117,7 +117,7 @@ Follow these conventions:
 
 ### Forum Topic Filtering
 
-Topic IDs are extracted from `message.reply_to.reply_to_top_id` (primary) with fallback to `reply_to_msg_id`. The General topic (id=1) service messages may not carry `reply_to` metadata and can bypass filtering. The `SKIP_TOPIC_IDS` env var uses format `chat_id:topic_id,...` parsed into `dict[int, set[int]]`.
+Topic IDs are extracted from `message.reply_to.reply_to_top_id` (primary) with fallback to `reply_to_msg_id`. General-topic messages carry NO `reply_to` (Telegram omits `top_msg_id` for General), so `extract_topic_id` returns None for them — `should_skip_topic` maps None to topic 1 when the chat's skip set contains 1, mirroring the archive's `coalesce(reply_to_top_id, 1)` General bucket. The `SKIP_TOPIC_IDS` env var uses format `chat_id:topic_id,...` parsed into `dict[int, set[int]]`.
 
 ### Logging Rules
 
