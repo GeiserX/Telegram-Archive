@@ -334,6 +334,7 @@ class RealtimeListener:
         # garbage-collected mid-run and so their exceptions are retrieved
         # (an un-referenced task's exception is otherwise silently dropped).
         self._callback_tasks: set[asyncio.Task] = set()
+        self._callbacks_dropped = 0
 
     async def init(self):
         """Initialize and detect database type."""
@@ -413,9 +414,30 @@ class RealtimeListener:
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(conn.close(), timeout=_TEARDOWN_TIMEOUT_SECONDS)
 
+    # In-flight ceiling for notification callbacks: asyncpg invokes
+    # _pg_callback synchronously for every NOTIFY, so without a bound the
+    # producer's rate becomes the viewer's memory growth rate (each retained
+    # task holds its payload alive). Beyond the cap the notification is
+    # dropped and counted — the broadcast layer is best-effort by design, a
+    # page refresh re-reads the archive, and dropping the NEWEST under a
+    # sustained burst keeps the already-queued work draining in order.
+    _MAX_CALLBACK_TASKS = 200
+
     def _pg_callback(self, connection, pid, channel, payload):
         """Handle PostgreSQL notification."""
         if not self._callback:
+            return
+
+        # Capacity first: this runs synchronously on the event loop, so at
+        # overload the drop must not pay json.loads per discarded payload.
+        if len(self._callback_tasks) >= self._MAX_CALLBACK_TASKS:
+            self._callbacks_dropped += 1
+            # Payload never logged (PII rule); counts only.
+            logger.debug(
+                "Realtime notification dropped: %d callbacks already in flight (%d dropped total)",
+                len(self._callback_tasks),
+                self._callbacks_dropped,
+            )
             return
 
         try:

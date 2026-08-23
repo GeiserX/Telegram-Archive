@@ -731,7 +731,16 @@ def extract_topic_id(message: object) -> int | None:
     reply_to.reply_to_msg_id is used as a fallback.
 
     Returns None for non-forum messages or messages without reply_to.
+
+    A topic-creation service message carries NO reply_to either, but it is
+    not General: in Telegram forums a topic's id IS the id of its creation
+    service message, so it identifies itself. Without this, excluding General
+    (which is caught via the None bucket) would also drop every topic's
+    creation record.
     """
+    action = getattr(message, "action", None)
+    if action is not None and type(action).__name__ == "MessageActionTopicCreate":
+        return message.id
     if not message.reply_to or not getattr(message.reply_to, "forum_topic", False):
         return None
     topic_id = getattr(message.reply_to, "reply_to_top_id", None)
@@ -898,3 +907,33 @@ def extract_reactions(message_reactions: object) -> list[dict[str, object]] | No
         logger.debug("Reaction extraction failed, skipping reconcile: %s", type(e).__name__)
         return None
     return out
+
+
+def normalize_configured_chat_ids(configured: set[int], existing_ids: set[int]) -> tuple[set[int], int, int]:
+    """Auto-correct filter ids missing the -100 supergroup/channel prefix.
+
+    The viewer's ``_normalize_display_chat_ids`` established the contract for
+    this exact user mistake (a chat id copied from Telegram Web or the viewer
+    without the marked prefix): an entry present in ``existing_ids`` is kept;
+    a positive entry absent as-is whose ``-100…`` marked form IS archived is
+    rewritten to the marked form; everything else is kept untouched (the chat
+    may simply not be archived yet). Returns
+    ``(normalized, corrected_count, unresolved_count)``. Callers log counts
+    only — never the ids (PII rule).
+    """
+    normalized: set[int] = set()
+    corrected = 0
+    unresolved = 0
+    for chat_id in configured:
+        if chat_id in existing_ids:
+            normalized.add(chat_id)
+            continue
+        if chat_id > 0:
+            marked_id = -1000000000000 - chat_id
+            if marked_id in existing_ids:
+                corrected += 1
+                normalized.add(marked_id)
+                continue
+        unresolved += 1
+        normalized.add(chat_id)
+    return normalized, corrected, unresolved

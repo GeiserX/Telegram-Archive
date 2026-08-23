@@ -911,6 +911,39 @@ async def test_deletion_snapshot_media_type_is_deterministic_across_rows(sqlite_
 
 
 @pytest.mark.asyncio
+async def test_recording_the_same_version_twice_is_a_silent_noop(sqlite_adapter, caplog):
+    """The uq (account_id, change_hash) dedup rides ON CONFLICT DO NOTHING.
+
+    Dropping the on_conflict clause kept the whole suite green: nothing ever
+    re-inserted the same version, so the duplicate path ran dark — and without
+    it every re-scan of an edited message would IntegrityError inside the
+    SAVEPOINT and flood a WARNING per message per cycle through the blanket
+    except. This pins the contract: second identical record -> False, ONE row,
+    and not a word in the log."""
+    import logging as _logging
+
+    when = datetime(2026, 6, 27, 10, 0)
+    async with sqlite_adapter.db_manager.async_session_factory() as session:
+        first = await sqlite_adapter._record_message_version(
+            session, account_id=1, chat_id=300, message_id=70, text="superseded", date=when
+        )
+        with caplog.at_level(_logging.WARNING, logger="src.db.adapter"):
+            again = await sqlite_adapter._record_message_version(
+                session, account_id=1, chat_id=300, message_id=70, text="superseded", date=when
+            )
+        await session.commit()
+
+    assert first is True
+    assert again is False  # deduped, not failed
+    assert "Could not record" not in caplog.text  # DO NOTHING, not except-swallowed
+    async with sqlite_adapter.db_manager.async_session_factory() as session:
+        rows = await session.execute(
+            select(MessageVersion).where(MessageVersion.chat_id == 300, MessageVersion.message_id == 70)
+        )
+        assert len(list(rows.scalars())) == 1
+
+
+@pytest.mark.asyncio
 async def test_version_export_window_uses_the_export_contract(sqlite_adapter):
     """iter_message_versions_for_export windows with (>= from, < to) — the
     export contract — without touching the shared query's inclusive end_date
