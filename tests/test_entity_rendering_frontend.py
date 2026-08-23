@@ -179,6 +179,43 @@ assert.equal(pre, '<pre class="tg-pre"><code>x = 1</code></pre>')
     )
 
 
+def test_spoiler_reveal_does_not_hijack_revealed_links() -> None:
+    """Concealed: first activation reveals and suppresses navigation. Revealed:
+    the span stops intercepting so url/text_url/tag links inside work."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index("const toggleSpoiler")
+    end = html.index("}", html.index("spoiler.classList.add", start)) + 1
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            html[start:end].replace("const toggleSpoiler", "globalThis.toggleSpoiler"),
+            """
+const mkEvent = (revealed) => {
+    const cls = new Set(revealed ? ['tg-spoiler', 'tg-spoiler-revealed'] : ['tg-spoiler'])
+    const spoiler = { classList: { contains: (c) => cls.has(c), add: (c) => cls.add(c) } }
+    let prevented = false
+    return {
+        ev: { target: { closest: (sel) => sel === '.tg-spoiler' ? spoiler : null }, preventDefault: () => { prevented = true } },
+        cls,
+        wasPrevented: () => prevented,
+    }
+}
+const concealed = mkEvent(false)
+toggleSpoiler(concealed.ev)
+assert.ok(concealed.cls.has('tg-spoiler-revealed'))
+assert.ok(concealed.wasPrevented())
+const revealed = mkEvent(true)
+toggleSpoiler(revealed.ev)
+assert.ok(!revealed.wasPrevented())
+""",
+        ]
+    )
+    _run_node(script)
+    # And the tag delegate must leave concealed-spoiler tags to the reveal.
+    assert ".tg-spoiler:not(.tg-spoiler-revealed)" in html
+
+
 def test_template_uses_entity_renderer_for_message_text() -> None:
     """The message bubble must route through renderMessageHtml (album-aware)."""
     html = INDEX_HTML.read_text(encoding="utf-8")

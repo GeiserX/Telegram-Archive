@@ -3730,6 +3730,9 @@
                 document.addEventListener('click', (event) => {
                     const link = event.target.closest ? event.target.closest('a.tag-link') : null
                     if (!link) return
+                    // A tag concealed inside a spoiler must reveal, not open:
+                    // the spoiler handler below owns that first click.
+                    if (link.closest('.tg-spoiler:not(.tg-spoiler-revealed)')) return
                     event.preventDefault()
                     openTagView(link.dataset.tag)
                 })
@@ -3737,8 +3740,11 @@
                 const toggleSpoiler = (event) => {
                     const spoiler = event.target.closest ? event.target.closest('.tg-spoiler') : null
                     if (!spoiler) return
+                    // Once revealed the span stops intercepting (official apps do
+                    // not re-conceal): links and tags inside behave normally.
+                    if (spoiler.classList.contains('tg-spoiler-revealed')) return
                     event.preventDefault()
-                    spoiler.classList.toggle('tg-spoiler-revealed')
+                    spoiler.classList.add('tg-spoiler-revealed')
                 }
                 document.addEventListener('click', toggleSpoiler)
                 document.addEventListener('keydown', (event) => {
