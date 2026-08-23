@@ -2396,15 +2396,23 @@ class DatabaseAdapter:
                 return
 
     async def reset_chat_sync_cursor(self, chat_id: int) -> int:
-        """Zero every account's sync cursor for one chat; rows changed.
+        """Zero every account's sync cursor for one chat; chat rows changed.
 
         The backfill-topics resweep needs the next backup pass to walk the
         chat from the beginning so its upserts can refresh reply_to_top_id
         on rows an HTML import created without topic metadata. All accounts
         on purpose: the backfill is per-chat, and any account archiving the
         chat wants the same refresh.
+
+        BOTH cursors must reset: the sweep's min_id comes from
+        sync_status.last_message_id (get_last_message_id), while
+        chats.last_synced_message_id mirrors it for display — zeroing only
+        the chat column leaves the resweep resuming where it left off. The
+        return value counts CHAT rows, so an archived chat whose sync_status
+        row does not exist yet (import-only history) still reads as known.
         """
         async with self.db_manager.async_session_factory() as session:
+            await session.execute(update(SyncStatus).where(SyncStatus.chat_id == chat_id).values(last_message_id=0))
             result = await session.execute(update(Chat).where(Chat.id == chat_id).values(last_synced_message_id=0))
             await session.commit()
             return result.rowcount or 0

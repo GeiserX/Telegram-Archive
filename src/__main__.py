@@ -355,7 +355,13 @@ def run_backfill_topics(args) -> int:
         finally:
             await db.close()
 
-    if asyncio.run(_reset_cursor()) == 0:
+    try:
+        known_chat_rows = asyncio.run(_reset_cursor())
+    except Exception as e:
+        print(f"Topic backfill failed: {e}", file=sys.stderr)
+        return 1
+
+    if known_chat_rows == 0:
         print("That chat is not in the archive yet — import or back it up first.")
         return 1
 

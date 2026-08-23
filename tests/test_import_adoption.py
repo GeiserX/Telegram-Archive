@@ -12,6 +12,8 @@ text-only (downloads off, deletion sync off) to refresh reply_to_top_id.
 """
 
 import asyncio
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -34,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.__main__ import run_backfill_topics
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager
-from src.db.models import Base, Chat, Media
+from src.db.models import Base, Chat, Media, SyncStatus
 from src.telegram_backup import TelegramBackup
 
 CHAT_ID = -1001
@@ -83,6 +85,10 @@ async def _make_adapter() -> DatabaseAdapter:
         session.add(Chat(account_id=1, id=CHAT_ID, type="channel", title="A", last_synced_message_id=500))
         session.add(Chat(account_id=2, id=CHAT_ID, type="channel", title="A", last_synced_message_id=700))
         session.add(Chat(account_id=1, id=OTHER_CHAT_ID, type="channel", title="B", last_synced_message_id=900))
+        # The cursor the sweep ACTUALLY reads (get_last_message_id -> min_id)
+        # lives in sync_status; account 2 deliberately has no row.
+        session.add(SyncStatus(account_id=1, chat_id=CHAT_ID, last_message_id=500))
+        session.add(SyncStatus(account_id=1, chat_id=OTHER_CHAT_ID, last_message_id=900))
         await session.commit()
 
     return DatabaseAdapter(db_manager)
@@ -178,6 +184,18 @@ async def test_reset_cursor_zeroes_every_account_for_that_chat_only(adapter):
     assert cursors[(1, CHAT_ID)] == 0
     assert cursors[(2, CHAT_ID)] == 0
     assert cursors[(1, OTHER_CHAT_ID)] == 900  # untouched
+
+
+@pytest.mark.asyncio
+async def test_reset_cursor_zeroes_the_cursor_the_sweep_reads(adapter):
+    """_backup_dialog takes min_id from sync_status.last_message_id, NOT from
+    chats.last_synced_message_id — zeroing only the chat column makes the
+    resweep resume where it left off and backfill-topics silently no-op.
+    """
+    assert await adapter.reset_chat_sync_cursor(CHAT_ID) == 2
+    assert await adapter.get_last_message_id(CHAT_ID, account_id=1) == 0
+    # The untargeted chat's sweep cursor stays put.
+    assert await adapter.get_last_message_id(OTHER_CHAT_ID, account_id=1) == 900
 
 
 @pytest.mark.asyncio
@@ -279,6 +297,26 @@ class TestBackfillTopicsCommand(unittest.TestCase):
         self.assertEqual(result, 1)
         backup_main.assert_not_called()
         adapter_mock.close.assert_awaited()
+
+    def test_reset_failure_exits_1_without_a_traceback(self):
+        """Sibling commands print 'X failed: e' and return 1 — so does this."""
+
+        async def broken_create_adapter(database_url=None):
+            raise RuntimeError("db is sideways")
+
+        backup_main = MagicMock(return_value=0)
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("src.db.create_adapter", new=broken_create_adapter),
+            mock.patch("src.telegram_backup.main", new=backup_main),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = run_backfill_topics(SimpleNamespace(chat_id=CHAT_ID))
+
+        self.assertEqual(result, 1)
+        backup_main.assert_not_called()
+        self.assertIn("Topic backfill failed: db is sideways", stderr.getvalue())
 
     def test_known_chat_resweeps_with_pinned_env(self):
         adapter_mock, fake_create = self._adapter_returning(2)
