@@ -163,6 +163,9 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
         backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         backup.client = AsyncMock()
         backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        backup.db.adopt_import_media = AsyncMock(return_value=None)
         backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
         # download_media returns the actual path with .mp4
         backup.client.download_media = AsyncMock(return_value=actual_returned_path)
@@ -214,6 +217,9 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
         self.backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -344,6 +350,9 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         self.backup.config.deduplicate_media = True
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
         _stream_verification_batches(self.backup.db)
         self.backup.client = AsyncMock()
 
@@ -471,6 +480,9 @@ class TestShutilMoveFallback(unittest.TestCase):
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
         self.backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -803,6 +815,9 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
         self.backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -914,6 +929,10 @@ class TestBackupNonDedupCapturesReturnValue(unittest.TestCase):
         self.backup.config.deduplicate_media = False
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
+        self.backup.db = AsyncMock()
+        # No import rows: a truthy mock would make the adoption hook
+        # short-circuit _process_media before the non-dedup path under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -980,6 +999,9 @@ class TestBackupDedupSymlinkFailFallback(unittest.TestCase):
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.client = AsyncMock()
         self.backup.db = AsyncMock()
+        # No import rows by default: a truthy mock would make the adoption
+        # hook short-circuit _process_media before the paths under test.
+        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):

@@ -93,6 +93,9 @@ def _make_backup(media_root):
     backup.config.deduplicate_media = False
     backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
     backup.db = AsyncMock()
+    # No import rows by default: a truthy mock would make the adoption
+    # hook short-circuit _process_media before the paths under test.
+    backup.db.adopt_import_media = AsyncMock(return_value=None)
     backup.client = AsyncMock()
     backup._owns_client = True
     backup._cleaned_media_chats = set()

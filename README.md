@@ -719,9 +719,24 @@ docker compose exec -it telegram-backup python -m src auth
 # Import a Telegram Desktop export (JSON or HTML) into the archive
 docker compose exec telegram-backup python -m src import -p /data/export
 
+# Give imported forum messages their topics back (see note below)
+docker compose exec telegram-backup python -m src backfill-topics -c -1001234567890
+
 # Detect and fill message gaps left by failed backups
 docker compose exec telegram-backup python -m src fill-gaps
 ```
+
+> **Imported forum chats and topics.** Telegram Desktop exports (HTML *and*
+> JSON) carry no forum-topic metadata, so imported forum messages all land in
+> the General topic. Once the same account also has API access to the chat,
+> `backfill-topics` resets that chat's sync cursor and re-sweeps it text-only
+> (media downloads, deletion/edit sync and media verification are disabled
+> for the pass) — the sweep's upsert fills in `reply_to_top_id` without
+> touching anything else.
+>
+> **Imported media is adopted, not re-downloaded.** When a normal API backup
+> later reaches a message whose file arrived via import, the archive re-keys
+> the imported record to the sweep's name and reuses the on-disk file.
 
 ## Data Storage
 

@@ -2395,6 +2395,88 @@ class DatabaseAdapter:
             if len(rows) < batch_size:
                 return
 
+    async def reset_chat_sync_cursor(self, chat_id: int) -> int:
+        """Zero every account's sync cursor for one chat; chat rows changed.
+
+        The backfill-topics resweep needs the next backup pass to walk the
+        chat from the beginning so its upserts can refresh reply_to_top_id
+        on rows an HTML import created without topic metadata. All accounts
+        on purpose: the backfill is per-chat, and any account archiving the
+        chat wants the same refresh.
+
+        BOTH cursors must reset: the sweep's min_id comes from
+        sync_status.last_message_id (get_last_message_id), while
+        chats.last_synced_message_id mirrors it for display — zeroing only
+        the chat column leaves the resweep resuming where it left off. The
+        return value counts CHAT rows, so an archived chat whose sync_status
+        row does not exist yet (import-only history) still reads as known.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            await session.execute(update(SyncStatus).where(SyncStatus.chat_id == chat_id).values(last_message_id=0))
+            result = await session.execute(update(Chat).where(Chat.id == chat_id).values(last_synced_message_id=0))
+            await session.commit()
+            return result.rowcount or 0
+
+    async def adopt_import_media(
+        self, chat_id: int, message_id: int, new_media_id: str, *, account_id: int
+    ) -> dict[str, Any] | None:
+        """Re-key an HTML/JSON-import media row to the sweep's name and return it.
+
+        Telegram Desktop imports store media as ``import_{chat}_{msg}`` with
+        the file already on disk. When the API sweep later reaches the same
+        message it would re-download those bytes under its own id — a
+        duplicate row AND a duplicate download. Re-keying converges the
+        sweep's upsert onto the existing row (and file) from then on.
+
+        None when there is no downloaded import row. When the sweep name
+        already exists (an earlier sweep archived its own copy), nothing is
+        touched — this path adopts records, it never deletes data.
+        """
+        import_media_id = f"import_{chat_id}_{message_id}"
+        async with self.db_manager.async_session_factory() as session:
+            existing_sweep_row = (
+                await session.execute(
+                    select(Media.id).where(and_(Media.account_id == account_id, Media.id == new_media_id))
+                )
+            ).first()
+            if existing_sweep_row is not None:
+                return None
+            row = (
+                await session.execute(
+                    select(Media).where(
+                        and_(
+                            Media.account_id == account_id,
+                            Media.id == import_media_id,
+                            Media.downloaded == 1,
+                        )
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            await session.execute(
+                update(Media)
+                .where(and_(Media.account_id == account_id, Media.id == import_media_id))
+                .values(id=new_media_id)
+            )
+            await session.commit()
+            return {
+                "id": new_media_id,
+                "type": row.type,
+                "message_id": row.message_id,
+                "chat_id": row.chat_id,
+                "file_name": row.file_name,
+                "file_path": row.file_path,
+                "file_size": row.file_size,
+                "mime_type": row.mime_type,
+                "width": row.width,
+                "height": row.height,
+                "duration": row.duration,
+                "content_hash": row.content_hash,
+                "downloaded": True,
+                "download_date": row.download_date,
+            }
+
     async def get_pending_media_downloads(
         self,
         max_media_size_bytes: int | None = None,
