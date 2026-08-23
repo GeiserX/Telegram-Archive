@@ -2395,6 +2395,52 @@ async def search_tag(
     return payload
 
 
+def _parse_changes_bound(value: str, param: str) -> datetime:
+    """ISO bound to naive UTC — the #365 conversion contract (convert, never relabel)."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {param} date. Use ISO 8601.") from None
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
+@app.get("/api/changes")
+async def get_recent_changes(
+    user: UserContext = Depends(require_auth),
+    since: str | None = Query(None),
+    before: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """What changed: deletions and edits the archive captured, newest first.
+
+    ``since`` bounds the window's start (inclusive); ``before`` is the keyset
+    cursor — pass the last row's ``date`` to page older. Entitlements are the
+    chat list's own compiled scope, so a restricted viewer sees only their
+    chats' changes.
+    """
+    parsed_since = _parse_changes_bound(since, "since") if since else None
+    parsed_before = _parse_changes_bound(before, "before") if before else None
+    try:
+        changes = await db.get_recent_changes(
+            since=parsed_since, before=parsed_before, limit=limit, scope=_chat_scope(user)
+        )
+        next_cursor = changes[-1]["date"] if len(changes) == limit else None
+        return JSONResponse(
+            {"changes": changes, "next_before": next_cursor},
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Counts/types only — feed rows carry chat titles and message text.
+        logger.error(f"Error building the changes feed: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/chats/{chat_ref}/messages/{message_id}/versions")
 async def get_message_versions(
     message_id: int,
