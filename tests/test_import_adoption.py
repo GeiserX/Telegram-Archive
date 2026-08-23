@@ -24,7 +24,6 @@ from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -110,7 +109,6 @@ async def _media_ids(adapter_, account_id: int = 1) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_adopts_downloaded_import_row(adapter):
     async with adapter.db_manager.async_session_factory() as session:
         session.add(_import_row())
@@ -131,7 +129,6 @@ async def test_adopts_downloaded_import_row(adapter):
     assert await _media_ids(adapter) == {SWEEP_ID}
 
 
-@pytest.mark.asyncio
 async def test_existing_sweep_row_is_never_touched(adapter):
     """An earlier sweep already archived its own copy: adopt nothing."""
     async with adapter.db_manager.async_session_factory() as session:
@@ -143,7 +140,6 @@ async def test_existing_sweep_row_is_never_touched(adapter):
     assert await _media_ids(adapter) == {IMPORT_ID, SWEEP_ID}
 
 
-@pytest.mark.asyncio
 async def test_undownloaded_import_row_is_ignored(adapter):
     """Adoption exists to reuse bytes on disk; a fileless row has none."""
     async with adapter.db_manager.async_session_factory() as session:
@@ -154,12 +150,10 @@ async def test_undownloaded_import_row_is_ignored(adapter):
     assert await _media_ids(adapter) == {IMPORT_ID}
 
 
-@pytest.mark.asyncio
 async def test_no_import_row_returns_none(adapter):
     assert await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1) is None
 
 
-@pytest.mark.asyncio
 async def test_adoption_is_account_scoped(adapter):
     async with adapter.db_manager.async_session_factory() as session:
         session.add(_import_row(account_id=1))
@@ -174,7 +168,6 @@ async def test_adoption_is_account_scoped(adapter):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_reset_cursor_zeroes_every_account_for_that_chat_only(adapter):
     assert await adapter.reset_chat_sync_cursor(CHAT_ID) == 2
 
@@ -186,7 +179,6 @@ async def test_reset_cursor_zeroes_every_account_for_that_chat_only(adapter):
     assert cursors[(1, OTHER_CHAT_ID)] == 900  # untouched
 
 
-@pytest.mark.asyncio
 async def test_reset_cursor_zeroes_the_cursor_the_sweep_reads(adapter):
     """_backup_dialog takes min_id from sync_status.last_message_id, NOT from
     chats.last_synced_message_id — zeroing only the chat column makes the
@@ -198,7 +190,6 @@ async def test_reset_cursor_zeroes_the_cursor_the_sweep_reads(adapter):
     assert await adapter.get_last_message_id(OTHER_CHAT_ID, account_id=1) == 900
 
 
-@pytest.mark.asyncio
 async def test_reset_cursor_unknown_chat_returns_zero(adapter):
     assert await adapter.reset_chat_sync_cursor(-999999) == 0
 
