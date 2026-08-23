@@ -55,8 +55,10 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    message_plain_text,
     sanitize_media_filename,
     sender_display_name,
+    serialize_message_entities,
     service_action_type,
     service_message_text,
     utcnow_naive,
@@ -1049,7 +1051,7 @@ class TelegramListener:
                 self._buffer_reaction_snapshot(chat_id, message)
 
                 self.stats["edits_received"] += 1
-                new_text = message.text or ""
+                new_text = message_plain_text(message)
                 edit_date = message.edit_date
 
                 # Check rate limit before applying
@@ -1068,6 +1070,8 @@ class TelegramListener:
                     new_text=new_text,
                     edit_date=edit_date,
                     account_id=self.account_id,
+                    entities=serialize_message_entities(getattr(message, "entities", None)),
+                    update_entities=True,
                 )
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
@@ -1261,7 +1265,7 @@ class TelegramListener:
                     "sender_id": message.sender_id,
                     "sender_name": sender_display_name(sender),
                     "date": message.date,
-                    "text": message.text or "",
+                    "text": message_plain_text(message),
                     "reply_to_msg_id": message.reply_to_msg_id if hasattr(message, "reply_to_msg_id") else None,
                     "reply_to_top_id": reply_to_top_id,
                     "reply_to_text": None,
@@ -1290,6 +1294,11 @@ class TelegramListener:
                 forward_origin = extract_forward_origin(message)
                 if forward_origin:
                     message_data["raw_data"]["forward_origin"] = forward_origin
+
+                # Formatting entities — same contract as the sweep writer.
+                message_entities = serialize_message_entities(getattr(message, "entities", None))
+                if message_entities:
+                    message_data["raw_data"]["entities"] = message_entities
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None

@@ -1484,7 +1484,15 @@ class DatabaseAdapter:
 
     @retry_on_locked()
     async def update_message_text(
-        self, chat_id: int, message_id: int, new_text: str, edit_date: datetime | None, *, account_id: int
+        self,
+        chat_id: int,
+        message_id: int,
+        new_text: str,
+        edit_date: datetime | None,
+        *,
+        account_id: int,
+        entities: list | None = None,
+        update_entities: bool = False,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
@@ -1504,7 +1512,26 @@ class DatabaseAdapter:
                 return "not_found", None
 
             if not self._should_apply_edit_text(message, new_text, edit_date):
-                logger.debug("Edit no-op: message already current")
+                # Formatting-only edits arrive with UNCHANGED text but different
+                # entities. Merge them silently — no edit_date bump, no version,
+                # no webhook — so formatting stays current without the phantom
+                # "edited" marker #219 removed.
+                if update_entities and self._merge_raw_data_entities(message, entities):
+                    await session.execute(
+                        update(Message)
+                        .where(
+                            and_(
+                                Message.account_id == account_id,
+                                Message.chat_id == chat_id,
+                                Message.id == message_id,
+                            )
+                        )
+                        .values(raw_data=message.raw_data)
+                    )
+                    await session.commit()
+                    logger.debug("Edit no-op text, entities refreshed")
+                else:
+                    logger.debug("Edit no-op: message already current")
                 return "noop", None
 
             prior = {"text": message.text, "sender_id": message.sender_id, "sender_name": message.sender_name}
@@ -1522,9 +1549,45 @@ class DatabaseAdapter:
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
                 .values(text=new_text, edit_date=edit_date)
             )
+            if update_entities and self._merge_raw_data_entities(message, entities):
+                await session.execute(
+                    update(Message)
+                    .where(
+                        and_(
+                            Message.account_id == account_id,
+                            Message.chat_id == chat_id,
+                            Message.id == message_id,
+                        )
+                    )
+                    .values(raw_data=message.raw_data)
+                )
             await session.commit()
             logger.debug("Updated archived message text")
             return "applied", prior
+
+    def _merge_raw_data_entities(self, message: Message, entities: list | None) -> bool:
+        """Set or drop raw_data["entities"] on the loaded row; True if it changed.
+
+        raw_data is a JSON string column, so the merge round-trips through
+        json; a row whose raw_data is unparseable is left untouched (never
+        destroy unrelated capture payloads for a formatting refresh).
+        """
+        try:
+            raw = json.loads(message.raw_data) if message.raw_data else {}
+        except ValueError, TypeError:
+            return False
+        if not isinstance(raw, dict):
+            return False
+        if raw.get("entities") == entities and (entities is not None or "entities" not in raw):
+            return False
+        if entities is None:
+            if "entities" not in raw:
+                return False
+            raw.pop("entities")
+        else:
+            raw["entities"] = entities
+        message.raw_data = json.dumps(raw)
+        return True
 
     async def sender_has_message_in_chats(
         self, sender_id: int, chat_ids: Iterable[int], *, account_id: int | None = None
