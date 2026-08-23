@@ -1300,15 +1300,20 @@
 
                                     <!-- Forwarded Message Info: tappable when the origin is archived,
                                          like official apps' forward headers. -->
-                                    <div v-if="msg.forward_from_id || getForwardName(msg)"
+                                    <div v-if="msg.forward_from_id || getForwardName(msg) || msg.raw_data?.forward_origin"
                                         @click="openForwardOrigin(msg)"
+                                        @keydown.enter.prevent="openForwardOrigin(msg)"
+                                        @keydown.space.prevent="openForwardOrigin(msg)"
+                                        :role="getForwardOriginChat(msg) ? 'button' : null"
+                                        :tabindex="getForwardOriginChat(msg) ? 0 : null"
                                         :class="getForwardOriginChat(msg) ? 'cursor-pointer hover:bg-black/30 transition' : ''"
                                         class="border-l-2 border-green-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2">
                                         <div class="font-semibold text-green-400 mb-0.5">
                                             Forwarded from
                                             <i v-if="getForwardOriginChat(msg)" class="fa-solid fa-arrow-up-right-from-square ml-1 opacity-70"></i>
                                         </div>
-                                        <div class="truncate opacity-90">{{ getForwardName(msg) }}</div>
+                                        <div class="truncate opacity-90">
+                                            {{ getForwardName(msg) || getForwardOriginChat(msg)?.title || 'Forwarded message' }}</div>
                                     </div>
 
                                     <!-- Polls: v6.0.0 - detected by presence of raw_data.poll -->
@@ -5535,16 +5540,52 @@
                 }
 
                 // The forward header's tap target: the origin chat, when archived.
+                // The sidebar holds only the current page, so unknown origins
+                // resolve through one shared full-list fetch (archived included,
+                // same limit=1000 bound the search box uses), cached per chat id
+                // (false = resolved, not in this archive).
+                const forwardOriginChats = ref({})
+                const _forwardOriginResolves = new Map()
+                let _forwardOriginListPromise = null
+
+                const _fetchAllChatsOnce = () => {
+                    _forwardOriginListPromise ??= fetch('/api/chats?limit=1000', { credentials: 'same-origin' })
+                        .then(resp => resp.ok ? resp.json() : { chats: [] })
+                        .then(data => data.chats || [])
+                        .catch(() => [])
+                    return _forwardOriginListPromise
+                }
+
+                const _resolveForwardOrigin = (chatId) => {
+                    let pending = _forwardOriginResolves.get(chatId)
+                    if (!pending) {
+                        pending = _fetchAllChatsOnce().then(all => {
+                            forwardOriginChats.value[chatId] = all.find(c => c.id === chatId) || false
+                        })
+                        _forwardOriginResolves.set(chatId, pending)
+                    }
+                    return pending
+                }
+
                 const getForwardOriginChat = (msg) => {
                     const origin = msg.raw_data?.forward_origin
                     if (!origin) return null
-                    return chats.value.find(c => c.id === origin.chat_id) || null
+                    const local = chats.value.find(c => c.id === origin.chat_id)
+                    if (local) return local
+                    const cached = forwardOriginChats.value[origin.chat_id]
+                    if (cached === undefined) _resolveForwardOrigin(origin.chat_id)
+                    return cached || null
                 }
 
                 const openForwardOrigin = async (msg) => {
                     const origin = msg.raw_data?.forward_origin
-                    const chat = getForwardOriginChat(msg)
-                    if (!origin || !chat) return
+                    if (!origin) return
+                    let chat = getForwardOriginChat(msg)
+                    if (!chat) {
+                        await _resolveForwardOrigin(origin.chat_id)
+                        chat = forwardOriginChats.value[origin.chat_id] || null
+                    }
+                    if (!chat) return
                     await openNotificationTarget(chat.ref, origin.message_id)
                 }
 
