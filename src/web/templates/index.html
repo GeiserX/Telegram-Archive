@@ -3028,9 +3028,14 @@
                         else changesFeed.value = data.changes
                         changesNextBefore.value = data.next_before
                     } catch (e) {
-                        // Feed is best-effort UI; show the empty state rather than crash.
-                        if (!before) changesFeed.value = []
-                        changesNextBefore.value = null
+                        // Best-effort UI, but a load-more failure must not eat
+                        // the cursor: keeping it leaves the "Load older"
+                        // button in place as the retry affordance. Only an
+                        // INITIAL failure clears to the empty state.
+                        if (!before) {
+                            changesFeed.value = []
+                            changesNextBefore.value = null
+                        }
                     } finally {
                         changesLoading.value = false
                     }
