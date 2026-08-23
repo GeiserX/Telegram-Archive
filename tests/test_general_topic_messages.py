@@ -110,10 +110,16 @@ async def test_topic_zero_returns_empty(forum_adapter):
 async def test_topic_filter_combined_with_search(forum_adapter):
     """topic_id and search filters must both apply — only matching messages returned."""
     adapter, chat_id = forum_adapter
-    # Search within General topic (id=1) — only "pre-forum general #1" matches
-    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="general #1")
+    # Indexed search is word-prefix AND (official-app semantics since 028):
+    # "general #1" also matches "(explicit 1)", so discriminate with a word
+    # only message 1 carries. Both filters must still apply together.
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="pre-forum general #1")
     ids = sorted(m["id"] for m in messages)
     assert ids == [1]
+    # And the prefix semantics themselves: "1" prefix-matches the "1" token
+    # of message 6 inside the same topic.
+    messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="general #1")
+    assert sorted(m["id"] for m in messages) == [1, 6]
 
     # Search term exists in topic-47 but not in General
     messages = await adapter.get_messages_paginated(chat_id=chat_id, topic_id=1, search="topic-47")
