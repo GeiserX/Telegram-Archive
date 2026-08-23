@@ -1897,6 +1897,12 @@
                         <dd class="mt-1 font-mono text-white">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
                     </div>
                 </dl>
+                <div v-if="senderInfoMessage.id" class="mt-4 flex justify-end">
+                    <button @click="copyMessageLink(senderInfoMessage)"
+                        class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        <i class="fa-solid fa-link mr-1"></i> Copy message link
+                    </button>
+                </div>
             </section>
         </div>
 
@@ -2930,6 +2936,16 @@
                         return
                     }
 
+                    // A pasted t.me link is a navigation, not a search.
+                    const telegramLink = parseTelegramLink(query)
+                    if (telegramLink) {
+                        searchQuery.value = ''
+                        searchResults.value = []
+                        searchLoading.value = false
+                        openTelegramLink(telegramLink)
+                        return
+                    }
+
                     searchLoading.value = true
                     searchDebounceTimer = setTimeout(async () => {
                         try {
@@ -3483,11 +3499,102 @@
                         return false
                     }
                     await selectChat(targetChat)
-                    if (messageId) {
-                        await nextTick()
-                        scrollToMessage(messageId)
+                    if (!messageId) return true
+                    if (targetChat.is_forum) {
+                        // selectChat short-circuits a forum into its topics list
+                        // without setting the pane — the jump needs the message's
+                        // topic first (the playbar's own continuation pattern).
+                        try {
+                            const resp = await fetch(
+                                `/api/chats/${encodeURIComponent(targetChat.ref)}/messages?after_id=${messageId - 1}&limit=1`,
+                                { credentials: 'same-origin' }
+                            )
+                            const rows = resp.ok ? await resp.json() : []
+                            const target = Array.isArray(rows) ? rows.find(m => m.id === messageId) || rows[0] : null
+                            const topicId = target?.reply_to_top_id ?? GENERAL_TOPIC_ID
+                            let topic = topics.value.find(t => Number(t.id) === Number(topicId))
+                            if (!topic && Number(topicId) === Number(GENERAL_TOPIC_ID)) {
+                                // Old captures may lack a General row — General always
+                                // exists conceptually (the playbar synthesizes it too).
+                                topic = { id: GENERAL_TOPIC_ID, title: 'General' }
+                            }
+                            if (!topic) {
+                                showToast('Could not locate that topic')
+                                return false
+                            }
+                            await selectTopic(targetChat, topic)
+                        } catch (e) {
+                            showToast('Could not locate that topic')
+                            return false
+                        }
                     }
+                    await nextTick()
+                    // The #367-hardened jump: windows around the id even when the
+                    // message is far outside the loaded page. scrollToMessage only
+                    // worked for already-rendered rows — fine for a fresh push
+                    // notification, silently a no-op for a shared link to history.
+                    await loadMessagesAroundId(messageId)
                     return true
+                }
+
+                // ---- Deep links: stable per-message URLs + t.me recognition ----
+                // The shareable form is the push-notification contract the app
+                // already honors on load: /?chat=<ref>&msg=<id> (opaque ref, so
+                // chat ids stay out of URLs and browser history).
+                const parseTelegramLink = (text) => {
+                    const value = (text || '').trim()
+                    const c = /^(?:https?:\/\/)?t\.me\/c\/(\d+)\/(\d+)(?:[?#].*)?$/.exec(value)
+                    if (c) {
+                        // t.me/c/<internal>/<msg>: the internal id is the marked id
+                        // without its -100 prefix.
+                        return { markedId: -1000000000000 - parseInt(c[1], 10), username: null, messageId: parseInt(c[2], 10) }
+                    }
+                    const u = /^(?:https?:\/\/)?t\.me\/([A-Za-z][A-Za-z0-9_]{3,31})\/(\d+)(?:[?#].*)?$/.exec(value)
+                    if (u) {
+                        return { markedId: null, username: u[1], messageId: parseInt(u[2], 10) }
+                    }
+                    return null
+                }
+
+                const resolveChatForLink = async (parsed) => {
+                    const matches = (c) => parsed.markedId != null
+                        ? c.id === parsed.markedId
+                        : (c.username || '').toLowerCase() === parsed.username.toLowerCase()
+                    const local = chats.value.find(matches)
+                    if (local) return local
+                    // The sidebar holds only the current page — ask the server
+                    // for the rest before declaring the chat unarchived (the
+                    // same limit=1000 bound the search box already uses;
+                    // archived chats included by default).
+                    try {
+                        const query = parsed.username ? `search=${encodeURIComponent(parsed.username)}&` : ''
+                        const resp = await fetch(`/api/chats?${query}limit=1000`, { credentials: 'same-origin' })
+                        if (!resp.ok) return null
+                        const data = await resp.json()
+                        return (data.chats || []).find(matches) || null
+                    } catch (e) {
+                        return null
+                    }
+                }
+
+                const openTelegramLink = async (parsed) => {
+                    const chat = await resolveChatForLink(parsed)
+                    if (!chat) {
+                        showToast('That link points at a chat this archive does not hold')
+                        return false
+                    }
+                    return openNotificationTarget(chat.ref, parsed.messageId)
+                }
+
+                const copyMessageLink = async (msg) => {
+                    if (!selectedChat.value || !msg?.id) return
+                    const url = `${window.location.origin}/?chat=${encodeURIComponent(selectedChat.value.ref)}&msg=${msg.id}`
+                    try {
+                        await navigator.clipboard.writeText(url)
+                        showToast('Message link copied')
+                    } catch (e) {
+                        showToast(url)  // clipboard unavailable (http origin): show it instead
+                    }
                 }
 
                 // A notification click can arrive before initialization has loaded the
@@ -7811,6 +7918,7 @@
                     retryLoadTopics,
                     selectFolder,
                     showArchived,
+                    copyMessageLink,
                     getForwardOriginChat,
                     openForwardOrigin,
                     showChangesFeed,
