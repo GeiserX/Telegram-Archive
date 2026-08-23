@@ -975,6 +975,7 @@ async def test_version_export_window_uses_the_export_contract(sqlite_adapter):
     ]
     assert [v["text"] for v in windowed] == ["v1", "v2"]
 
+
 # ---------------------------------------------------------------------------
 # What-changed feed (#9t6.11.2)
 # ---------------------------------------------------------------------------

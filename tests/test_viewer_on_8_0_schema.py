@@ -511,7 +511,6 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
                 f"/api/chats/{self.ref_a}/export", params={"from": "2026-03-02", "to": "2026-03-01"}
             )
 
-
     async def test_changes_feed(self):
         """/api/changes lists captured deletions and edits, newest first,
         under the viewer's compiled scope."""
