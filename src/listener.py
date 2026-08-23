@@ -45,6 +45,7 @@ from .message_utils import (
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
+    extract_forward_origin,
     extract_media_attributes,
     extract_reactions,
     extract_topic_id,
@@ -1272,6 +1273,12 @@ class TelegramListener:
                 webpage_preview = extract_webpage_preview(message.media)
                 if webpage_preview is not None:
                     message_data["raw_data"]["webpage"] = webpage_preview
+
+                # Forward origin pointer: pure metadata off the event, no API
+                # cost — the sweep writer captures the same key.
+                forward_origin = extract_forward_origin(message)
+                if forward_origin:
+                    message_data["raw_data"]["forward_origin"] = forward_origin
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None
