@@ -937,3 +937,127 @@ def normalize_configured_chat_ids(configured: set[int], existing_ids: set[int]) 
         unresolved += 1
         normalized.add(chat_id)
     return normalized, corrected, unresolved
+
+
+# Media types that are Telegram message payloads rather than downloadable
+# files. THE single source for that split: the media pipeline stores them as
+# metadata-only rows, the retry drain and the operator-status pending count
+# must never treat them as failed downloads.
+METADATA_ONLY_MEDIA_TYPES = frozenset(
+    {
+        "contact",
+        "geo",
+        "poll",
+        "venue",
+        "dice",
+        "invoice",
+        "story",
+        "giveaway",
+        "giveaway_results",
+        "geo_live",
+        "game",
+        "unsupported",
+    }
+)
+
+# The nine kinds official apps render as typed placeholders and the archive
+# used to flatten to nothing (type=None, no record, no chip). Name-based so a
+# bare MagicMock (type name "MagicMock") stays inert, matching the module's
+# service_action_type idiom. GeoLive must precede Geo checks at call sites —
+# handled here by exact class-name match, which cannot collide.
+_EXTENDED_MEDIA_TYPES = {
+    "MessageMediaVenue": "venue",
+    "MessageMediaDice": "dice",
+    "MessageMediaInvoice": "invoice",
+    "MessageMediaStory": "story",
+    "MessageMediaGiveaway": "giveaway",
+    "MessageMediaGiveawayResults": "giveaway_results",
+    "MessageMediaGeoLive": "geo_live",
+    "MessageMediaGame": "game",
+    "MessageMediaUnsupported": "unsupported",
+}
+
+
+def classify_extended_media(media: object) -> str | None:
+    """The nine metadata-only kinds _get_media_type's isinstance ladder misses."""
+    if media is None:
+        return None
+    return _EXTENDED_MEDIA_TYPES.get(type(media).__name__)
+
+
+def extract_extended_media_details(media: object) -> tuple[str, dict] | None:
+    """(raw_data key, salient fields) for an extended media kind, else None.
+
+    Both writers store the payload under ``raw_data[key]`` so the viewer can
+    render the typed chip official apps show. Field access is defensive
+    (getattr chains) — a Telethon layer change degrades a chip to its bare
+    label, never fails a capture. Nothing here is logged (PII rule).
+    """
+    kind = classify_extended_media(media)
+    if kind is None:
+        return None
+    details: dict = {}
+    try:
+        if kind == "dice":
+            details = {"emoticon": getattr(media, "emoticon", None), "value": getattr(media, "value", None)}
+        elif kind == "venue":
+            geo = getattr(media, "geo", None)
+            details = {
+                "title": getattr(media, "title", None),
+                "address": getattr(media, "address", None),
+                "provider": getattr(media, "provider", None),
+                "lat": getattr(geo, "lat", None),
+                "long": getattr(geo, "long", None),
+            }
+        elif kind == "invoice":
+            details = {
+                "title": getattr(media, "title", None),
+                "description": getattr(media, "description", None),
+                "currency": getattr(media, "currency", None),
+                "total_amount": getattr(media, "total_amount", None),
+                "test": bool(getattr(media, "test", False)),
+            }
+        elif kind == "story":
+            peer = getattr(media, "peer", None)
+            peer_id = None
+            if peer is not None:
+                from telethon.utils import get_peer_id
+
+                try:
+                    peer_id = get_peer_id(peer)
+                except Exception:
+                    peer_id = None
+            details = {"peer_id": peer_id, "story_id": getattr(media, "id", None)}
+        elif kind == "giveaway":
+            channels = getattr(media, "channels", None)
+            until = getattr(media, "until_date", None)
+            details = {
+                "quantity": getattr(media, "quantity", None),
+                "months": getattr(media, "months", None),
+                "until_date": until.isoformat() if hasattr(until, "isoformat") else None,
+                "channel_count": len(channels) if isinstance(channels, (list, tuple)) else None,
+            }
+        elif kind == "giveaway_results":
+            details = {
+                "winners_count": getattr(media, "winners_count", None),
+                "months": getattr(media, "months", None),
+            }
+        elif kind == "geo_live":
+            geo = getattr(media, "geo", None)
+            details = {
+                "lat": getattr(geo, "lat", None),
+                "long": getattr(geo, "long", None),
+                "period": getattr(media, "period", None),
+            }
+        elif kind == "game":
+            game = getattr(media, "game", None)
+            details = {
+                "title": getattr(game, "title", None),
+                "short_name": getattr(game, "short_name", None),
+                "description": getattr(game, "description", None),
+            }
+        # "unsupported": presence alone is the signal; empty payload.
+    except Exception:
+        details = {}
+    clean = {key: value for key, value in details.items() if isinstance(value, (str, int, float, bool))}
+    return kind, clean

@@ -1344,6 +1344,17 @@
                                         </div>
                                     </div>
 
+                                    <!-- Extended media chip (dice, venue, invoice, story, giveaway, live location, game, ...) -->
+                                    <div v-if="getExtendedMediaChip(msg)"
+                                        class="mb-2 inline-flex items-start gap-2 bg-black/20 rounded-lg px-3 py-2 text-sm max-w-full">
+                                        <span class="text-lg leading-none">{{ getExtendedMediaChip(msg).icon }}</span>
+                                        <div class="min-w-0">
+                                            <div class="font-semibold truncate">{{ getExtendedMediaChip(msg).label }}</div>
+                                            <div v-if="getExtendedMediaChip(msg).detail" class="text-xs opacity-80 break-words">
+                                                {{ getExtendedMediaChip(msg).detail }}</div>
+                                        </div>
+                                    </div>
+
                                     <!-- Media (show if media exists, even if not yet downloaded) -->
                                     <div v-if="msg.media?.file_path || msg.media?.type" class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
@@ -5774,6 +5785,74 @@
                     return Math.round((res.voters / results.total_voters) * 100)
                 }
 
+                const EXTENDED_MEDIA_CHIP_META = {
+                    dice: { icon: '\u{1F3B2}', label: 'Dice' },
+                    venue: { icon: '\u{1F4CD}', label: 'Venue' },
+                    invoice: { icon: '\u{1F9FE}', label: 'Invoice' },
+                    story: { icon: '\u{1F4D6}', label: 'Story' },
+                    giveaway: { icon: '\u{1F381}', label: 'Giveaway' },
+                    giveaway_results: { icon: '\u{1F3C6}', label: 'Giveaway results' },
+                    geo_live: { icon: '\u{1F4E1}', label: 'Live location' },
+                    game: { icon: '\u{1F3AE}', label: 'Game' },
+                    unsupported: { icon: '\u26A0\uFE0F', label: 'Unsupported media' },
+                }
+
+                const formatInvoiceAmount = (amount, currency) => {
+                    // Telegram sends prices in the currency's smallest unit;
+                    // Intl knows each currency's minor-unit count (JPY=0, USD=2).
+                    try {
+                        const fmt = new Intl.NumberFormat(undefined, { style: 'currency', currency })
+                        const digits = fmt.resolvedOptions().maximumFractionDigits
+                        return fmt.format(amount / Math.pow(10, digits))
+                    } catch (e) {
+                        return `${amount} ${currency}`
+                    }
+                }
+
+                const getExtendedMediaChip = (msg) => {
+                    const kind = msg.media?.type
+                    const meta = EXTENDED_MEDIA_CHIP_META[kind]
+                    if (!meta) return null
+                    const data = msg.raw_data?.[kind] || {}
+                    let icon = meta.icon
+                    let label = meta.label
+                    let detail = ''
+                    if (kind === 'dice') {
+                        if (typeof data.emoticon === 'string' && data.emoticon) icon = data.emoticon
+                        if (Number.isFinite(data.value)) detail = `Rolled ${data.value}`
+                    } else if (kind === 'venue') {
+                        if (data.title) label = data.title
+                        detail = data.address || ''
+                    } else if (kind === 'invoice') {
+                        if (data.title) label = data.title
+                        if (Number.isFinite(data.total_amount) && typeof data.currency === 'string' && data.currency) {
+                            detail = formatInvoiceAmount(data.total_amount, data.currency)
+                        } else {
+                            detail = data.description || ''
+                        }
+                    } else if (kind === 'story') {
+                        detail = 'Shared story'
+                    } else if (kind === 'giveaway') {
+                        if (Number.isFinite(data.quantity) && Number.isFinite(data.months)) {
+                            detail = `${data.quantity} \u00D7 ${data.months}-month Premium`
+                        }
+                    } else if (kind === 'giveaway_results') {
+                        if (Number.isFinite(data.winners_count)) {
+                            detail = `${data.winners_count} winner${data.winners_count === 1 ? '' : 's'}`
+                        }
+                    } else if (kind === 'geo_live') {
+                        if (Number.isFinite(data.lat) && Number.isFinite(data.long)) {
+                            detail = `${data.lat.toFixed(5)}, ${data.long.toFixed(5)}`
+                        }
+                    } else if (kind === 'game') {
+                        if (data.title) label = data.title
+                        detail = data.description || ''
+                    } else if (kind === 'unsupported') {
+                        detail = 'Sent with a newer Telegram feature this archive version cannot decode'
+                    }
+                    return { icon, label, detail }
+                }
+
                 const getSenderStyle = (msg) => {
                     return {
                         backgroundColor: getMessageBackground(msg),
@@ -7816,6 +7895,7 @@
                     getSenderInitials,
                     getAvatarFill,
                     getPollPercentage,
+                    getExtendedMediaChip,
                     isDeletedChat,
                     isAudioFile,
                     exportChat,
