@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -185,6 +186,7 @@ class TestFilenameFallback(unittest.TestCase):
 
 class TestViewerTemplate(unittest.TestCase):
     def test_card_shows_downloaded_image_and_generic_block_excludes_webpage(self):
-        html = open(os.path.join(os.path.dirname(__file__), "..", "src", "web", "templates", "index.html")).read()
+        template = Path(__file__).resolve().parents[1] / "src" / "web" / "templates" / "index.html"
+        html = template.read_text(encoding="utf-8")
         self.assertIn("msg.media?.type === 'webpage' && msg.media?.file_path", html)
         self.assertIn("msg.media?.type !== 'webpage' && !getExtendedMediaChip(msg)", html)
