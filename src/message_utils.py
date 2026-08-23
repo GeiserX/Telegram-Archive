@@ -1095,3 +1095,67 @@ def extract_forward_origin(message: object) -> dict | None:
     except Exception:
         return None
     return None
+
+
+def message_plain_text(message: object) -> str:
+    """The message's RAW text — what entity offsets index into.
+
+    Telethon's ``.text`` runs the client's default parse mode (markdown) and
+    re-inserts ``**``/``__``/backtick markers, silently DROPPING spoilers —
+    and entity offsets never align with that serialization. ``.raw_text`` is
+    the wire text. isinstance guards keep MagicMock fixtures inert (a mock's
+    ``.raw_text`` is not a str, so tests that set ``.text`` keep working).
+    """
+    raw = getattr(message, "raw_text", None)
+    if isinstance(raw, str):
+        return raw
+    text = getattr(message, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+_ENTITY_CLASS_PREFIX = "MessageEntity"
+_ENTITY_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def serialize_message_entities(entities: object) -> list[dict] | None:
+    """JSON-safe ``[{type, offset, length, ...extras}]`` off ``message.entities``.
+
+    Offsets/lengths are Telegram's native UTF-16 code units and are stored
+    untouched — JavaScript strings index the same units, so the viewer
+    applies them directly. Name-based type mapping (``MessageEntityTextUrl``
+    -> ``text_url``) with isinstance guards, so a bare MagicMock serializes
+    to nothing. None when no usable entity remains.
+    """
+    if not isinstance(entities, (list, tuple)) or not entities:
+        return None
+    serialized: list[dict] = []
+    for entity in entities:
+        name = type(entity).__name__
+        if not name.startswith(_ENTITY_CLASS_PREFIX):
+            continue
+        offset = getattr(entity, "offset", None)
+        length = getattr(entity, "length", None)
+        if not isinstance(offset, int) or not isinstance(length, int) or offset < 0 or length <= 0:
+            continue
+        record: dict = {
+            "type": _ENTITY_SNAKE_RE.sub("_", name[len(_ENTITY_CLASS_PREFIX) :]).lower(),
+            "offset": offset,
+            "length": length,
+        }
+        url = getattr(entity, "url", None)
+        if isinstance(url, str) and url:
+            record["url"] = url
+        user_id = getattr(entity, "user_id", None)
+        if isinstance(user_id, int):
+            record["user_id"] = user_id
+        language = getattr(entity, "language", None)
+        if isinstance(language, str) and language:
+            record["language"] = language
+        document_id = getattr(entity, "document_id", None)
+        if isinstance(document_id, int):
+            record["document_id"] = document_id
+        collapsed = getattr(entity, "collapsed", None)
+        if isinstance(collapsed, bool) and collapsed:
+            record["collapsed"] = True
+        serialized.append(record)
+    return serialized or None
