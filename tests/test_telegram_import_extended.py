@@ -541,6 +541,9 @@ class TestTelegramImporterClose(unittest.TestCase):
         """TelegramImporter.close delegates to close_database."""
         mock_close_db.return_value = None
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, "/tmp/media", account_id=1)
 
@@ -575,6 +578,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         """run raises ValueError when export has no chats (line 558)."""
         self._write_export({"chats": {"list": []}})
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -601,6 +607,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
 
@@ -636,6 +645,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
@@ -659,6 +671,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
@@ -681,6 +696,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
@@ -709,6 +727,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
@@ -744,6 +765,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
         )
 
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 0}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)
@@ -768,6 +792,9 @@ class TestImporterRunEdgeCases(unittest.TestCase):
             }
         )
         db = AsyncMock()
+        # No sweep-archived media by default: a truthy mock would make the
+        # importer's duplicate guard skip every media insert.
+        db.has_media_for_message = AsyncMock(return_value=False)
         db.get_last_message_id.return_value = 0
         db.get_chat_stats.return_value = {"messages": 500}
         importer = TelegramImporter(db, os.path.join(self.temp_dir, "media"), account_id=1)

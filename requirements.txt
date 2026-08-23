@@ -26,3 +26,4 @@ py-vapid>=1.9.4
 cryptography>=50.0.0
 # HTML import parsing (v7.0+)
 beautifulsoup4>=4.12.0
+ijson>=3.5.1
