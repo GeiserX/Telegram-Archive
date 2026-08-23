@@ -1119,6 +1119,21 @@ class TestExtractTopicId(unittest.TestCase):
         msg.reply_to.reply_to_msg_id = 99
         self.assertEqual(extract_topic_id(msg), 99)
 
+    def test_topic_creation_service_message_identifies_itself(self):
+        """A topic's id IS its creation message's id (no reply_to on these):
+        without this branch, excluding General via the None bucket would also
+        drop every topic's creation record. Matched by class NAME — the
+        service_action_type idiom — so bare MagicMock actions stay inert."""
+
+        class MessageActionTopicCreate:
+            pass
+
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 4242
+        msg.action = MessageActionTopicCreate()
+        self.assertEqual(extract_topic_id(msg), 4242)
+
     def test_returns_none_when_both_ids_none(self):
         msg = MagicMock()
         msg.reply_to = MagicMock()

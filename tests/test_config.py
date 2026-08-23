@@ -681,7 +681,9 @@ class TestSkipTopicIds(unittest.TestCase):
             self.assertTrue(config.should_skip_topic(-1001234567890, 1))
             # Other chats' General is untouched.
             self.assertFalse(config.should_skip_topic(-1009999999999, None))
-            # And a skip set WITHOUT 1 keeps None messages (existing contract).
+            # An unrelated topic in the same chat stays included. (None with
+            # a skip set NOT containing 1 is pinned by
+            # test_should_skip_topic_none_topic above.)
             self.assertFalse(config.should_skip_topic(-1001234567890, 2))
 
     def test_should_skip_topic_empty_config(self):
