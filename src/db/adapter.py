@@ -46,6 +46,7 @@ from ..message_utils import (
     utcnow_naive,
 )
 from .base import DatabaseManager
+from .fts import PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, pg_tsquery
 from .models import (
     DEFAULT_ACCOUNT_ID,
     Account,
@@ -369,6 +370,8 @@ class DatabaseAdapter:
         """
         self.db_manager = db_manager
         self._is_sqlite = db_manager._is_sqlite
+        # Full-text capability, probed once on first search: None = unknown.
+        self._fts_ready_cache: bool | None = None
 
     def _serialize_raw_data(self, raw_data: Any) -> str:
         """
@@ -3203,6 +3206,50 @@ class DatabaseAdapter:
             "truncated": truncated,
         }
 
+    async def _fts_ready(self, session) -> bool:
+        """Whether migration 028's full-text layer exists in THIS database.
+
+        Probed once per adapter (databases do not gain or lose the index
+        mid-process except during the migration itself, which restarts the
+        app). A create_all() database that has not run migrations yet keeps
+        ILIKE until its first upgrade pass.
+        """
+        if self._fts_ready_cache is None:
+            if self._is_sqlite:
+                row = await session.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t").bindparams(t=SQLITE_FTS_TABLE)
+                )
+            else:
+                row = await session.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='messages' AND column_name=:c"
+                    ).bindparams(c=PG_TSVECTOR_COLUMN)
+                )
+            self._fts_ready_cache = row.first() is not None
+        return self._fts_ready_cache
+
+    async def _text_search_predicate(self, session, search: str):
+        """An indexed word-prefix predicate for ``search``, or None for ILIKE.
+
+        None means: no index in this database, or the search reduced to no
+        words (punctuation-only) — the caller keeps the substring ILIKE that
+        has always answered those.
+        """
+        if not await self._fts_ready(session):
+            return None
+        if self._is_sqlite:
+            match = fts_match_query(search)
+            if match is None:
+                return None
+            return text(
+                "messages.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH :fts_match)"
+            ).bindparams(fts_match=match)
+        tsq = pg_tsquery(search)
+        if tsq is None:
+            return None
+        return text("messages.text_search @@ to_tsquery('simple', :fts_tsq)").bindparams(fts_tsq=tsq)
+
     async def get_messages_paginated(
         self,
         chat_id: int,
@@ -3277,8 +3324,12 @@ class DatabaseAdapter:
                 stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
             if search:
-                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-                stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
+                fts_predicate = await self._text_search_predicate(session, search)
+                if fts_predicate is not None:
+                    stmt = stmt.where(fts_predicate)
+                else:
+                    escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+                    stmt = stmt.where(Message.text.ilike(f"%{escaped}%", escape="\\"))
 
             # Cursor-based pagination (preferred - O(1) performance)
             # Mirrored by the viewer (src/web/templates/index.html: compareMessagesDesc/messageCursor) — keep in sync.
