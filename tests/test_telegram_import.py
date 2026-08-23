@@ -674,17 +674,17 @@ class TestTelegramImporterRun(unittest.TestCase):
         with patch("src.telegram_import.BATCH_SIZE", 1):
             summary = self._run(importer.run(self.export_dir))
 
-        # The streaming parser (yajl) sanitizes the lone surrogate at the
-        # boundary — the once-unwritable name becomes plain '?', so BOTH
-        # media import and nothing can crash downstream. The invariant this
-        # test protects (a malformed name must never abort the import) holds.
+        # Backend-independent invariants only: ijson's C backend sanitizes
+        # the lone surrogate (both media import under a writable name), the
+        # pure-Python backend keeps it (that media is skipped at the filename
+        # budget, as before). Either way the import must complete, keep the
+        # well-formed media, and never persist an unencodable filename.
         self.assertEqual(summary["total_messages"], 2)
-        self.assertEqual(summary["total_media"], 2)
         self.assertEqual(db.insert_messages_batch.await_count, 2)
-        self.assertEqual(db.insert_media.await_count, 2)
-        first_media = db.insert_media.await_args_list[0].args[0]
-        self.assertEqual(first_media["message_id"], 1)
-        self.assertNotIn("\ud800", first_media["file_name"])
+        inserted = [call.args[0] for call in db.insert_media.await_args_list]
+        self.assertIn(2, [m["message_id"] for m in inserted])  # the valid media survives
+        for m in inserted:
+            m["file_name"].encode("utf-8")  # raises if a surrogate leaked through
 
     def test_skip_media_flag(self):
         photos_dir = os.path.join(self.export_dir, "photos")
