@@ -1891,7 +1891,7 @@
                         <dd class="mt-1 font-mono text-white">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
                     </div>
                 </dl>
-                <div class="mt-4 flex justify-end">
+                <div v-if="senderInfoMessage.id" class="mt-4 flex justify-end">
                     <button @click="copyMessageLink(senderInfoMessage)"
                         class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
                         <i class="fa-solid fa-link mr-1"></i> Copy message link
@@ -3493,14 +3493,41 @@
                         return false
                     }
                     await selectChat(targetChat)
-                    if (messageId) {
-                        await nextTick()
-                        // The #367-hardened jump: windows around the id even when the
-                        // message is far outside the loaded page. scrollToMessage only
-                        // worked for already-rendered rows — fine for a fresh push
-                        // notification, silently a no-op for a shared link to history.
-                        await loadMessagesAroundId(messageId)
+                    if (!messageId) return true
+                    if (targetChat.is_forum) {
+                        // selectChat short-circuits a forum into its topics list
+                        // without setting the pane — the jump needs the message's
+                        // topic first (the playbar's own continuation pattern).
+                        try {
+                            const resp = await fetch(
+                                `/api/chats/${encodeURIComponent(targetChat.ref)}/messages?after_id=${messageId - 1}&limit=1`,
+                                { credentials: 'same-origin' }
+                            )
+                            const rows = resp.ok ? await resp.json() : []
+                            const target = Array.isArray(rows) ? rows.find(m => m.id === messageId) || rows[0] : null
+                            const topicId = target?.reply_to_top_id ?? GENERAL_TOPIC_ID
+                            let topic = topics.value.find(t => Number(t.id) === Number(topicId))
+                            if (!topic && Number(topicId) === Number(GENERAL_TOPIC_ID)) {
+                                // Old captures may lack a General row — General always
+                                // exists conceptually (the playbar synthesizes it too).
+                                topic = { id: GENERAL_TOPIC_ID, title: 'General' }
+                            }
+                            if (!topic) {
+                                showToast('Could not locate that topic')
+                                return false
+                            }
+                            await selectTopic(targetChat, topic)
+                        } catch (e) {
+                            showToast('Could not locate that topic')
+                            return false
+                        }
                     }
+                    await nextTick()
+                    // The #367-hardened jump: windows around the id even when the
+                    // message is far outside the loaded page. scrollToMessage only
+                    // worked for already-rendered rows — fine for a fresh push
+                    // notification, silently a no-op for a shared link to history.
+                    await loadMessagesAroundId(messageId)
                     return true
                 }
 
@@ -3523,10 +3550,29 @@
                     return null
                 }
 
-                const openTelegramLink = async (parsed) => {
-                    const chat = chats.value.find(c => parsed.markedId != null
+                const resolveChatForLink = async (parsed) => {
+                    const matches = (c) => parsed.markedId != null
                         ? c.id === parsed.markedId
-                        : (c.username || '').toLowerCase() === parsed.username.toLowerCase())
+                        : (c.username || '').toLowerCase() === parsed.username.toLowerCase()
+                    const local = chats.value.find(matches)
+                    if (local) return local
+                    // The sidebar holds only the current page — ask the server
+                    // for the rest before declaring the chat unarchived (the
+                    // same limit=1000 bound the search box already uses;
+                    // archived chats included by default).
+                    try {
+                        const query = parsed.username ? `search=${encodeURIComponent(parsed.username)}&` : ''
+                        const resp = await fetch(`/api/chats?${query}limit=1000`, { credentials: 'same-origin' })
+                        if (!resp.ok) return null
+                        const data = await resp.json()
+                        return (data.chats || []).find(matches) || null
+                    } catch (e) {
+                        return null
+                    }
+                }
+
+                const openTelegramLink = async (parsed) => {
+                    const chat = await resolveChatForLink(parsed)
                     if (!chat) {
                         showToast('That link points at a chat this archive does not hold')
                         return false
