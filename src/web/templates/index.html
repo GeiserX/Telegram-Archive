@@ -1298,10 +1298,16 @@
                                         <div class="truncate opacity-70">{{ replyToSnippet(msg) }}</div>
                                     </div>
 
-                                    <!-- Forwarded Message Info -->
+                                    <!-- Forwarded Message Info: tappable when the origin is archived,
+                                         like official apps' forward headers. -->
                                     <div v-if="msg.forward_from_id || getForwardName(msg)"
+                                        @click="openForwardOrigin(msg)"
+                                        :class="getForwardOriginChat(msg) ? 'cursor-pointer hover:bg-black/30 transition' : ''"
                                         class="border-l-2 border-green-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2">
-                                        <div class="font-semibold text-green-400 mb-0.5">Forwarded from</div>
+                                        <div class="font-semibold text-green-400 mb-0.5">
+                                            Forwarded from
+                                            <i v-if="getForwardOriginChat(msg)" class="fa-solid fa-arrow-up-right-from-square ml-1 opacity-70"></i>
+                                        </div>
                                         <div class="truncate opacity-90">{{ getForwardName(msg) }}</div>
                                     </div>
 
@@ -5421,6 +5427,20 @@
                     }, event)
                 }
 
+                // The forward header's tap target: the origin chat, when archived.
+                const getForwardOriginChat = (msg) => {
+                    const origin = msg.raw_data?.forward_origin
+                    if (!origin) return null
+                    return chats.value.find(c => c.id === origin.chat_id) || null
+                }
+
+                const openForwardOrigin = async (msg) => {
+                    const origin = msg.raw_data?.forward_origin
+                    const chat = getForwardOriginChat(msg)
+                    if (!origin || !chat) return
+                    await openNotificationTarget(chat.ref, origin.message_id)
+                }
+
                 // Get name for forwarded message source
                 const getForwardName = (msg) => {
                     // First check raw_data for the resolved name
@@ -7791,6 +7811,8 @@
                     retryLoadTopics,
                     selectFolder,
                     showArchived,
+                    getForwardOriginChat,
+                    openForwardOrigin,
                     showChangesFeed,
                     changesFeed,
                     changesNextBefore,
