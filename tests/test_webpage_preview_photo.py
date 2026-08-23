@@ -124,6 +124,26 @@ class TestSweepDownloadsPreviewPhoto(unittest.TestCase):
         self.assertTrue(result["file_name"].startswith("987"))
         backup._download_media_to_path.assert_awaited()
 
+    def test_document_backed_preview_keeps_its_file_id(self):
+        """A real WebPage has BOTH .photo and .document (one None): a bare
+        hasattr sniff picks the empty photo branch and loses the document id,
+        so the filename degrades to <msg>_webpage.<ext> and dedup identity dies.
+        """
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        backup = self._make_backup(media_root)
+
+        message = MagicMock()
+        message.id = 34
+        doc = SimpleNamespace(id=555, size=3000, mime_type="image/gif", attributes=[])
+        message.media = _webpage_media(photo=None, document=doc)
+
+        result = self._run(backup._process_media(message, CHAT_ID))
+        self.assertEqual(result["type"], "webpage")
+        self.assertTrue(result["downloaded"])
+        self.assertTrue(result["file_name"].startswith("555"))
+        self.assertTrue(result["file_name"].endswith(".gif"))
+
     def test_oversized_preview_is_size_capped(self):
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
@@ -176,6 +196,36 @@ class TestListenerDownloadsPreviewPhoto(unittest.TestCase):
         _path, file_name, _hash = result
         self.assertTrue(file_name.startswith("654"))
         listener.client.download_media.assert_awaited()
+
+    def test_listener_document_backed_preview_keeps_its_file_id(self):
+        listener = TelegramListener.__new__(TelegramListener)
+        listener.db = AsyncMock()
+        listener.account_id = 1
+        listener.config = MagicMock()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        listener.config.media_path = tmp
+        listener.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
+        listener.config.deduplicate_media = False
+        listener.client = AsyncMock()
+
+        async def fake_download(_message, path):
+            with open(path, "wb") as handle:
+                handle.write(b"previewbytes")
+            return path
+
+        listener.client.download_media = AsyncMock(side_effect=fake_download)
+
+        message = MagicMock()
+        message.id = 35
+        doc = SimpleNamespace(id=777, size=2000, mime_type="image/gif", attributes=[])
+        message.media = _webpage_media(photo=None, document=doc)
+
+        result = self._run(listener._download_media(message, CHAT_ID))
+        self.assertIsNotNone(result)
+        _path, file_name, _hash = result
+        self.assertTrue(file_name.startswith("777"))
+        self.assertTrue(file_name.endswith(".gif"))
 
 
 class TestFilenameFallback(unittest.TestCase):

@@ -898,10 +898,13 @@ class TelegramListener:
             # Get Telegram's file unique ID for deduplication. Webpage previews
             # keep their photo/document one level down — unwrap once.
             payload = downloadable_media_payload(media)
+            # Truthy guards, not hasattr: a WebPage carries BOTH .photo and
+            # .document (one None), so hasattr would pick the empty photo
+            # branch for document-backed previews and lose the file id.
             telegram_file_id = None
-            if hasattr(payload, "photo"):
+            if getattr(payload, "photo", None):
                 telegram_file_id = str(getattr(payload.photo, "id", None))
-            elif hasattr(payload, "document"):
+            elif getattr(payload, "document", None):
                 telegram_file_id = str(getattr(payload.document, "id", None))
 
             # Guard against inaccessible media producing "None" string IDs
