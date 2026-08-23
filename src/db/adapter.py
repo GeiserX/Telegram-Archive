@@ -39,7 +39,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from ..message_utils import compute_directory_size, resolve_sender_display_name, utcnow_naive
+from ..message_utils import (
+    METADATA_ONLY_MEDIA_TYPES,
+    compute_directory_size,
+    resolve_sender_display_name,
+    utcnow_naive,
+)
 from .base import DatabaseManager
 from .models import (
     DEFAULT_ACCOUNT_ID,
@@ -716,18 +721,22 @@ class DatabaseAdapter:
             downloaded = (
                 await session.execute(select(func.count()).select_from(Media).where(Media.downloaded == 1))
             ).scalar() or 0
+            # Metadata-only rows (polls, dice, venues, ...) sit at
+            # downloaded=0 by design — counting them as pending would show a
+            # permanently-red pipeline for archives full of polls.
+            not_metadata = Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES))
             pending = (
                 await session.execute(
                     select(func.count())
                     .select_from(Media)
-                    .where(Media.downloaded == 0, Media.download_attempts < max_attempts)
+                    .where(Media.downloaded == 0, Media.download_attempts < max_attempts, not_metadata)
                 )
             ).scalar() or 0
             exhausted = (
                 await session.execute(
                     select(func.count())
                     .select_from(Media)
-                    .where(Media.downloaded == 0, Media.download_attempts >= max_attempts)
+                    .where(Media.downloaded == 0, Media.download_attempts >= max_attempts, not_metadata)
                 )
             ).scalar() or 0
         return {"downloaded": downloaded, "pending": pending, "exhausted": exhausted}
@@ -2412,7 +2421,7 @@ class DatabaseAdapter:
                 # account's client, and only its session can fetch them.
                 Media.account_id == account_id,
                 Media.downloaded == 0,
-                Media.type.notin_(["contact", "geo", "poll"]),
+                Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES)),
             ]
             if max_media_size_bytes is not None:
                 conditions.append(or_(Media.file_size.is_(None), Media.file_size <= max_media_size_bytes))
@@ -2488,7 +2497,7 @@ class DatabaseAdapter:
                 and_(
                     Media.account_id == account_id,
                     Media.downloaded == 0,
-                    Media.type.notin_(["contact", "geo", "poll"]),
+                    Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES)),
                     Media.download_attempts >= max_attempts,
                 )
             )
