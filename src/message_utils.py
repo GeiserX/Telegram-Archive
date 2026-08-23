@@ -199,6 +199,7 @@ _FALLBACK_MEDIA_EXTENSIONS = {
     "audio": "mp3",
     "sticker": "webp",
     "document": "bin",
+    "webpage": "jpg",
 }
 
 
@@ -1159,3 +1160,18 @@ def serialize_message_entities(entities: object) -> list[dict] | None:
             record["collapsed"] = True
         serialized.append(record)
     return serialized or None
+
+
+def downloadable_media_payload(media: object) -> object:
+    """The object whose ``.photo``/``.document`` is the downloadable file.
+
+    ``MessageMediaWebPage`` keeps its preview photo/document on ``.webpage``
+    (Telethon's ``download_media`` unwraps the same way) — one unwrap here
+    lets every size/id/filename sniffer work unchanged. Everything else
+    passes through. Name-based, so mocks stay inert.
+    """
+    if type(media).__name__ == "MessageMediaWebPage":
+        webpage = getattr(media, "webpage", None)
+        if type(webpage).__name__ == "WebPage":
+            return webpage
+    return media
