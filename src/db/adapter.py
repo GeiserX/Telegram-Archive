@@ -705,6 +705,53 @@ class DatabaseAdapter:
             await session.commit()
 
     @retry_on_locked()
+    async def get_operator_status_counts(self, *, max_attempts: int) -> dict[str, Any]:
+        """Aggregate media-pipeline counts for the operator status panel.
+
+        Counts only (PII rule). ``pending`` rows are still retried by the
+        scheduled pass; ``exhausted`` rows hit the retry cap and stay pending
+        until the operator intervenes (the honesty split #212/#360 built).
+        """
+        async with self.db_manager.async_session_factory() as session:
+            downloaded = (
+                await session.execute(select(func.count()).select_from(Media).where(Media.downloaded == 1))
+            ).scalar() or 0
+            pending = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Media)
+                    .where(Media.downloaded == 0, Media.download_attempts < max_attempts)
+                )
+            ).scalar() or 0
+            exhausted = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Media)
+                    .where(Media.downloaded == 0, Media.download_attempts >= max_attempts)
+                )
+            ).scalar() or 0
+        return {"downloaded": downloaded, "pending": pending, "exhausted": exhausted}
+
+    async def get_database_size_bytes(self) -> int | None:
+        """Best-effort on-disk size of the archive database.
+
+        SQLite: the database file's size. PostgreSQL: pg_database_size().
+        None when it cannot be determined — the status panel shows "unknown"
+        rather than failing.
+        """
+        try:
+            if self.db_manager._is_sqlite:
+                url = self.db_manager.database_url
+                _, sep, path = url.partition(":///")
+                if not sep or not path:
+                    return None
+                return os.path.getsize(path)
+            async with self.db_manager.async_session_factory() as session:
+                result = await session.execute(text("SELECT pg_database_size(current_database())"))
+                return int(result.scalar())
+        except Exception:
+            return None
+
     async def get_account_ids(self) -> list[int]:
         """All accounts.id values, ascending (viewer status aggregation, 8.1)."""
         async with self.db_manager.async_session_factory() as session:

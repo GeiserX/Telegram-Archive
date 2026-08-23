@@ -2647,6 +2647,45 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/status")
+async def get_operator_status(user: UserContext = Depends(require_master)):
+    """One page's worth of "is my archive healthy right now" (master-only).
+
+    Aggregates signals the system already writes: last backup run and
+    in-progress flag, per-account listener liveness, the media pipeline's
+    pending/exhausted split, stats freshness and database size. Counts and
+    timestamps only — never ids, titles or content.
+    """
+    try:
+        payload: dict = {
+            "backup": {
+                "last_run": await db.get_metadata("last_backup_time"),
+                "in_progress": (await db.get_metadata("backup_in_progress")) == "1",
+            },
+            "stats_calculated_at": await db.get_metadata("stats_calculated_at"),
+        }
+        try:
+            account_ids = list(await db.get_account_ids())
+        except Exception:
+            account_ids = [DEFAULT_ACCOUNT_ID]
+        listeners = []
+        for account_id in account_ids:
+            since = await db.get_metadata(account_metadata_key("listener_active_since", account_id))
+            listeners.append({"account_id": account_id, "active": bool(since), "active_since": since})
+        payload["listeners"] = listeners
+        payload["media"] = await db.get_operator_status_counts(max_attempts=config.max_media_download_attempts)
+        payload["database"] = {
+            "backend": "sqlite" if db.db_manager._is_sqlite else "postgresql",
+            "size_bytes": await db.get_database_size_bytes(),
+        }
+        return JSONResponse(payload, headers={"Cache-Control": "private, no-store"})
+    except Exception as e:
+        logger.error(f"Error building operator status: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/api/stats/refresh")
 async def refresh_stats(user: UserContext = Depends(require_master)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
