@@ -328,7 +328,13 @@ const opened = [];
 const scrolled = [];
 const toasts = [];
 const selectChat = async chat => { opened.push(chat.id); };
-const scrollToMessage = id => { scrolled.push(id); };
+// The shared opener rides the #367-hardened jump now (scrollToMessage was a
+// silent no-op outside the rendered window); the non-forum path never touches
+// the topic helpers, but the identifiers must exist for the forum branch.
+const loadMessagesAroundId = async id => { scrolled.push(id); };
+const GENERAL_TOPIC_ID = 1;
+const topics = { value: [] };
+const selectTopic = async () => {};
 const nextTick = async () => {};
 const showToast = message => { toasts.push(message); };
 const console = { error: () => {}, log: () => {} };
