@@ -2220,3 +2220,36 @@ class TestOperatorStatus(_MasterTestBase):
         assert payload["media"] == {"downloaded": 10, "pending": 2, "exhausted": 1}
         assert payload["database"] == {"backend": "sqlite", "size_bytes": 4096}
         self.mock_db.get_operator_status_counts.assert_awaited_once()
+
+    async def test_account_list_failure_degrades_to_the_default_account(self):
+        """Advisory status only: a broken get_account_ids falls back to the
+        legacy single-account key instead of failing the whole panel."""
+        self.mock_db.get_metadata = AsyncMock(return_value=None)
+        self.mock_db.get_account_ids = AsyncMock(side_effect=RuntimeError("no accounts table"))
+        self.mock_db.get_operator_status_counts = AsyncMock(
+            return_value={"downloaded": 0, "pending": 0, "exhausted": 0}
+        )
+        self.mock_db.get_database_size_bytes = AsyncMock(return_value=None)
+        self.mock_db.db_manager = MagicMock(_is_sqlite=False)
+
+        async with self._client() as client:
+            resp = await client.get("/api/status")
+
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert [entry["account_id"] for entry in payload["listeners"]] == [1]
+        assert payload["database"] == {"backend": "postgresql", "size_bytes": None}
+
+    async def test_status_failure_maps_to_500_and_connection_loss_to_503(self):
+        self.mock_db.get_metadata = AsyncMock(side_effect=RuntimeError("boom"))
+
+        async with self._client() as client:
+            resp = await client.get("/api/status")
+        assert resp.status_code == 500
+
+        from sqlalchemy.exc import OperationalError
+
+        self.mock_db.get_metadata = AsyncMock(side_effect=OperationalError("x", None, Exception("down")))
+        async with self._client() as client:
+            resp = await client.get("/api/status")
+        assert resp.status_code == 503
