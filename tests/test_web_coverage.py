@@ -937,12 +937,12 @@ class TestExportEndpoint(_WebTestBase):
             }
         )
 
-        async def fake_versions(chat_id, account_id=None):
+        async def fake_versions(chat_id, account_id=None, from_date=None, to_date=None):
             yield {"message_id": 2, "chat_id": 42, "text": "old", "date": "2025-01-01"}
 
         self.mock_db.iter_message_versions_for_export = fake_versions
 
-        async def fake_export(chat_id, account_id=None):
+        async def fake_export(chat_id, account_id=None, from_date=None, to_date=None):
             yield {"id": 1, "text": "hello", "date": "2025-01-01"}
             yield {"id": 2, "text": "world", "date": "2025-01-02"}
 

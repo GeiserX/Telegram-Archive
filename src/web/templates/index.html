@@ -1685,6 +1685,47 @@
             </section>
         </div>
 
+        <!-- Export Chat Modal (date-windowed JSON export) -->
+        <div v-if="showExportModal"
+            class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
+            @click.self="showExportModal = false">
+            <section role="dialog" aria-modal="true" aria-labelledby="export-modal-title"
+                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 id="export-modal-title" class="text-xl font-bold text-white">Export Chat to JSON</h3>
+                    <button type="button" @click="showExportModal = false" aria-label="Close export dialog"
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="mb-4 grid grid-cols-2 gap-3">
+                    <label class="block">
+                        <span class="text-xs text-tg-muted">From (optional)</span>
+                        <input type="date" v-model="exportFromDate"
+                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+                    <label class="block">
+                        <span class="text-xs text-tg-muted">To (optional)</span>
+                        <input type="date" v-model="exportToDate"
+                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+                </div>
+                <p class="mb-4 text-xs text-tg-muted">Both days are included. Leave empty to export everything.</p>
+                <div class="flex gap-2 justify-end">
+                    <button @click="showExportModal = false"
+                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        Cancel
+                    </button>
+                    <button @click="runExport"
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                        Export
+                    </button>
+                </div>
+            </section>
+        </div>
+
         <!-- Sender Details Dialog -->
         <div v-if="senderInfoMessage"
             class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
@@ -5239,9 +5280,24 @@
                         filename.endsWith('.opus') || filename.endsWith('.flac')
                 }
 
+                const showExportModal = ref(false)
+                const exportFromDate = ref('')
+                const exportToDate = ref('')
+
                 const exportChat = () => {
                     if (!selectedChat.value) return
-                    const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/export`
+                    showExportModal.value = true
+                }
+
+                const runExport = () => {
+                    if (!selectedChat.value) return
+                    const params = new URLSearchParams()
+                    // Bare dates: the server includes the whole "to" day (#365 tz contract).
+                    if (exportFromDate.value) params.set('from', exportFromDate.value)
+                    if (exportToDate.value) params.set('to', exportToDate.value)
+                    const query = params.toString()
+                    const url = `/api/chats/${encodeURIComponent(selectedChat.value.ref)}/export${query ? '?' + query : ''}`
+                    showExportModal.value = false
                     window.open(url, '_blank')
                 }
 
@@ -7453,6 +7509,10 @@
                     isDeletedChat,
                     isAudioFile,
                     exportChat,
+                    runExport,
+                    showExportModal,
+                    exportFromDate,
+                    exportToDate,
                     // Error states
                     chatsError,
                     loadChats,

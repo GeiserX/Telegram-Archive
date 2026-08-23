@@ -467,3 +467,47 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(export["chat"]["ref"], self.ref_a)
             self.assertEqual(len(export["messages"]), 30)
             self.assertEqual(export["message_versions"], [])
+            # An unwindowed export carries no filters block: the file IS the
+            # full history and must not suggest otherwise.
+            self.assertNotIn("filters", export)
+
+    async def test_export_date_window(self):
+        """?from/?to reach the export stream (the README advertised this).
+
+        Bounds follow the #365 conversion contract: tz-aware instants convert
+        to naive UTC (never relabel), a bare "to" date includes its whole day,
+        a full "to" timestamp is exclusive.
+        """
+        async with self._client() as client:
+            await self._login(client)
+
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"from": "2026-03-01T12:11:00"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            export = json.loads(resp.text)
+            self.assertEqual(len(export["messages"]), 20)  # minutes 11..30
+            self.assertEqual(export["filters"], {"from": "2026-03-01T12:11:00", "to": None})
+
+            # +02:00 is the same instant as 12:11 UTC — the window must not shift.
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"from": "2026-03-01T14:11:00+02:00"})
+            self.assertEqual(len(json.loads(resp.text)["messages"]), 20)
+
+            # Full-timestamp "to" is exclusive: < 12:10 keeps minutes 1..9.
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"to": "2026-03-01T12:10:00"})
+            self.assertEqual(len(json.loads(resp.text)["messages"]), 9)
+
+            # A bare "to" date includes the whole named day.
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"to": "2026-03-01"})
+            self.assertEqual(len(json.loads(resp.text)["messages"]), 30)
+
+            # The maximum ISO date means "no upper bound", not a 500.
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"to": "9999-12-31"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(len(json.loads(resp.text)["messages"]), 30)
+
+            resp = await client.get(f"/api/chats/{self.ref_a}/export", params={"from": "not-a-date"})
+            self.assertEqual(resp.status_code, 400)
+
+            resp = await client.get(
+                f"/api/chats/{self.ref_a}/export", params={"from": "2026-03-02", "to": "2026-03-01"}
+            )
+            self.assertEqual(resp.status_code, 400)
