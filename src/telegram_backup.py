@@ -55,11 +55,14 @@ from .db.models import account_metadata_key
 from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
 from .media_errors import is_media_location_error
 from .message_utils import (
+    METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
     build_media_filename,
+    classify_extended_media,
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
+    extract_extended_media_details,
     extract_forward_origin,
     extract_media_attributes,
     extract_reactions,
@@ -3079,6 +3082,14 @@ class TelegramBackup:
         if webpage_preview is not None:
             message_data["raw_data"]["webpage"] = webpage_preview
 
+        # Extended media kinds (venue/dice/invoice/story/giveaways/live
+        # location/game/unsupported): salient fields for the viewer's typed
+        # chip — official apps render these, the archive used to show nothing.
+        extended_media = extract_extended_media_details(message.media)
+        if extended_media is not None:
+            extended_kind, extended_details = extended_media
+            message_data["raw_data"][extended_kind] = extended_details
+
         # Preserve service-action metadata (e.g. forum topic creations and
         # renames) so historical backfills carry the same raw_data *shape* AND
         # *vocabulary* as the live listener: since the #222 fix both derive
@@ -3528,10 +3539,11 @@ class TelegramBackup:
         # Generate unique media ID
         media_id = f"{chat_id}_{message.id}_{media_type}"
 
-        # Contacts, locations, and polls are Telegram message payloads rather
-        # than downloadable files. Store them as metadata-only records when the
+        # Metadata-only kinds (contacts, locations, polls, and the nine
+        # extended kinds) are Telegram message payloads rather than
+        # downloadable files. Store them as metadata-only records when the
         # caller asks for media processing.
-        if media_type in {"contact", "geo", "poll"}:
+        if media_type in METADATA_ONLY_MEDIA_TYPES:
             return {
                 "id": media_id,
                 "type": media_type,
@@ -3794,7 +3806,10 @@ class TelegramBackup:
             return "geo"
         elif isinstance(media, MessageMediaPoll):
             return "poll"
-        return None
+        # The nine kinds this ladder used to flatten to None (venue, dice,
+        # invoice, story, giveaways, live location, game, unsupported):
+        # metadata-only types with a typed viewer chip, never downloaded.
+        return classify_extended_media(media)
 
     def _get_media_filename(self, message: Message, media_type: str, telegram_file_id: str = None) -> str:
         """
