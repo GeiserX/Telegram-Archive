@@ -63,6 +63,7 @@ from .message_utils import (
     describe_exception,
     download_and_shard_media,
     extract_extended_media_details,
+    extract_forward_origin,
     extract_media_attributes,
     extract_reactions,
     extract_topic_id,
@@ -3170,6 +3171,12 @@ class TelegramBackup:
                 forward_name = await self._resolve_forward_source_name(fwd.from_id)
                 if forward_name:
                     message_data["raw_data"]["forward_from_name"] = forward_name
+            # Origin pointer (channel_post / saved_from): what makes the
+            # forward header tappable in official apps. Metadata only, no API
+            # cost; the viewer links it when the origin chat is archived.
+            forward_origin = extract_forward_origin(message)
+            if forward_origin:
+                message_data["raw_data"]["forward_origin"] = forward_origin
 
         # Capture channel post author (signature) if available
         if hasattr(message, "post_author") and message.post_author:

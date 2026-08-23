@@ -1061,3 +1061,37 @@ def extract_extended_media_details(media: object) -> tuple[str, dict] | None:
         details = {}
     clean = {key: value for key, value in details.items() if isinstance(value, (str, int, float, bool))}
     return kind, clean
+
+
+def extract_forward_origin(message: object) -> dict | None:
+    """The forwarded message's ORIGIN pointer — {chat_id (marked), message_id}.
+
+    Official apps make a forward header tappable because ``fwd_from`` carries
+    where the message came from: ``channel_post`` (the origin message id in
+    the source channel, paired with ``from_id``) for channel forwards, or
+    ``saved_from_peer``/``saved_from_msg_id`` for messages saved from
+    elsewhere. The archive kept only the display name, so the provenance
+    chain died here. Ids are stored MARKED (the project-wide convention), via
+    the same get_peer_id mapping every other persisted id uses.
+
+    Strict isinstance checks keep bare-MagicMock messages inert, and any
+    resolution surprise returns None — provenance is best-effort metadata,
+    never worth failing a capture.
+    """
+    from telethon.utils import get_peer_id
+
+    fwd = getattr(message, "fwd_from", None)
+    if fwd is None:
+        return None
+    try:
+        channel_post = getattr(fwd, "channel_post", None)
+        from_id = getattr(fwd, "from_id", None)
+        if isinstance(channel_post, int) and channel_post > 0 and from_id is not None:
+            return {"chat_id": get_peer_id(from_id), "message_id": channel_post}
+        saved_msg_id = getattr(fwd, "saved_from_msg_id", None)
+        saved_peer = getattr(fwd, "saved_from_peer", None)
+        if isinstance(saved_msg_id, int) and saved_msg_id > 0 and saved_peer is not None:
+            return {"chat_id": get_peer_id(saved_peer), "message_id": saved_msg_id}
+    except Exception:
+        return None
+    return None
