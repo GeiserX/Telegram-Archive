@@ -1085,7 +1085,10 @@ class TelegramBackup:
                         "to marked (channel/supergroup) format"
                     )
                 if unresolved:
-                    logger.info(f"Capture filters: {unresolved} configured id entr(y/ies) not in the archive yet")
+                    logger.info(
+                        f"Capture filters: {unresolved} configured id entr{'y' if unresolved == 1 else 'ies'} "
+                        "not in the archive yet"
+                    )
             except Exception as e:
                 # MagicMock configs in tests land here too; normalization is
                 # strictly best-effort and must never block a backup.
