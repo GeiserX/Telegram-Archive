@@ -400,6 +400,57 @@ class TestEventHandlers:
         listener.db.insert_message.assert_called_once()
         listener.db.upsert_chat.assert_called_once()
 
+    def test_on_new_message_captures_forward_origin(self, listener_with_handlers, full_config):
+        """A forwarded channel post stores the origin pointer in raw_data."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        from telethon.tl.types import PeerChannel
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 43
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, tzinfo=UTC)
+        msg.text = "forwarded"
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        msg.fwd_from = SimpleNamespace(
+            channel_post=777,
+            from_id=PeerChannel(channel_id=123),
+            saved_from_msg_id=None,
+            saved_from_peer=None,
+            date=None,
+            from_name=None,
+        )
+        event.message = msg
+
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+
+        asyncio.run(handler(event))
+
+        listener.db.insert_message.assert_called_once()
+        saved = listener.db.insert_message.call_args[0][0]
+        assert saved["raw_data"]["forward_origin"] == {
+            "chat_id": -1000000000123,
+            "message_id": 777,
+        }
+
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
         """Test new message from untracked-but-included chat gets added to tracking."""
         listener, handlers = listener_with_handlers
