@@ -97,6 +97,9 @@ class TestSweepDownloadsPreviewPhoto(unittest.TestCase):
         backup.config.deduplicate_media = False
         backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         backup.db = AsyncMock()
+        # No import rows: a truthy mock would make the adoption hook
+        # short-circuit _process_media before the preview paths under test.
+        backup.db.adopt_import_media = AsyncMock(return_value=None)
         backup.client = AsyncMock()
 
         async def fake_download(_message, path, _size, _chat_id):
