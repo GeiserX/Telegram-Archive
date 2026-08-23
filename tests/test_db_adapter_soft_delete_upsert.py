@@ -976,6 +976,69 @@ async def test_version_export_window_uses_the_export_contract(sqlite_adapter):
     assert [v["text"] for v in windowed] == ["v1", "v2"]
 
 
+# ---------------------------------------------------------------------------
+# What-changed feed (#9t6.11.2)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_feed_chat(adapter, chat_id, title):
+    await adapter.upsert_chat({"id": chat_id, "type": "group", "title": title}, account_id=1)
+
+
+@pytest.mark.asyncio
+async def test_recent_changes_merges_deletions_and_edits_newest_first(sqlite_adapter):
+
+    await _seed_feed_chat(sqlite_adapter, 400, "Feed Group")
+    await sqlite_adapter.insert_message(
+        {"id": 1, "chat_id": 400, "date": datetime(2026, 7, 1, 9, 0), "text": "will be deleted"}, account_id=1
+    )
+    await sqlite_adapter.insert_message(
+        {"id": 2, "chat_id": 400, "date": datetime(2026, 7, 1, 9, 5), "text": "v1"}, account_id=1
+    )
+    await sqlite_adapter.mark_message_deleted(400, 1, datetime(2026, 7, 1, 10, 0), account_id=1)
+    await sqlite_adapter.update_message_text(400, 2, "v2", datetime(2026, 7, 1, 11, 0), account_id=1)
+
+    changes = await sqlite_adapter.get_recent_changes(limit=10)
+
+    assert [c["kind"] for c in changes] == ["edited", "deleted"]  # version captured after the delete
+    edited, deleted = changes
+    assert edited["old_text"] == "v1" and edited["new_text"] == "v2"
+    assert edited["chat"]["title"] == "Feed Group"
+    assert edited["chat"]["ref"]
+    assert deleted["text"] == "will be deleted"
+    assert deleted["date"] == "2026-07-01T10:00:00"
+
+    # since after the deletion excludes it...
+    windowed = await sqlite_adapter.get_recent_changes(since=datetime(2026, 7, 1, 10, 30), limit=10)
+    assert [c["kind"] for c in windowed] == ["edited"]
+
+    # ...and the exclusive before-cursor pages past the newest row.
+    older = await sqlite_adapter.get_recent_changes(before=datetime.fromisoformat(changes[0]["date"]), limit=10)
+    assert [c["kind"] for c in older] == ["deleted"]
+
+
+@pytest.mark.asyncio
+async def test_recent_changes_respects_the_compiled_scope(sqlite_adapter):
+    from src.db.adapter import ChatScope
+
+    await _seed_feed_chat(sqlite_adapter, 401, "Mine")
+    await _seed_feed_chat(sqlite_adapter, 402, "Not mine")
+    for chat_id, msg_id in ((401, 11), (402, 12)):
+        await sqlite_adapter.insert_message(
+            {"id": msg_id, "chat_id": chat_id, "date": datetime(2026, 7, 2, 9, 0), "text": "gone"}, account_id=1
+        )
+        await sqlite_adapter.mark_message_deleted(chat_id, msg_id, datetime(2026, 7, 2, 10, 0), account_id=1)
+
+    mine = await sqlite_adapter.get_chat_by_id(401, account_id=1)
+    scoped = await sqlite_adapter.get_recent_changes(scope=ChatScope(refs={mine["ref"]}), limit=10)
+    assert [c["chat"]["title"] for c in scoped] == ["Mine"]
+
+    # The classic falsy-empty bug must not resurface: an EMPTY grant is
+    # "entitled to nothing", never "no filter".
+    nothing = await sqlite_adapter.get_recent_changes(scope=ChatScope(refs=set()), limit=10)
+    assert nothing == []
+
+
 @pytest.mark.asyncio
 async def test_operator_status_counts_split_pending_from_exhausted(sqlite_adapter):
     """The status panel's honesty split: rows still in the retry loop vs rows

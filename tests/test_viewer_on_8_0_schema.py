@@ -41,7 +41,7 @@ if not os.environ.get("BACKUP_PATH"):
 
 from src.db.adapter import DatabaseAdapter
 from src.db.base import DatabaseManager
-from src.db.models import Chat, Media, Message, Reaction, ViewerAccount
+from src.db.models import Chat, Media, Message, MessageVersion, Reaction, ViewerAccount
 from src.web import main as web_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -518,4 +518,71 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             resp = await client.get(
                 f"/api/chats/{self.ref_a}/export", params={"from": "2026-03-02", "to": "2026-03-01"}
             )
+
+    async def test_changes_feed(self):
+        """/api/changes lists captured deletions and edits, newest first,
+        under the viewer's compiled scope."""
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy import update as sa_update
+
+        async with self.manager.async_session_factory() as session:
+            await session.execute(
+                sa_update(Message)
+                .where(Message.account_id == 1, Message.chat_id == CHAT_A, Message.id == 1)
+                .values(is_deleted=1, deleted_at=BASE_DATE + timedelta(days=1))
+            )
+            session.add(
+                MessageVersion(
+                    account_id=1,
+                    chat_id=CHAT_A,
+                    message_id=2,
+                    text="the old text",
+                    date=BASE_DATE,
+                    change_hash="feedtesthash0001",
+                    captured_at=BASE_DATE + timedelta(days=1, hours=1),
+                )
+            )
+            await session.commit()
+
+        # The seed is class-scoped: undo these mutations whatever happens, or
+        # alphabetically-later tests inherit a tombstoned message 1.
+        async def _restore():
+            async with self.manager.async_session_factory() as session:
+                await session.execute(
+                    sa_update(Message)
+                    .where(Message.account_id == 1, Message.chat_id == CHAT_A, Message.id == 1)
+                    .values(is_deleted=0, deleted_at=None)
+                )
+                await session.execute(sa_delete(MessageVersion).where(MessageVersion.change_hash == "feedtesthash0001"))
+                await session.commit()
+
+        try:
+            await self._run_changes_feed_assertions()
+        finally:
+            await _restore()
+
+    async def _run_changes_feed_assertions(self):
+        async with self._client() as client:
+            await self._login(client)
+
+            resp = await client.get("/api/changes")
+            self.assertEqual(resp.status_code, 200, resp.text)
+            payload = resp.json()
+            kinds = [c["kind"] for c in payload["changes"]]
+            self.assertEqual(kinds, ["edited", "deleted"])  # captured_at is newer
+            edited, deleted = payload["changes"]
+            self.assertEqual(edited["old_text"], "the old text")
+            self.assertEqual(edited["chat"]["ref"], self.ref_a)
+            self.assertEqual(deleted["message_id"], 1)
+            self.assertIsNone(payload["next_before"])  # short page, no cursor
+
+            # since after both excludes everything.
+            resp = await client.get("/api/changes", params={"since": "2026-03-03T00:00:00Z"})
+            self.assertEqual(resp.json()["changes"], [])
+
+            # Cursor pages strictly older than the given instant.
+            resp = await client.get("/api/changes", params={"before": edited["date"]})
+            self.assertEqual([c["kind"] for c in resp.json()["changes"]], ["deleted"])
+
+            resp = await client.get("/api/changes", params={"since": "not-a-date"})
             self.assertEqual(resp.status_code, 400)
