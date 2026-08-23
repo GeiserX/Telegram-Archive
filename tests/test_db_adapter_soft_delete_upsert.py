@@ -1037,3 +1037,35 @@ async def test_recent_changes_respects_the_compiled_scope(sqlite_adapter):
     # "entitled to nothing", never "no filter".
     nothing = await sqlite_adapter.get_recent_changes(scope=ChatScope(refs=set()), limit=10)
     assert nothing == []
+
+
+@pytest.mark.asyncio
+async def test_operator_status_counts_split_pending_from_exhausted(sqlite_adapter):
+    """The status panel's honesty split: rows still in the retry loop vs rows
+    that hit the cap and wait for the operator."""
+    rows = [
+        ("m1", 1, 0, 0),  # pending, never tried
+        ("m2", 2, 0, 3),  # pending, some attempts left (cap 5)
+        ("m3", 3, 0, 5),  # exhausted at the cap
+        ("m4", 4, 1, 2),  # downloaded
+    ]
+    for media_id, msg_id, downloaded, attempts in rows:
+        await sqlite_adapter.insert_message(
+            {"id": msg_id, "chat_id": 500, "date": datetime(2026, 7, 3, 9, msg_id), "text": "m"}, account_id=1
+        )
+        await sqlite_adapter.insert_media(
+            {"id": media_id, "message_id": msg_id, "chat_id": 500, "type": "photo", "downloaded": bool(downloaded)},
+            account_id=1,
+        )
+        for _ in range(attempts):
+            await sqlite_adapter.increment_media_download_attempts(media_id, account_id=1)
+
+    counts = await sqlite_adapter.get_operator_status_counts(max_attempts=5)
+
+    assert counts == {"downloaded": 1, "pending": 2, "exhausted": 1}
+
+
+@pytest.mark.asyncio
+async def test_database_size_is_reported_for_sqlite(sqlite_adapter):
+    size = await sqlite_adapter.get_database_size_bytes()
+    assert isinstance(size, int) and size > 0

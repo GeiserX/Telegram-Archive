@@ -471,6 +471,14 @@ class TestViewerOn80Schema(unittest.IsolatedAsyncioTestCase):
             # full history and must not suggest otherwise.
             self.assertNotIn("filters", export)
 
+    async def test_operator_status_is_master_only(self):
+        """/api/status is operator surface; this suite's login is a
+        viewer-role account, so the gate must refuse it."""
+        async with self._client() as client:
+            await self._login(client)
+            resp = await client.get("/api/status")
+            self.assertEqual(resp.status_code, 403)
+
     async def test_export_date_window(self):
         """?from/?to reach the export stream (the README advertised this).
 

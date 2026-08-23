@@ -3746,3 +3746,31 @@ class TestDeleteChatPushSubscriptionPurge:
             assert "FOR UPDATE" in str(locked.compile(dialect=postgresql.dialect()))
         finally:
             await db_manager.engine.dispose()
+
+
+class TestDatabaseSizeBytes:
+    """get_database_size_bytes: PG branch and the never-raise contract."""
+
+    @pytest.mark.asyncio
+    async def test_postgres_branch_returns_pg_database_size(self):
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+        mock_session.execute.return_value = MagicMock(scalar=MagicMock(return_value=123456))
+
+        assert await adapter.get_database_size_bytes() == 123456
+
+    @pytest.mark.asyncio
+    async def test_query_failure_degrades_to_none(self):
+        db_manager, mock_session = _make_mock_db_manager(is_sqlite=False)
+        adapter = DatabaseAdapter(db_manager)
+        mock_session.execute.side_effect = RuntimeError("connection lost")
+
+        assert await adapter.get_database_size_bytes() is None
+
+    @pytest.mark.asyncio
+    async def test_memory_sqlite_url_has_no_file_to_size(self):
+        db_manager, _ = _make_mock_db_manager(is_sqlite=True)
+        db_manager.database_url = "sqlite+aiosqlite://"
+        adapter = DatabaseAdapter(db_manager)
+
+        assert await adapter.get_database_size_bytes() is None

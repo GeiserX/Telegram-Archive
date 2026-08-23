@@ -529,6 +529,9 @@
                 <!-- User bar -->
                 <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-gray-700">
                     <span class="text-xs text-gray-400 truncate flex-1">{{ currentUsername }}</span>
+                    <button v-if="userRole === 'master'" @click="openStatusPanel" class="text-gray-400 hover:text-white p-1" title="Archive Status">
+                        <i class="fas fa-heart-pulse"></i>
+                    </button>
                     <button v-if="userRole === 'master'" @click="openAdminPanel" class="text-gray-400 hover:text-white p-1" title="Admin Settings">
                         <i class="fas fa-cog"></i>
                     </button>
@@ -1686,6 +1689,65 @@
                         Jump
                     </button>
                 </div>
+            </section>
+        </div>
+
+        <!-- Operator Status Modal (master only) -->
+        <div v-if="showStatusPanel"
+            class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
+            @click.self="showStatusPanel = false">
+            <section role="dialog" aria-modal="true" aria-labelledby="status-panel-title"
+                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 id="status-panel-title" class="text-xl font-bold text-white">Archive Status</h3>
+                    <button type="button" @click="showStatusPanel = false" aria-label="Close status panel"
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div v-if="statusLoading" class="text-sm text-tg-muted py-4 text-center">Loading…</div>
+                <div v-else-if="!statusData" class="text-sm text-amber-300 py-4 text-center">Could not load status.</div>
+                <dl v-else class="space-y-3 text-sm">
+                    <div class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Backup</dt>
+                        <dd class="text-white text-right">
+                            <span v-if="statusData.backup.in_progress" class="text-blue-300">running now</span>
+                            <span v-else-if="statusData.backup.last_run">last run {{ formatStatusDate(statusData.backup.last_run) }}</span>
+                            <span v-else class="text-amber-300">never ran</span>
+                        </dd>
+                    </div>
+                    <div v-for="l in statusData.listeners" :key="l.account_id" class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Listener (account {{ l.account_id }})</dt>
+                        <dd class="text-right">
+                            <span :class="l.active ? 'text-green-400' : 'text-gray-400'">
+                                {{ l.active ? 'active since ' + formatStatusDate(l.active_since) : 'not running' }}
+                            </span>
+                        </dd>
+                    </div>
+                    <div class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Media pipeline</dt>
+                        <dd class="text-white text-right">
+                            {{ statusData.media.downloaded.toLocaleString() }} downloaded
+                            <span v-if="statusData.media.pending" class="text-blue-300">· {{ statusData.media.pending.toLocaleString() }} pending</span>
+                            <span v-if="statusData.media.exhausted" class="text-amber-300">· {{ statusData.media.exhausted.toLocaleString() }} gave up</span>
+                        </dd>
+                    </div>
+                    <div class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Stats freshness</dt>
+                        <dd class="text-white text-right">
+                            {{ statusData.stats_calculated_at ? formatStatusDate(statusData.stats_calculated_at) : 'never calculated' }}
+                        </dd>
+                    </div>
+                    <div class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Database</dt>
+                        <dd class="text-white text-right">
+                            {{ statusData.database.backend }}
+                            <span v-if="statusData.database.size_bytes != null">· {{ formatStatusSize(statusData.database.size_bytes) }}</span>
+                        </dd>
+                    </div>
+                </dl>
             </section>
         </div>
 
@@ -3053,6 +3115,35 @@
                     if (!iso) return ''
                     const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'))
                     return d.toLocaleString()
+                }
+
+                const showStatusPanel = ref(false)
+                const statusData = ref(null)
+                const statusLoading = ref(false)
+
+                const openStatusPanel = async () => {
+                    showStatusPanel.value = true
+                    statusLoading.value = true
+                    try {
+                        const resp = await fetch('/api/status', { credentials: 'same-origin' })
+                        statusData.value = resp.ok ? await resp.json() : null
+                    } catch (e) {
+                        statusData.value = null
+                    } finally {
+                        statusLoading.value = false
+                    }
+                }
+                const formatStatusDate = (iso) => {
+                    if (!iso) return ''
+                    const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
+                    return d.toLocaleString()
+                }
+                const formatStatusSize = (bytes) => {
+                    if (bytes == null) return ''
+                    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+                    let v = bytes, u = 0
+                    while (v >= 1024 && u < units.length - 1) { v /= 1024; u++ }
+                    return `${v.toFixed(u ? 1 : 0)} ${units[u]}`
                 }
 
                 const showArchived = () => {
@@ -7709,6 +7800,13 @@
                     reloadChangesFeed,
                     loadMoreChanges,
                     formatChangeDate,
+
+                    showStatusPanel,
+                    statusData,
+                    statusLoading,
+                    openStatusPanel,
+                    formatStatusDate,
+                    formatStatusSize,
                     showAllChats,
                     openForumTopics,
                     selectTopic,
