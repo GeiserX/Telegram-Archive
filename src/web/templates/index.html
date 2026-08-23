@@ -435,6 +435,48 @@
                 justify-content: center;
             }
         }
+
+        /* Telegram entity formatting (bold/italic handled by native tags) */
+        .tg-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            padding: 1px 4px;
+            font-size: 0.9em;
+        }
+        .tg-pre {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 8px 10px;
+            margin: 4px 0;
+            overflow-x: auto;
+            white-space: pre;
+            font-size: 0.85em;
+        }
+        .tg-blockquote {
+            border-left: 3px solid rgba(96, 165, 250, 0.6);
+            padding: 2px 8px;
+            margin: 4px 0;
+            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.15);
+        }
+        .tg-spoiler {
+            filter: blur(4px);
+            cursor: pointer;
+            border-radius: 3px;
+            transition: filter 0.15s ease;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        .tg-spoiler-revealed {
+            filter: none;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        .tg-mention {
+            color: rgb(96, 165, 250);
+        }
     </style>
     <script>
         tailwind.config = {
@@ -1570,7 +1612,7 @@
                                     <!-- Text with clickable links (for albums, use caption from whichever message has it) -->
                                     <div class="whitespace-pre-wrap break-words message-text"
                                         :class="{ 'opacity-50': msg.is_deleted }"
-                                        v-html="linkifyText(getAlbumCaption(msg) || msg.text)"></div>
+                                        v-html="renderMessageHtml(getAlbumCaptionMessage(msg) || msg)"></div>
 
                                     <!-- Capture-time link preview (mf7): Telegram's own webpage card
                                          as it existed when the message was archived -->
@@ -3692,8 +3734,25 @@
                 document.addEventListener('click', (event) => {
                     const link = event.target.closest ? event.target.closest('a.tag-link') : null
                     if (!link) return
+                    // A tag concealed inside a spoiler must reveal, not open:
+                    // the spoiler handler below owns that first click.
+                    if (link.closest('.tg-spoiler:not(.tg-spoiler-revealed)')) return
                     event.preventDefault()
                     openTagView(link.dataset.tag)
+                })
+                // Spoilers are injected via v-html too — same delegated pattern.
+                const toggleSpoiler = (event) => {
+                    const spoiler = event.target.closest ? event.target.closest('.tg-spoiler') : null
+                    if (!spoiler) return
+                    // Once revealed the span stops intercepting (official apps do
+                    // not re-conceal): links and tags inside behave normally.
+                    if (spoiler.classList.contains('tg-spoiler-revealed')) return
+                    event.preventDefault()
+                    spoiler.classList.add('tg-spoiler-revealed')
+                }
+                document.addEventListener('click', toggleSpoiler)
+                document.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') toggleSpoiler(event)
                 })
 
                 let pendingNotificationClick = null
@@ -4720,13 +4779,19 @@
                 }
 
                 // For album messages, find the caption from any message in the group
-                const getAlbumCaption = (msg) => {
+                // The album member carrying the caption — the renderer needs the
+                // MESSAGE (its entities live beside its text), not just the string.
+                const getAlbumCaptionMessage = (msg) => {
                     const groupedId = getGroupedId(msg)
                     if (!groupedId) return null
                     if (msg.media?.type !== 'photo' && msg.media?.type !== 'video') return null
                     const album = getAlbumForMessage(msg)
                     if (!album) return null
-                    const captionMsg = album.find(m => m.text && m.text.trim() !== '')
+                    return album.find(m => m.text && m.text.trim() !== '') || null
+                }
+
+                const getAlbumCaption = (msg) => {
+                    const captionMsg = getAlbumCaptionMessage(msg)
                     return captionMsg ? captionMsg.text : null
                 }
 
@@ -6321,6 +6386,93 @@
                         .join('')
                 }
 
+                // Telegram formatting entities: escape-first HTML off the RAW text.
+                // Stored offsets/lengths are UTF-16 code units — the units JS
+                // strings index — so they apply directly, no transformation.
+                const safeEntityUrl = (url) => {
+                    if (typeof url !== 'string') return null
+                    return /^(https?|tg):\/\//i.test(url) ? url : null
+                }
+
+                const wrapEntity = (node, inner, text) => {
+                    switch (node.type) {
+                        case null: return inner
+                        case 'bold': return `<strong>${inner}</strong>`
+                        case 'italic': return `<em>${inner}</em>`
+                        case 'underline': return `<u>${inner}</u>`
+                        case 'strikethrough': return `<s>${inner}</s>`
+                        case 'code': return `<code class="tg-code">${inner}</code>`
+                        case 'pre': return `<pre class="tg-pre"><code>${inner}</code></pre>`
+                        case 'blockquote': return `<blockquote class="tg-blockquote">${inner}</blockquote>`
+                        case 'spoiler': return `<span class="tg-spoiler" role="button" tabindex="0" aria-label="Spoiler, activate to reveal">${inner}</span>`
+                        case 'text_url': {
+                            const url = safeEntityUrl(node.url)
+                            return url ? `<a href="${escapeUrlForAttr(url)}" target="_blank" rel="noopener noreferrer">${inner}</a>` : inner
+                        }
+                        case 'url': {
+                            const raw = text.slice(node.offset, node.end)
+                            return isHttpUrl(raw) ? `<a href="${escapeUrlForAttr(raw)}" target="_blank" rel="noopener noreferrer">${inner}</a>` : inner
+                        }
+                        case 'email': {
+                            const raw = text.slice(node.offset, node.end)
+                            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw) ? `<a href="mailto:${escapeUrlForAttr(raw)}">${inner}</a>` : inner
+                        }
+                        case 'mention':
+                        case 'mention_name': return `<span class="tg-mention">${inner}</span>`
+                        default: return inner
+                    }
+                }
+
+                // These render their inner text escaped-only: code keeps its
+                // characters literal, and link entities must not linkify again.
+                const ESCAPE_ONLY_ENTITY_TYPES = new Set(['code', 'pre', 'url', 'text_url', 'email'])
+
+                const renderEntityHtml = (text, entityList) => {
+                    const len = text.length
+                    const valid = entityList
+                        .filter(e => e && Number.isInteger(e.offset) && Number.isInteger(e.length)
+                            && e.offset >= 0 && e.length > 0 && e.offset < len)
+                        .map(e => ({ type: e.type, url: e.url, offset: e.offset, end: Math.min(e.offset + e.length, len), children: [] }))
+                        .sort((a, b) => a.offset - b.offset || b.end - a.end)
+                    // Proper forest: children fully inside their parent; the rare
+                    // partially-overlapping entity is clipped to the open parent.
+                    const root = { type: null, offset: 0, end: len, children: [] }
+                    const stack = [root]
+                    for (const node of valid) {
+                        while (node.offset >= stack[stack.length - 1].end && stack.length > 1) stack.pop()
+                        const parent = stack[stack.length - 1]
+                        if (node.end > parent.end) node.end = parent.end
+                        if (node.end <= node.offset) continue
+                        parent.children.push(node)
+                        stack.push(node)
+                    }
+                    const renderLeaf = (raw, escapeOnly) => escapeOnly ? escapeHtml(raw) : linkifyText(raw)
+                    const renderNode = (node, escapeOnly) => {
+                        const escapeHere = escapeOnly || ESCAPE_ONLY_ENTITY_TYPES.has(node.type)
+                        let inner = ''
+                        let cursor = node.offset
+                        for (const child of node.children) {
+                            if (child.offset > cursor) inner += renderLeaf(text.slice(cursor, child.offset), escapeHere)
+                            inner += renderNode(child, escapeHere)
+                            cursor = child.end
+                        }
+                        if (cursor < node.end) inner += renderLeaf(text.slice(cursor, node.end), escapeHere)
+                        return wrapEntity(node, inner, text)
+                    }
+                    return renderNode(root, false)
+                }
+
+                const renderMessageHtml = (msg) => {
+                    const text = String((msg && msg.text) || '')
+                    const entities = Array.isArray(msg?.raw_data?.entities) ? msg.raw_data.entities : null
+                    if (!entities || !entities.length) return linkifyText(text)
+                    try {
+                        return renderEntityHtml(text, entities)
+                    } catch (e) {
+                        return linkifyText(text)  // malformed payload: degrade to today's output
+                    }
+                }
+
                 // Resolve the rendered row for a message id via its data-msg-id attribute.
                 // Hidden album members (only the first photo/video of a group renders a row)
                 // resolve to their visible first-in-album sibling so album targets still get
@@ -7845,6 +7997,7 @@
                     isHiddenAlbumMessage,
                     getAlbumGridClass,
                     getAlbumCaption,
+                    getAlbumCaptionMessage,
                     getChatName,
                     getInitials,
                     formatDate,
@@ -7883,6 +8036,7 @@
                     isLightboxImage,
                     isLightboxVideo,
                     linkifyText,
+                    renderMessageHtml,
                     // Tag view
                     tagView,
                     tagTabs,
