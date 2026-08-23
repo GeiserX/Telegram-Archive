@@ -164,6 +164,19 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
         help="Minimum gap size to investigate (overrides GAP_THRESHOLD env var)",
     )
 
+    backfill_parser = subparsers.add_parser(
+        "backfill-topics",
+        help="Re-sweep one chat so imported forum messages regain their topic",
+        description=(
+            "Telegram Desktop HTML exports carry no forum-topic metadata, so "
+            "imported forum messages land in the General topic. This resets the "
+            "chat's sync cursor and runs a text-only resweep (media downloads, "
+            "deletion/edit sync and media verification all disabled) scoped to "
+            "that chat — the upsert refreshes reply_to_top_id in place."
+        ),
+    )
+    backfill_parser.add_argument("-c", "--chat-id", type=int, required=True, help="Chat ID to backfill")
+
     return parser
 
 
@@ -322,6 +335,35 @@ def run_schedule(args) -> int:
     return asyncio.run(scheduler_main())
 
 
+def run_backfill_topics(args) -> int:
+    """Reset one chat's cursor and resweep it text-only (topic backfill)."""
+    # The documented recovery procedure for imported forum chats, minus its
+    # footguns: DOWNLOAD_MEDIA off (nothing to fetch, the files are local),
+    # SYNC_DELETIONS_EDITS off (a full-history pass must never mass-delete),
+    # VERIFY_MEDIA off, scope pinned to the one chat.
+    os.environ["DOWNLOAD_MEDIA"] = "false"
+    os.environ["SYNC_DELETIONS_EDITS"] = "false"
+    os.environ["VERIFY_MEDIA"] = "false"
+    os.environ["CHAT_IDS"] = str(args.chat_id)
+
+    from .db import create_adapter
+
+    async def _reset_cursor() -> int:
+        db = await create_adapter()
+        try:
+            return await db.reset_chat_sync_cursor(args.chat_id)
+        finally:
+            await db.close()
+
+    if asyncio.run(_reset_cursor()) == 0:
+        print("That chat is not in the archive yet — import or back it up first.")
+        return 1
+
+    from .telegram_backup import main as backup_main
+
+    return backup_main()
+
+
 def main() -> int:
     """Main entry point."""
     parser = create_parser()
@@ -352,6 +394,8 @@ def main() -> int:
         return run_auth(args)
     elif args.command == "backup":
         return run_backup(args)
+    elif args.command == "backfill-topics":
+        return run_backfill_topics(args)
     elif args.command == "schedule":
         return run_schedule(args)
     elif args.command == "export":

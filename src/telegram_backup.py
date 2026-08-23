@@ -3568,6 +3568,14 @@ class TelegramBackup:
                 "downloaded": False,
             }
 
+        # Adopt HTML/JSON-import media: the same (chat, message) may already
+        # carry its file from a Telegram Desktop export. Re-keying that row to
+        # this sweep name reuses the on-disk file instead of re-downloading it
+        # (rebuild-without-redownload for import-built archives).
+        adopted = await self.db.adopt_import_media(chat_id, message.id, media_id, account_id=self.account_id)
+        if adopted is not None:
+            return adopted
+
         # Get Telegram's file unique ID for deduplication
         telegram_file_id = None
         if hasattr(media, "photo"):
