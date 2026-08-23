@@ -5,6 +5,7 @@ Loads and validates settings from environment variables.
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -44,6 +45,43 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     the user guess which of the flags carried it.
     """
     return _parse_bool(os.getenv(name), default, name=name)
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    """os.getenv(name) as an int that FAILS BY NAME.
+
+    A bare int() crash reads "invalid literal for int() with base 10" and the
+    user has to guess which of ~20 numeric variables carried the typo. Empty
+    or unset falls back to the default — compose's ``${VAR:-}`` idiom injects
+    empty strings for unset variables, and a blank must mean "use the default",
+    not a crash.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        raise ValueError(f"{name} must be an integer") from None
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    """os.getenv(name) as a finite float that FAILS BY NAME.
+
+    Same contract as _parse_int_env; "nan"/"inf" parse as real floats but no
+    knob here means anything sensible by them, so they fail by name too
+    instead of poisoning a max()/min() clamp downstream.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return value
 
 
 def build_telegram_proxy_from_env() -> dict | None:
@@ -384,7 +422,23 @@ class Config:
     def __init__(self):
         """Initialize configuration from environment variables."""
         # Telegram API credentials (optional for viewer, required for backup)
-        self.api_id = int(os.getenv("TELEGRAM_API_ID")) if os.getenv("TELEGRAM_API_ID") else None
+        # A non-numeric value (most reachably .env.example's your_api_id_here
+        # placeholder) used to crash as a bare "invalid literal for int()"
+        # BEFORE validate_credentials could say anything useful.
+        raw_api_id = (os.getenv("TELEGRAM_API_ID") or "").strip()
+        if raw_api_id:
+            # try/except rather than isdigit(): Unicode digits like "²" pass
+            # isdigit() but still crash int(), and the whole point is that NO
+            # value reaches a bare "invalid literal" crash.
+            try:
+                self.api_id = int(raw_api_id)
+            except ValueError:
+                raise ValueError(
+                    "TELEGRAM_API_ID must be the numeric API ID from https://my.telegram.org/apps "
+                    "(it looks like a placeholder or typo is still in place)"
+                ) from None
+        else:
+            self.api_id = None
         self.api_hash = os.getenv("TELEGRAM_API_HASH")
         self.phone = os.getenv("TELEGRAM_PHONE")
 
@@ -394,13 +448,13 @@ class Config:
         # Backup options
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = _parse_bool_env("DOWNLOAD_MEDIA", True)
-        self.max_media_size_mb = int(os.getenv("MAX_MEDIA_SIZE_MB", "100"))
+        self.max_media_size_mb = _parse_int_env("MAX_MEDIA_SIZE_MB", 100)
         # Timeout for media downloads (seconds). 0 disables the timeout.
-        self.download_timeout_seconds = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "3600"))
+        self.download_timeout_seconds = _parse_int_env("DOWNLOAD_TIMEOUT_SECONDS", 3600)
         # Absorb short mid-download FloodWaits (up to this many seconds) so the
         # chunk stream resumes in place instead of restarting from byte 0;
         # 0 = pre-7.27 raise-immediately behavior (#232).
-        self.media_flood_sleep_threshold = int(os.getenv("MEDIA_FLOOD_SLEEP_THRESHOLD", "60"))
+        self.media_flood_sleep_threshold = _parse_int_env("MEDIA_FLOOD_SLEEP_THRESHOLD", 60)
         # Absorb short FloodWaits (up to this many seconds) during get_dialogs()'s
         # internal pagination so Telethon sleeps and resumes the SAME page instead
         # of the whole call aborting and call_with_flood_retry restarting from
@@ -409,19 +463,19 @@ class Config:
         # restart re-walks the same successful early pages and re-trips the same
         # later page every time, regardless of retry count or schedule spacing.
         # 0 = raise-immediately behavior (#295).
-        self.dialog_flood_sleep_threshold = int(os.getenv("DIALOG_FLOOD_SLEEP_THRESHOLD", "60"))
+        self.dialog_flood_sleep_threshold = _parse_int_env("DIALOG_FLOOD_SLEEP_THRESHOLD", 60)
         # Max usable filename-component length in BYTES for the media store. Default 143
         # keeps names writable on Synology/eCryptfs encrypted shares (whose filename-
         # encryption overhead caps components at ~143 bytes, not the usual 255); the temp
         # ``.part`` suffix is reserved on top of this. Raise to 255 on plain ext4/xfs/btrfs
         # if you prefer longer decorative names. Only the decorative part is shortened; the
         # file_id prefix (uniqueness) and the extension are always preserved. (#212)
-        self.max_filename_bytes = int(os.getenv("MEDIA_MAX_FILENAME_BYTES", "143"))
+        self.max_filename_bytes = _parse_int_env("MEDIA_MAX_FILENAME_BYTES", 143)
         # Stop re-fetching a media file that keeps failing to download after this many
         # attempts, so a permanently-unwritable file (e.g. an over-limit name on an
         # exotic filesystem, or a revoked file reference) can't tax every backup run
         # forever. (#212)
-        self.max_media_download_attempts = int(os.getenv("MEDIA_MAX_DOWNLOAD_ATTEMPTS", "5"))
+        self.max_media_download_attempts = _parse_int_env("MEDIA_MAX_DOWNLOAD_ATTEMPTS", 5)
 
         # =====================================================================
         # PARALLEL CHUNKED DOWNLOADS (issue #183)
@@ -434,10 +488,10 @@ class Config:
         self.parallel_download_enabled = _parse_bool_env("PARALLEL_DOWNLOAD_ENABLED", False)
         # Only files at/above this size use the parallel path (smaller files
         # gain nothing and pay pure overhead). Clamped to a sane floor.
-        self.parallel_download_min_size_mb = max(1, int(os.getenv("PARALLEL_DOWNLOAD_MIN_SIZE_MB", "20")))
+        self.parallel_download_min_size_mb = max(1, _parse_int_env("PARALLEL_DOWNLOAD_MIN_SIZE_MB", 20))
         # Concurrent senders per file. Hard-capped well under Telegram's ~20
         # connection cliff to stay safe for an unattended, scheduled tool.
-        self.parallel_download_connections = max(2, min(8, int(os.getenv("PARALLEL_DOWNLOAD_CONNECTIONS", "4"))))
+        self.parallel_download_connections = max(2, min(8, _parse_int_env("PARALLEL_DOWNLOAD_CONNECTIONS", 4)))
         # Per-request chunk size in KiB. Must be a 4 KiB multiple that divides
         # 1 MiB and is <= 512 KiB (Telegram getFile constraints); invalid values
         # fall back to the 512 KiB maximum. Peak memory ~= connections * part.
@@ -446,16 +500,22 @@ class Config:
         )
 
         # Batch processing configuration
-        self.batch_size = int(os.getenv("BATCH_SIZE", "100"))
+        self.batch_size = _parse_int_env("BATCH_SIZE", 100)
         # How often to checkpoint sync progress (every N batch inserts)
         # Lower = better crash recovery, higher = fewer DB writes
-        self.checkpoint_interval = max(1, int(os.getenv("CHECKPOINT_INTERVAL", "1")))
+        self.checkpoint_interval = max(1, _parse_int_env("CHECKPOINT_INTERVAL", 1))
 
         # Database Configuration
         # Timeout for SQLite operations (seconds).
         # Increase this if you experience "database is locked" errors (e.g., on Unraid/slow disks).
         # Default increased to 60s for better resilience with concurrent access (backup + web viewer).
-        self.database_timeout = float(os.getenv("DATABASE_TIMEOUT", "60.0"))
+        # DATABASE_TIMEOUT deliberately keeps the never-abort contract of
+        # src/db/base.py's own parse (#378): the viewer tolerates garbage here,
+        # and the backup container must not crash where the viewer shrugs.
+        try:
+            self.database_timeout = _parse_float_env("DATABASE_TIMEOUT", 60.0)
+        except ValueError:
+            self.database_timeout = 60.0
 
         # =====================================================================
         # CHAT FILTERING - Two Modes
@@ -478,7 +538,7 @@ class Config:
         self.whitelist_mode = len(self.chat_ids) > 0
         # Bounded dialog scan warming the session entity cache when a whitelisted
         # id cannot be resolved (typically a cache-cold DM); 0 disables (#234).
-        self.whitelist_resolve_dialog_limit = int(os.getenv("WHITELIST_RESOLVE_DIALOG_LIMIT", "1000"))
+        self.whitelist_resolve_dialog_limit = _parse_int_env("WHITELIST_RESOLVE_DIALOG_LIMIT", 1000)
 
         # Type-based mode (only used if CHAT_IDS is not set)
         chat_types_env = os.environ.get("CHAT_TYPES")
@@ -586,7 +646,7 @@ class Config:
         # When enabled, runs after each scheduled backup to find and fill gaps
         # in message ID sequences caused by API errors or interruptions
         self.fill_gaps = _parse_bool_env("FILL_GAPS", False)
-        self.gap_threshold = int(os.getenv("GAP_THRESHOLD", "50"))
+        self.gap_threshold = _parse_int_env("GAP_THRESHOLD", 50)
 
         # Real-time listener mode
         # When enabled, runs a background listener that catches message edits and deletions
@@ -631,7 +691,7 @@ class Config:
         # REACTION_DEBOUNCE_SECONDS: coalesce a burst of reaction updates for the same
         # message into one reconcile/broadcast. Each update carries the full current
         # snapshot, so keeping only the latest within the window is loss-free.
-        self.reaction_debounce_seconds = max(0.1, float(os.getenv("REACTION_DEBOUNCE_SECONDS", "1.5")))
+        self.reaction_debounce_seconds = max(0.1, _parse_float_env("REACTION_DEBOUNCE_SECONDS", 1.5))
 
         # REACTION_RESWEEP_DAYS: bounded reaction re-sweep window (#221). Telegram does
         # not reliably push reaction updates for the archive account's OWN reactions
@@ -639,11 +699,11 @@ class Config:
         # revisits messages inside its incremental window. When >0, each scheduled
         # sweep re-checks the last N days of messages per chat and reconciles their
         # current aggregate. DEFAULT 0 (disabled) — opt-in, small extra API cost.
-        self.reaction_resweep_days: float = max(0.0, float(os.getenv("REACTION_RESWEEP_DAYS", "0")))
+        self.reaction_resweep_days: float = max(0.0, _parse_float_env("REACTION_RESWEEP_DAYS", 0.0))
 
         # REACTION_RESWEEP_MAX_PER_CHAT: cap on messages re-checked per chat per sweep
         # (fetched newest-first in batches of 100 → ceil(cap/100) requests/chat/sweep).
-        self.reaction_resweep_max_per_chat: int = max(1, int(os.getenv("REACTION_RESWEEP_MAX_PER_CHAT", "500")))
+        self.reaction_resweep_max_per_chat: int = max(1, _parse_int_env("REACTION_RESWEEP_MAX_PER_CHAT", 500))
 
         # REACTION_RESWEEP_BATCH_DELAY_SECONDS: minimum spacing between the re-sweep's
         # batched API requests, measured ACROSS chats (#224 — getMessagesReactions has
@@ -653,7 +713,7 @@ class Config:
         # additionally defers the rest of a run on its first FloodWait and resumes
         # where it left off on the next scheduled sweep. 0 disables the spacing.
         self.reaction_resweep_batch_delay_seconds: float = max(
-            0.0, float(os.getenv("REACTION_RESWEEP_BATCH_DELAY_SECONDS", "2"))
+            0.0, _parse_float_env("REACTION_RESWEEP_BATCH_DELAY_SECONDS", 2.0)
         )
 
         # =====================================================================
@@ -716,8 +776,8 @@ class Config:
         #
         # Example: If >10 deletions arrive within 30s, the first 10 are
         # applied and the rest are blocked (counted, logged).
-        self.mass_operation_threshold = int(os.getenv("MASS_OPERATION_THRESHOLD", "10"))
-        self.mass_operation_window_seconds = int(os.getenv("MASS_OPERATION_WINDOW_SECONDS", "30"))
+        self.mass_operation_threshold = _parse_int_env("MASS_OPERATION_THRESHOLD", 10)
+        self.mass_operation_window_seconds = _parse_int_env("MASS_OPERATION_WINDOW_SECONDS", 30)
         # Non-positive values do not degrade — they invert the protection: a
         # zero/negative window prunes each operation before it is counted (the
         # limiter never fires again), and a non-positive threshold blocks every
@@ -729,7 +789,7 @@ class Config:
         if self.mass_operation_window_seconds < 1:
             raise ValueError("MASS_OPERATION_WINDOW_SECONDS must be >= 1")
         # DEPRECATED: parsed for compatibility, consumed by nothing.
-        self.mass_operation_buffer_delay = float(os.getenv("MASS_OPERATION_BUFFER_DELAY", "2.0"))
+        self.mass_operation_buffer_delay = _parse_float_env("MASS_OPERATION_BUFFER_DELAY", 2.0)
 
         # Display chat IDs - restrict viewer to specific chats only
         # Useful for sharing public channel viewers without exposing other chats
@@ -1212,11 +1272,21 @@ class Config:
         Returns:
             True if this topic should be skipped, False otherwise
         """
-        if topic_id is None or not self.skip_topic_ids:
+        if not self.skip_topic_ids:
             return False
         skip_set = self.skip_topic_ids.get(chat_id)
         if skip_set is None:
             return False
+        if topic_id is None:
+            # General-topic messages carry NO reply_to metadata (Telegram sets
+            # top_msg_id "except for the 'General' topic"), so the natural
+            # exclusion spelling chat:1 could never fire — while the topic
+            # SIDEBAR honored it, signalling an exclusion that wasn't
+            # happening. The archive's own General bucket is
+            # coalesce(reply_to_top_id, 1); the filter mirrors it: excluding
+            # topic 1 excludes exactly the messages the viewer files under
+            # General.
+            return 1 in skip_set
         return topic_id in skip_set
 
     def _get_required_env(self, key: str, value_type: type):
