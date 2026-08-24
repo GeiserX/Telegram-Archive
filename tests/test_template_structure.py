@@ -46,6 +46,22 @@ VOID_ELEMENTS = {
 # this template always closes them explicitly, so the strict rule holds.)
 NO_SELF_NESTING = {"button", "form", "a", "p", "select", "option", "label"}
 
+# The only elements this template legitimately self-closes: SVG icon children,
+# where foreign-content parsing honors the slash. Deliberately NOT "anything
+# inside <svg>" — an HTML element like <div/> stays open even there (and
+# foreignObject re-enters HTML parsing), so it must keep being flagged.
+SVG_SELF_CLOSING_CHILDREN = {
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "use",
+    "stop",
+}
+
 
 class StrictBalanceAuditor(HTMLParser):
     def __init__(self):
@@ -75,8 +91,8 @@ class StrictBalanceAuditor(HTMLParser):
         # element.
         if tag in VOID_ELEMENTS:
             return
-        if any(open_tag == "svg" for open_tag, _ in self.stack):
-            return  # foreign content: the slash really closes it
+        if tag in SVG_SELF_CLOSING_CHILDREN and any(open_tag == "svg" for open_tag, _ in self.stack):
+            return  # foreign content: the slash really closes these
         self.errors.append(
             f"line {self._line()}: <{tag}/> self-closing syntax on a non-void HTML element — "
             "browsers ignore the slash and the element stays OPEN; close it explicitly"
