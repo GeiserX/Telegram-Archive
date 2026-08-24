@@ -68,7 +68,20 @@ class StrictBalanceAuditor(HTMLParser):
         self.stack.append((tag, self._line()))
 
     def handle_startendtag(self, tag, attrs):
-        pass  # explicitly self-closed — balanced by definition
+        # WHATWG parsing IGNORES a trailing solidus on non-void HTML elements:
+        # `<div/>` opens a div that stays open. Only SVG/MathML foreign
+        # content honors self-closing. Treat the HTML-side illusion as an
+        # error so the gate can't be green while a browser sees an unclosed
+        # element.
+        if tag in VOID_ELEMENTS:
+            return
+        if any(open_tag == "svg" for open_tag, _ in self.stack):
+            return  # foreign content: the slash really closes it
+        self.errors.append(
+            f"line {self._line()}: <{tag}/> self-closing syntax on a non-void HTML element — "
+            "browsers ignore the slash and the element stays OPEN; close it explicitly"
+        )
+        self.stack.append((tag, self._line()))
 
     def handle_endtag(self, tag):
         if tag in VOID_ELEMENTS:
