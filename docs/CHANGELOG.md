@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.3.1] - 2026-08-24
+
+### Fixed
+
+- **The viewer rendered raw template over the whole UI.** 8.3.0's template lost the export modal's closing tags (a modal was spliced in mid-element); browsers recovered by force-closing open elements, which pushed every later modal outside Vue's mount target — they showed as un-compiled `{{ }}` overlays with dead buttons, covering the app on every browser. The structure is restored, and a new structural test makes the whole class unshippable: the template must parse perfectly balanced, with every modal inside the mount target. ([#408](https://github.com/GeiserX/Telegram-Archive/pull/408))
+
 ## [8.3.0] - 2026-08-23
 
 Fidelity and scale: the archive now keeps what official clients show — formatting, forward origins, link previews, the media kinds that used to vanish — searches it through a real text index, and survives gigabyte imports. Every change shipped through its own reviewed PR.
