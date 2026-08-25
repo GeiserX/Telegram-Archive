@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.3.2] - 2026-08-25
+
+Dependency maintenance. Nothing about how the archive behaves changes.
+
+### Changed
+
+- **Telethon 1.44.0** (scheme layer 227). Two of its fixes land on exactly this workload: it no longer times out handling server salts, and no longer burns CPU when Telegram closes a connection from its end. ([#412](https://github.com/GeiserX/Telegram-Archive/pull/412))
+- FastAPI, Uvicorn, websockets, Alembic, BeautifulSoup, ijson and pywebpush each move up a minor or two; ruff, pytest and pre-commit follow on the development side. ([#412](https://github.com/GeiserX/Telegram-Archive/pull/412), [#410](https://github.com/GeiserX/Telegram-Archive/pull/410))
+- Dependency updates now arrive with `uv.lock` already updated. They had been proposed against `pyproject.toml` alone, which CI refuses to resolve because it installs with `uv sync --locked` — so every one of them arrived with red checks that had nothing to do with the dependency. ([#411](https://github.com/GeiserX/Telegram-Archive/pull/411))
+
 ## [8.3.1] - 2026-08-24
 
 ### Fixed
