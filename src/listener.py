@@ -724,7 +724,14 @@ class TelegramListener:
                 media_type=prior.get("media_type"),
             )
 
-    def _should_process_chat(self, chat_id: int) -> bool:
+    def _should_process_chat(
+        self,
+        chat_id: int,
+        *,
+        is_user: bool | None = None,
+        is_group: bool | None = None,
+        is_channel: bool | None = None,
+    ) -> bool:
         """
         Check if we should process events for this chat.
 
@@ -737,7 +744,23 @@ class TelegramListener:
         MODE 2 - Type-based Mode:
             Process if:
             - Chat is in our tracked list (backed up at least once), OR
-            - Chat matches our backup filters (include lists)
+            - Chat matches our backup filters (include lists), OR
+            - The caller already knows the chat's type (is_user/is_group/
+              is_channel) and it matches CHAT_TYPES
+
+        The is_user/is_group/is_channel kwargs let a caller that already has
+        cheap, no-network type info (e.g. NewMessage.Event.is_private/
+        is_group/is_channel, derived from the update's peer) evaluate a
+        brand-new, never-tracked chat against CHAT_TYPES immediately -
+        without them, a chat we've never backed up falls through to
+        "conservative: only explicit include lists match", i.e. first
+        contact from someone we've never chatted with is invisible to the
+        listener until the next scheduled backup discovers it. Bots can't
+        be distinguished from regular users this way (that needs the sender
+        entity, which isn't synchronously available), so is_user=True is
+        passed for both - a first DM from a bot is evaluated against
+        CHAT_TYPES' "private" bucket rather than "bots" until the next
+        scheduled backup reclassifies it.
         """
         # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority. Followed
         # migrations are added explicitly (not via _tracked_chat_ids, which
@@ -751,8 +774,6 @@ class TelegramListener:
             return True
 
         # If not tracked yet, check if it would be backed up based on config
-        # We can't determine chat type without fetching the entity, so be conservative
-        # and only process if it's in an explicit include list
         if chat_id in self.config.global_include_ids:
             return True
         if chat_id in self.config.private_include_ids:
@@ -761,6 +782,12 @@ class TelegramListener:
             return True
         if chat_id in self.config.channels_include_ids:
             return True
+
+        # First-contact fallback: only take this path when the caller
+        # supplied real type info; otherwise stay conservative and return
+        # False rather than guess.
+        if is_user is not None or is_group is not None or is_channel is not None:
+            return self.config.should_backup_chat_type(bool(is_user), bool(is_group), bool(is_channel))
 
         return False
 
@@ -1206,14 +1233,23 @@ class TelegramListener:
             try:
                 chat_id = self._get_marked_id(event.chat_id)
 
+                # NewMessage carries its peer type (PeerUser/PeerChat/PeerChannel)
+                # synchronously via _chat_peer - no entity fetch needed - so a chat
+                # we've never backed up before can be matched against CHAT_TYPES
+                # right now instead of being dropped until the next scheduled
+                # backup adds it to _tracked_chat_ids. Otherwise a first message
+                # from someone we've never chatted with is invisible to the
+                # listener (see _should_process_chat).
+                is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
+
                 # Add to tracked chats if we should be backing up this chat
                 if chat_id not in self._tracked_chat_ids:
-                    if self._should_process_chat(chat_id):
+                    if self._should_process_chat(chat_id, is_user=is_user, is_group=is_group, is_channel=is_channel):
                         self._tracked_chat_ids.add(chat_id)
                         logger.debug("Added chat to tracking list")
 
                 # Skip if not in tracked chats
-                if not self._should_process_chat(chat_id):
+                if not self._should_process_chat(chat_id, is_user=is_user, is_group=is_group, is_channel=is_channel):
                     return
 
                 # Save the message to database

@@ -31,6 +31,9 @@ class TestTelegramListener:
         # CHAT_IDS whitelist mode (v6.0.0)
         config.whitelist_mode = False
         config.chat_ids = set()
+        # First-contact CHAT_TYPES fallback (default: no match, same as the
+        # pre-fallback conservative behavior) unless a test opts in.
+        config.should_backup_chat_type = MagicMock(return_value=False)
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
@@ -87,6 +90,42 @@ class TestTelegramListener:
 
         assert listener._should_process_chat(-1009999999) is True
         assert listener._should_process_chat(-1008888888) is False
+
+    def test_should_process_chat_no_hint_stays_conservative(self, mock_config, mock_db):
+        """Without a type hint, an untracked/unlisted chat is still rejected (#415 regression guard)."""
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
+        listener._tracked_chat_ids = set()
+
+        assert listener._should_process_chat(555) is False
+        mock_config.should_backup_chat_type.assert_not_called()
+
+    def test_should_process_chat_type_hint_first_contact(self, mock_config, mock_db):
+        """A type hint lets a never-before-seen chat match CHAT_TYPES (#415)."""
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
+        listener._tracked_chat_ids = set()
+        mock_config.should_backup_chat_type = MagicMock(return_value=True)
+
+        assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is True
+        mock_config.should_backup_chat_type.assert_called_once_with(True, False, False)
+
+    def test_should_process_chat_type_hint_no_match(self, mock_config, mock_db):
+        """A type hint that CHAT_TYPES rejects still returns False."""
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
+        listener._tracked_chat_ids = set()
+        mock_config.should_backup_chat_type = MagicMock(return_value=False)
+
+        assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is False
+
+    def test_should_process_chat_type_hint_ignored_in_whitelist_mode(self, mock_config, mock_db):
+        """CHAT_IDS whitelist mode takes priority over any type hint."""
+        mock_config.whitelist_mode = True
+        mock_config.chat_ids = {-1002222222}
+        mock_config.should_backup_chat_type = MagicMock(return_value=True)
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
+        listener._tracked_chat_ids = set()
+
+        assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is False
+        mock_config.should_backup_chat_type.assert_not_called()
 
     def test_get_marked_id(self, mock_config, mock_db):
         """Test _get_marked_id handles various inputs."""
@@ -259,6 +298,9 @@ class TestEventHandlers:
         config.mass_operation_window_seconds = 30
         config.mass_operation_buffer_delay = 2.0
         config.should_download_media_for_chat = MagicMock(return_value=False)
+        # First-contact CHAT_TYPES fallback (default: no match, same as the
+        # pre-fallback conservative behavior) unless a test opts in.
+        config.should_backup_chat_type = MagicMock(return_value=False)
         return config
 
     @pytest.fixture
@@ -524,6 +566,67 @@ class TestEventHandlers:
         asyncio.run(handler(event))
 
         assert new_chat_id in listener._tracked_chat_ids
+
+    def test_on_new_message_first_contact_matches_chat_types(self, listener_with_handlers, full_config):
+        """A message from a brand-new private chat (never tracked, no include list
+        match) is captured live when its CHAT_TYPES-derived type hint matches (#415)."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        full_config.should_backup_chat_type = MagicMock(return_value=True)
+
+        new_chat_id = 424242424  # Never backed up, not in any include list
+        listener._tracked_chat_ids = set()
+
+        event = MagicMock()
+        event.chat_id = new_chat_id
+        event.is_private = True
+        event.is_group = False
+        event.is_channel = False
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 1
+        msg.sender_id = 111
+        msg.date = MagicMock()
+        msg.text = "hi, first message"
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        event.message = msg
+        event.get_chat = AsyncMock(return_value=MagicMock())
+
+        asyncio.run(handler(event))
+
+        assert new_chat_id in listener._tracked_chat_ids
+        full_config.should_backup_chat_type.assert_called_once_with(True, False, False)
+        listener.db.insert_message.assert_called_once()
+
+    def test_on_new_message_first_contact_no_chat_types_match(self, listener_with_handlers, full_config):
+        """A brand-new chat whose type doesn't match CHAT_TYPES stays untracked."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        full_config.should_backup_chat_type = MagicMock(return_value=False)
+
+        new_chat_id = 424242425
+        listener._tracked_chat_ids = set()
+
+        event = MagicMock()
+        event.chat_id = new_chat_id
+        event.is_private = False
+        event.is_group = True
+        event.is_channel = False
+        msg = MagicMock()
+        msg.reply_to = None
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        assert new_chat_id not in listener._tracked_chat_ids
+        listener.db.insert_message.assert_not_called()
 
     def test_on_new_message_increments_error_on_exception(self, listener_with_handlers):
         """Test error counter increments when handler raises an exception."""
@@ -843,6 +946,9 @@ class TestStatsTracking:
         config.mass_operation_window_seconds = 30
         config.mass_operation_buffer_delay = 2.0
         config.should_download_media_for_chat = MagicMock(return_value=False)
+        # First-contact CHAT_TYPES fallback (default: no match, same as the
+        # pre-fallback conservative behavior) unless a test opts in.
+        config.should_backup_chat_type = MagicMock(return_value=False)
         return config
 
     @pytest.fixture
@@ -1070,6 +1176,9 @@ class TestListenerEventHandling:
         # CHAT_IDS whitelist mode (v6.0.0)
         config.whitelist_mode = False
         config.chat_ids = set()
+        # First-contact CHAT_TYPES fallback (default: no match, same as the
+        # pre-fallback conservative behavior) unless a test opts in.
+        config.should_backup_chat_type = MagicMock(return_value=False)
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
