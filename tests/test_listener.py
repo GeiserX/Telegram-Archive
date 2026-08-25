@@ -628,6 +628,39 @@ class TestEventHandlers:
         assert new_chat_id not in listener._tracked_chat_ids
         listener.db.insert_message.assert_not_called()
 
+    def test_on_new_message_first_contact_megagroup_not_treated_as_channel(self, listener_with_handlers, full_config):
+        """A megagroup's first message sets both is_group and is_channel on the
+        Telethon event; CHAT_TYPES=channels alone must not match it (#415 review
+        fix - _get_chat_type() already treats a megagroup as "group", never
+        "channel", so the type hint passed to should_backup_chat_type must too)."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        # CHAT_TYPES=channels only: a real "channels" chat would match, but a
+        # megagroup (is_group=True *and* is_channel=True on the raw event) must not.
+        full_config.should_backup_chat_type = MagicMock(
+            side_effect=lambda is_user, is_group, is_channel: is_channel and not is_group
+        )
+
+        new_chat_id = -1005555555
+        listener._tracked_chat_ids = set()
+
+        event = MagicMock()
+        event.chat_id = new_chat_id
+        event.is_private = False
+        event.is_group = True  # Telethon: True for a megagroup
+        event.is_channel = True  # Telethon: also True for a megagroup (any PeerChannel)
+        msg = MagicMock()
+        msg.reply_to = None
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        for call in full_config.should_backup_chat_type.call_args_list:
+            assert call.args == (False, True, False)
+        assert new_chat_id not in listener._tracked_chat_ids
+        listener.db.insert_message.assert_not_called()
+
     def test_on_new_message_increments_error_on_exception(self, listener_with_handlers):
         """Test error counter increments when handler raises an exception."""
         listener, handlers = listener_with_handlers

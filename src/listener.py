@@ -1240,7 +1240,16 @@ class TelegramListener:
                 # backup adds it to _tracked_chat_ids. Otherwise a first message
                 # from someone we've never chatted with is invisible to the
                 # listener (see _should_process_chat).
+                #
+                # Telethon's event.is_channel is True for BOTH broadcast channels
+                # and megagroups (any PeerChannel), while event.is_group is True
+                # for megagroups too - so a megagroup would otherwise set both
+                # flags and could match a channels-only CHAT_TYPES filter it
+                # should be excluded from. _get_chat_type() already treats a
+                # megagroup as "group", never "channel"; mirror that here.
                 is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
+                if is_channel and is_group:
+                    is_channel = False
 
                 # Add to tracked chats if we should be backing up this chat
                 if chat_id not in self._tracked_chat_ids:
