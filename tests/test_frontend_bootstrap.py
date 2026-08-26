@@ -4619,7 +4619,11 @@ def test_body_height_is_not_overridden_with_a_dynamic_viewport_unit():
     # A layout-root compound selector: html / body / #app plus its own
     # classes, ids, attributes or pseudos - but no descendant, so a rule
     # like `body .modal` or `.date-picker-dialog` is correctly not a root.
-    root = re.compile(r"^(?:html|body|#app)(?:[.#:\[][^\s>+~,]*)*$")
+    # The qualifier group is optional, never repeated: its trailing class
+    # already swallows further qualifiers, so one pass matches the same
+    # selectors without the nested quantifier that lets `html####...`
+    # backtrack exponentially (CodeQL py/redos).
+    root = re.compile(r"^(?:html|body|#app)(?:[.#:\[][^\s>+~,]*)?$")
     offenders = []
     for selector, decls in re.findall(r"([^{}]+)\{([^{}]*)\}", style):
         selector = selector.strip()
