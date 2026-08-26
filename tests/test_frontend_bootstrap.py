@@ -4595,20 +4595,31 @@ def test_scroll_fab_carries_no_position_utility():
     )
 
 
-def test_app_height_tracks_the_dynamic_viewport():
-    """body must size to 100dvh, with 100vh as the pre-dvh fallback.
+def test_body_height_is_not_overridden_with_a_dynamic_viewport_unit():
+    """body keeps Tailwind's h-screen (100vh). Do not re-add a dvh override.
 
-    100vh on phones includes the strip behind the retractable browser
-    toolbar; with overflow:hidden the app never reflows, so bottom-anchored
-    absolute content (the scroll FAB) rendered partly behind browser chrome.
+    8.4.0 sized body to 100dvh on the theory that 100vh hides bottom-anchored
+    content behind iOS Safari's retractable toolbar. On a real iPhone it did
+    the opposite: the app rendered SHORT, leaving a large dead band below the
+    message list. body also carries the safe-area padding and overflow:hidden,
+    and in that combination the dynamic unit resolves to less than the visible
+    area. Reverted in 8.4.1.
+
+    The scroll-to-latest button being clipped - the bug the dvh change was
+    bundled with - was fully explained and fixed by removing the `relative`
+    utility (see test_scroll_fab_carries_no_position_utility), which was
+    measured in a browser; the dvh half never was.
+
+    The one legitimate dvh use is a modal's max-height, which predates this
+    and is scoped to that element, not the layout root.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
-    rule = re.search(r"body\.h-screen\s*\{([^}]*)\}", html)
-    assert rule is not None, "body.h-screen sizing rule is gone"
-    body = rule.group(1)
-    assert "height: 100vh" in body and "height: 100dvh" in body
-    assert body.index("height: 100vh") < body.index("height: 100dvh"), (
-        "the dvh declaration must come AFTER the vh fallback, or engines with dvh support resolve the older unit"
+    assert re.search(r"body\.h-screen\s*\{", html) is None, (
+        "body.h-screen override is back; sizing the layout root in dvh left a "
+        "dead band at the bottom on iOS (8.4.0 regression)"
+    )
+    assert 'class="bg-tg-bg text-tg-ink h-screen overflow-hidden"' in html, (
+        "body must keep h-screen: it is what gives the app its height"
     )
 
 
