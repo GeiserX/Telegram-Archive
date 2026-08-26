@@ -771,8 +771,8 @@ def test_flatpickr_month_select_has_dark_native_colors():
     assert ".flatpickr-monthDropdown-months {" in html
     assert "color-scheme: dark;" in html
     assert ".flatpickr-monthDropdown-month {" in html
-    assert "background: #334155 !important;" in html
-    assert "color: #e2e8f0 !important;" in html
+    assert "background: rgb(var(--tg-hover)) !important;" in html
+    assert "color: rgb(var(--tg-text)) !important;" in html
 
 
 def test_date_picker_fetches_month_availability_and_marks_days():
@@ -1167,7 +1167,7 @@ def test_private_chat_header_avatar_opens_sender_details():
     assert '@click="openSenderInfoFromChat(selectedChat, $event)"' in body
     assert ":aria-label=" in body
     assert "getChatName(selectedChat)" in body
-    assert "focus:ring-2 focus:ring-blue-400" in body
+    assert "focus:ring-2 focus:ring-tg-accent-soft" in body
 
     # Groups/channels keep the non-interactive circle (that photo is the group, not a sender).
     assert "<div v-else" in html[html.index("</button>", start) :][:400]
@@ -3630,7 +3630,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
-        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-gray-400"')
+        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-tg-n400"')
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
         self.assertGreaterEqual(len(spans), 3)
@@ -3639,7 +3639,9 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_the_specific_spans_reported_in_267(self) -> None:
         self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
-        self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-blue-400 whitespace-nowrap">', self.bubble)
+        self.assertIn(
+            '<span v-if="isCurrentAudioMessage(msg)" class="text-tg-accent-soft whitespace-nowrap">', self.bubble
+        )
         self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>', self.bubble)
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
@@ -3664,7 +3666,7 @@ class TestReplyQuoteNamesItsSender(unittest.TestCase):
         self.assertNotIn(">Reply to</div>", block)
         # A long sender name must not break per character either (#267's rule
         # applies to this block too — it is inside the same bubble).
-        self.assertIn('class="font-semibold text-blue-400 mb-0.5 truncate"', block)
+        self.assertIn('class="font-semibold text-tg-accent-soft mb-0.5 truncate"', block)
 
     def test_helpers_are_exported_to_the_template(self) -> None:
         self.assertIn("\n                    replyToLabel,\n", self.html)
@@ -4608,3 +4610,73 @@ def test_app_height_tracks_the_dynamic_viewport():
     assert body.index("height: 100vh") < body.index("height: 100dvh"), (
         "the dvh declaration must come AFTER the vh fallback, or engines with dvh support resolve the older unit"
     )
+
+
+def test_theme_boot_precedence_includes_the_server_default():
+    """The pre-paint boot script resolves ?theme= > saved choice > server default.
+
+    '__VIEWER_DEFAULT_THEME__' is substituted by read_root at serve time; it
+    must appear in BOTH consumers (the boot script and the picker init), the
+    boot chain must consult it only after the user's own sources, and every
+    source must be validated against the theme allowlist BEFORE precedence -
+    an unknown candidate that merely fell through later would flash the
+    wrong palette pre-paint.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert html.count("'__VIEWER_DEFAULT_THEME__'") == 2
+    assert (
+        "pick(new URLSearchParams(location.search).get('theme')) || pick(localStorage.getItem('viewerTheme')) || pick('__VIEWER_DEFAULT_THEME__')"
+        in html
+    )
+
+
+def test_theme_boot_allowlist_matches_the_picker():
+    """KNOWN_THEMES in the head script and viewerThemes in the app are two
+    copies of one list (the head runs before the app exists); they must not
+    drift, or a valid theme would be silently ignored pre-paint."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    boot = re.search(r"const KNOWN_THEMES = \[([^\]]*)\]", html)
+    assert boot is not None
+    boot_ids = re.findall(r"'([a-z]+)'", boot.group(1))
+    picker = re.search(r"const viewerThemes = \[(.*?)\n {16}\]", html, re.S)
+    assert picker is not None
+    picker_ids = re.findall(r"\{ id: '([a-z]+)', label:", picker.group(1))
+    assert boot_ids == picker_ids, f"boot {boot_ids} != picker {picker_ids}"
+    assert len(boot_ids) == 7
+
+
+def test_light_themes_define_the_full_token_set():
+    """day/paper restate every token the light flip depends on.
+
+    The dark palettes inherit the neutral scale from :root (it IS the dark
+    scale); a light palette that misses one token silently renders that
+    surface dark - so day/paper must define core + ink + n-scale + name-l.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    core = [
+        "bg",
+        "sidebar",
+        "hover",
+        "active",
+        "text",
+        "text-dim",
+        "muted",
+        "own",
+        "other",
+        "border",
+        "border-strong",
+        "accent",
+        "accent-strong",
+        "accent-hover",
+        "accent-soft",
+        "accent-bright",
+        "accent-faint",
+        "accent-dim",
+    ]
+    neutrals = ["ink"] + [f"n{v}" for v in (100, 200, 300, 400, 500, 600, 700, 800, 900, 950)]
+    for theme in ("day", "paper"):
+        match = re.search(r':root\[data-theme="' + theme + r'"\]\s*\{([^}]*)\}', html)
+        assert match is not None, f"no token block for {theme}"
+        block = match.group(1)
+        for token in core + neutrals + ["name-l"]:
+            assert f"--tg-{token}:" in block, f"{theme} is missing --tg-{token}"
