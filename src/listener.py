@@ -744,23 +744,27 @@ class TelegramListener:
         MODE 2 - Type-based Mode:
             Process if:
             - Chat is in our tracked list (backed up at least once), OR
-            - Chat matches our backup filters (include lists), OR
             - The caller already knows the chat's type (is_user/is_group/
-              is_channel) and it matches CHAT_TYPES
+              is_channel) and the full scheduled-backup decision
+              (config.should_backup_chat: excludes first, include lists as
+              whitelists, then CHAT_TYPES) accepts it, OR
+            - Without type info: chat is in an explicit include list
 
         The is_user/is_group/is_channel kwargs let a caller that already has
         cheap, no-network type info (e.g. NewMessage.Event.is_private/
         is_group/is_channel, derived from the update's peer) evaluate a
-        brand-new, never-tracked chat against CHAT_TYPES immediately -
-        without them, a chat we've never backed up falls through to
-        "conservative: only explicit include lists match", i.e. first
-        contact from someone we've never chatted with is invisible to the
-        listener until the next scheduled backup discovers it. Bots can't
-        be distinguished from regular users this way (that needs the sender
-        entity, which isn't synchronously available), so is_user=True is
-        passed for both - a first DM from a bot is evaluated against
-        CHAT_TYPES' "private" bucket rather than "bots" until the next
-        scheduled backup reclassifies it.
+        brand-new, never-tracked chat immediately - without them, a chat
+        we've never backed up falls through to "conservative: only explicit
+        include lists match", i.e. first contact from someone we've never
+        chatted with is invisible to the listener until the next scheduled
+        backup discovers it. With them, the decision is should_backup_chat()
+        - the same one the scheduled backup applies - so a chat the exclude
+        lists or an include-whitelist would keep out of the archive is never
+        live-captured either. Bots can't be distinguished from regular users
+        this way (that needs the sender entity, which isn't synchronously
+        available), so is_user=True is passed for both - a first DM from a
+        bot is evaluated against CHAT_TYPES' "private" bucket rather than
+        "bots" until the next scheduled backup reclassifies it.
         """
         # MODE 1: Whitelist Mode - CHAT_IDS takes absolute priority. Followed
         # migrations are added explicitly (not via _tracked_chat_ids, which
@@ -773,7 +777,16 @@ class TelegramListener:
         if chat_id in self._tracked_chat_ids:
             return True
 
-        # If not tracked yet, check if it would be backed up based on config
+        # With type info in hand, an untracked chat gets exactly the
+        # scheduled backup's decision - excludes first, include lists as
+        # whitelists, then CHAT_TYPES. Never the bare type filter: a chat
+        # the exclude lists (or an include-whitelist) keep out of the
+        # archive must not be live-captured either.
+        if is_user is not None or is_group is not None or is_channel is not None:
+            return self.config.should_backup_chat(chat_id, bool(is_user), bool(is_group), bool(is_channel))
+
+        # Without type info (edits/deletions/pins/reactions), stay
+        # conservative: only explicit include-list membership matches.
         if chat_id in self.config.global_include_ids:
             return True
         if chat_id in self.config.private_include_ids:
@@ -782,12 +795,6 @@ class TelegramListener:
             return True
         if chat_id in self.config.channels_include_ids:
             return True
-
-        # First-contact fallback: only take this path when the caller
-        # supplied real type info; otherwise stay conservative and return
-        # False rather than guess.
-        if is_user is not None or is_group is not None or is_channel is not None:
-            return self.config.should_backup_chat_type(bool(is_user), bool(is_group), bool(is_channel))
 
         return False
 
@@ -1248,7 +1255,14 @@ class TelegramListener:
                 # should be excluded from. _get_chat_type() already treats a
                 # megagroup as "group", never "channel"; mirror that here.
                 is_user, is_group, is_channel = event.is_private, event.is_group, event.is_channel
-                if is_channel and is_group:
+                if is_channel and is_group is None:
+                    # Telethon's is_group is None for a PeerChannel whose
+                    # broadcast flag it can't see (chat entity absent from
+                    # the update). Megagroup vs broadcast is unknowable
+                    # here, so don't guess: drop the hints and take the
+                    # conservative no-hint path for this message.
+                    is_user = is_group = is_channel = None
+                elif is_channel and is_group:
                     is_channel = False
 
                 # Add to tracked chats if we should be backing up this chat

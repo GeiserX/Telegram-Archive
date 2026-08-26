@@ -31,9 +31,10 @@ class TestTelegramListener:
         # CHAT_IDS whitelist mode (v6.0.0)
         config.whitelist_mode = False
         config.chat_ids = set()
-        # First-contact CHAT_TYPES fallback (default: no match, same as the
-        # pre-fallback conservative behavior) unless a test opts in.
-        config.should_backup_chat_type = MagicMock(return_value=False)
+        # First-contact fallback (default: no match, same as the pre-hint
+        # conservative behavior) unless a test opts in. The listener consults
+        # the full should_backup_chat decision, never the bare type filter.
+        config.should_backup_chat = MagicMock(return_value=False)
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
@@ -97,22 +98,22 @@ class TestTelegramListener:
         listener._tracked_chat_ids = set()
 
         assert listener._should_process_chat(555) is False
-        mock_config.should_backup_chat_type.assert_not_called()
+        mock_config.should_backup_chat.assert_not_called()
 
     def test_should_process_chat_type_hint_first_contact(self, mock_config, mock_db):
         """A type hint lets a never-before-seen chat match CHAT_TYPES (#415)."""
         listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = set()
-        mock_config.should_backup_chat_type = MagicMock(return_value=True)
+        mock_config.should_backup_chat = MagicMock(return_value=True)
 
         assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is True
-        mock_config.should_backup_chat_type.assert_called_once_with(True, False, False)
+        mock_config.should_backup_chat.assert_called_once_with(555, True, False, False)
 
     def test_should_process_chat_type_hint_no_match(self, mock_config, mock_db):
         """A type hint that CHAT_TYPES rejects still returns False."""
         listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = set()
-        mock_config.should_backup_chat_type = MagicMock(return_value=False)
+        mock_config.should_backup_chat = MagicMock(return_value=False)
 
         assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is False
 
@@ -120,11 +121,25 @@ class TestTelegramListener:
         """CHAT_IDS whitelist mode takes priority over any type hint."""
         mock_config.whitelist_mode = True
         mock_config.chat_ids = {-1002222222}
-        mock_config.should_backup_chat_type = MagicMock(return_value=True)
+        mock_config.should_backup_chat = MagicMock(return_value=True)
         listener = TelegramListener(mock_config, mock_db, account_id=1)
         listener._tracked_chat_ids = set()
 
         assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is False
+        mock_config.should_backup_chat.assert_not_called()
+
+    def test_should_process_chat_type_hint_uses_full_decision_not_bare_type_filter(self, mock_config, mock_db):
+        """The hinted path consults should_backup_chat (excludes first, include
+        lists as whitelists, then CHAT_TYPES) - never the bare type filter,
+        which would live-capture chats the exclude lists keep out of the
+        archive (#416 review)."""
+        listener = TelegramListener(mock_config, mock_db, account_id=1)
+        listener._tracked_chat_ids = set()
+        mock_config.should_backup_chat = MagicMock(return_value=False)
+        mock_config.should_backup_chat_type = MagicMock(return_value=True)
+
+        assert listener._should_process_chat(555, is_user=True, is_group=False, is_channel=False) is False
+        mock_config.should_backup_chat.assert_called_once_with(555, True, False, False)
         mock_config.should_backup_chat_type.assert_not_called()
 
     def test_get_marked_id(self, mock_config, mock_db):
@@ -298,9 +313,10 @@ class TestEventHandlers:
         config.mass_operation_window_seconds = 30
         config.mass_operation_buffer_delay = 2.0
         config.should_download_media_for_chat = MagicMock(return_value=False)
-        # First-contact CHAT_TYPES fallback (default: no match, same as the
-        # pre-fallback conservative behavior) unless a test opts in.
-        config.should_backup_chat_type = MagicMock(return_value=False)
+        # First-contact fallback (default: no match, same as the pre-hint
+        # conservative behavior) unless a test opts in. The listener consults
+        # the full should_backup_chat decision, never the bare type filter.
+        config.should_backup_chat = MagicMock(return_value=False)
         return config
 
     @pytest.fixture
@@ -537,17 +553,28 @@ class TestEventHandlers:
         assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 0, "length": 4}]
 
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
-        """Test new message from untracked-but-included chat gets added to tracking."""
+        """Test new message from untracked-but-included chat gets added to tracking.
+
+        With type hints on the event (every real NewMessage has them), the
+        include decision is should_backup_chat's - mock it with the real
+        semantics: global include membership wins.
+        """
         listener, handlers = listener_with_handlers
         handler = handlers[events.NewMessage]
 
         # Chat not in tracked set, but in global include list
         new_chat_id = -1009999999
         full_config.global_include_ids = {new_chat_id}
+        full_config.should_backup_chat = MagicMock(
+            side_effect=lambda chat_id, is_user, is_group, is_channel: chat_id in full_config.global_include_ids
+        )
         listener._tracked_chat_ids = set()  # Empty
 
         event = MagicMock()
         event.chat_id = new_chat_id
+        event.is_private = False
+        event.is_group = False
+        event.is_channel = True
         msg = MagicMock()
         msg.reply_to = None
         msg.id = 1
@@ -573,7 +600,7 @@ class TestEventHandlers:
         listener, handlers = listener_with_handlers
         handler = handlers[events.NewMessage]
 
-        full_config.should_backup_chat_type = MagicMock(return_value=True)
+        full_config.should_backup_chat = MagicMock(return_value=True)
 
         new_chat_id = 424242424  # Never backed up, not in any include list
         listener._tracked_chat_ids = set()
@@ -601,7 +628,7 @@ class TestEventHandlers:
         asyncio.run(handler(event))
 
         assert new_chat_id in listener._tracked_chat_ids
-        full_config.should_backup_chat_type.assert_called_once_with(True, False, False)
+        full_config.should_backup_chat.assert_called_once_with(424242424, True, False, False)
         listener.db.insert_message.assert_called_once()
 
     def test_on_new_message_first_contact_no_chat_types_match(self, listener_with_handlers, full_config):
@@ -609,7 +636,7 @@ class TestEventHandlers:
         listener, handlers = listener_with_handlers
         handler = handlers[events.NewMessage]
 
-        full_config.should_backup_chat_type = MagicMock(return_value=False)
+        full_config.should_backup_chat = MagicMock(return_value=False)
 
         new_chat_id = 424242425
         listener._tracked_chat_ids = set()
@@ -632,14 +659,14 @@ class TestEventHandlers:
         """A megagroup's first message sets both is_group and is_channel on the
         Telethon event; CHAT_TYPES=channels alone must not match it (#415 review
         fix - _get_chat_type() already treats a megagroup as "group", never
-        "channel", so the type hint passed to should_backup_chat_type must too)."""
+        "channel", so the type hint passed to should_backup_chat must too)."""
         listener, handlers = listener_with_handlers
         handler = handlers[events.NewMessage]
 
         # CHAT_TYPES=channels only: a real "channels" chat would match, but a
         # megagroup (is_group=True *and* is_channel=True on the raw event) must not.
-        full_config.should_backup_chat_type = MagicMock(
-            side_effect=lambda is_user, is_group, is_channel: is_channel and not is_group
+        full_config.should_backup_chat = MagicMock(
+            side_effect=lambda chat_id, is_user, is_group, is_channel: is_channel and not is_group
         )
 
         new_chat_id = -1005555555
@@ -656,9 +683,37 @@ class TestEventHandlers:
 
         asyncio.run(handler(event))
 
-        for call in full_config.should_backup_chat_type.call_args_list:
-            assert call.args == (False, True, False)
+        for call in full_config.should_backup_chat.call_args_list:
+            assert call.args[1:] == (False, True, False)
         assert new_chat_id not in listener._tracked_chat_ids
+        listener.db.insert_message.assert_not_called()
+
+    def test_on_new_message_channel_unknown_broadcast_stays_conservative(self, listener_with_handlers, full_config):
+        """A PeerChannel whose broadcast flag Telethon can't see yields
+        is_group=None; megagroup vs broadcast is unknowable there, so no hints
+        are passed and the pre-hint conservative behavior applies (#416
+        review) rather than guessing "channel"."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        full_config.should_backup_chat = MagicMock(return_value=True)
+
+        new_chat_id = -1006666666
+        listener._tracked_chat_ids = set()
+
+        event = MagicMock()
+        event.chat_id = new_chat_id
+        event.is_private = False
+        event.is_group = None  # Telethon: broadcast status unknown
+        event.is_channel = True
+        msg = MagicMock()
+        msg.reply_to = None
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        assert new_chat_id not in listener._tracked_chat_ids
+        full_config.should_backup_chat.assert_not_called()
         listener.db.insert_message.assert_not_called()
 
     def test_on_new_message_increments_error_on_exception(self, listener_with_handlers):
@@ -979,9 +1034,10 @@ class TestStatsTracking:
         config.mass_operation_window_seconds = 30
         config.mass_operation_buffer_delay = 2.0
         config.should_download_media_for_chat = MagicMock(return_value=False)
-        # First-contact CHAT_TYPES fallback (default: no match, same as the
-        # pre-fallback conservative behavior) unless a test opts in.
-        config.should_backup_chat_type = MagicMock(return_value=False)
+        # First-contact fallback (default: no match, same as the pre-hint
+        # conservative behavior) unless a test opts in. The listener consults
+        # the full should_backup_chat decision, never the bare type filter.
+        config.should_backup_chat = MagicMock(return_value=False)
         return config
 
     @pytest.fixture
@@ -1209,9 +1265,10 @@ class TestListenerEventHandling:
         # CHAT_IDS whitelist mode (v6.0.0)
         config.whitelist_mode = False
         config.chat_ids = set()
-        # First-contact CHAT_TYPES fallback (default: no match, same as the
-        # pre-fallback conservative behavior) unless a test opts in.
-        config.should_backup_chat_type = MagicMock(return_value=False)
+        # First-contact fallback (default: no match, same as the pre-hint
+        # conservative behavior) unless a test opts in. The listener consults
+        # the full should_backup_chat decision, never the bare type filter.
+        config.should_backup_chat = MagicMock(return_value=False)
         # Mass operation protection settings
         config.listen_edits = True
         config.listen_deletions = False
