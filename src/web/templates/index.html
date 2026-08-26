@@ -21,7 +21,11 @@
         // paint is already themed (no flash of the default palette). Full
         // validation/persistence happens in the app; this only sets the hook.
         try {
-            const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme')
+            // Precedence: one-shot URL param > the user's saved choice >
+            // the server's VIEWER_DEFAULT_THEME (substituted at serve time,
+            // empty when unset) > built-in Slate.
+            const serverDefault = '__VIEWER_DEFAULT_THEME__'
+            const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme') || serverDefault
             if (t && /^[a-z]{3,16}$/.test(t) && t !== 'slate') document.documentElement.dataset.theme = t
         } catch (e) { /* storage blocked: default palette */ }
     </script>
@@ -3648,7 +3652,9 @@
                         window.history.replaceState({}, '', cleanUrl)
                     } else {
                         const saved = localStorage.getItem('viewerTheme')
+                        const serverDefault = '__VIEWER_DEFAULT_THEME__'
                         if (saved && knownTheme(saved)) currentTheme.value = saved
+                        else if (knownTheme(serverDefault)) currentTheme.value = serverDefault
                     }
                 } catch (e) { /* storage blocked: default palette */ }
                 applyTheme(currentTheme.value)

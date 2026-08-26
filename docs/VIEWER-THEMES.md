@@ -31,6 +31,11 @@ The choice persists in `localStorage` (per browser, works for anonymous viewers 
 `?theme=night` in the URL applies and saves a theme, then scrubs itself from the address bar like
 the other one-shot parameters — that makes themes linkable and testable.
 
+A deployment can pick its own default with `VIEWER_DEFAULT_THEME` (e.g. `night`): browsers with no
+saved choice get that palette from the very first paint (the value is substituted into the page at
+serve time, not fetched), and a user's picker choice always wins over it. Precedence:
+`?theme=` → saved choice → `VIEWER_DEFAULT_THEME` → Slate.
+
 ## How it works
 
 Every color the app's chrome uses is a CSS variable holding an RGB triplet — 18 tokens
@@ -91,11 +96,11 @@ Both carry regression tests; the first was watched go red against the reverted m
 
 ## Open decisions
 
-1. **Default palette.** Slate stays the default in this change so nothing shifts under existing
-   users. If Telegram Night (or another) should be the new default, it is a one-line change.
+1. ~~**Default palette.**~~ Solved: `VIEWER_DEFAULT_THEME` sets the deployment's default; Slate
+   when unset.
 2. **Light theme.** Needs the neutral grays (~250 utility usages across dialogs, inputs, hovers)
-   swept onto tokens the same way the blues were. Mechanical but wide; worth doing as its own pass
-   with the same pixel-identity proof. Not started.
+   swept onto tokens the same way the blues were. In progress as its own pass with the same
+   pixel-identity proof.
 3. **Server-side persistence.** The choice could ride the viewer account instead of the browser,
    so it follows a user across devices. Needs a column and two endpoints; localStorage covers the
    common case today.

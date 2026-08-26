@@ -4610,3 +4610,18 @@ def test_app_height_tracks_the_dynamic_viewport():
     assert body.index("height: 100vh") < body.index("height: 100dvh"), (
         "the dvh declaration must come AFTER the vh fallback, or engines with dvh support resolve the older unit"
     )
+
+
+def test_theme_boot_precedence_includes_the_server_default():
+    """The pre-paint boot script resolves ?theme= > saved choice > server default.
+
+    '__VIEWER_DEFAULT_THEME__' is substituted by read_root at serve time; it
+    must appear in BOTH consumers (the boot script and the picker init), and
+    the boot chain must consult it only after the user's own sources.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert html.count("'__VIEWER_DEFAULT_THEME__'") == 2
+    assert (
+        "new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme') || serverDefault"
+        in html
+    )
