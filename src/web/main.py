@@ -677,6 +677,22 @@ async def add_security_headers(request: Request, call_next):
 # Multi-User Authentication (v7.0.0)
 # ============================================================================
 
+
+def _sanitize_theme_slug(value: str) -> str:
+    """A theme id is a strict slug or nothing.
+
+    The value is baked into the served page inside a JS string (the pre-paint
+    boot script), so anything that is not a plain slug is dropped rather than
+    escaped. The client additionally checks it against its theme list.
+    """
+    value = value.strip().lower()
+    return value if re.fullmatch(r"[a-z]{3,16}", value) else ""
+
+
+# Default palette for browsers with no saved choice. A user's picker choice
+# (localStorage) always wins over this.
+VIEWER_DEFAULT_THEME = _sanitize_theme_slug(os.getenv("VIEWER_DEFAULT_THEME", ""))
+
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
 AUTH_ENABLED = bool(VIEWER_USERNAME and VIEWER_PASSWORD)
@@ -1654,9 +1670,16 @@ async def serve_media(
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """Serve the main application page."""
-    return FileResponse(
-        templates_dir / "index.html",
+    """Serve the main application page.
+
+    The default theme is baked in at serve time (a placeholder inside the
+    boot script) because it must be known before first paint - fetching it
+    from an API would flash the built-in palette first.
+    """
+    html = (templates_dir / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__VIEWER_DEFAULT_THEME__", VIEWER_DEFAULT_THEME)
+    return HTMLResponse(
+        html,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 

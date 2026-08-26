@@ -666,6 +666,43 @@ class TestRootEndpoint(_WebTestBase):
                 self.assertEqual(resp.status_code, 200)
                 self.assertIn("text/html", resp.headers.get("content-type", ""))
 
+    async def test_root_substitutes_the_default_theme(self):
+        """VIEWER_DEFAULT_THEME lands in the served page pre-paint (no API trip)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = os.path.join(tmpdir, "index.html")
+            with open(index_path, "w") as f:
+                f.write("<html>theme='__VIEWER_DEFAULT_THEME__'</html>")
+            with (
+                patch.object(web_main, "templates_dir", web_main.Path(tmpdir)),
+                patch.object(web_main, "VIEWER_DEFAULT_THEME", "night"),
+            ):
+                async with self._client() as client:
+                    resp = await client.get("/")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("theme='night'", resp.text)
+                self.assertNotIn("__VIEWER_DEFAULT_THEME__", resp.text)
+
+    async def test_root_unset_default_theme_substitutes_empty(self):
+        """No VIEWER_DEFAULT_THEME -> the placeholder becomes the empty string."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = os.path.join(tmpdir, "index.html")
+            with open(index_path, "w") as f:
+                f.write("<html>theme='__VIEWER_DEFAULT_THEME__'</html>")
+            with (
+                patch.object(web_main, "templates_dir", web_main.Path(tmpdir)),
+                patch.object(web_main, "VIEWER_DEFAULT_THEME", ""),
+            ):
+                async with self._client() as client:
+                    resp = await client.get("/")
+                self.assertIn("theme=''", resp.text)
+
+    def test_sanitize_theme_slug(self):
+        """Only a strict slug survives; the value is baked into a JS string."""
+        self.assertEqual(web_main._sanitize_theme_slug(" Night "), "night")
+        self.assertEqual(web_main._sanitize_theme_slug("forest"), "forest")
+        for bad in ("", "ab", "x" * 17, "night!", "night theme", "night'</script>"):
+            self.assertEqual(web_main._sanitize_theme_slug(bad), "")
+
 
 # ============================================================================
 # Login edge cases
