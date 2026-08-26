@@ -4614,9 +4614,26 @@ def test_body_height_is_not_overridden_with_a_dynamic_viewport_unit():
     and is scoped to that element, not the layout root.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert re.search(r"body\.h-screen\s*\{", html) is None, (
-        "body.h-screen override is back; sizing the layout root in dvh left a "
-        "dead band at the bottom on iOS (8.4.0 regression)"
+    style = html[html.index("<style>") : html.index("</style>")]
+
+    # A layout-root compound selector: html / body / #app plus its own
+    # classes, ids, attributes or pseudos - but no descendant, so a rule
+    # like `body .modal` or `.date-picker-dialog` is correctly not a root.
+    root = re.compile(r"^(?:html|body|#app)(?:[.#:\[][^\s>+~,]*)*$")
+    offenders = []
+    for selector, decls in re.findall(r"([^{}]+)\{([^{}]*)\}", style):
+        selector = selector.strip()
+        if selector.startswith("@"):
+            continue
+        parts = [p.strip() for p in selector.split(",")]
+        if not any(root.match(p) for p in parts):
+            continue
+        for prop, value in re.findall(r"([a-z-]*height)\s*:\s*([^;]+)", decls):
+            if "dvh" in value or "svh" in value:
+                offenders.append(f"{selector} {{ {prop}: {value.strip()} }}")
+    assert not offenders, (
+        "the layout root is sized with a dynamic viewport unit again; that left "
+        f"a dead band at the bottom on iOS (8.4.0 regression): {offenders}"
     )
     assert 'class="bg-tg-bg text-tg-ink h-screen overflow-hidden"' in html, (
         "body must keep h-screen: it is what gives the app its height"
