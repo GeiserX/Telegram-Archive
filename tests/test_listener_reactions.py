@@ -265,7 +265,7 @@ def _new_message_event(msg_id=77, reactions=None):
         grouped_id=None,
         reply_to_msg_id=None,
     )
-    event = SimpleNamespace(chat_id=TRACKED, message=message)
+    event = SimpleNamespace(chat_id=TRACKED, message=message, is_private=True, is_group=False, is_channel=False)
     event.get_chat = AsyncMock(return_value=None)
     return event
 
