@@ -183,3 +183,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Green must mean "both architectures are actually in the registry".
+      # 8.1.0 and everything before it shipped amd64-only while this
+      # workflow stayed green: QEMU was set up, platforms: was not (#337).
+      # Read every tag just pushed back from the registry and gate on it.
+      - name: Verify pushed tags ship amd64 and arm64
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          for tag in $TAGS; do
+            docker buildx imagetools inspect --raw "$tag" \
+              | python3 .github/scripts/check_manifest_arches.py "$tag"
+          done

@@ -185,7 +185,7 @@ Use: pytest, pytest-asyncio, pytest-cov
 
 ### Version Files
 
-Both `pyproject.toml` AND `src/__init__.py` must be updated together when bumping versions.
+Both `pyproject.toml` AND `src/__init__.py` must be updated together when bumping versions — plus `uv.lock` and the image pins in `docker-compose.yml`, `README.md` and `scripts/migrate-sqlite-to-postgres.py` (`tests/test_release_pins.py` fails the release PR until every pin names the new version).
 
 ### Release Workflow
 
