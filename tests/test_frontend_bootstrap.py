@@ -4569,3 +4569,42 @@ def test_parse_telegram_link_recognizes_both_forms_and_rejects_noise():
     assert out[2] == {"markedId": None, "username": "durov", "messageId": 100}
     assert out[3] == {"markedId": None, "username": "Some_Channel", "messageId": 7}
     assert out[4] is None and out[5] is None and out[6] is None and out[7] is None
+
+
+def test_scroll_fab_carries_no_position_utility():
+    """The scroll-to-latest FAB must not carry Tailwind's ``relative``.
+
+    ``.scroll-to-bottom-btn`` positions the FAB with ``position: absolute``
+    (bottom-right of the message pane); Tailwind's ``.relative`` ties it on
+    specificity and the CDN-injected sheet cascades later, so ``relative``
+    WON — turning ``right: 20px`` into "20px left of static position" and
+    parking the button half off the bottom-LEFT edge (shipped in #207 for
+    the unseen badge; the badge needs a positioned parent, which
+    ``position: absolute`` already is).
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'class="scroll-to-bottom-btn"' in html
+    match = re.search(r'class="[^"]*scroll-to-bottom-btn[^"]*"', html)
+    assert match is not None
+    assert match.group(0) == 'class="scroll-to-bottom-btn"', (
+        f"scroll FAB class list grew: {match.group(0)!r} — any utility that sets "
+        "position (relative/absolute/fixed/static) breaks its placement; if you "
+        "need one, move the positioning into the .scroll-to-bottom-btn rule instead"
+    )
+
+
+def test_app_height_tracks_the_dynamic_viewport():
+    """body must size to 100dvh, with 100vh as the pre-dvh fallback.
+
+    100vh on phones includes the strip behind the retractable browser
+    toolbar; with overflow:hidden the app never reflows, so bottom-anchored
+    absolute content (the scroll FAB) rendered partly behind browser chrome.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    rule = re.search(r"body\.h-screen\s*\{([^}]*)\}", html)
+    assert rule is not None, "body.h-screen sizing rule is gone"
+    body = rule.group(1)
+    assert "height: 100vh" in body and "height: 100dvh" in body
+    assert body.index("height: 100vh") < body.index("height: 100dvh"), (
+        "the dvh declaration must come AFTER the vh fallback, or engines with dvh support resolve the older unit"
+    )
