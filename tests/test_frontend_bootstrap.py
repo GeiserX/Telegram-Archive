@@ -3630,7 +3630,7 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_every_span_in_the_metadata_row_is_nowrap(self) -> None:
         """Row-wide, not span-by-span: a NEW status span must not regress it."""
-        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-gray-400"')
+        row_start = self.bubble.index('class="flex items-center gap-2 mt-1 text-[11px] text-tg-n400"')
         row = self.bubble[row_start : self.bubble.index("</div>", row_start)]
         spans = re.findall(r"<span\b[^>]*>", row)
         self.assertGreaterEqual(len(spans), 3)
@@ -4625,3 +4625,40 @@ def test_theme_boot_precedence_includes_the_server_default():
         "new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme') || serverDefault"
         in html
     )
+
+
+def test_light_themes_define_the_full_token_set():
+    """day/paper restate every token the light flip depends on.
+
+    The dark palettes inherit the neutral scale from :root (it IS the dark
+    scale); a light palette that misses one token silently renders that
+    surface dark - so day/paper must define core + ink + n-scale + name-l.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    core = [
+        "bg",
+        "sidebar",
+        "hover",
+        "active",
+        "text",
+        "text-dim",
+        "muted",
+        "own",
+        "other",
+        "border",
+        "border-strong",
+        "accent",
+        "accent-strong",
+        "accent-hover",
+        "accent-soft",
+        "accent-bright",
+        "accent-faint",
+        "accent-dim",
+    ]
+    neutrals = ["ink"] + [f"n{v}" for v in (100, 200, 300, 400, 500, 600, 700, 800, 900, 950)]
+    for theme in ("day", "paper"):
+        match = re.search(r':root\[data-theme="' + theme + r'"\]\s*\{([^}]*)\}', html)
+        assert match is not None, f"no token block for {theme}"
+        block = match.group(1)
+        for token in core + neutrals + ["name-l"]:
+            assert f"--tg-{token}:" in block, f"{theme} is missing --tg-{token}"

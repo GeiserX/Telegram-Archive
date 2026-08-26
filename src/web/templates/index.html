@@ -72,6 +72,23 @@
             --tg-accent-bright: 147 197 253;
             --tg-accent-faint: 191 219 254;
             --tg-accent-dim: 30 58 138;
+            /* Neutral scale: exactly Tailwind's gray levels, so the dark
+               palettes render byte-identically to the old gray-N utilities.
+               The dark palettes share it (only the light ones override). */
+            --tg-ink: 255 255 255;
+            --tg-n100: 243 244 246;
+            --tg-n200: 229 231 235;
+            --tg-n300: 209 213 219;
+            --tg-n400: 156 163 175;
+            --tg-n500: 107 114 128;
+            --tg-n600: 75 85 99;
+            --tg-n700: 55 65 81;
+            --tg-n800: 31 41 55;
+            --tg-n900: 17 24 39;
+            --tg-n950: 3 7 18;
+            /* Sender-name lightness: hsl(hue 70% THIS). 65% pops on dark
+               canvases and washes out on light ones. */
+            --tg-name-l: 65%;
         }
 
         /* Telegram Desktop's night palette. */
@@ -160,6 +177,77 @@
             --tg-accent-bright: 205 188 236;
             --tg-accent-faint: 224 213 242;
             --tg-accent-dim: 62 46 92;
+        }
+
+        /* Clean white light mode. The accent-soft/bright slots hold DARKER
+           blues than the dark palettes: they are text-on-canvas colors, and
+           the canvas is now white. accent-dim flips to a pale banner tint,
+           and accent-faint to the dark text that sits on it. */
+        :root[data-theme="day"] {
+            --tg-bg: 255 255 255;
+            --tg-sidebar: 248 250 252;
+            --tg-hover: 226 232 240;
+            --tg-active: 191 219 254;
+            --tg-text: 15 23 42;
+            --tg-text-dim: 51 65 85;
+            --tg-muted: 100 116 139;
+            --tg-own: 209 231 255;
+            --tg-other: 241 245 249;
+            --tg-border: 203 213 225;
+            --tg-border-strong: 148 163 184;
+            --tg-accent: 37 99 235;
+            --tg-accent-strong: 29 78 216;
+            --tg-accent-hover: 30 64 175;
+            --tg-accent-soft: 29 78 216;
+            --tg-accent-bright: 30 64 175;
+            --tg-accent-faint: 30 58 138;
+            --tg-accent-dim: 219 234 254;
+            --tg-ink: 15 23 42;
+            --tg-n100: 17 24 39;
+            --tg-n200: 31 41 55;
+            --tg-n300: 55 65 81;
+            --tg-n400: 100 116 139;
+            --tg-n500: 113 123 140;
+            --tg-n600: 203 213 225;
+            --tg-n700: 226 232 240;
+            --tg-n800: 248 250 252;
+            --tg-n900: 255 255 255;
+            --tg-n950: 241 245 249;
+            --tg-name-l: 36%;
+        }
+
+        /* Warm off-white with an amber accent - reading-room light. */
+        :root[data-theme="paper"] {
+            --tg-bg: 247 240 228;
+            --tg-sidebar: 241 232 217;
+            --tg-hover: 228 216 197;
+            --tg-active: 233 209 164;
+            --tg-text: 43 34 24;
+            --tg-text-dim: 78 64 50;
+            --tg-muted: 130 113 94;
+            --tg-own: 221 227 190;
+            --tg-other: 253 248 238;
+            --tg-border: 213 200 180;
+            --tg-border-strong: 172 156 132;
+            --tg-accent: 173 88 21;
+            --tg-accent-strong: 146 71 16;
+            --tg-accent-hover: 120 58 14;
+            --tg-accent-soft: 146 71 16;
+            --tg-accent-bright: 120 58 14;
+            --tg-accent-faint: 108 53 12;
+            --tg-accent-dim: 245 224 189;
+            --tg-ink: 43 34 24;
+            --tg-n100: 43 34 24;
+            --tg-n200: 64 52 40;
+            --tg-n300: 90 74 58;
+            --tg-n400: 124 106 86;
+            --tg-n500: 158 140 118;
+            --tg-n600: 210 196 176;
+            --tg-n700: 228 216 197;
+            --tg-n800: 245 237 224;
+            --tg-n900: 252 246 236;
+            --tg-n950: 240 231 216;
+            --tg-name-l: 34%;
         }
 
         html {
@@ -647,6 +735,21 @@
                             'accent-bright': 'rgb(var(--tg-accent-bright) / <alpha-value>)',
                             'accent-faint': 'rgb(var(--tg-accent-faint) / <alpha-value>)',
                             'accent-dim': 'rgb(var(--tg-accent-dim) / <alpha-value>)',
+                            // Ink is "maximum-contrast foreground" (white on the
+                            // dark palettes, near-black on the light ones); the
+                            // n-scale plays the role the gray-N utilities played
+                            // on the dark palettes and mirrors on the light ones.
+                            ink: 'rgb(var(--tg-ink) / <alpha-value>)',
+                            n100: 'rgb(var(--tg-n100) / <alpha-value>)',
+                            n200: 'rgb(var(--tg-n200) / <alpha-value>)',
+                            n300: 'rgb(var(--tg-n300) / <alpha-value>)',
+                            n400: 'rgb(var(--tg-n400) / <alpha-value>)',
+                            n500: 'rgb(var(--tg-n500) / <alpha-value>)',
+                            n600: 'rgb(var(--tg-n600) / <alpha-value>)',
+                            n700: 'rgb(var(--tg-n700) / <alpha-value>)',
+                            n800: 'rgb(var(--tg-n800) / <alpha-value>)',
+                            n900: 'rgb(var(--tg-n900) / <alpha-value>)',
+                            n950: 'rgb(var(--tg-n950) / <alpha-value>)',
                         }
                     }
                 }
@@ -655,7 +758,7 @@
     </script>
 </head>
 
-<body class="bg-tg-bg text-white h-screen overflow-hidden">
+<body class="bg-tg-bg text-tg-ink h-screen overflow-hidden">
     <div id="app" class="w-full h-full">
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800">
@@ -720,27 +823,27 @@
         <!-- Main App -->
         <div v-else class="flex w-full h-full bg-tg-bg">
             <!-- Sidebar - hidden on mobile when chat is selected -->
-            <div class="bg-tg-sidebar flex flex-col border-r border-gray-700 shrink-0"
+            <div class="bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
                 :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
                 <!-- User bar -->
-                <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-gray-700">
-                    <span class="text-xs text-gray-400 truncate flex-1">{{ currentUsername }}</span>
-                    <button v-if="userRole === 'master'" @click="openStatusPanel" class="text-gray-400 hover:text-white p-1" title="Archive Status">
+                <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-tg-n700">
+                    <span class="text-xs text-tg-n400 truncate flex-1">{{ currentUsername }}</span>
+                    <button v-if="userRole === 'master'" @click="openStatusPanel" class="text-tg-n400 hover:text-tg-ink p-1" title="Archive Status">
                         <i class="fas fa-heart-pulse"></i>
                     </button>
-                    <button v-if="userRole === 'master'" @click="openAdminPanel" class="text-gray-400 hover:text-white p-1" title="Admin Settings">
+                    <button v-if="userRole === 'master'" @click="openAdminPanel" class="text-tg-n400 hover:text-tg-ink p-1" title="Admin Settings">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <button @click="performLogout" class="text-gray-400 hover:text-red-400 p-1" title="Logout">
+                    <button @click="performLogout" class="text-tg-n400 hover:text-red-400 p-1" title="Logout">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
                 </div>
                 <!-- Header with Stats Dropdown -->
-                <div class="p-4 border-b border-gray-700">
+                <div class="p-4 border-b border-tg-n700">
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
                             <h1 class="text-xl font-bold">Telegram Archive</h1>
-                            <button @click="openChangesFeed" class="text-gray-400 hover:text-white p-1"
+                            <button @click="openChangesFeed" class="text-tg-n400 hover:text-tg-ink p-1"
                                 title="What changed (deletions & edits)">
                                 <i class="fas fa-clock-rotate-left"></i>
                             </button>
@@ -748,17 +851,17 @@
                                  the dropdown mirrors the Stats popup pattern. -->
                             <div class="relative">
                                 <button @click="themePopupOpen = !themePopupOpen"
-                                    class="text-gray-400 hover:text-white p-1"
+                                    class="text-tg-n400 hover:text-tg-ink p-1"
                                     title="Color theme" aria-label="Choose color theme"
                                     :aria-expanded="themePopupOpen ? 'true' : 'false'">
                                     <i class="fas fa-palette"></i>
                                 </button>
                                 <div v-if="themePopupOpen" @click="themePopupOpen = false" class="fixed inset-0 z-40"></div>
                                 <div v-if="themePopupOpen"
-                                    class="absolute left-0 top-full mt-1 z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-2 min-w-[200px]">
+                                    class="absolute left-0 top-full mt-1 z-50 bg-tg-n800 border border-tg-n600 rounded-lg shadow-xl p-2 min-w-[200px]">
                                     <button v-for="theme in viewerThemes" :key="theme.id" @click="setTheme(theme.id)"
-                                        class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-left transition hover:bg-gray-700"
-                                        :class="currentTheme === theme.id ? 'bg-gray-700/70 text-white' : 'text-gray-300'">
+                                        class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-left transition hover:bg-tg-n700"
+                                        :class="currentTheme === theme.id ? 'bg-tg-n700/70 text-tg-ink' : 'text-tg-n300'">
                                         <span class="flex -space-x-1">
                                             <span class="w-3.5 h-3.5 rounded-full border border-black/40" :style="{ background: theme.dots[0] }"></span>
                                             <span class="w-3.5 h-3.5 rounded-full border border-black/40" :style="{ background: theme.dots[1] }"></span>
@@ -772,7 +875,7 @@
                             <!-- Stats Dropdown Button (hidden if SHOW_STATS=false) -->
                             <div class="relative" v-if="showStatsUI && statsData.stats_calculated_at">
                                 <button @click="statsPopupOpen = !statsPopupOpen"
-                                    class="flex items-center gap-1.5 px-2 py-1 text-xs text-tg-muted hover:text-white hover:bg-gray-700/50 rounded transition">
+                                    class="flex items-center gap-1.5 px-2 py-1 text-xs text-tg-muted hover:text-tg-ink hover:bg-tg-n700/50 rounded transition">
                                     <span>📊</span>
                                     <span>Stats</span>
                                     <svg :class="{'rotate-180': statsPopupOpen}" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -782,19 +885,19 @@
                                 <!-- Stats Popup + Click-outside overlay -->
                                 <div v-if="statsPopupOpen" @click="statsPopupOpen = false" class="fixed inset-0 z-40"></div>
                                 <div v-if="statsPopupOpen"
-                                    class="absolute left-0 top-full mt-1 z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-4 min-w-[220px]">
+                                    class="absolute left-0 top-full mt-1 z-50 bg-tg-n800 border border-tg-n600 rounded-lg shadow-xl p-4 min-w-[220px]">
                                     <div class="text-xs text-tg-muted space-y-2">
-                                        <div class="font-semibold text-white mb-3 pb-2 border-b border-gray-700">Backup Statistics</div>
-                                        <div class="flex justify-between"><span>💬 Chats:</span><span class="text-white">{{ formatNumber(statsData.chats) }}</span></div>
-                                        <div class="flex justify-between"><span>📬 Messages:</span><span class="text-white">{{ formatNumber(statsData.messages) }}</span></div>
-                                        <div class="flex justify-between"><span>🖼️ Media files:</span><span class="text-white">{{ formatNumber(statsData.media_files) }}</span></div>
-                                        <div class="flex justify-between"><span>💾 Storage:</span><span class="text-white">{{ formatSize(statsData.total_size_mb) }}</span></div>
-                                        <div class="pt-2 mt-2 border-t border-gray-700 text-[10px] opacity-70 flex items-center justify-between gap-2">
+                                        <div class="font-semibold text-tg-ink mb-3 pb-2 border-b border-tg-n700">Backup Statistics</div>
+                                        <div class="flex justify-between"><span>💬 Chats:</span><span class="text-tg-ink">{{ formatNumber(statsData.chats) }}</span></div>
+                                        <div class="flex justify-between"><span>📬 Messages:</span><span class="text-tg-ink">{{ formatNumber(statsData.messages) }}</span></div>
+                                        <div class="flex justify-between"><span>🖼️ Media files:</span><span class="text-tg-ink">{{ formatNumber(statsData.media_files) }}</span></div>
+                                        <div class="flex justify-between"><span>💾 Storage:</span><span class="text-tg-ink">{{ formatSize(statsData.total_size_mb) }}</span></div>
+                                        <div class="pt-2 mt-2 border-t border-tg-n700 text-[10px] opacity-70 flex items-center justify-between gap-2">
                                             <span>{{ formatStatsTime(statsData.stats_calculated_at) }}</span>
                                             <span v-if="statsData && statsData.backup_in_progress" class="text-tg-accent-soft opacity-100 shrink-0">● Backup in progress…</span>
                                         </div>
                                         <!-- Footer -->
-                                        <div class="pt-3 mt-3 border-t border-gray-700 text-center">
+                                        <div class="pt-3 mt-3 border-t border-tg-n700 text-center">
                                             <div class="text-[10px] opacity-70">
                                                 Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-tg-accent-soft hover:text-tg-accent-bright">Sergio Fernández</a>
                                             </div>
@@ -822,8 +925,8 @@
 
                     <div class="relative mb-3">
                         <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
-                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
-                        <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
+                            class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                        <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -832,13 +935,13 @@
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()"
-                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             All Chats
                         </button>
                         <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
-                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             {{ folder.emoticon || '📁' }} {{ folder.title }}
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
@@ -855,7 +958,7 @@
                                     <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                                 </span>
                                 <span class="text-green-400">Real-time sync</span>
-                                <span class="text-gray-500">•</span>
+                                <span class="text-tg-n500">•</span>
                                 <span>Last backup: {{ formatLastBackupTime(lastBackupTime, viewerTimezone, lastBackupTimeSource) }}</span>
                             </template>
                             <template v-else>
@@ -877,7 +980,7 @@
                                 d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                         </svg>
                         <span>{{ chatsError }}</span>
-                        <button @click="loadChats()" class="ml-auto text-amber-300 hover:text-white text-xs underline">
+                        <button @click="loadChats()" class="ml-auto text-amber-300 hover:text-tg-ink text-xs underline">
                             Retry
                         </button>
                     </div>
@@ -893,7 +996,7 @@
                         </svg>
                         <span>Enable notifications for new messages</span>
                         <button @click="requestNotificationPermission()"
-                            class="ml-auto px-2 py-1 bg-tg-accent-strong hover:bg-tg-accent text-white text-xs rounded transition">
+                            class="ml-auto px-2 py-1 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-xs rounded transition">
                             Enable
                         </button>
                     </div>
@@ -909,7 +1012,7 @@
                         </svg>
                         <span>Notifications blocked by browser. Enable in browser settings to receive alerts.</span>
                         <button @click="unsubscribeFromPush()"
-                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded transition">
+                            class="ml-auto px-2 py-1 bg-amber-700 hover:bg-amber-600 text-tg-ink text-xs rounded transition">
                             Unsubscribe
                         </button>
                     </div>
@@ -920,14 +1023,14 @@
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
-                        <div class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBackToChats()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                        <div class="p-3 border-b border-tg-n700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
+                            <button @click="navigateBackToChats()" class="p-1.5 hover:bg-tg-n700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
                             </button>
                             <div class="flex-1 min-w-0">
-                                <h3 class="font-semibold text-white truncate">{{ topicsNavEntry.chatName }}</h3>
+                                <h3 class="font-semibold text-tg-ink truncate">{{ topicsNavEntry.chatName }}</h3>
                                 <p class="text-xs text-tg-muted">{{ topics.length }} topics</p>
                             </div>
                         </div>
@@ -949,7 +1052,7 @@
                                         d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                                 </svg>
                                 <span>{{ topicsError }}</span>
-                                <button @click="retryLoadTopics()" class="ml-auto text-amber-300 hover:text-white text-xs underline">
+                                <button @click="retryLoadTopics()" class="ml-auto text-amber-300 hover:text-tg-ink text-xs underline">
                                     Retry
                                 </button>
                             </div>
@@ -963,16 +1066,16 @@
                                 <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
                             </span>
                             <button @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, { id: 'all', title: 'All messages' })"
-                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-tg-accent-strong text-white transition">
+                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-tg-accent-strong text-tg-ink transition">
                                 View all messages
                             </button>
                         </div>
                         <div v-else v-for="topic in topics" :key="topic.id"
                             @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, topic)"
-                            class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/30"
+                            class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-tg-n700/30"
                             :class="{'bg-tg-active': selectedPaneTopic?.id === topic.id}">
                             <!-- Topic icon -->
-                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0"
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-tg-ink shrink-0"
                                 :style="{ backgroundColor: getTopicColor(topic.icon_color) }">
                                 <span v-if="topic.icon_emoji" class="text-xl">{{ topic.icon_emoji }}</span>
                                 <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -981,9 +1084,9 @@
                             </div>
                             <div class="flex-1 min-w-0">
                                 <div class="flex justify-between items-baseline">
-                                    <h3 class="font-semibold truncate text-white text-sm">
+                                    <h3 class="font-semibold truncate text-tg-ink text-sm">
                                         <span v-if="topic.is_pinned" class="text-tg-accent-soft mr-1">📌</span>
-                                        <span v-if="topic.is_closed" class="text-gray-500 mr-1">🔒</span>
+                                        <span v-if="topic.is_closed" class="text-tg-n500 mr-1">🔒</span>
                                         {{ topic.title }}
                                     </h3>
                                     <span class="text-xs text-tg-muted shrink-0 ml-2">{{ formatDate(topic.last_message_date) }}</span>
@@ -999,13 +1102,13 @@
                     <template v-else>
                         <!-- v6.2.0: Back button for archived/folder views -->
                         <div v-if="canGoBack && currentNav.type === 'chatList'"
-                            class="p-3 border-b border-gray-700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
-                            <button @click="navigateBack()" class="p-1.5 hover:bg-gray-700 rounded-full transition">
+                            class="p-3 border-b border-tg-n700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
+                            <button @click="navigateBack()" class="p-1.5 hover:bg-tg-n700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                                 </svg>
                             </button>
-                            <h3 class="font-semibold text-white">
+                            <h3 class="font-semibold text-tg-ink">
                                 {{ currentNav.filter === 'archived' ? 'Archived Chats' : 'Back' }}
                             </h3>
                         </div>
@@ -1030,7 +1133,7 @@
                             <!-- v6.2.0: Archived Chats Row (only in "All Chats" view) -->
                             <div v-if="archivedCount > 0 && currentNav.filter === 'all' && !searchQuery"
                                 @click="showArchived()"
-                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/50">
+                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-tg-n700/50">
                                 <div class="w-12 h-12 rounded-full bg-tg-accent-strong/30 flex items-center justify-center shrink-0">
                                     <svg class="w-6 h-6 text-tg-accent-soft" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>
@@ -1051,7 +1154,7 @@
                                 :class="{'bg-tg-active': selectedChat?.ref === chat.ref}">
                                 <!-- Avatar -->
                                 <div
-                                    class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-white shrink-0 overflow-hidden relative">
+                                    class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
                                     <img v-if="chat.avatar_url" :src="chat.avatar_url" class="w-full h-full object-cover"
                                         @error="chat.avatar_url = null" :alt="getChatName(chat)">
                                     <template v-else-if="isDeletedChat(chat)">
@@ -1070,7 +1173,7 @@
 
                                 <div class="flex-1 min-w-0">
                                     <div class="flex justify-between items-baseline">
-                                        <h3 class="font-semibold truncate text-white">
+                                        <h3 class="font-semibold truncate text-tg-ink">
                                             <span v-if="chat.is_forum" class="text-tg-accent-soft mr-1 text-xs" title="Forum">#</span>
                                             {{ getChatName(chat) }}
                                         </h3>
@@ -1106,7 +1209,7 @@
                         </div>
 
                         <!-- Search results info -->
-                        <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-gray-700/50">
+                        <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-tg-n700/50">
                             <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
                             <span v-else>No chats found</span>
                         </div>
@@ -1131,11 +1234,11 @@
                 <template v-else>
                     <!-- Chat Header -->
                     <div
-                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-gray-700 flex items-center justify-between shadow-md z-10">
+                        class="px-2 sm:px-4 py-2 sm:py-3 bg-tg-sidebar border-b border-tg-n700 flex items-center justify-between shadow-md z-10">
                         <div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             <!-- Back Button (mobile only) -->
                             <button @click="currentNav.type === 'chat' && currentNav.topicId ? navigateBack() : selectedChat = null"
-                                class="tap-target md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
+                                class="tap-target md:hidden p-2 -ml-2 text-tg-n400 hover:text-tg-ink">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M15 19l-7-7 7-7"></path>
@@ -1152,7 +1255,7 @@
                             <button v-if="selectedChat?.type === 'private'" type="button"
                                 @click="openSenderInfoFromChat(selectedChat, $event)"
                                 :aria-label="`Show details for ${getChatName(selectedChat)}`"
-                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-tg-ink overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
                                     class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
                                     :alt="getChatName(selectedChat)">
@@ -1170,7 +1273,7 @@
                                 </template>
                             </button>
                             <div v-else
-                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0">
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-tg-ink overflow-hidden shrink-0">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
                                     class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
                                     :alt="getChatName(selectedChat)">
@@ -1197,7 +1300,7 @@
                                 </p>
                             </div>
                             <!-- Per-Chat Stats -->
-                            <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-gray-800/50 rounded-lg text-xs text-tg-muted">
+                            <div v-if="chatStats" class="hidden sm:flex items-center gap-3 ml-4 px-3 py-1 bg-tg-n800/50 rounded-lg text-xs text-tg-muted">
                                 <span title="Messages in this chat">📬 {{ formatNumber(chatStats.messages) }} msgs</span>
                                 <span v-if="chatStats.media_files > 0" title="Media files">🖼️ {{ formatNumber(chatStats.media_files) }} media</span>
                                 <span v-if="chatStats.total_size_mb > 0" title="Storage used">💾 {{ formatSize(chatStats.total_size_mb) }}</span>
@@ -1216,8 +1319,8 @@
                             <div class="relative w-28 sm:w-48 md:w-64">
                                 <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
                                     placeholder="Search..."
-                                    class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
-                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
+                                    class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-tg-n400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -1226,7 +1329,7 @@
 
                             <!-- Media Gallery Button -->
                             <button @click="showMediaGallery = true"
-                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-tg-n400 hover:text-tg-ink rounded-lg hover:bg-tg-ink/10 transition shrink-0"
                                 title="Shared Media Gallery">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1236,7 +1339,7 @@
 
                             <!-- Export Button - always visible -->
                             <button @click="exportChat"
-                                class="tap-target p-1.5 sm:p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition shrink-0"
+                                class="tap-target p-1.5 sm:p-2 text-tg-n400 hover:text-tg-ink rounded-lg hover:bg-tg-ink/10 transition shrink-0"
                                 title="Export Chat to JSON">
                                 <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1261,7 +1364,7 @@
                     <!-- Click on message content → scroll to message + cycle to next -->
                     <!-- Click on pin icon (right side) → open pinned messages view -->
                     <div v-if="pinnedMessage && !showPinnedOnly"
-                        class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 flex items-center gap-3">
+                        class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-tg-n700 flex items-center gap-3">
                         <!-- Pin icon on left -->
                         <div class="text-tg-accent-soft">
                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -1269,7 +1372,7 @@
                             </svg>
                         </div>
                         <!-- Message content - click to scroll and cycle -->
-                        <div class="flex-1 min-w-0 cursor-pointer hover:bg-white/5 -my-1 py-1 px-1 rounded transition"
+                        <div class="flex-1 min-w-0 cursor-pointer hover:bg-tg-ink/5 -my-1 py-1 px-1 rounded transition"
                             @click="handlePinnedClick">
                             <div class="text-xs text-tg-accent-soft font-semibold mb-0.5 flex items-center gap-2">
                                 <span>Pinned Message</span>
@@ -1277,7 +1380,7 @@
                                     ({{ currentPinnedIndex + 1 }} of {{ pinnedMessages.length }})
                                 </span>
                             </div>
-                            <div class="text-sm text-gray-300 truncate">
+                            <div class="text-sm text-tg-n300 truncate">
                                 {{ pinnedMessage.text || (pinnedMessage.media?.type ? `[${pinnedMessage.media?.type}]` : 'Message') }}
                             </div>
                         </div>
@@ -1299,17 +1402,17 @@
 
                     <!-- Pinned Messages View Header (shown when in pinned-only mode) -->
                     <div v-if="showPinnedOnly"
-                        class="px-4 py-3 bg-tg-sidebar border-b border-gray-700 flex items-center gap-3">
+                        class="px-4 py-3 bg-tg-sidebar border-b border-tg-n700 flex items-center gap-3">
                         <!-- Back button -->
                         <button @click="closePinnedView"
-                            class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-gray-300 transition">
+                            class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-tg-ink/10 text-tg-n300 transition">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
                             </svg>
                         </button>
                         <!-- Title -->
                         <div class="flex-1">
-                            <div class="text-base font-semibold text-white">Pinned Messages</div>
+                            <div class="text-base font-semibold text-tg-ink">Pinned Messages</div>
                             <div class="text-xs text-tg-muted">{{ pinnedMessages.length }} messages</div>
                         </div>
                     </div>
@@ -1318,18 +1421,18 @@
                     <template v-if="showMediaGallery">
                     <div class="flex flex-col h-full flex-1 min-h-0">
                         <!-- Header with back button -->
-                        <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700">
-                            <button @click="showMediaGallery = false" class="text-gray-400 hover:text-white">
+                        <div class="flex items-center gap-3 px-4 py-3 border-b border-tg-n700">
+                            <button @click="showMediaGallery = false" class="text-tg-n400 hover:text-tg-ink">
                                 <i class="fas fa-arrow-left"></i>
                             </button>
-                            <h3 class="text-white font-medium">Shared Media</h3>
+                            <h3 class="text-tg-ink font-medium">Shared Media</h3>
                         </div>
 
                         <!-- Tab bar -->
-                        <div class="flex gap-1 px-4 py-2 border-b border-gray-700">
+                        <div class="flex gap-1 px-4 py-2 border-b border-tg-n700">
                             <button v-for="tab in mediaTabs" :key="tab.id"
                                 @click="switchMediaTab(tab.id)"
-                                :class="mediaGalleryTab === tab.id ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-gray-400 hover:text-white'"
+                                :class="mediaGalleryTab === tab.id ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-n400 hover:text-tg-ink'"
                                 class="px-3 py-1.5 rounded-lg text-sm font-medium transition">
                                 {{ tab.label }}
                                 <span v-if="mediaGalleryCounts[tab.id]" class="ml-1 text-xs opacity-75">
@@ -1342,7 +1445,7 @@
                         <div class="flex-1 overflow-y-auto p-2">
                             <!-- Loading state -->
                             <div v-if="mediaGalleryLoading && mediaGalleryItems.length === 0" class="grid grid-cols-3 md:grid-cols-4 gap-1">
-                                <div v-for="i in 12" :key="i" class="aspect-square bg-gray-700 rounded animate-pulse"></div>
+                                <div v-for="i in 12" :key="i" class="aspect-square bg-tg-n700 rounded animate-pulse"></div>
                             </div>
 
                             <!-- Photos/Videos Grid -->
@@ -1353,13 +1456,13 @@
                                         class="aspect-square relative cursor-pointer group overflow-hidden rounded">
                                         <img v-if="item.thumb_url" :src="item.thumb_url" :alt="item.file_name"
                                             class="w-full h-full object-cover" loading="lazy" decoding="async">
-                                        <div v-else class="w-full h-full bg-gray-700 flex items-center justify-center">
-                                            <i class="fas fa-play-circle text-2xl text-gray-400" v-if="item.type === 'video' || item.type === 'animation'"></i>
-                                            <i class="fas fa-image text-2xl text-gray-400" v-else></i>
+                                        <div v-else class="w-full h-full bg-tg-n700 flex items-center justify-center">
+                                            <i class="fas fa-play-circle text-2xl text-tg-n400" v-if="item.type === 'video' || item.type === 'animation'"></i>
+                                            <i class="fas fa-image text-2xl text-tg-n400" v-else></i>
                                         </div>
                                         <!-- Video overlay -->
                                         <div v-if="item.type === 'video' || item.type === 'animation'"
-                                            class="absolute bottom-1 left-1 bg-black/70 text-white text-xs px-1 rounded">
+                                            class="absolute bottom-1 left-1 bg-black/70 text-tg-ink text-xs px-1 rounded">
                                             <i class="fas fa-play text-[10px] mr-0.5"></i>
                                             {{ formatDuration(item.duration) }}
                                         </div>
@@ -1373,16 +1476,16 @@
                             <template v-else-if="mediaGalleryTab === 'voice'">
                                 <div class="space-y-1">
                                     <div v-for="item in mediaGalleryItems" :key="item.id"
-                                        class="flex items-center gap-3 p-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 cursor-pointer"
+                                        class="flex items-center gap-3 p-3 rounded-lg bg-tg-n800/50 hover:bg-tg-n700/50 cursor-pointer"
                                         @click="jumpToMessage(item)">
                                         <div class="w-10 h-10 rounded-full bg-tg-accent-strong flex items-center justify-center flex-shrink-0">
-                                            <i class="fas fa-play text-white text-sm"></i>
+                                            <i class="fas fa-play text-tg-ink text-sm"></i>
                                         </div>
                                         <div class="flex-1 min-w-0">
-                                            <div class="text-sm text-white">{{ item.sender_name || 'Unknown' }}</div>
-                                            <div class="text-xs text-gray-400">{{ formatDuration(item.duration) }}</div>
+                                            <div class="text-sm text-tg-ink">{{ item.sender_name || 'Unknown' }}</div>
+                                            <div class="text-xs text-tg-n400">{{ formatDuration(item.duration) }}</div>
                                         </div>
-                                        <div class="text-xs text-gray-500">{{ formatMediaDate(item.message_date) }}</div>
+                                        <div class="text-xs text-tg-n500">{{ formatMediaDate(item.message_date) }}</div>
                                     </div>
                                 </div>
                             </template>
@@ -1391,20 +1494,20 @@
                             <template v-else-if="mediaGalleryTab === 'files'">
                                 <div class="space-y-1">
                                     <div v-for="item in mediaGalleryItems" :key="item.id"
-                                        class="flex items-center gap-3 p-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50">
-                                        <div class="w-10 h-10 rounded-lg bg-gray-700 flex items-center justify-center flex-shrink-0">
-                                            <i class="fas fa-file text-gray-400"></i>
+                                        class="flex items-center gap-3 p-3 rounded-lg bg-tg-n800/50 hover:bg-tg-n700/50">
+                                        <div class="w-10 h-10 rounded-lg bg-tg-n700 flex items-center justify-center flex-shrink-0">
+                                            <i class="fas fa-file text-tg-n400"></i>
                                         </div>
                                         <div class="flex-1 min-w-0">
-                                            <div class="text-sm text-white truncate">{{ getMediaDisplayName(item) }}</div>
-                                            <div class="text-xs text-gray-400">{{ formatFileSize(item.file_size) }} &middot; {{ formatMediaDate(item.message_date) }}</div>
+                                            <div class="text-sm text-tg-ink truncate">{{ getMediaDisplayName(item) }}</div>
+                                            <div class="text-xs text-tg-n400">{{ formatFileSize(item.file_size) }} &middot; {{ formatMediaDate(item.message_date) }}</div>
                                         </div>
                                         <div class="flex items-center gap-2">
                                             <button v-if="item.media_url && !noDownload" @click.stop="downloadMedia(item)"
-                                                class="text-gray-400 hover:text-white p-1">
+                                                class="text-tg-n400 hover:text-tg-ink p-1">
                                                 <i class="fas fa-download"></i>
                                             </button>
-                                            <button @click.stop="jumpToMessage(item)" class="text-gray-400 hover:text-white p-1" title="Go to message">
+                                            <button @click.stop="jumpToMessage(item)" class="text-tg-n400 hover:text-tg-ink p-1" title="Go to message">
                                                 <i class="fas fa-crosshairs"></i>
                                             </button>
                                         </div>
@@ -1413,7 +1516,7 @@
                             </template>
 
                             <!-- Empty state -->
-                            <div v-if="!mediaGalleryLoading && mediaGalleryItems.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-500">
+                            <div v-if="!mediaGalleryLoading && mediaGalleryItems.length === 0" class="flex flex-col items-center justify-center py-20 text-tg-n500">
                                 <i class="fas fa-photo-film text-4xl mb-3"></i>
                                 <p>No media found</p>
                             </div>
@@ -1421,7 +1524,7 @@
                             <!-- Load more -->
                             <div v-if="mediaGalleryHasMore && mediaGalleryItems.length > 0" class="flex justify-center py-4">
                                 <button @click="loadMoreMedia" :disabled="mediaGalleryLoading"
-                                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm disabled:opacity-50">
+                                    class="px-4 py-2 bg-tg-n700 hover:bg-tg-n600 text-tg-ink rounded-lg text-sm disabled:opacity-50">
                                     {{ mediaGalleryLoading ? 'Loading...' : 'Load more' }}
                                 </button>
                             </div>
@@ -1446,7 +1549,7 @@
                             class="flex items-center justify-center gap-2 py-2 text-xs text-amber-300">
                             <span>{{ newerLoadError }}</span>
                             <button type="button" @click="retryNewerMessages"
-                                class="rounded bg-gray-700 px-2 py-1 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                class="rounded bg-tg-n700 px-2 py-1 text-tg-ink hover:bg-tg-n600 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                 Retry
                             </button>
                         </div>
@@ -1468,7 +1571,7 @@
                                         <button v-if="view.clickable" type="button"
                                             @click="openSenderInfo(msg, $event)"
                                             :aria-label="`Show sender details for ${view.actor}`"
-                                            class="font-semibold hover:underline hover:text-white focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">{{ view.actor }}</button><span v-else-if="view.actor" class="font-semibold">{{ view.actor }}</span>{{ view.tail }}
+                                            class="font-semibold hover:underline hover:text-tg-ink focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">{{ view.actor }}</button><span v-else-if="view.actor" class="font-semibold">{{ view.actor }}</span>{{ view.tail }}
                                     </div>
                                 </template>
                             </div>
@@ -1494,7 +1597,7 @@
                                     <button v-if="showSenderName(index)" type="button"
                                         @click="openSenderInfo(msg, $event)"
                                         :aria-label="`Show sender details for ${getSenderName(msg)}`"
-                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none focus:outline-none focus:ring-2 focus:ring-tg-accent-soft"
+                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-tg-ink select-none focus:outline-none focus:ring-2 focus:ring-tg-accent-soft"
                                         :style="{ background: getAvatarFill(msg) }">
                                         <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url"
                                             loading="lazy"
@@ -1503,7 +1606,7 @@
                                         <template v-else>{{ getSenderInitials(msg) }}</template>
                                     </button>
                                 </div>
-                                <div class="message-bubble p-3 text-sm shadow-sm text-gray-100"
+                                <div class="message-bubble p-3 text-sm shadow-sm text-tg-n100"
                                     :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
                                     :style="getSenderStyle(msg)">
                                     <!-- Sender Name (if group and first in sequence) -->
@@ -1547,7 +1650,7 @@
                                                 class="relative group">
                                                 <!-- Use a wrapper for the bar to show visual progress behind text -->
                                                 <div
-                                                    class="relative w-full border border-white/10 rounded-md overflow-hidden bg-white/5">
+                                                    class="relative w-full border border-tg-ink/10 rounded-md overflow-hidden bg-tg-ink/5">
                                                     <!-- Progress Bar -->
                                                     <div v-if="getPollPercentage(msg, answer) > 0"
                                                         class="absolute left-0 top-0 bottom-0 bg-tg-accent/30 transition-all duration-500"
@@ -1594,14 +1697,14 @@
                                         class="mb-2 space-y-1">
                                         <!-- Placeholder for media not yet downloaded -->
                                         <div v-if="!msg.media?.file_path && msg.media?.type"
-                                            class="bg-gray-700/50 rounded-lg p-4 flex items-center gap-3 max-w-md">
-                                            <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            class="bg-tg-n700/50 rounded-lg p-4 flex items-center gap-3 max-w-md">
+                                            <svg class="w-8 h-8 text-tg-n400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                     d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                                             </svg>
                                             <div>
-                                                <div class="text-sm text-gray-300">{{ msg.media?.type }}</div>
-                                                <div class="text-xs text-gray-500">Will download on next backup</div>
+                                                <div class="text-sm text-tg-n300">{{ msg.media?.type }}</div>
+                                                <div class="text-xs text-tg-n500">Will download on next backup</div>
                                             </div>
                                         </div>
                                     </div>
@@ -1625,7 +1728,7 @@
                                                         <!-- Video indicator overlay -->
                                                         <div v-if="albumMsg.media?.type === 'video'"
                                                             class="absolute inset-0 flex items-center justify-center bg-black/20">
-                                                            <svg class="w-10 h-10 text-white/90" fill="currentColor" viewBox="0 0 24 24">
+                                                            <svg class="w-10 h-10 text-tg-ink/90" fill="currentColor" viewBox="0 0 24 24">
                                                                 <path d="M8 5v14l11-7z"/>
                                                             </svg>
                                                         </div>
@@ -1644,12 +1747,12 @@
                                              its own — it only delegates to the single app-wide player, so
                                              playback survives chat switches and jump-window rebuilds. -->
                                         <div v-else-if="isAudioFile(msg)"
-                                            class="w-full min-w-0 max-w-md bg-gradient-to-r from-gray-800 to-gray-700 p-3 rounded-xl shadow-lg">
+                                            class="w-full min-w-0 max-w-md bg-gradient-to-r from-tg-n800 to-tg-n700 p-3 rounded-xl shadow-lg">
                                             <div class="flex items-center gap-3">
                                                 <button type="button" @click.stop="playAudioMessage(msg)"
                                                     :disabled="noDownload"
                                                     :aria-label="(isPlayingAudioMessage(msg) ? 'Pause ' : 'Play ') + getDocumentDisplayName(msg)"
-                                                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-tg-ink transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                                     <svg v-if="isPlayingAudioMessage(msg)" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                                                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                                                     </svg>
@@ -1658,7 +1761,7 @@
                                                     </svg>
                                                 </button>
                                                 <div class="min-w-0 flex-1">
-                                                    <div class="flex items-center gap-2 text-xs text-gray-300">
+                                                    <div class="flex items-center gap-2 text-xs text-tg-n300">
                                                         <span class="shrink-0">🎵</span>
                                                         <span class="truncate">{{ getDocumentDisplayName(msg) }}</span>
                                                     </div>
@@ -1673,7 +1776,7 @@
                                                          the full string, which flex `min-width: auto` then refuses
                                                          to shrink below. shrink-0 is NOT needed and is not added —
                                                          it guards the flex-basis, not the wrapping. -->
-                                                    <div class="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
+                                                    <div class="flex items-center gap-2 mt-1 text-[11px] text-tg-n400">
                                                         <span v-if="msg.media?.duration" class="whitespace-nowrap">{{ formatAudioTime(msg.media.duration) }}</span>
                                                         <span v-if="isCurrentAudioMessage(msg)" class="text-tg-accent-soft whitespace-nowrap">
                                                             {{ audioIsPlaying ? 'Now playing' : 'Paused' }}
@@ -1692,7 +1795,7 @@
                                                     :download="getDocumentDisplayName(msg)"
                                                     @click.stop
                                                     :aria-label="'Download ' + getDocumentDisplayName(msg)"
-                                                    class="bubble-icon-action w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                    class="bubble-icon-action w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-tg-n300 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                             d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
@@ -1716,7 +1819,7 @@
                                                  with innerHTML detached this subtree from the render tree for
                                                  good: Vue kept patching nodes that were no longer in the
                                                  document, so the bubble never updated again. -->
-                                            <div v-if="msg.mediaLoadFailed" class="flex items-center gap-2 text-gray-400 text-sm py-2">
+                                            <div v-if="msg.mediaLoadFailed" class="flex items-center gap-2 text-tg-n400 text-sm py-2">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                         d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
@@ -1889,7 +1992,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
                         </svg>
                         <span v-if="unseenMessageCount > 0" aria-hidden="true"
-                            class="absolute -top-1.5 -right-1.5 bg-tg-accent text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
+                            class="absolute -top-1.5 -right-1.5 bg-tg-accent text-tg-ink text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
                             {{ unseenMessageCount > 99 ? '99+' : unseenMessageCount }}
                         </span>
                     </button>
@@ -1904,12 +2007,12 @@
             class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
             @click.self="closeDatePicker">
             <section ref="datePickerDialog" role="dialog" aria-modal="true" aria-labelledby="date-picker-title"
-                class="date-picker-dialog my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                class="date-picker-dialog my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-tg-n700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 id="date-picker-title" class="text-xl font-bold text-white">Jump to Date</h3>
+                    <h3 id="date-picker-title" class="text-xl font-bold text-tg-ink">Jump to Date</h3>
                     <button type="button" @click="closeDatePicker"
                         aria-label="Close date picker"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
+                        class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1918,7 +2021,7 @@
                 <div class="mb-4">
                     <input ref="datePickerInput" type="text"
                         aria-label="Date to jump to"
-                        class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-tg-accent"
+                        class="w-full bg-tg-n900 text-tg-ink rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-tg-accent"
                         placeholder="Select a date">
                     <p v-if="calendarAvailabilityLoading" role="status" aria-live="polite"
                         class="mt-2 text-xs text-tg-muted">
@@ -1931,11 +2034,11 @@
                 </div>
                 <div class="flex gap-2 justify-end">
                     <button @click="closeDatePicker"
-                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-n700 hover:bg-tg-n600 text-tg-ink rounded-lg transition">
                         Cancel
                     </button>
                     <button @click="jumpToDate"
-                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-ink rounded-lg transition">
                         Jump
                     </button>
                 </div>
@@ -1947,11 +2050,11 @@
             class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
             @click.self="showStatusPanel = false">
             <section role="dialog" aria-modal="true" aria-labelledby="status-panel-title"
-                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-tg-n700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 id="status-panel-title" class="text-xl font-bold text-white">Archive Status</h3>
+                    <h3 id="status-panel-title" class="text-xl font-bold text-tg-ink">Archive Status</h3>
                     <button type="button" @click="showStatusPanel = false" aria-label="Close status panel"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
+                        class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1962,7 +2065,7 @@
                 <dl v-else class="space-y-3 text-sm">
                     <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Backup</dt>
-                        <dd class="text-white text-right">
+                        <dd class="text-tg-ink text-right">
                             <span v-if="statusData.backup.in_progress" class="text-tg-accent-bright">running now</span>
                             <span v-else-if="statusData.backup.last_run">last run {{ formatStatusDate(statusData.backup.last_run) }}</span>
                             <span v-else class="text-amber-300">never ran</span>
@@ -1971,14 +2074,14 @@
                     <div v-for="l in statusData.listeners" :key="l.account_id" class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Listener (account {{ l.account_id }})</dt>
                         <dd class="text-right">
-                            <span :class="l.active ? 'text-green-400' : 'text-gray-400'">
+                            <span :class="l.active ? 'text-green-400' : 'text-tg-n400'">
                                 {{ l.active ? 'active since ' + formatStatusDate(l.active_since) : 'not running' }}
                             </span>
                         </dd>
                     </div>
                     <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Media pipeline</dt>
-                        <dd class="text-white text-right">
+                        <dd class="text-tg-ink text-right">
                             {{ statusData.media.downloaded.toLocaleString() }} downloaded
                             <span v-if="statusData.media.pending" class="text-tg-accent-bright">· {{ statusData.media.pending.toLocaleString() }} pending</span>
                             <span v-if="statusData.media.exhausted" class="text-amber-300">· {{ statusData.media.exhausted.toLocaleString() }} gave up</span>
@@ -1986,13 +2089,13 @@
                     </div>
                     <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Stats freshness</dt>
-                        <dd class="text-white text-right">
+                        <dd class="text-tg-ink text-right">
                             {{ statusData.stats_calculated_at ? formatStatusDate(statusData.stats_calculated_at) : 'never calculated' }}
                         </dd>
                     </div>
                     <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Database</dt>
-                        <dd class="text-white text-right">
+                        <dd class="text-tg-ink text-right">
                             {{ statusData.database.backend }}
                             <span v-if="statusData.database.size_bytes != null">· {{ formatStatusSize(statusData.database.size_bytes) }}</span>
                         </dd>
@@ -2006,11 +2109,11 @@
             class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
             @click.self="showExportModal = false">
             <section role="dialog" aria-modal="true" aria-labelledby="export-modal-title"
-                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-700">
+                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-md border border-tg-n700">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 id="export-modal-title" class="text-xl font-bold text-white">Export Chat to JSON</h3>
+                    <h3 id="export-modal-title" class="text-xl font-bold text-tg-ink">Export Chat to JSON</h3>
                     <button type="button" @click="showExportModal = false" aria-label="Close export dialog"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
+                        class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -2020,22 +2123,22 @@
                     <label class="block">
                         <span class="text-xs text-tg-muted">From (optional)</span>
                         <input type="date" v-model="exportFromDate"
-                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                            class="mt-1 w-full bg-tg-n900 text-tg-ink rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                     </label>
                     <label class="block">
                         <span class="text-xs text-tg-muted">To (optional)</span>
                         <input type="date" v-model="exportToDate"
-                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                            class="mt-1 w-full bg-tg-n900 text-tg-ink rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                     </label>
                 </div>
                 <p class="mb-4 text-xs text-tg-muted">Both days are included. Leave empty to export everything.</p>
                 <div class="flex gap-2 justify-end">
                     <button @click="showExportModal = false"
-                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-n700 hover:bg-tg-n600 text-tg-ink rounded-lg transition">
                         Cancel
                     </button>
                     <button @click="runExport"
-                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-ink rounded-lg transition">
                         Export
                     </button>
                 </div>
@@ -2047,19 +2150,19 @@
             class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center overflow-y-auto p-4"
             @click.self="showChangesFeed = false">
             <section role="dialog" aria-modal="true" aria-labelledby="changes-feed-title"
-                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-2xl border border-gray-700 max-h-[85vh] flex flex-col">
+                class="my-auto bg-tg-sidebar rounded-2xl shadow-2xl p-6 w-full max-w-2xl border border-tg-n700 max-h-[85vh] flex flex-col">
                 <div class="flex items-center justify-between mb-3">
-                    <h3 id="changes-feed-title" class="text-xl font-bold text-white">What changed</h3>
+                    <h3 id="changes-feed-title" class="text-xl font-bold text-tg-ink">What changed</h3>
                     <div class="flex items-center gap-2">
                         <select v-model="changesSince" @change="reloadChangesFeed"
-                            class="bg-gray-900 text-white text-sm rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                            class="bg-tg-n900 text-tg-ink text-sm rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                             <option value="1">Last 24 hours</option>
                             <option value="7">Last 7 days</option>
                             <option value="30">Last 30 days</option>
                             <option value="">All time</option>
                         </select>
                         <button type="button" @click="showChangesFeed = false" aria-label="Close changes feed"
-                            class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
+                            class="text-tg-n400 hover:text-tg-ink transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
@@ -2075,26 +2178,26 @@
                         Nothing changed in this window.
                     </div>
                     <article v-for="change in changesFeed" :key="change.kind + change.chat.ref + change.message_id + change.date"
-                        class="rounded-xl border border-gray-700 bg-gray-900/60 p-3">
+                        class="rounded-xl border border-tg-n700 bg-tg-n900/60 p-3">
                         <header class="flex items-center gap-2 text-xs mb-1.5">
                             <span :class="change.kind === 'deleted' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'"
                                 class="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide">
                                 {{ change.kind }}
                             </span>
-                            <span class="text-white font-medium truncate">{{ change.chat.title || 'Unnamed chat' }}</span>
+                            <span class="text-tg-ink font-medium truncate">{{ change.chat.title || 'Unnamed chat' }}</span>
                             <span v-if="change.sender_name" class="text-tg-muted truncate">· {{ change.sender_name }}</span>
                             <span class="text-tg-muted ml-auto whitespace-nowrap">{{ formatChangeDate(change.date) }}</span>
                         </header>
-                        <div v-if="change.kind === 'deleted'" class="text-sm text-gray-200 whitespace-pre-wrap break-words">
+                        <div v-if="change.kind === 'deleted'" class="text-sm text-tg-n200 whitespace-pre-wrap break-words">
                             {{ change.text || '(no text — media or service message)' }}
                         </div>
                         <div v-else class="text-sm space-y-1">
-                            <div class="text-gray-400 line-through whitespace-pre-wrap break-words">{{ change.old_text || '(empty)' }}</div>
-                            <div class="text-gray-200 whitespace-pre-wrap break-words">{{ change.new_text || '(empty)' }}</div>
+                            <div class="text-tg-n400 line-through whitespace-pre-wrap break-words">{{ change.old_text || '(empty)' }}</div>
+                            <div class="text-tg-n200 whitespace-pre-wrap break-words">{{ change.new_text || '(empty)' }}</div>
                         </div>
                     </article>
                     <button v-if="changesNextBefore" @click="loadMoreChanges" :disabled="changesLoading"
-                        class="w-full py-2 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white rounded-lg transition">
+                        class="w-full py-2 text-sm bg-tg-n700 hover:bg-tg-n600 disabled:opacity-50 text-tg-ink rounded-lg transition">
                         {{ changesLoading ? 'Loading…' : 'Load older' }}
                     </button>
                 </div>
@@ -2106,11 +2209,11 @@
             class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
             @click.self="closeSenderInfo">
             <section ref="senderInfoDialog" role="dialog" aria-modal="true" aria-labelledby="sender-info-title"
-                class="w-full max-w-sm rounded-xl border border-gray-700 bg-tg-sidebar p-5 shadow-2xl">
+                class="w-full max-w-sm rounded-xl border border-tg-n700 bg-tg-sidebar p-5 shadow-2xl">
                 <header class="flex items-start justify-between gap-4">
-                    <h3 id="sender-info-title" class="text-base font-semibold text-white">Sender details</h3>
+                    <h3 id="sender-info-title" class="text-base font-semibold text-tg-ink">Sender details</h3>
                     <button ref="senderInfoCloseBtn" type="button" @click="closeSenderInfo"
-                        class="p-1 text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded"
+                        class="p-1 text-tg-n400 hover:text-tg-ink focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded"
                         aria-label="Close sender details">
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
@@ -2121,7 +2224,7 @@
                      because the name it would announce is already the next thing read
                      out of the <dl> below — a non-empty alt would just duplicate it. -->
                 <div class="mt-4 flex justify-center">
-                    <div class="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-2xl font-bold text-white select-none"
+                    <div class="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-2xl font-bold text-tg-ink select-none"
                         :style="{ background: getAvatarFill(senderInfoMessage) }">
                         <img v-if="senderInfoMessage.sender_avatar_url" :src="senderInfoMessage.sender_avatar_url"
                             class="w-full h-full object-cover"
@@ -2134,20 +2237,20 @@
                         <dt class="text-xs uppercase tracking-wide text-tg-muted">
                             {{ senderInfoMessage.sender_name ? 'Archived name' : (getCurrentSenderName(senderInfoMessage) ? 'Latest known name' : 'Name') }}
                         </dt>
-                        <dd class="mt-1 break-words text-white">{{ getSenderInfoName(senderInfoMessage) }}</dd>
+                        <dd class="mt-1 break-words text-tg-ink">{{ getSenderInfoName(senderInfoMessage) }}</dd>
                     </div>
                     <div v-if="hasDifferentCurrentSenderName(senderInfoMessage)">
                         <dt class="text-xs uppercase tracking-wide text-tg-muted">Latest known name</dt>
-                        <dd class="mt-1 break-words text-white">{{ getCurrentSenderName(senderInfoMessage) }}</dd>
+                        <dd class="mt-1 break-words text-tg-ink">{{ getCurrentSenderName(senderInfoMessage) }}</dd>
                     </div>
                     <div>
                         <dt class="text-xs uppercase tracking-wide text-tg-muted">Telegram ID</dt>
-                        <dd class="mt-1 font-mono text-white">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
+                        <dd class="mt-1 font-mono text-tg-ink">{{ senderInfoMessage.sender_id ?? 'Unknown' }}</dd>
                     </div>
                 </dl>
                 <div v-if="senderInfoMessage.id" class="mt-4 flex justify-end">
                     <button @click="copyMessageLink(senderInfoMessage)"
-                        class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                        class="px-3 py-1.5 text-sm bg-tg-n700 hover:bg-tg-n600 text-tg-ink rounded-lg transition">
                         <i class="fa-solid fa-link mr-1"></i> Copy message link
                     </button>
                 </div>
@@ -2158,17 +2261,17 @@
         <div v-if="versionsMessage"
             class="fixed inset-0 z-50 bg-black/70 flex justify-end"
             @click.self="closeVersionsPanel">
-            <aside role="dialog" aria-modal="true" aria-label="Message versions" class="h-full w-full sm:max-w-lg bg-tg-sidebar border-l border-gray-700 shadow-2xl flex flex-col">
-                <header class="shrink-0 border-b border-gray-700 px-4 py-3">
+            <aside role="dialog" aria-modal="true" aria-label="Message versions" class="h-full w-full sm:max-w-lg bg-tg-sidebar border-l border-tg-n700 shadow-2xl flex flex-col">
+                <header class="shrink-0 border-b border-tg-n700 px-4 py-3">
                     <div class="flex items-start justify-between gap-3">
                         <div class="min-w-0">
-                            <h3 class="text-base font-semibold text-white">Versions</h3>
+                            <h3 class="text-base font-semibold text-tg-ink">Versions</h3>
                             <div class="mt-1 text-xs text-tg-muted truncate">
                                 {{ formatDateFull(versionsMessage.date) }} {{ formatTime(versionsMessage.date) }}
                             </div>
                         </div>
                         <button ref="versionsCloseBtn" @click="closeVersionsPanel"
-                            class="text-gray-400 hover:text-white transition p-1"
+                            class="text-tg-n400 hover:text-tg-ink transition p-1"
                             title="Close">
                             <i class="fa-solid fa-xmark text-lg"></i>
                         </button>
@@ -2192,7 +2295,7 @@
                     </div>
 
                     <div v-else-if="getMessageVersions(versionsMessage).length === 0"
-                        class="rounded-md border border-white/10 bg-black/20 p-4 text-sm text-tg-muted">
+                        class="rounded-md border border-tg-ink/10 bg-black/20 p-4 text-sm text-tg-muted">
                         No previous versions retained
                     </div>
 
@@ -2204,12 +2307,12 @@
 
                         <article v-for="(entry, idx) in getMessageVersions(versionsMessage)"
                             :key="`${entry.message_id || versionsMessage.id}:${entry.date || idx}:${idx}`"
-                            class="rounded-md border border-white/10 bg-black/20 p-3">
+                            class="rounded-md border border-tg-ink/10 bg-black/20 p-3">
                             <div class="mb-3 text-xs text-tg-muted">
                                 as of {{ formatMessageVersionDate(entry.date) }}
                             </div>
 
-                            <div class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-gray-950/60 p-2 text-sm text-gray-100">
+                            <div class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-tg-n950/60 p-2 text-sm text-tg-n100">
                                 {{ entry.text || '' }}
                             </div>
                         </article>
@@ -2225,7 +2328,7 @@
 
             <!-- Close Button -->
             <button @click="closeLightbox"
-                class="absolute top-4 right-4 z-60 p-2 text-white/70 hover:text-white transition">
+                class="absolute top-4 right-4 z-60 p-2 text-tg-ink/70 hover:text-tg-ink transition">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
@@ -2233,7 +2336,7 @@
 
             <!-- Download Button -->
             <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
-                class="absolute top-4 right-16 z-60 p-2 text-white/70 hover:text-white transition">
+                class="absolute top-4 right-16 z-60 p-2 text-tg-ink/70 hover:text-tg-ink transition">
                 <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
@@ -2241,7 +2344,7 @@
 
             <!-- Previous Button -->
             <button v-if="lightboxIndex > 0" @click.stop="lightboxPrev"
-                class="absolute left-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                class="absolute left-4 top-1/2 -translate-y-1/2 z-60 p-3 text-tg-ink/70 hover:text-tg-ink bg-black/30 hover:bg-black/50 rounded-full transition">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
@@ -2249,7 +2352,7 @@
 
             <!-- Next Button -->
             <button v-if="lightboxIndex < (lightboxList.length || mediaMessages.length) - 1" @click.stop="lightboxNext"
-                class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-white/70 hover:text-white bg-black/30 hover:bg-black/50 rounded-full transition">
+                class="absolute right-4 top-1/2 -translate-y-1/2 z-60 p-3 text-tg-ink/70 hover:text-tg-ink bg-black/30 hover:bg-black/50 rounded-full transition">
                 <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                 </svg>
@@ -2270,7 +2373,7 @@
             </video>
 
             <!-- Media Info -->
-            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-4 py-2 rounded-full">
+            <div v-if="lightboxMedia" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-tg-ink/70 text-sm bg-black/50 px-4 py-2 rounded-full">
                 <template v-if="lightboxMedia.date">{{ formatDateFull(lightboxMedia.date) }} {{ formatTime(lightboxMedia.date) }}</template>
                 <span v-if="(lightboxList.length || mediaMessages.length) > 1" class="ml-2 opacity-70">
                     {{ lightboxIndex + 1 }} / {{ lightboxList.length || mediaMessages.length }}
@@ -2282,26 +2385,26 @@
         <!-- Tag view: #hashtag / $cashtag click-through (official-app tab structure) -->
         <div v-if="tagView" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" @click.self="closeTagView()">
             <div role="dialog" aria-modal="true" aria-labelledby="tag-view-title"
-                class="bg-tg-sidebar border border-gray-700 rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
-                <div class="flex items-center justify-between p-3 border-b border-gray-700/50">
+                class="bg-tg-sidebar border border-tg-n700 rounded-lg w-full max-w-lg max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between p-3 border-b border-tg-n700/50">
                     <span id="tag-view-title" class="font-semibold truncate">{{ tagView.tag }}</span>
-                    <button @click="closeTagView()" aria-label="Close tag search" class="text-gray-400 hover:text-white px-2 text-lg leading-none">&times;</button>
+                    <button @click="closeTagView()" aria-label="Close tag search" class="text-tg-n400 hover:text-tg-ink px-2 text-lg leading-none">&times;</button>
                 </div>
-                <div class="flex border-b border-gray-700/50 text-sm">
+                <div class="flex border-b border-tg-n700/50 text-sm">
                     <button v-for="t in tagTabs" :key="t.key" @click="setTagTab(t.key)"
                         :disabled="t.key === 'chat' && !selectedChat"
                         :class="['flex-1 py-2 disabled:opacity-40',
-                                 tagView.tab === t.key ? 'text-white border-b-2 border-tg-accent' : 'text-gray-400 hover:text-white']">
+                                 tagView.tab === t.key ? 'text-tg-ink border-b-2 border-tg-accent' : 'text-tg-n400 hover:text-tg-ink']">
                         {{ t.label }}
                     </button>
                 </div>
                 <div class="overflow-y-auto flex-1 min-h-[8rem]">
-                    <div v-if="tagView.loading && !tagView.results.length" class="p-4 text-center text-gray-400 text-sm">Loading…</div>
+                    <div v-if="tagView.loading && !tagView.results.length" class="p-4 text-center text-tg-n400 text-sm">Loading…</div>
                     <div v-else-if="tagView.error" class="p-4 text-center text-red-400 text-sm">{{ tagView.error }}</div>
-                    <div v-else-if="!tagView.results.length" class="p-4 text-center text-gray-400 text-sm">No messages with {{ tagView.tag }}</div>
+                    <div v-else-if="!tagView.results.length" class="p-4 text-center text-tg-n400 text-sm">No messages with {{ tagView.tag }}</div>
                     <button v-for="r in tagView.results" :key="r.chat_ref + ':' + r.id" @click="openTagResult(r)"
-                        class="block w-full text-left p-3 border-b border-gray-700/30 hover:bg-gray-700/30">
-                        <div class="flex justify-between text-xs text-gray-400 mb-1">
+                        class="block w-full text-left p-3 border-b border-tg-n700/30 hover:bg-tg-n700/30">
+                        <div class="flex justify-between text-xs text-tg-n400 mb-1">
                             <span class="truncate">{{ tagView.tab === 'chat' ? (r.sender_name || '') : r.chat_title }}</span>
                             <span class="ml-2 shrink-0">{{ formatDate(r.date) }}</span>
                         </div>
@@ -2311,7 +2414,7 @@
                         <button @click="loadTagResults(false)" :disabled="tagView.loading"
                             class="text-tg-accent-soft text-sm hover:underline disabled:opacity-40">Load more</button>
                     </div>
-                    <div v-if="tagView.truncated" class="p-2 text-center text-xs text-gray-500">
+                    <div v-if="tagView.truncated" class="p-2 text-center text-xs text-tg-n500">
                         Search stopped early — older matches may exist
                     </div>
                 </div>
@@ -2319,24 +2422,24 @@
         </div>
 
         <div v-if="showAdminPanel" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4">
-            <div class="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+            <div class="bg-tg-n800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
                 <!-- Header -->
-                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
-                    <h2 class="text-lg font-semibold text-white">Admin Settings</h2>
-                    <button @click="showAdminPanel = false" class="text-gray-400 hover:text-white">
+                <div class="flex items-center justify-between px-6 py-4 border-b border-tg-n700">
+                    <h2 class="text-lg font-semibold text-tg-ink">Admin Settings</h2>
+                    <button @click="showAdminPanel = false" class="text-tg-n400 hover:text-tg-ink">
                         <i class="fas fa-times text-xl"></i>
                     </button>
                 </div>
 
                 <!-- Tabs -->
-                <div class="flex border-b border-gray-700 px-6">
-                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                <div class="flex border-b border-tg-n700 px-6">
+                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-tg-n400 hover:text-tg-n200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Viewer Accounts
                     </button>
-                    <button @click="adminActiveTab = 'tokens'; loadAdminTokens()" :class="adminActiveTab === 'tokens' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                    <button @click="adminActiveTab = 'tokens'; loadAdminTokens()" :class="adminActiveTab === 'tokens' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-tg-n400 hover:text-tg-n200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Share Tokens
                     </button>
-                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-tg-n400 hover:text-tg-n200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Audit Log
                     </button>
                 </div>
@@ -2346,32 +2449,32 @@
                     <!-- Viewers Tab -->
                     <div v-if="adminActiveTab === 'viewers'">
                         <!-- Create/Edit Form -->
-                        <div class="bg-gray-900 rounded-lg p-4 mb-4">
-                            <h3 class="text-sm font-medium text-gray-300 mb-3">{{ adminEditingId ? 'Edit Viewer' : 'Create Viewer' }}</h3>
+                        <div class="bg-tg-n900 rounded-lg p-4 mb-4">
+                            <h3 class="text-sm font-medium text-tg-n300 mb-3">{{ adminEditingId ? 'Edit Viewer' : 'Create Viewer' }}</h3>
                             <div v-if="adminError" class="text-red-400 text-sm mb-3">{{ adminError }}</div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <input v-model="adminViewerForm.username" :disabled="!!adminEditingId" placeholder="Username" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
-                                <input v-model="adminViewerForm.password" type="password" :placeholder="adminEditingId ? 'New password (leave empty to keep)' : 'Password'" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                                <input v-model="adminViewerForm.username" :disabled="!!adminEditingId" placeholder="Username" class="bg-tg-n700 text-tg-ink rounded px-3 py-2 text-sm" />
+                                <input v-model="adminViewerForm.password" type="password" :placeholder="adminEditingId ? 'New password (leave empty to keep)' : 'Password'" class="bg-tg-n700 text-tg-ink rounded px-3 py-2 text-sm" />
                             </div>
                             <div class="mt-3">
-                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
-                                <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
+                                <label class="text-xs text-tg-n400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
+                                <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2 max-h-32 overflow-y-auto">
+                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
                                         <input type="checkbox" :value="chat.ref" v-model="adminViewerForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
                                     </label>
                                 </div>
                             </div>
                             <div class="mt-3 flex items-center gap-4">
-                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                <label class="flex items-center gap-2 text-sm text-tg-n300">
                                     <input type="checkbox" v-model="adminViewerForm.is_active" class="rounded" /> Active
                                 </label>
-                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                <label class="flex items-center gap-2 text-sm text-tg-n300">
                                     <input type="checkbox" v-model="adminViewerForm.no_download" class="rounded" /> No Downloads
                                 </label>
                                 <div class="flex-1"></div>
-                                <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
-                                <button @click="saveViewer" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-white text-sm rounded">
+                                <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-tg-n400 hover:text-tg-ink">Cancel</button>
+                                <button @click="saveViewer" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-sm rounded">
                                     {{ adminEditingId ? 'Update' : 'Create' }}
                                 </button>
                             </div>
@@ -2379,10 +2482,10 @@
 
                         <!-- Viewers List -->
                         <div class="space-y-2">
-                            <div v-for="viewer in adminViewers" :key="viewer.id" class="flex items-center gap-3 bg-gray-900 rounded-lg p-3">
+                            <div v-for="viewer in adminViewers" :key="viewer.id" class="flex items-center gap-3 bg-tg-n900 rounded-lg p-3">
                                 <div class="flex-1">
-                                    <div class="text-sm text-white font-medium">{{ viewer.username }}</div>
-                                    <div class="text-xs text-gray-400">
+                                    <div class="text-sm text-tg-ink font-medium">{{ viewer.username }}</div>
+                                    <div class="text-xs text-tg-n400">
                                         <template v-if="viewer.allowed_chat_refs && viewer.allowed_chat_refs.length">
                                             {{ viewer.allowed_chat_refs.map(r => { const c = adminChats.find(ch => ch.ref === r); return c ? c.title : r }).join(', ') }}
                                         </template>
@@ -2394,38 +2497,38 @@
                                         <template v-if="viewer.no_download"> · <span class="text-amber-400">No DL</span></template>
                                     </div>
                                 </div>
-                                <button @click="editViewer(viewer)" class="text-gray-400 hover:text-tg-accent-soft p-1"><i class="fas fa-edit"></i></button>
-                                <button @click="deleteViewer(viewer)" class="text-gray-400 hover:text-red-400 p-1"><i class="fas fa-trash"></i></button>
+                                <button @click="editViewer(viewer)" class="text-tg-n400 hover:text-tg-accent-soft p-1"><i class="fas fa-edit"></i></button>
+                                <button @click="deleteViewer(viewer)" class="text-tg-n400 hover:text-red-400 p-1"><i class="fas fa-trash"></i></button>
                             </div>
-                            <div v-if="adminViewers.length === 0" class="text-gray-500 text-sm text-center py-4">No viewer accounts yet</div>
+                            <div v-if="adminViewers.length === 0" class="text-tg-n500 text-sm text-center py-4">No viewer accounts yet</div>
                         </div>
                     </div>
 
                     <!-- Share Tokens Tab (v7.2.0) -->
                     <div v-if="adminActiveTab === 'tokens'">
                         <!-- Create Token Form -->
-                        <div class="bg-gray-900 rounded-lg p-4 mb-4">
-                            <h3 class="text-sm font-medium text-gray-300 mb-3">Create Share Token</h3>
+                        <div class="bg-tg-n900 rounded-lg p-4 mb-4">
+                            <h3 class="text-sm font-medium text-tg-n300 mb-3">Create Share Token</h3>
                             <div v-if="adminTokenError" class="text-red-400 text-sm mb-3">{{ adminTokenError }}</div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <input v-model="adminTokenForm.label" placeholder="Label (optional)" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
-                                <input v-model="adminTokenForm.expires_at" type="datetime-local" class="bg-gray-700 text-white rounded px-3 py-2 text-sm" />
+                                <input v-model="adminTokenForm.label" placeholder="Label (optional)" class="bg-tg-n700 text-tg-ink rounded px-3 py-2 text-sm" />
+                                <input v-model="adminTokenForm.expires_at" type="datetime-local" class="bg-tg-n700 text-tg-ink rounded px-3 py-2 text-sm" />
                             </div>
                             <div class="mt-3">
-                                <label class="text-xs text-gray-400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
-                                <div class="flex flex-wrap gap-1 bg-gray-700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-gray-300 bg-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-500">
+                                <label class="text-xs text-tg-n400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
+                                <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2 max-h-32 overflow-y-auto">
+                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
                                         <input type="checkbox" :value="chat.ref" v-model="adminTokenForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
                                     </label>
                                 </div>
                             </div>
                             <div class="mt-3 flex items-center gap-4">
-                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                <label class="flex items-center gap-2 text-sm text-tg-n300">
                                     <input type="checkbox" v-model="adminTokenForm.no_download" class="rounded" /> No Downloads
                                 </label>
                                 <div class="flex-1"></div>
-                                <button @click="createToken" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-white text-sm rounded">
+                                <button @click="createToken" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-sm rounded">
                                     Create Token
                                 </button>
                             </div>
@@ -2435,25 +2538,25 @@
                         <div v-if="adminNewToken" class="bg-green-900/50 border border-green-600 rounded-lg p-4 mb-4">
                             <div class="text-sm text-green-300 mb-2">Token created! Copy it now — it won't be shown again.</div>
                             <div class="flex items-center gap-2 mb-2">
-                                <span class="text-xs text-gray-400 w-16 shrink-0">Token</span>
-                                <code class="flex-1 bg-gray-900 text-green-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewToken }}</code>
-                                <button @click="navigator.clipboard.writeText(adminNewToken); adminNewToken = ''" class="px-3 py-2 bg-green-700 hover:bg-green-600 text-white text-xs rounded whitespace-nowrap">Copy</button>
+                                <span class="text-xs text-tg-n400 w-16 shrink-0">Token</span>
+                                <code class="flex-1 bg-tg-n900 text-green-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewToken }}</code>
+                                <button @click="navigator.clipboard.writeText(adminNewToken); adminNewToken = ''" class="px-3 py-2 bg-green-700 hover:bg-green-600 text-tg-ink text-xs rounded whitespace-nowrap">Copy</button>
                             </div>
                             <div class="flex items-center gap-2">
-                                <span class="text-xs text-gray-400 w-16 shrink-0">Link</span>
-                                <code class="flex-1 bg-gray-900 text-tg-accent-soft rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
-                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-tg-accent-hover hover:bg-tg-accent-strong text-white text-xs rounded whitespace-nowrap">Copy Link</button>
+                                <span class="text-xs text-tg-n400 w-16 shrink-0">Link</span>
+                                <code class="flex-1 bg-tg-n900 text-tg-accent-soft rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
+                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-tg-accent-hover hover:bg-tg-accent-strong text-tg-ink text-xs rounded whitespace-nowrap">Copy Link</button>
                             </div>
-                            <div class="text-xs text-gray-500 mt-2">Note: token may appear in server access logs when the link is opened.</div>
+                            <div class="text-xs text-tg-n500 mt-2">Note: token may appear in server access logs when the link is opened.</div>
                         </div>
 
                         <!-- Tokens List -->
                         <div class="space-y-2">
-                            <div v-for="token in adminTokens" :key="token.id" class="bg-gray-900 rounded-lg p-3">
+                            <div v-for="token in adminTokens" :key="token.id" class="bg-tg-n900 rounded-lg p-3">
                                 <div class="flex items-center gap-3">
                                     <div class="flex-1">
-                                        <div class="text-sm text-white font-medium">{{ token.label || `Token #${token.id}` }}</div>
-                                        <div class="text-xs text-gray-400">
+                                        <div class="text-sm text-tg-ink font-medium">{{ token.label || `Token #${token.id}` }}</div>
+                                        <div class="text-xs text-tg-n400">
                                             <template v-if="token.allowed_chat_refs && token.allowed_chat_refs.length">
                                                 {{ token.allowed_chat_refs.map(r => { const c = adminChats.find(ch => ch.ref === r); return c ? c.title : r }).join(', ') }}
                                             </template>
@@ -2467,11 +2570,11 @@
                                             <template v-if="token.is_revoked"> · <span class="text-red-400">Revoked</span></template>
                                         </div>
                                     </div>
-                                    <button v-if="!token.is_revoked" @click="revokeToken(token)" class="text-gray-400 hover:text-amber-400 p-1" title="Revoke"><i class="fas fa-ban"></i></button>
-                                    <button @click="deleteToken(token)" class="text-gray-400 hover:text-red-400 p-1" title="Delete"><i class="fas fa-trash"></i></button>
+                                    <button v-if="!token.is_revoked" @click="revokeToken(token)" class="text-tg-n400 hover:text-amber-400 p-1" title="Revoke"><i class="fas fa-ban"></i></button>
+                                    <button @click="deleteToken(token)" class="text-tg-n400 hover:text-red-400 p-1" title="Delete"><i class="fas fa-trash"></i></button>
                                 </div>
                             </div>
-                            <div v-if="adminTokens.length === 0" class="text-gray-500 text-sm text-center py-4">No share tokens yet</div>
+                            <div v-if="adminTokens.length === 0" class="text-tg-n500 text-sm text-center py-4">No share tokens yet</div>
                         </div>
                     </div>
 
@@ -2479,7 +2582,7 @@
                     <div v-if="adminActiveTab === 'audit'">
                         <!-- Action filter -->
                         <div class="flex gap-2 mb-3">
-                            <select v-model="adminAuditAction" @change="loadAdminAudit()" class="bg-gray-700 text-white rounded px-3 py-1.5 text-sm">
+                            <select v-model="adminAuditAction" @change="loadAdminAudit()" class="bg-tg-n700 text-tg-ink rounded px-3 py-1.5 text-sm">
                                 <option value="">All actions</option>
                                 <option value="login_success">Login success</option>
                                 <option value="login_failed">Login failed</option>
@@ -2496,14 +2599,14 @@
                             </select>
                         </div>
                         <div class="space-y-1">
-                            <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-gray-900 rounded px-3 py-2">
-                                <span class="text-gray-500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
+                            <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-tg-n900 rounded px-3 py-2">
+                                <span class="text-tg-n500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
                                 <span :class="{'text-yellow-400': log.role === 'master', 'text-tg-accent-soft': log.role === 'viewer', 'text-purple-400': log.role === 'token'}" class="w-16 shrink-0">{{ log.role }}</span>
-                                <span class="text-gray-300 w-24 shrink-0 truncate">{{ log.username }}</span>
-                                <span class="text-gray-400 flex-1 truncate">{{ log.action }}</span>
-                                <span class="text-gray-600 truncate w-28">{{ log.ip_address }}</span>
+                                <span class="text-tg-n300 w-24 shrink-0 truncate">{{ log.username }}</span>
+                                <span class="text-tg-n400 flex-1 truncate">{{ log.action }}</span>
+                                <span class="text-tg-n500 truncate w-28">{{ log.ip_address }}</span>
                             </div>
-                            <div v-if="adminAuditLogs.length === 0" class="text-gray-500 text-sm text-center py-4">No audit logs yet</div>
+                            <div v-if="adminAuditLogs.length === 0" class="text-tg-n500 text-sm text-center py-4">No audit logs yet</div>
                         </div>
                     </div>
                 </div>
@@ -2517,14 +2620,14 @@
             role="region" aria-label="Audio player">
             <div class="max-w-5xl mx-auto flex items-center gap-2 sm:gap-3">
                 <button type="button" @click="playPrevAudio()" aria-label="Previous audio message"
-                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                    class="p-2 rounded-full text-tg-n300 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
                     </svg>
                 </button>
                 <button type="button" @click="toggleAudioPlayback()"
                     :aria-label="audioIsPlaying ? 'Pause audio' : 'Play audio'"
-                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent flex items-center justify-center text-tg-ink transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg v-if="audioIsPlaying" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                     </svg>
@@ -2533,7 +2636,7 @@
                     </svg>
                 </button>
                 <button type="button" @click="playNextAudio()" aria-label="Next audio message"
-                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                    class="p-2 rounded-full text-tg-n300 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/>
                     </svg>
@@ -2542,8 +2645,8 @@
                 <div class="flex-1 min-w-0">
                     <button type="button" @click="focusAudioTrackMessage()"
                         :aria-label="'Go to message from ' + audioTrack.sender"
-                        class="block w-full text-left truncate rounded px-1 hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
-                        <span class="text-sm text-white">{{ audioTrack.sender }}</span>
+                        class="block w-full text-left truncate rounded px-1 hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                        <span class="text-sm text-tg-ink">{{ audioTrack.sender }}</span>
                         <span class="text-[11px] text-tg-muted ml-2">
                             {{ audioTrack.chatName }}<template v-if="audioTrack.date"> · {{ formatShortDate(audioTrack.date) }} {{ formatTime(audioTrack.date) }}</template>
                         </span>
@@ -2562,14 +2665,14 @@
                     <button v-for="rate in audioSpeeds" :key="rate" type="button" @click="setAudioSpeed(rate)"
                         :aria-pressed="currentAudioSpeed === rate"
                         :aria-label="'Playback speed ' + rate + 'x'"
-                        :class="currentAudioSpeed === rate ? 'bg-tg-accent-strong text-white' : 'text-gray-300 hover:bg-white/10'"
+                        :class="currentAudioSpeed === rate ? 'bg-tg-accent-strong text-tg-ink' : 'text-tg-n300 hover:bg-tg-ink/10'"
                         class="text-[11px] px-2 py-1 rounded transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                         {{ rate }}x
                     </button>
                 </div>
 
                 <button type="button" @click="closeAudioPlayer()" aria-label="Close audio player"
-                    class="p-2 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                    class="p-2 rounded-full text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
@@ -2583,7 +2686,7 @@
 
         <!-- Toast notification for background failures -->
         <div v-if="toastMessage" role="status" aria-live="polite" aria-atomic="true"
-            class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
+            class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-tg-n900 text-tg-ink text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
             {{ toastMessage }}
         </div>
     </div>
@@ -3634,6 +3737,8 @@
                     { id: 'amoled', label: 'AMOLED', dots: ['#000000', '#1a3652', '#4ea4f5'] },
                     { id: 'forest', label: 'Forest', dots: ['#0a120e', '#28543e', '#4caf82'] },
                     { id: 'aubergine', label: 'Aubergine', dots: ['#181221', '#4c3970', '#9b7bd4'] },
+                    { id: 'day', label: 'Day', dots: ['#ffffff', '#d1e7ff', '#2563eb'] },
+                    { id: 'paper', label: 'Paper', dots: ['#f7f0e4', '#dde3be', '#ad5815'] },
                 ]
                 const themePopupOpen = ref(false)
                 const currentTheme = ref('slate')
@@ -6089,8 +6194,9 @@
                 // Get color for sender name (unique per person)
                 const getSenderNameColor = (msg) => {
                     const hue = getSenderColor(msg)
-                    // Bright, vibrant color for name
-                    return `hsl(${hue}, 70%, 65%)`
+                    // Lightness rides the theme: 65% pops on the dark
+                    // palettes and washes out on the light ones.
+                    return `hsl(${hue}, 70%, var(--tg-name-l, 65%))`
                 }
 
                 // Sender avatar helpers (#229 group avatars). Memoized to avoid

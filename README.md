@@ -354,7 +354,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VIEWER_HOST` | `localhost` | B | Viewer host for SQLite realtime push from backup/listener. The `localhost` default only fits a same-host (bare-metal) setup; the shipped compose overrides it to the `telegram-viewer` service |
 | `VIEWER_PORT` | `8080` | B | Viewer port for SQLite realtime push from backup/listener. The shipped compose overrides it to `8000`, the viewer container's port |
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
-| `VIEWER_DEFAULT_THEME` | *(unset — Slate)* | V | Default color theme for browsers with no saved choice: `slate`, `night`, `amoled`, `forest`, `aubergine`. The in-app picker overrides it per browser |
+| `VIEWER_DEFAULT_THEME` | *(unset — Slate)* | V | Default color theme for browsers with no saved choice: `slate`, `night`, `amoled`, `forest`, `aubergine`, `day`, `paper`. The in-app picker overrides it per browser |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
 | `THUMBNAIL_CACHE_DIR` | `$BACKUP_PATH/media/.thumbs` | V | Where generated thumbnails are cached. Falls back to `/tmp/telegram-archive-thumbs` when the media directory is not writable |
 | **Security** | | | |

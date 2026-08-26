@@ -18,6 +18,8 @@ palettes, applied instantly, remembered per browser:
 | **AMOLED** | `#000000` | `#0c0c0e` | `#1a3652` | `#4ea4f5` | True black for OLED screens |
 | **Forest** | `#0a120e` | `#131f18` | `#28543e` | `#4caf82` | Deep greens, easy on the eyes |
 | **Aubergine** | `#181221` | `#241a33` | `#4c3970` | `#9b7bd4` | Purple night, a nod to the classic mobile theme |
+| **Day** | `#ffffff` | `#f8fafc` | `#d1e7ff` | `#2563eb` | Clean white light mode |
+| **Paper** | `#f7f0e4` | `#f1e8d9` | `#dde3be` | `#ad5815` | Warm off-white with an amber accent — reading-room light |
 
 ### Full-page screenshots
 
@@ -25,7 +27,8 @@ palettes, applied instantly, remembered per browser:
 |---|---|
 | ![Slate](images/themes/default.png) | ![Telegram Night](images/themes/night.png) |
 | ![AMOLED](images/themes/amoled.png) | ![Forest](images/themes/forest.png) |
-| ![Aubergine](images/themes/aubergine.png) | |
+| ![Aubergine](images/themes/aubergine.png) | ![Day](images/themes/day.png) |
+| ![Paper](images/themes/paper.png) | |
 
 The choice persists in `localStorage` (per browser, works for anonymous viewers too — no backend).
 `?theme=night` in the URL applies and saves a theme, then scrubs itself from the address bar like
@@ -60,8 +63,8 @@ there is no flash of the default palette on load.
 - **The login page.** It renders before any user preference can load; it keeps its blue identity.
 - **Avatar fallback gradients.** They encode identity (per-chat initials circles), not chrome.
 - **Semantic colors.** Green forward markers, red errors, amber warnings — meaning, not decoration.
-- **Neutral gray dialogs.** Modals and dropdowns use the gray scale, which is shared by all five
-  dark palettes. Theming them is what a light theme costs (below).
+- **Black scrims and media overlays.** The lightbox backdrop, in-bubble reply washes and the
+  video play button darken whatever they sit on; that works on every palette, light included.
 
 ## Verification
 
@@ -98,9 +101,11 @@ Both carry regression tests; the first was watched go red against the reverted m
 
 1. ~~**Default palette.**~~ Solved: `VIEWER_DEFAULT_THEME` sets the deployment's default; Slate
    when unset.
-2. **Light theme.** Needs the neutral grays (~250 utility usages across dialogs, inputs, hovers)
-   swept onto tokens the same way the blues were. In progress as its own pass with the same
-   pixel-identity proof.
+2. ~~**Light theme.**~~ Solved: the ~315 neutral utilities (grays, whites, washes) now ride an
+   `ink` + `n100–n950` token scale — the dark palettes inherit the exact old gray values from
+   `:root` (all five verified pixel-identical after the sweep), and Day/Paper override the scale.
+   Sender-name lightness also rides the theme (`--tg-name-l`), so names stay readable on light
+   canvases. Avatars, black scrims and the login page stay as they were.
 3. **Server-side persistence.** The choice could ride the viewer account instead of the browser,
    so it follows a user across devices. Needs a column and two endpoints; localStorage covers the
    common case today.
@@ -111,4 +116,5 @@ Both carry regression tests; the first was watched go red against the reverted m
 
 On the test instance once the `:dev` images rebuild, or any deployment of this branch:
 open the viewer and use the palette icon, or append `?theme=night`, `?theme=amoled`,
-`?theme=forest`, `?theme=aubergine` — and `?theme=slate` to go back.
+`?theme=forest`, `?theme=aubergine`, `?theme=day`, `?theme=paper` — and `?theme=slate` to go
+back. `VIEWER_DEFAULT_THEME` accepts the same ids.
