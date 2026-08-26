@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.4.1] - 2026-08-26
+
+### Fixed
+
+- **The viewer no longer leaves a dead band below the message list on phones.** 8.4.0 sized the layout root to `100dvh`, meaning to keep bottom-anchored content clear of iOS Safari's retractable toolbar. Combined with the safe-area padding and `overflow: hidden` that `body` already carries, the dynamic unit resolved to less than the visible area, so the app rendered short and the space under the newest message went to waste. The layout root is back to what it was before 8.4.0. The scroll-to-latest button, whose clipping 8.4.0 also addressed, stays fixed — that was a separate cause and a separate fix.
+
 ## [8.4.0] - 2026-08-26
 
 The viewer's colors are yours now, and two capture bugs are gone.
