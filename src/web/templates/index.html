@@ -279,6 +279,18 @@
             height: 100dvh;
         }
 
+        /* h-screen is 100vh, and on phones 100vh includes the strip behind the
+           browser's retractable toolbar (safe-area insets don't cover it: they
+           are 0 while a toolbar is showing). With overflow:hidden on body the
+           app never reflows, so everything anchored to the layout's bottom
+           edge - most visibly the scroll-to-latest button - rendered partly
+           behind browser chrome. dvh tracks the toolbar as it shows and
+           hides; the vh line stays as the fallback for engines without dvh. */
+        body.h-screen {
+            height: 100vh;
+            height: 100dvh;
+        }
+
         /* Custom Scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
