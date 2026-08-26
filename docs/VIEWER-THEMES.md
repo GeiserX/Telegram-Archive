@@ -4,12 +4,12 @@ The viewer has always shipped one palette: the dark slate it launched with. This
 theme system that replaces it — how it works, the palettes it ships, what stays fixed, what was
 verified, and the decisions still open.
 
-![All five themes side by side](images/themes/side-by-side.png)
+![All seven themes side by side](images/themes/side-by-side.png)
 
 ## What ships
 
-A palette picker in the sidebar header (the palette icon next to the changes-feed clock). Five
-palettes, applied instantly, remembered per browser:
+A palette picker in the sidebar header (the palette icon next to the changes-feed clock). Seven
+palettes — five dark, two light — applied instantly, remembered per browser:
 
 | Theme | Canvas | Sidebar | Own bubble | Accent | Character |
 |---|---|---|---|---|---|

@@ -23,10 +23,15 @@
         try {
             // Precedence: one-shot URL param > the user's saved choice >
             // the server's VIEWER_DEFAULT_THEME (substituted at serve time,
-            // empty when unset) > built-in Slate.
-            const serverDefault = '__VIEWER_DEFAULT_THEME__'
-            const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme') || serverDefault
-            if (t && /^[a-z]{3,16}$/.test(t) && t !== 'slate') document.documentElement.dataset.theme = t
+            // empty when unset) > built-in Slate. Every source is validated
+            // against the theme list HERE, not just in the app - an unknown
+            // value falling through to a later source pre-paint would flash
+            // the wrong palette once the app re-resolves it. This list must
+            // match viewerThemes in the app (a template test compares them).
+            const KNOWN_THEMES = ['slate', 'night', 'amoled', 'forest', 'aubergine', 'day', 'paper']
+            const pick = (v) => (v && KNOWN_THEMES.includes(v) ? v : '')
+            const t = pick(new URLSearchParams(location.search).get('theme')) || pick(localStorage.getItem('viewerTheme')) || pick('__VIEWER_DEFAULT_THEME__')
+            if (t && t !== 'slate') document.documentElement.dataset.theme = t
         } catch (e) { /* storage blocked: default palette */ }
     </script>
     <script src="/static/vendor/tailwindcss-play-3.4.17.js"></script>

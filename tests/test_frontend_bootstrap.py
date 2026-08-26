@@ -4616,15 +4616,33 @@ def test_theme_boot_precedence_includes_the_server_default():
     """The pre-paint boot script resolves ?theme= > saved choice > server default.
 
     '__VIEWER_DEFAULT_THEME__' is substituted by read_root at serve time; it
-    must appear in BOTH consumers (the boot script and the picker init), and
-    the boot chain must consult it only after the user's own sources.
+    must appear in BOTH consumers (the boot script and the picker init), the
+    boot chain must consult it only after the user's own sources, and every
+    source must be validated against the theme allowlist BEFORE precedence -
+    an unknown candidate that merely fell through later would flash the
+    wrong palette pre-paint.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert html.count("'__VIEWER_DEFAULT_THEME__'") == 2
     assert (
-        "new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme') || serverDefault"
+        "pick(new URLSearchParams(location.search).get('theme')) || pick(localStorage.getItem('viewerTheme')) || pick('__VIEWER_DEFAULT_THEME__')"
         in html
     )
+
+
+def test_theme_boot_allowlist_matches_the_picker():
+    """KNOWN_THEMES in the head script and viewerThemes in the app are two
+    copies of one list (the head runs before the app exists); they must not
+    drift, or a valid theme would be silently ignored pre-paint."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    boot = re.search(r"const KNOWN_THEMES = \[([^\]]*)\]", html)
+    assert boot is not None
+    boot_ids = re.findall(r"'([a-z]+)'", boot.group(1))
+    picker = re.search(r"const viewerThemes = \[(.*?)\n {16}\]", html, re.S)
+    assert picker is not None
+    picker_ids = re.findall(r"\{ id: '([a-z]+)', label:", picker.group(1))
+    assert boot_ids == picker_ids, f"boot {boot_ids} != picker {picker_ids}"
+    assert len(boot_ids) == 7
 
 
 def test_light_themes_define_the_full_token_set():

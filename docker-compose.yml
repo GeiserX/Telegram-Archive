@@ -225,7 +225,7 @@ services:
       VIEWER_TIMEZONE: ${VIEWER_TIMEZONE:-Europe/Madrid}
       # Default color theme for browsers with no saved choice
       # (slate | night | amoled | forest | aubergine | day | paper); the in-app picker wins.
-      # VIEWER_DEFAULT_THEME: night
+      VIEWER_DEFAULT_THEME: ${VIEWER_DEFAULT_THEME:-}
       SHOW_STATS: ${SHOW_STATS:-true}
       # Restrict viewer to specific chats (optional)
       DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}
