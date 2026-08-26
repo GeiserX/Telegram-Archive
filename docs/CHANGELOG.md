@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.4.0] - 2026-08-26
+
+The viewer's colors are yours now, and two capture bugs are gone.
+
+### Added
+
+- **Seven color themes, picked from the sidebar header.** Slate (the palette the viewer has always had) stays the default; Telegram Night, AMOLED, Forest and Aubergine join it, plus two light modes — Day and Paper. The choice is remembered per browser, applied before the page paints, and shareable as a `?theme=` link. See [docs/VIEWER-THEMES.md](VIEWER-THEMES.md). ([#420](https://github.com/GeiserX/Telegram-Archive/pull/420))
+- **`VIEWER_DEFAULT_THEME`** picks the palette a deployment hands to browsers that have not chosen one. A viewer's own choice always wins over it. ([#420](https://github.com/GeiserX/Telegram-Archive/pull/420))
+
+### Fixed
+
+- **The listener no longer misses the first message from a chat it has never backed up.** A new DM from someone you had never spoken to, or a group you had just joined, stayed invisible until the next scheduled sweep discovered it. The listener now reads the chat's type straight off the event — no extra network call — and applies exactly the decision the scheduled backup would. Chats your exclude lists or include-whitelists keep out of the archive are still never captured. Thanks to [@jordanfelle](https://github.com/jordanfelle). ([#416](https://github.com/GeiserX/Telegram-Archive/issues/415))
+- **The scroll-to-latest button is whole again on phones.** It was rendering half off the bottom-left edge — a `relative` utility on the button was overriding its own positioning — and the app sized itself to `100vh`, which on phones includes the strip behind the retractable browser toolbar. ([#419](https://github.com/GeiserX/Telegram-Archive/pull/419))
+- The example `docker-compose.yml` pinned 8.1.0, the last release that shipped amd64-only images, so anyone copying it onto an ARM machine got a version that could not run there. Thanks to [@skywinder](https://github.com/skywinder). ([#417](https://github.com/GeiserX/Telegram-Archive/pull/417))
+
+### Internal
+
+- A release can no longer ship stale pins or half its architectures. The image pins in `docker-compose.yml`, the README and the migration helper must name the version being released, and both publish workflows now read each pushed tag's manifest back from the registry and fail unless amd64 and arm64 are both in it. ([#418](https://github.com/GeiserX/Telegram-Archive/pull/418))
+
 ## [8.3.2] - 2026-08-25
 
 Dependency maintenance. Nothing about how the archive behaves changes.
