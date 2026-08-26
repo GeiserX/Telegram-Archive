@@ -51,6 +51,18 @@
             background-color: #0f172a;
         }
 
+        /* h-screen is 100vh, and on phones 100vh includes the strip behind the
+           browser's retractable toolbar (safe-area insets don't cover it: they
+           are 0 while a toolbar is showing). With overflow:hidden on body the
+           app never reflows, so everything anchored to the layout's bottom
+           edge - most visibly the scroll-to-latest button - rendered partly
+           behind browser chrome. dvh tracks the toolbar as it shows and
+           hides; the vh line stays as the fallback for engines without dvh. */
+        body.h-screen {
+            height: 100vh;
+            height: 100dvh;
+        }
+
         /* Custom Scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
@@ -1703,7 +1715,7 @@
                     <!-- Scroll to Bottom Button -->
                     <button v-if="showScrollToBottom || unseenMessageCount > 0 || viewingPinnedWindow"
                         @click="scrollToLatest"
-                        class="scroll-to-bottom-btn relative"
+                        class="scroll-to-bottom-btn"
                         :aria-label="unseenMessageCount > 0 ? unseenMessageCount + ' new message(s) — scroll to latest' : 'Scroll to latest messages'"
                         title="Scroll to latest messages">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
