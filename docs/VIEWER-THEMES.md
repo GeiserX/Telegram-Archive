@@ -88,12 +88,17 @@ causes, fixed independently of the themes:
    live browser: `x: -20` before, `x: 436` (bottom-right, 20px margins) after. The utility came in
    with the unseen-count badge, which needs a positioned parent — `position: absolute` already is
    one, so it is simply dropped.
-2. The app sized itself to `100vh`, which on phones includes the strip behind the retractable
-   browser toolbar, so anything anchored to the layout's bottom edge sat partly behind browser
-   chrome. The app now sizes to `100dvh` (which tracks the toolbar), with `100vh` kept as the
-   fallback for engines without it.
+2. ~~The app sized itself to `100vh`…~~ **Reverted in 8.4.1.** The same change also switched the
+   layout root to `100dvh`, on the theory that `100vh` hides bottom-anchored content behind iOS
+   Safari's retractable toolbar. That half was reasoning, not measurement — it cannot be
+   reproduced in headless Chrome, which has no retractable toolbar — and on a real iPhone it did
+   the opposite of what was intended: the app rendered short, leaving a large dead band under the
+   message list. `body` also carries the safe-area padding and `overflow: hidden`, and in that
+   combination the dynamic unit resolves to less than the visible area. The layout root is back on
+   `h-screen`, and a test now fails if a dvh override is re-added.
 
-Both carry regression tests; the first was watched go red against the reverted markup.
+The clipped button was fully explained by cause 1 on its own. Both the fix and the revert carry
+regression tests, each watched go red against the code it guards against.
 
 ![Jump button before and after](images/themes/jump-button-before-after.png)
 
