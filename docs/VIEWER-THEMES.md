@@ -4,6 +4,8 @@ The viewer has always shipped one palette: the dark slate it launched with. This
 theme system that replaces it — how it works, the palettes it ships, what stays fixed, what was
 verified, and the decisions still open.
 
+![All five themes side by side](images/themes/side-by-side.png)
+
 ## What ships
 
 A palette picker in the sidebar header (the palette icon next to the changes-feed clock). Five
@@ -16,6 +18,14 @@ palettes, applied instantly, remembered per browser:
 | **AMOLED** | `#000000` | `#0c0c0e` | `#1a3652` | `#4ea4f5` | True black for OLED screens |
 | **Forest** | `#0a120e` | `#131f18` | `#28543e` | `#4caf82` | Deep greens, easy on the eyes |
 | **Aubergine** | `#181221` | `#241a33` | `#4c3970` | `#9b7bd4` | Purple night, a nod to the classic mobile theme |
+
+### Full-page screenshots
+
+| | |
+|---|---|
+| ![Slate](images/themes/default.png) | ![Telegram Night](images/themes/night.png) |
+| ![AMOLED](images/themes/amoled.png) | ![Forest](images/themes/forest.png) |
+| ![Aubergine](images/themes/aubergine.png) | |
 
 The choice persists in `localStorage` (per browser, works for anonymous viewers too — no backend).
 `?theme=night` in the URL applies and saves a theme, then scrubs itself from the address bar like
@@ -76,6 +86,8 @@ causes, fixed independently of the themes:
    fallback for engines without it.
 
 Both carry regression tests; the first was watched go red against the reverted markup.
+
+![Jump button before and after](images/themes/jump-button-before-after.png)
 
 ## Open decisions
 
