@@ -20,14 +20,14 @@ Usage:
         -e POSTGRES_USER=telegram \
         -e POSTGRES_PASSWORD=your-password \
         -e POSTGRES_DB=telegram_backup \
-        drumsergio/telegram-archive:8.3.2 \
+        drumsergio/telegram-archive:8.4.0 \
         python scripts/migrate-sqlite-to-postgres.py
 
     # Or with explicit paths
     docker run --rm -it \
         -v /path/to/sqlite/telegram_backup.db:/sqlite.db:ro \
         -e DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname \
-        drumsergio/telegram-archive:8.3.2 \
+        drumsergio/telegram-archive:8.4.0 \
         python scripts/migrate-sqlite-to-postgres.py --sqlite /sqlite.db
 
 Environment Variables:
