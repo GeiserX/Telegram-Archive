@@ -16,6 +16,15 @@
          same origin as the archive session, so they load from this server and
          nowhere else: no CDN edge to compromise, no per-pageview IP/UA leak to
          third parties, and the UI keeps working offline/air-gapped. -->
+    <script>
+        // Apply the saved theme before any stylesheet resolves, so the first
+        // paint is already themed (no flash of the default palette). Full
+        // validation/persistence happens in the app; this only sets the hook.
+        try {
+            const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('viewerTheme')
+            if (t && /^[a-z]{3,16}$/.test(t) && t !== 'slate') document.documentElement.dataset.theme = t
+        } catch (e) { /* storage blocked: default palette */ }
+    </script>
     <script src="/static/vendor/tailwindcss-play-3.4.17.js"></script>
     <script src="/static/vendor/vue-3.5.41.global.prod.js"></script>
     <script src="/static/vendor/moment-2.29.4.min.js"></script>
@@ -34,8 +43,123 @@
             --sal: env(safe-area-inset-left, 0px);
         }
 
+        /* ---- Theme tokens. RGB triplets (not hex) so Tailwind can compose
+           opacity modifiers on them. The bare :root block is Slate - the
+           palette this viewer has always had - and doubles as the fallback
+           for an unknown data-theme value. The picker in the sidebar header
+           sets data-theme on <html>; every block below restates EVERY token
+           (a missing one would silently fall through to Slate's value). */
+        :root {
+            --tg-bg: 15 23 42;
+            --tg-sidebar: 30 41 59;
+            --tg-hover: 51 65 85;
+            --tg-active: 43 82 120;
+            --tg-text: 226 232 240;
+            --tg-text-dim: 203 213 225;
+            --tg-muted: 148 163 184;
+            --tg-own: 29 71 114;
+            --tg-other: 51 59 76;
+            --tg-border: 71 85 105;
+            --tg-border-strong: 100 116 139;
+            --tg-accent: 59 130 246;
+            --tg-accent-strong: 37 99 235;
+            --tg-accent-hover: 29 78 216;
+            --tg-accent-soft: 96 165 250;
+            --tg-accent-bright: 147 197 253;
+            --tg-accent-faint: 191 219 254;
+            --tg-accent-dim: 30 58 138;
+        }
+
+        /* Telegram Desktop's night palette. */
+        :root[data-theme="night"] {
+            --tg-bg: 14 22 33;
+            --tg-sidebar: 23 33 43;
+            --tg-hover: 32 43 54;
+            --tg-active: 43 82 120;
+            --tg-text: 245 245 245;
+            --tg-text-dim: 210 216 222;
+            --tg-muted: 108 120 131;
+            --tg-own: 43 82 120;
+            --tg-other: 24 37 51;
+            --tg-border: 42 56 70;
+            --tg-border-strong: 74 92 110;
+            --tg-accent: 82 136 193;
+            --tg-accent-strong: 68 119 172;
+            --tg-accent-hover: 58 104 152;
+            --tg-accent-soft: 106 156 205;
+            --tg-accent-bright: 148 186 221;
+            --tg-accent-faint: 190 214 235;
+            --tg-accent-dim: 34 56 80;
+        }
+
+        /* True black for OLED screens. */
+        :root[data-theme="amoled"] {
+            --tg-bg: 0 0 0;
+            --tg-sidebar: 12 12 14;
+            --tg-hover: 28 28 32;
+            --tg-active: 30 62 94;
+            --tg-text: 235 235 238;
+            --tg-text-dim: 205 205 210;
+            --tg-muted: 122 128 136;
+            --tg-own: 26 54 82;
+            --tg-other: 20 20 24;
+            --tg-border: 44 44 50;
+            --tg-border-strong: 82 82 92;
+            --tg-accent: 78 164 245;
+            --tg-accent-strong: 54 144 232;
+            --tg-accent-hover: 41 126 210;
+            --tg-accent-soft: 116 184 248;
+            --tg-accent-bright: 158 205 250;
+            --tg-accent-faint: 197 225 252;
+            --tg-accent-dim: 22 52 84;
+        }
+
+        /* Deep greens, easy on the eyes. */
+        :root[data-theme="forest"] {
+            --tg-bg: 10 18 14;
+            --tg-sidebar: 19 31 24;
+            --tg-hover: 32 48 38;
+            --tg-active: 46 92 70;
+            --tg-text: 227 237 231;
+            --tg-text-dim: 200 214 206;
+            --tg-muted: 133 153 142;
+            --tg-own: 40 84 62;
+            --tg-other: 21 33 27;
+            --tg-border: 46 64 53;
+            --tg-border-strong: 84 108 94;
+            --tg-accent: 76 175 130;
+            --tg-accent-strong: 56 152 108;
+            --tg-accent-hover: 47 132 94;
+            --tg-accent-soft: 110 199 158;
+            --tg-accent-bright: 154 219 184;
+            --tg-accent-faint: 197 235 214;
+            --tg-accent-dim: 24 66 46;
+        }
+
+        /* Purple night, a nod to the classic mobile theme. */
+        :root[data-theme="aubergine"] {
+            --tg-bg: 24 18 33;
+            --tg-sidebar: 36 27 50;
+            --tg-hover: 54 41 74;
+            --tg-active: 84 63 122;
+            --tg-text: 236 230 244;
+            --tg-text-dim: 212 202 226;
+            --tg-muted: 160 147 180;
+            --tg-own: 76 57 112;
+            --tg-other: 31 23 43;
+            --tg-border: 58 45 79;
+            --tg-border-strong: 96 80 122;
+            --tg-accent: 155 123 212;
+            --tg-accent-strong: 135 100 196;
+            --tg-accent-hover: 118 85 176;
+            --tg-accent-soft: 180 156 224;
+            --tg-accent-bright: 205 188 236;
+            --tg-accent-faint: 224 213 242;
+            --tg-accent-dim: 62 46 92;
+        }
+
         html {
-            background-color: #0f172a;
+            background-color: rgb(var(--tg-bg));
             /* Stop iOS from auto-inflating text on rotate / in landscape,
                which also silently widens content and can force h-scroll. */
             -webkit-text-size-adjust: 100%;
@@ -48,7 +172,7 @@
             padding-bottom: var(--sab);
             padding-left: var(--sal);
             padding-right: var(--sar);
-            background-color: #0f172a;
+            background-color: rgb(var(--tg-bg));
         }
 
         /* h-screen is 100vh, and on phones 100vh includes the strip behind the
@@ -69,16 +193,16 @@
         }
 
         ::-webkit-scrollbar-track {
-            background: #1e293b;
+            background: rgb(var(--tg-sidebar));
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #475569;
+            background: rgb(var(--tg-border));
             border-radius: 3px;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #64748b;
+            background: rgb(var(--tg-border-strong));
         }
 
         /* Message Bubbles.
@@ -202,7 +326,7 @@
 
         .floating-date-pill button,
         .date-separator button {
-            background-color: rgba(30, 41, 59, 0.85);
+            background-color: rgb(var(--tg-sidebar) / 0.85);
             -webkit-backdrop-filter: blur(6px);
             backdrop-filter: blur(6px);
             border: 0;
@@ -210,7 +334,7 @@
             border-radius: 16px;
             font-size: 0.75rem;
             font-family: inherit;
-            color: #cbd5e1;
+            color: rgb(var(--tg-text-dim));
             cursor: pointer;
             transition: background-color 0.2s;
             display: inline-block;
@@ -219,65 +343,65 @@
         }
 
         .date-separator button:hover {
-            background-color: #475569;
-            color: #cbd5e1;
+            background-color: rgb(var(--tg-border));
+            color: rgb(var(--tg-text-dim));
         }
 
         /* Flatpickr dark theme customization */
         .flatpickr-calendar {
-            background: #1e293b !important;
-            border: 1px solid #475569 !important;
+            background: rgb(var(--tg-sidebar)) !important;
+            border: 1px solid rgb(var(--tg-border)) !important;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
         }
 
         .flatpickr-months {
-            background: #334155 !important;
-            border-bottom: 1px solid #475569 !important;
+            background: rgb(var(--tg-hover)) !important;
+            border-bottom: 1px solid rgb(var(--tg-border)) !important;
         }
 
         .flatpickr-month {
-            color: #e2e8f0 !important;
+            color: rgb(var(--tg-text)) !important;
         }
 
         .flatpickr-calendar .flatpickr-monthDropdown-months {
             color-scheme: dark;
-            background: #334155 !important;
-            color: #e2e8f0 !important;
+            background: rgb(var(--tg-hover)) !important;
+            color: rgb(var(--tg-text)) !important;
         }
 
         .flatpickr-calendar .flatpickr-monthDropdown-month {
-            background: #334155 !important;
-            color: #e2e8f0 !important;
+            background: rgb(var(--tg-hover)) !important;
+            color: rgb(var(--tg-text)) !important;
         }
 
         .flatpickr-weekdays {
-            background: #334155 !important;
+            background: rgb(var(--tg-hover)) !important;
         }
 
         .flatpickr-weekday {
-            color: #94a3b8 !important;
+            color: rgb(var(--tg-muted)) !important;
         }
 
         .flatpickr-day {
-            color: #e2e8f0 !important;
+            color: rgb(var(--tg-text)) !important;
         }
 
         .flatpickr-day:hover {
-            background: #475569 !important;
-            border-color: #475569 !important;
+            background: rgb(var(--tg-border)) !important;
+            border-color: rgb(var(--tg-border)) !important;
         }
 
         .flatpickr-day.selected {
-            background: #3b82f6 !important;
-            border-color: #3b82f6 !important;
+            background: rgb(var(--tg-accent)) !important;
+            border-color: rgb(var(--tg-accent)) !important;
         }
 
         .flatpickr-day.today {
-            border-color: #60a5fa !important;
+            border-color: rgb(var(--tg-accent-soft)) !important;
         }
 
         .flatpickr-day.today:hover {
-            background: #475569 !important;
+            background: rgb(var(--tg-border)) !important;
         }
 
         @media (max-height: 700px) {
@@ -303,7 +427,7 @@
             width: 4px;
             height: 4px;
             border-radius: 9999px;
-            background: #60a5fa;
+            background: rgb(var(--tg-accent-soft));
             transform: translateX(-50%);
             pointer-events: none;
         }
@@ -320,9 +444,9 @@
             width: 44px;
             height: 44px;
             border-radius: 50%;
-            background: #334155;
-            border: 1px solid #475569;
-            color: #e2e8f0;
+            background: rgb(var(--tg-hover));
+            border: 1px solid rgb(var(--tg-border));
+            color: rgb(var(--tg-text));
             display: flex;
             align-items: center;
             justify-content: center;
@@ -333,7 +457,7 @@
         }
 
         .scroll-to-bottom-btn:hover {
-            background: #475569;
+            background: rgb(var(--tg-border));
             transform: scale(1.05);
         }
 
@@ -354,15 +478,15 @@
             right: 0;
             bottom: 0;
             z-index: 45;
-            background: rgba(30, 41, 59, 0.97);
+            background: rgb(var(--tg-sidebar) / 0.97);
             -webkit-backdrop-filter: blur(8px);
             backdrop-filter: blur(8px);
-            border-top: 1px solid #334155;
+            border-top: 1px solid rgb(var(--tg-hover));
             box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
         }
 
         .audio-playbar input[type="range"] {
-            accent-color: #3b82f6;
+            accent-color: rgb(var(--tg-accent));
         }
 
         /* Keep the newest bubbles and the scroll FAB clear of the docked bar. */
@@ -379,7 +503,7 @@
             width: 24px;
             height: 24px;
             border: 2px solid rgba(255, 255, 255, 0.1);
-            border-top-color: #60a5fa;
+            border-top-color: rgb(var(--tg-accent-soft));
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
@@ -390,12 +514,12 @@
 
         /* Clickable Links */
         .message-text a {
-            color: #60a5fa;
+            color: rgb(var(--tg-accent-soft));
             text-decoration: underline;
         }
 
         .message-text a:hover {
-            color: #93c5fd;
+            color: rgb(var(--tg-accent-bright));
         }
 
         /* Album Grid Styles */
@@ -467,7 +591,7 @@
             font-size: 0.85em;
         }
         .tg-blockquote {
-            border-left: 3px solid rgba(96, 165, 250, 0.6);
+            border-left: 3px solid rgb(var(--tg-accent-soft) / 0.6);
             padding: 2px 8px;
             margin: 4px 0;
             border-radius: 4px;
@@ -487,7 +611,7 @@
             user-select: text;
         }
         .tg-mention {
-            color: rgb(96, 165, 250);
+            color: rgb(var(--tg-accent-soft));
         }
     </style>
     <script>
@@ -496,15 +620,29 @@
             theme: {
                 extend: {
                     colors: {
+                        // Every value is an RGB-triplet CSS variable (see the
+                        // theme tokens in the stylesheet) so the palette follows
+                        // data-theme on <html> and opacity modifiers keep
+                        // working (bg-tg-sidebar/80).
                         tg: {
-                            bg: '#0f172a',
-                            sidebar: '#1e293b',
-                            hover: '#334155',
-                            active: '#2b5278',
-                            text: '#e2e8f0',
-                            muted: '#94a3b8',
-                            own: '#2b5278',
-                            other: '#182533',
+                            bg: 'rgb(var(--tg-bg) / <alpha-value>)',
+                            sidebar: 'rgb(var(--tg-sidebar) / <alpha-value>)',
+                            hover: 'rgb(var(--tg-hover) / <alpha-value>)',
+                            active: 'rgb(var(--tg-active) / <alpha-value>)',
+                            text: 'rgb(var(--tg-text) / <alpha-value>)',
+                            'text-dim': 'rgb(var(--tg-text-dim) / <alpha-value>)',
+                            muted: 'rgb(var(--tg-muted) / <alpha-value>)',
+                            own: 'rgb(var(--tg-own) / <alpha-value>)',
+                            other: 'rgb(var(--tg-other) / <alpha-value>)',
+                            border: 'rgb(var(--tg-border) / <alpha-value>)',
+                            'border-strong': 'rgb(var(--tg-border-strong) / <alpha-value>)',
+                            accent: 'rgb(var(--tg-accent) / <alpha-value>)',
+                            'accent-strong': 'rgb(var(--tg-accent-strong) / <alpha-value>)',
+                            'accent-hover': 'rgb(var(--tg-accent-hover) / <alpha-value>)',
+                            'accent-soft': 'rgb(var(--tg-accent-soft) / <alpha-value>)',
+                            'accent-bright': 'rgb(var(--tg-accent-bright) / <alpha-value>)',
+                            'accent-faint': 'rgb(var(--tg-accent-faint) / <alpha-value>)',
+                            'accent-dim': 'rgb(var(--tg-accent-dim) / <alpha-value>)',
                         }
                     }
                 }
@@ -513,7 +651,7 @@
     </script>
 </head>
 
-<body class="bg-slate-900 text-white h-screen overflow-hidden">
+<body class="bg-tg-bg text-white h-screen overflow-hidden">
     <div id="app" class="w-full h-full">
         <!-- Login Page -->
         <div v-if="!isAuthenticated" class="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800">
@@ -522,7 +660,7 @@
                 <!-- Telegram Logo -->
                 <div class="flex justify-center mb-6">
                     <div class="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg">
-                        <i class="fab fa-telegram-plane text-5xl text-blue-500"></i>
+                        <i class="fab fa-telegram-plane text-5xl text-tg-accent"></i>
                     </div>
                 </div>
 
@@ -602,6 +740,31 @@
                                 title="What changed (deletions & edits)">
                                 <i class="fas fa-clock-rotate-left"></i>
                             </button>
+                            <!-- Theme picker. The palette rides data-theme on <html>;
+                                 the dropdown mirrors the Stats popup pattern. -->
+                            <div class="relative">
+                                <button @click="themePopupOpen = !themePopupOpen"
+                                    class="text-gray-400 hover:text-white p-1"
+                                    title="Color theme" aria-label="Choose color theme"
+                                    :aria-expanded="themePopupOpen ? 'true' : 'false'">
+                                    <i class="fas fa-palette"></i>
+                                </button>
+                                <div v-if="themePopupOpen" @click="themePopupOpen = false" class="fixed inset-0 z-40"></div>
+                                <div v-if="themePopupOpen"
+                                    class="absolute left-0 top-full mt-1 z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl p-2 min-w-[200px]">
+                                    <button v-for="theme in viewerThemes" :key="theme.id" @click="setTheme(theme.id)"
+                                        class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-left transition hover:bg-gray-700"
+                                        :class="currentTheme === theme.id ? 'bg-gray-700/70 text-white' : 'text-gray-300'">
+                                        <span class="flex -space-x-1">
+                                            <span class="w-3.5 h-3.5 rounded-full border border-black/40" :style="{ background: theme.dots[0] }"></span>
+                                            <span class="w-3.5 h-3.5 rounded-full border border-black/40" :style="{ background: theme.dots[1] }"></span>
+                                            <span class="w-3.5 h-3.5 rounded-full border border-black/40" :style="{ background: theme.dots[2] }"></span>
+                                        </span>
+                                        <span class="flex-1">{{ theme.label }}</span>
+                                        <i v-if="currentTheme === theme.id" class="fas fa-check text-xs text-tg-accent-soft"></i>
+                                    </button>
+                                </div>
+                            </div>
                             <!-- Stats Dropdown Button (hidden if SHOW_STATS=false) -->
                             <div class="relative" v-if="showStatsUI && statsData.stats_calculated_at">
                                 <button @click="statsPopupOpen = !statsPopupOpen"
@@ -624,12 +787,12 @@
                                         <div class="flex justify-between"><span>💾 Storage:</span><span class="text-white">{{ formatSize(statsData.total_size_mb) }}</span></div>
                                         <div class="pt-2 mt-2 border-t border-gray-700 text-[10px] opacity-70 flex items-center justify-between gap-2">
                                             <span>{{ formatStatsTime(statsData.stats_calculated_at) }}</span>
-                                            <span v-if="statsData && statsData.backup_in_progress" class="text-blue-400 opacity-100 shrink-0">● Backup in progress…</span>
+                                            <span v-if="statsData && statsData.backup_in_progress" class="text-tg-accent-soft opacity-100 shrink-0">● Backup in progress…</span>
                                         </div>
                                         <!-- Footer -->
                                         <div class="pt-3 mt-3 border-t border-gray-700 text-center">
                                             <div class="text-[10px] opacity-70">
-                                                Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-blue-400 hover:text-blue-300">Sergio Fernández</a>
+                                                Made with ❤️ by <a href="https://geiser.cloud" target="_blank" class="text-tg-accent-soft hover:text-tg-accent-bright">Sergio Fernández</a>
                                             </div>
                                             <a href="https://github.com/sponsors/GeiserX" target="_blank"
                                                 class="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 text-[9px] bg-pink-600/20 hover:bg-pink-600/30 text-pink-300 rounded transition">
@@ -655,7 +818,7 @@
 
                     <div class="relative mb-3">
                         <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
-                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            class="w-full bg-gray-900 text-white rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                         <svg class="w-5 h-5 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -665,13 +828,13 @@
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()"
-                            :class="activeTab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             All Chats
                         </button>
                         <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
-                            :class="activeTab === 'folder_' + folder.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
+                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-tg-muted hover:bg-gray-700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             {{ folder.emoticon || '📁' }} {{ folder.title }}
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
@@ -718,15 +881,15 @@
 
                 <!-- Notification Permission Banner (shows when permission is 'default' AND notifications are enabled) -->
                 <div v-if="(notificationsEnabled || pushEnabled) && notificationsSupported && notificationPermission === 'default'"
-                    class="px-3 py-2 bg-blue-900/80 border-b border-blue-700">
-                    <div class="flex items-center gap-2 text-blue-200 text-sm">
+                    class="px-3 py-2 bg-tg-accent-dim/80 border-b border-tg-accent-hover">
+                    <div class="flex items-center gap-2 text-tg-accent-faint text-sm">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
                         </svg>
                         <span>Enable notifications for new messages</span>
                         <button @click="requestNotificationPermission()"
-                            class="ml-auto px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition">
+                            class="ml-auto px-2 py-1 bg-tg-accent-strong hover:bg-tg-accent text-white text-xs rounded transition">
                             Enable
                         </button>
                     </div>
@@ -796,7 +959,7 @@
                                 <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
                             </span>
                             <button @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, { id: 'all', title: 'All messages' })"
-                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-blue-600 text-white transition">
+                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-tg-accent-strong text-white transition">
                                 View all messages
                             </button>
                         </div>
@@ -815,7 +978,7 @@
                             <div class="flex-1 min-w-0">
                                 <div class="flex justify-between items-baseline">
                                     <h3 class="font-semibold truncate text-white text-sm">
-                                        <span v-if="topic.is_pinned" class="text-blue-400 mr-1">📌</span>
+                                        <span v-if="topic.is_pinned" class="text-tg-accent-soft mr-1">📌</span>
                                         <span v-if="topic.is_closed" class="text-gray-500 mr-1">🔒</span>
                                         {{ topic.title }}
                                     </h3>
@@ -864,13 +1027,13 @@
                             <div v-if="archivedCount > 0 && currentNav.filter === 'all' && !searchQuery"
                                 @click="showArchived()"
                                 class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3 border-b border-gray-700/50">
-                                <div class="w-12 h-12 rounded-full bg-blue-600/30 flex items-center justify-center shrink-0">
-                                    <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <div class="w-12 h-12 rounded-full bg-tg-accent-strong/30 flex items-center justify-center shrink-0">
+                                    <svg class="w-6 h-6 text-tg-accent-soft" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>
                                     </svg>
                                 </div>
                                 <div class="flex-1 min-w-0">
-                                    <h3 class="font-semibold text-blue-400">Archived Chats</h3>
+                                    <h3 class="font-semibold text-tg-accent-soft">Archived Chats</h3>
                                     <p class="text-xs text-tg-muted">{{ archivedCount }} chats</p>
                                 </div>
                                 <svg class="w-5 h-5 text-tg-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -904,15 +1067,15 @@
                                 <div class="flex-1 min-w-0">
                                     <div class="flex justify-between items-baseline">
                                         <h3 class="font-semibold truncate text-white">
-                                            <span v-if="chat.is_forum" class="text-blue-400 mr-1 text-xs" title="Forum">#</span>
+                                            <span v-if="chat.is_forum" class="text-tg-accent-soft mr-1 text-xs" title="Forum">#</span>
                                             {{ getChatName(chat) }}
                                         </h3>
                                         <span class="text-xs text-tg-muted">{{ formatDate(chat.last_message_date) }}</span>
                                     </div>
                                     <p class="text-sm text-tg-muted truncate">
-                                        <span v-if="chat.username" class="text-blue-400 font-mono">@{{ chat.username }}</span>
+                                        <span v-if="chat.username" class="text-tg-accent-soft font-mono">@{{ chat.username }}</span>
                                         <span v-if="chat.username"> • </span>{{ chat.type }}
-                                        <span v-if="chat.is_forum" class="text-blue-400/70"> • Forum</span>
+                                        <span v-if="chat.is_forum" class="text-tg-accent-soft/70"> • Forum</span>
                                         <span v-if="chat.type !== 'private' && chat.participants_count">
                                             • {{ chat.participants_count }} participants
                                         </span>
@@ -985,7 +1148,7 @@
                             <button v-if="selectedChat?.type === 'private'" type="button"
                                 @click="openSenderInfoFromChat(selectedChat, $event)"
                                 :aria-label="`Show details for ${getChatName(selectedChat)}`"
-                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                class="w-10 h-10 min-w-[2.5rem] aspect-square rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-bold text-white overflow-hidden shrink-0 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                 <img v-if="selectedChat?.avatar_url" :src="selectedChat.avatar_url"
                                     class="w-full h-full object-cover rounded-full" @error="selectedChat.avatar_url = null"
                                     :alt="getChatName(selectedChat)">
@@ -1049,7 +1212,7 @@
                             <div class="relative w-28 sm:w-48 md:w-64">
                                 <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
                                     placeholder="Search..."
-                                    class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    class="w-full bg-gray-900 text-white rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
                                 <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1082,8 +1245,8 @@
                     <!-- Group ↔ supergroup migration banner (#228). Display-only pointer;
                          rendered only when the loaded messages carry the marker. -->
                     <div v-if="migrationBanner && !showPinnedOnly"
-                        class="px-4 py-2 bg-blue-500/10 border-b border-blue-500/30 flex items-center gap-3 text-sm text-blue-200">
-                        <svg class="w-4 h-4 shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        class="px-4 py-2 bg-tg-accent/10 border-b border-tg-accent/30 flex items-center gap-3 text-sm text-tg-accent-faint">
+                        <svg class="w-4 h-4 shrink-0 text-tg-accent-soft" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                         </svg>
@@ -1096,7 +1259,7 @@
                     <div v-if="pinnedMessage && !showPinnedOnly"
                         class="px-4 py-2 bg-tg-sidebar/80 backdrop-blur-sm border-b border-gray-700 flex items-center gap-3">
                         <!-- Pin icon on left -->
-                        <div class="text-blue-400">
+                        <div class="text-tg-accent-soft">
                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                                 <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
                             </svg>
@@ -1104,7 +1267,7 @@
                         <!-- Message content - click to scroll and cycle -->
                         <div class="flex-1 min-w-0 cursor-pointer hover:bg-white/5 -my-1 py-1 px-1 rounded transition"
                             @click="handlePinnedClick">
-                            <div class="text-xs text-blue-400 font-semibold mb-0.5 flex items-center gap-2">
+                            <div class="text-xs text-tg-accent-soft font-semibold mb-0.5 flex items-center gap-2">
                                 <span>Pinned Message</span>
                                 <span v-if="pinnedMessages.length > 1" class="text-tg-muted font-normal">
                                     ({{ currentPinnedIndex + 1 }} of {{ pinnedMessages.length }})
@@ -1121,7 +1284,7 @@
                             </div>
                             <!-- Open pinned messages view button -->
                             <button @click.stop="openPinnedView"
-                                class="w-6 h-6 flex items-center justify-center rounded-full bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 transition"
+                                class="w-6 h-6 flex items-center justify-center rounded-full bg-tg-accent/20 hover:bg-tg-accent/40 text-tg-accent-soft transition"
                                 :title="`View all ${pinnedMessages.length} pinned messages`">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
@@ -1162,7 +1325,7 @@
                         <div class="flex gap-1 px-4 py-2 border-b border-gray-700">
                             <button v-for="tab in mediaTabs" :key="tab.id"
                                 @click="switchMediaTab(tab.id)"
-                                :class="mediaGalleryTab === tab.id ? 'bg-blue-600 text-white' : 'bg-gray-700/50 text-gray-400 hover:text-white'"
+                                :class="mediaGalleryTab === tab.id ? 'bg-tg-accent-strong text-white' : 'bg-gray-700/50 text-gray-400 hover:text-white'"
                                 class="px-3 py-1.5 rounded-lg text-sm font-medium transition">
                                 {{ tab.label }}
                                 <span v-if="mediaGalleryCounts[tab.id]" class="ml-1 text-xs opacity-75">
@@ -1208,7 +1371,7 @@
                                     <div v-for="item in mediaGalleryItems" :key="item.id"
                                         class="flex items-center gap-3 p-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 cursor-pointer"
                                         @click="jumpToMessage(item)">
-                                        <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                                        <div class="w-10 h-10 rounded-full bg-tg-accent-strong flex items-center justify-center flex-shrink-0">
                                             <i class="fas fa-play text-white text-sm"></i>
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -1279,7 +1442,7 @@
                             class="flex items-center justify-center gap-2 py-2 text-xs text-amber-300">
                             <span>{{ newerLoadError }}</span>
                             <button type="button" @click="retryNewerMessages"
-                                class="rounded bg-gray-700 px-2 py-1 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                class="rounded bg-gray-700 px-2 py-1 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                 Retry
                             </button>
                         </div>
@@ -1301,7 +1464,7 @@
                                         <button v-if="view.clickable" type="button"
                                             @click="openSenderInfo(msg, $event)"
                                             :aria-label="`Show sender details for ${view.actor}`"
-                                            class="font-semibold hover:underline hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">{{ view.actor }}</button><span v-else-if="view.actor" class="font-semibold">{{ view.actor }}</span>{{ view.tail }}
+                                            class="font-semibold hover:underline hover:text-white focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">{{ view.actor }}</button><span v-else-if="view.actor" class="font-semibold">{{ view.actor }}</span>{{ view.tail }}
                                     </div>
                                 </template>
                             </div>
@@ -1327,7 +1490,7 @@
                                     <button v-if="showSenderName(index)" type="button"
                                         @click="openSenderInfo(msg, $event)"
                                         :aria-label="`Show sender details for ${getSenderName(msg)}`"
-                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                        class="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold text-white select-none focus:outline-none focus:ring-2 focus:ring-tg-accent-soft"
                                         :style="{ background: getAvatarFill(msg) }">
                                         <img v-if="msg.sender_avatar_url" :src="msg.sender_avatar_url"
                                             loading="lazy"
@@ -1347,8 +1510,8 @@
 
                                     <!-- Reply Context -->
                                     <div v-if="msg.reply_to_msg_id" @click="jumpToReply(msg.reply_to_msg_id)"
-                                        class="border-l-2 border-blue-400/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2 cursor-pointer hover:bg-black/30 transition">
-                                        <div class="font-semibold text-blue-400 mb-0.5 truncate">{{ replyToLabel(msg) }}</div>
+                                        class="border-l-2 border-tg-accent-soft/50 pl-2 mb-2 text-xs bg-black/20 rounded p-2 cursor-pointer hover:bg-black/30 transition">
+                                        <div class="font-semibold text-tg-accent-soft mb-0.5 truncate">{{ replyToLabel(msg) }}</div>
                                         <div class="truncate opacity-70">{{ replyToSnippet(msg) }}</div>
                                     </div>
 
@@ -1383,7 +1546,7 @@
                                                     class="relative w-full border border-white/10 rounded-md overflow-hidden bg-white/5">
                                                     <!-- Progress Bar -->
                                                     <div v-if="getPollPercentage(msg, answer) > 0"
-                                                        class="absolute left-0 top-0 bottom-0 bg-blue-500/30 transition-all duration-500"
+                                                        class="absolute left-0 top-0 bottom-0 bg-tg-accent/30 transition-all duration-500"
                                                         :style="{ width: getPollPercentage(msg, answer) + '%' }">
                                                     </div>
 
@@ -1482,7 +1645,7 @@
                                                 <button type="button" @click.stop="playAudioMessage(msg)"
                                                     :disabled="noDownload"
                                                     :aria-label="(isPlayingAudioMessage(msg) ? 'Pause ' : 'Play ') + getDocumentDisplayName(msg)"
-                                                    class="w-10 h-10 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                                     <svg v-if="isPlayingAudioMessage(msg)" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                                                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                                                     </svg>
@@ -1508,7 +1671,7 @@
                                                          it guards the flex-basis, not the wrapping. -->
                                                     <div class="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
                                                         <span v-if="msg.media?.duration" class="whitespace-nowrap">{{ formatAudioTime(msg.media.duration) }}</span>
-                                                        <span v-if="isCurrentAudioMessage(msg)" class="text-blue-400 whitespace-nowrap">
+                                                        <span v-if="isCurrentAudioMessage(msg)" class="text-tg-accent-soft whitespace-nowrap">
                                                             {{ audioIsPlaying ? 'Now playing' : 'Paused' }}
                                                         </span>
                                                         <span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>
@@ -1525,7 +1688,7 @@
                                                     :download="getDocumentDisplayName(msg)"
                                                     @click.stop
                                                     :aria-label="'Download ' + getDocumentDisplayName(msg)"
-                                                    class="bubble-icon-action w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                                                    class="bubble-icon-action w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                             d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"></path>
@@ -1594,7 +1757,7 @@
                                             <div class="flex items-center justify-between text-[11px] opacity-80">
                                                 <span class="truncate mr-2">{{ getDocumentDisplayName(msg) }}</span>
                                                 <a v-if="!noDownload" :href="getMediaUrl(msg) + '?download=1'" download
-                                                    class="text-blue-400 hover:text-blue-300 whitespace-nowrap">
+                                                    class="text-tg-accent-soft hover:text-tg-accent-bright whitespace-nowrap">
                                                     Download
                                                 </a>
                                             </div>
@@ -1628,8 +1791,8 @@
 
                                     <!-- Capture-time link preview (mf7): Telegram's own webpage card
                                          as it existed when the message was archived -->
-                                    <div v-if="msg.raw_data?.webpage" class="mt-2 border-l-2 border-blue-400/60 pl-2 pr-1 py-1 bg-black/10 rounded-r max-w-full">
-                                        <div v-if="msg.raw_data.webpage.site_name" class="text-xs font-medium text-blue-400">{{ msg.raw_data.webpage.site_name }}</div>
+                                    <div v-if="msg.raw_data?.webpage" class="mt-2 border-l-2 border-tg-accent-soft/60 pl-2 pr-1 py-1 bg-black/10 rounded-r max-w-full">
+                                        <div v-if="msg.raw_data.webpage.site_name" class="text-xs font-medium text-tg-accent-soft">{{ msg.raw_data.webpage.site_name }}</div>
                                         <a v-if="isHttpUrl(msg.raw_data.webpage.url)" :href="msg.raw_data.webpage.url" target="_blank" rel="noopener noreferrer"
                                             class="text-sm font-medium hover:underline break-words block">{{ msg.raw_data.webpage.title || msg.raw_data.webpage.display_url || msg.raw_data.webpage.url }}</a>
                                         <div v-else-if="msg.raw_data.webpage.title" class="text-sm font-medium break-words">{{ msg.raw_data.webpage.title }}</div>
@@ -1644,7 +1807,7 @@
                                     <div v-if="msg.reactions && msg.reactions.length > 0" class="mt-2 flex flex-wrap gap-1.5">
                                         <div v-for="reaction in msg.reactions" :key="reaction.emoji"
                                             class="inline-flex items-center gap-1 px-2 py-1 rounded-full transition"
-                                            :class="isOwnMessage(msg) ? 'bg-blue-500/20 hover:bg-blue-500/30' : 'bg-black/20 hover:bg-black/30'"
+                                            :class="isOwnMessage(msg) ? 'bg-tg-accent/20 hover:bg-tg-accent/30' : 'bg-black/20 hover:bg-black/30'"
                                             :title="reaction.count > 1 ? `${reaction.count} reactions` : '1 reaction'">
                                             <span class="text-sm">{{ formatReactionEmoji(reaction.emoji) }}</span>
                                             <span v-if="reaction.count > 1" class="text-[11px] font-medium opacity-80">{{ reaction.count }}</span>
@@ -1658,8 +1821,8 @@
                                         <button v-if="Number(msg.version_count) > 0"
                                             type="button"
                                             @click.stop="toggleMessageVersions(msg)"
-                                            class="order-2 hover:text-blue-300 transition-colors"
-                                            :class="{ 'text-blue-300': isVersionsPanelOpenFor(msg) }"
+                                            class="order-2 hover:text-tg-accent-bright transition-colors"
+                                            :class="{ 'text-tg-accent-bright': isVersionsPanelOpenFor(msg) }"
                                             :aria-expanded="isVersionsPanelOpenFor(msg)"
                                             :title="formatMetadataTimestampTitle('Edited', msg.edit_date)">
                                             edited({{ msg.version_count }})
@@ -1722,7 +1885,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
                         </svg>
                         <span v-if="unseenMessageCount > 0" aria-hidden="true"
-                            class="absolute -top-1.5 -right-1.5 bg-blue-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
+                            class="absolute -top-1.5 -right-1.5 bg-tg-accent text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
                             {{ unseenMessageCount > 99 ? '99+' : unseenMessageCount }}
                         </span>
                     </button>
@@ -1742,7 +1905,7 @@
                     <h3 id="date-picker-title" class="text-xl font-bold text-white">Jump to Date</h3>
                     <button type="button" @click="closeDatePicker"
                         aria-label="Close date picker"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1751,7 +1914,7 @@
                 <div class="mb-4">
                     <input ref="datePickerInput" type="text"
                         aria-label="Date to jump to"
-                        class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        class="w-full bg-gray-900 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-tg-accent"
                         placeholder="Select a date">
                     <p v-if="calendarAvailabilityLoading" role="status" aria-live="polite"
                         class="mt-2 text-xs text-tg-muted">
@@ -1768,7 +1931,7 @@
                         Cancel
                     </button>
                     <button @click="jumpToDate"
-                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-white rounded-lg transition">
                         Jump
                     </button>
                 </div>
@@ -1784,7 +1947,7 @@
                 <div class="flex items-center justify-between mb-4">
                     <h3 id="status-panel-title" class="text-xl font-bold text-white">Archive Status</h3>
                     <button type="button" @click="showStatusPanel = false" aria-label="Close status panel"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1796,7 +1959,7 @@
                     <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Backup</dt>
                         <dd class="text-white text-right">
-                            <span v-if="statusData.backup.in_progress" class="text-blue-300">running now</span>
+                            <span v-if="statusData.backup.in_progress" class="text-tg-accent-bright">running now</span>
                             <span v-else-if="statusData.backup.last_run">last run {{ formatStatusDate(statusData.backup.last_run) }}</span>
                             <span v-else class="text-amber-300">never ran</span>
                         </dd>
@@ -1813,7 +1976,7 @@
                         <dt class="text-tg-muted">Media pipeline</dt>
                         <dd class="text-white text-right">
                             {{ statusData.media.downloaded.toLocaleString() }} downloaded
-                            <span v-if="statusData.media.pending" class="text-blue-300">· {{ statusData.media.pending.toLocaleString() }} pending</span>
+                            <span v-if="statusData.media.pending" class="text-tg-accent-bright">· {{ statusData.media.pending.toLocaleString() }} pending</span>
                             <span v-if="statusData.media.exhausted" class="text-amber-300">· {{ statusData.media.exhausted.toLocaleString() }} gave up</span>
                         </dd>
                     </div>
@@ -1843,7 +2006,7 @@
                 <div class="flex items-center justify-between mb-4">
                     <h3 id="export-modal-title" class="text-xl font-bold text-white">Export Chat to JSON</h3>
                     <button type="button" @click="showExportModal = false" aria-label="Close export dialog"
-                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                        class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
@@ -1853,12 +2016,12 @@
                     <label class="block">
                         <span class="text-xs text-tg-muted">From (optional)</span>
                         <input type="date" v-model="exportFromDate"
-                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                     </label>
                     <label class="block">
                         <span class="text-xs text-tg-muted">To (optional)</span>
                         <input type="date" v-model="exportToDate"
-                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            class="mt-1 w-full bg-gray-900 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                     </label>
                 </div>
                 <p class="mb-4 text-xs text-tg-muted">Both days are included. Leave empty to export everything.</p>
@@ -1868,7 +2031,7 @@
                         Cancel
                     </button>
                     <button @click="runExport"
-                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-white rounded-lg transition">
                         Export
                     </button>
                 </div>
@@ -1885,14 +2048,14 @@
                     <h3 id="changes-feed-title" class="text-xl font-bold text-white">What changed</h3>
                     <div class="flex items-center gap-2">
                         <select v-model="changesSince" @change="reloadChangesFeed"
-                            class="bg-gray-900 text-white text-sm rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            class="bg-gray-900 text-white text-sm rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                             <option value="1">Last 24 hours</option>
                             <option value="7">Last 7 days</option>
                             <option value="30">Last 30 days</option>
                             <option value="">All time</option>
                         </select>
                         <button type="button" @click="showChangesFeed = false" aria-label="Close changes feed"
-                            class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-blue-400 rounded">
+                            class="text-gray-400 hover:text-white transition p-1 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
@@ -1943,7 +2106,7 @@
                 <header class="flex items-start justify-between gap-4">
                     <h3 id="sender-info-title" class="text-base font-semibold text-white">Sender details</h3>
                     <button ref="senderInfoCloseBtn" type="button" @click="closeSenderInfo"
-                        class="p-1 text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-400 rounded"
+                        class="p-1 text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-tg-accent-soft rounded"
                         aria-label="Close sender details">
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
@@ -2124,7 +2287,7 @@
                     <button v-for="t in tagTabs" :key="t.key" @click="setTagTab(t.key)"
                         :disabled="t.key === 'chat' && !selectedChat"
                         :class="['flex-1 py-2 disabled:opacity-40',
-                                 tagView.tab === t.key ? 'text-white border-b-2 border-blue-500' : 'text-gray-400 hover:text-white']">
+                                 tagView.tab === t.key ? 'text-white border-b-2 border-tg-accent' : 'text-gray-400 hover:text-white']">
                         {{ t.label }}
                     </button>
                 </div>
@@ -2142,7 +2305,7 @@
                     </button>
                     <div v-if="tagView.has_more" class="p-3 text-center">
                         <button @click="loadTagResults(false)" :disabled="tagView.loading"
-                            class="text-blue-400 text-sm hover:underline disabled:opacity-40">Load more</button>
+                            class="text-tg-accent-soft text-sm hover:underline disabled:opacity-40">Load more</button>
                     </div>
                     <div v-if="tagView.truncated" class="p-2 text-center text-xs text-gray-500">
                         Search stopped early — older matches may exist
@@ -2163,13 +2326,13 @@
 
                 <!-- Tabs -->
                 <div class="flex border-b border-gray-700 px-6">
-                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                    <button @click="adminActiveTab = 'viewers'" :class="adminActiveTab === 'viewers' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Viewer Accounts
                     </button>
-                    <button @click="adminActiveTab = 'tokens'; loadAdminTokens()" :class="adminActiveTab === 'tokens' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                    <button @click="adminActiveTab = 'tokens'; loadAdminTokens()" :class="adminActiveTab === 'tokens' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Share Tokens
                     </button>
-                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
+                    <button @click="adminActiveTab = 'audit'; loadAdminAudit()" :class="adminActiveTab === 'audit' ? 'border-tg-accent text-tg-accent-soft' : 'border-transparent text-gray-400 hover:text-gray-200'" class="px-4 py-2 border-b-2 text-sm font-medium">
                         Audit Log
                     </button>
                 </div>
@@ -2204,7 +2367,7 @@
                                 </label>
                                 <div class="flex-1"></div>
                                 <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
-                                <button @click="saveViewer" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
+                                <button @click="saveViewer" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-white text-sm rounded">
                                     {{ adminEditingId ? 'Update' : 'Create' }}
                                 </button>
                             </div>
@@ -2227,7 +2390,7 @@
                                         <template v-if="viewer.no_download"> · <span class="text-amber-400">No DL</span></template>
                                     </div>
                                 </div>
-                                <button @click="editViewer(viewer)" class="text-gray-400 hover:text-blue-400 p-1"><i class="fas fa-edit"></i></button>
+                                <button @click="editViewer(viewer)" class="text-gray-400 hover:text-tg-accent-soft p-1"><i class="fas fa-edit"></i></button>
                                 <button @click="deleteViewer(viewer)" class="text-gray-400 hover:text-red-400 p-1"><i class="fas fa-trash"></i></button>
                             </div>
                             <div v-if="adminViewers.length === 0" class="text-gray-500 text-sm text-center py-4">No viewer accounts yet</div>
@@ -2258,7 +2421,7 @@
                                     <input type="checkbox" v-model="adminTokenForm.no_download" class="rounded" /> No Downloads
                                 </label>
                                 <div class="flex-1"></div>
-                                <button @click="createToken" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded">
+                                <button @click="createToken" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-white text-sm rounded">
                                     Create Token
                                 </button>
                             </div>
@@ -2274,8 +2437,8 @@
                             </div>
                             <div class="flex items-center gap-2">
                                 <span class="text-xs text-gray-400 w-16 shrink-0">Link</span>
-                                <code class="flex-1 bg-gray-900 text-blue-400 rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
-                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded whitespace-nowrap">Copy Link</button>
+                                <code class="flex-1 bg-gray-900 text-tg-accent-soft rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
+                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-tg-accent-hover hover:bg-tg-accent-strong text-white text-xs rounded whitespace-nowrap">Copy Link</button>
                             </div>
                             <div class="text-xs text-gray-500 mt-2">Note: token may appear in server access logs when the link is opened.</div>
                         </div>
@@ -2331,7 +2494,7 @@
                         <div class="space-y-1">
                             <div v-for="log in adminAuditLogs" :key="log.id" class="flex items-center gap-3 text-xs bg-gray-900 rounded px-3 py-2">
                                 <span class="text-gray-500 w-36 shrink-0">{{ new Date(log.created_at).toLocaleString() }}</span>
-                                <span :class="{'text-yellow-400': log.role === 'master', 'text-blue-400': log.role === 'viewer', 'text-purple-400': log.role === 'token'}" class="w-16 shrink-0">{{ log.role }}</span>
+                                <span :class="{'text-yellow-400': log.role === 'master', 'text-tg-accent-soft': log.role === 'viewer', 'text-purple-400': log.role === 'token'}" class="w-16 shrink-0">{{ log.role }}</span>
                                 <span class="text-gray-300 w-24 shrink-0 truncate">{{ log.username }}</span>
                                 <span class="text-gray-400 flex-1 truncate">{{ log.action }}</span>
                                 <span class="text-gray-600 truncate w-28">{{ log.ip_address }}</span>
@@ -2350,14 +2513,14 @@
             role="region" aria-label="Audio player">
             <div class="max-w-5xl mx-auto flex items-center gap-2 sm:gap-3">
                 <button type="button" @click="playPrevAudio()" aria-label="Previous audio message"
-                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
                     </svg>
                 </button>
                 <button type="button" @click="toggleAudioPlayback()"
                     :aria-label="audioIsPlaying ? 'Pause audio' : 'Play audio'"
-                    class="w-10 h-10 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent flex items-center justify-center text-white transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg v-if="audioIsPlaying" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                     </svg>
@@ -2366,7 +2529,7 @@
                     </svg>
                 </button>
                 <button type="button" @click="playNextAudio()" aria-label="Next audio message"
-                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    class="p-2 rounded-full text-gray-300 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/>
                     </svg>
@@ -2375,7 +2538,7 @@
                 <div class="flex-1 min-w-0">
                     <button type="button" @click="focusAudioTrackMessage()"
                         :aria-label="'Go to message from ' + audioTrack.sender"
-                        class="block w-full text-left truncate rounded px-1 hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        class="block w-full text-left truncate rounded px-1 hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                         <span class="text-sm text-white">{{ audioTrack.sender }}</span>
                         <span class="text-[11px] text-tg-muted ml-2">
                             {{ audioTrack.chatName }}<template v-if="audioTrack.date"> · {{ formatShortDate(audioTrack.date) }} {{ formatTime(audioTrack.date) }}</template>
@@ -2395,14 +2558,14 @@
                     <button v-for="rate in audioSpeeds" :key="rate" type="button" @click="setAudioSpeed(rate)"
                         :aria-pressed="currentAudioSpeed === rate"
                         :aria-label="'Playback speed ' + rate + 'x'"
-                        :class="currentAudioSpeed === rate ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10'"
-                        class="text-[11px] px-2 py-1 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        :class="currentAudioSpeed === rate ? 'bg-tg-accent-strong text-white' : 'text-gray-300 hover:bg-white/10'"
+                        class="text-[11px] px-2 py-1 rounded transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                         {{ rate }}x
                     </button>
                 </div>
 
                 <button type="button" @click="closeAudioPlayer()" aria-label="Close audio player"
-                    class="p-2 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-blue-400">
+                    class="p-2 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
@@ -3455,6 +3618,47 @@
                     backup_in_progress: false
                 })
                 const statsPopupOpen = ref(false)
+
+                // --- Color themes. A tiny script in <head> already set
+                // data-theme from localStorage/?theme= before first paint;
+                // this state drives the picker and persists the choice.
+                // ?theme= is validated against this list, saved, and then
+                // scrubbed from the URL like the other one-shot params.
+                const viewerThemes = [
+                    { id: 'slate', label: 'Slate', dots: ['#0f172a', '#1d4772', '#3b82f6'] },
+                    { id: 'night', label: 'Telegram Night', dots: ['#0e1621', '#2b5278', '#5288c1'] },
+                    { id: 'amoled', label: 'AMOLED', dots: ['#000000', '#1a3652', '#4ea4f5'] },
+                    { id: 'forest', label: 'Forest', dots: ['#0a120e', '#28543e', '#4caf82'] },
+                    { id: 'aubergine', label: 'Aubergine', dots: ['#181221', '#4c3970', '#9b7bd4'] },
+                ]
+                const themePopupOpen = ref(false)
+                const currentTheme = ref('slate')
+                const applyTheme = (id) => {
+                    if (id === 'slate') delete document.documentElement.dataset.theme
+                    else document.documentElement.dataset.theme = id
+                }
+                const knownTheme = (id) => viewerThemes.some((t) => t.id === id)
+                try {
+                    const fromUrl = new URLSearchParams(window.location.search).get('theme')
+                    if (fromUrl && knownTheme(fromUrl)) {
+                        currentTheme.value = fromUrl
+                        localStorage.setItem('viewerTheme', fromUrl)
+                        const cleanUrl = new URL(window.location)
+                        cleanUrl.searchParams.delete('theme')
+                        window.history.replaceState({}, '', cleanUrl)
+                    } else {
+                        const saved = localStorage.getItem('viewerTheme')
+                        if (saved && knownTheme(saved)) currentTheme.value = saved
+                    }
+                } catch (e) { /* storage blocked: default palette */ }
+                applyTheme(currentTheme.value)
+                const setTheme = (id) => {
+                    if (!knownTheme(id)) return
+                    currentTheme.value = id
+                    applyTheme(id)
+                    try { localStorage.setItem('viewerTheme', id) } catch (e) { /* per-tab only */ }
+                    themePopupOpen.value = false
+                }
                 const showStatsUI = ref(true)  // Can be disabled via SHOW_STATS=false
 
                 const loadStats = async () => {
@@ -5868,11 +6072,11 @@
                     const isOwn = isOwnMessage(msg)
 
                     if (isOwn) {
-                        // Own messages: Strong blue background
-                        return 'hsla(210, 60%, 28%, 0.95)'
+                        // Own messages: the theme's own-bubble color
+                        return 'rgb(var(--tg-own) / 0.95)'
                     } else {
-                        // Others: Unified softer gray background
-                        return 'hsla(220, 20%, 25%, 0.80)'
+                        // Others: the theme's incoming-bubble color
+                        return 'rgb(var(--tg-other) / 0.80)'
                     }
                 }
 
@@ -8225,6 +8429,10 @@
                     changesLoading,
                     changesSince,
                     openChangesFeed,
+                    viewerThemes,
+                    themePopupOpen,
+                    currentTheme,
+                    setTheme,
                     reloadChangesFeed,
                     loadMoreChanges,
                     formatChangeDate,

@@ -771,8 +771,8 @@ def test_flatpickr_month_select_has_dark_native_colors():
     assert ".flatpickr-monthDropdown-months {" in html
     assert "color-scheme: dark;" in html
     assert ".flatpickr-monthDropdown-month {" in html
-    assert "background: #334155 !important;" in html
-    assert "color: #e2e8f0 !important;" in html
+    assert "background: rgb(var(--tg-hover)) !important;" in html
+    assert "color: rgb(var(--tg-text)) !important;" in html
 
 
 def test_date_picker_fetches_month_availability_and_marks_days():
@@ -1167,7 +1167,7 @@ def test_private_chat_header_avatar_opens_sender_details():
     assert '@click="openSenderInfoFromChat(selectedChat, $event)"' in body
     assert ":aria-label=" in body
     assert "getChatName(selectedChat)" in body
-    assert "focus:ring-2 focus:ring-blue-400" in body
+    assert "focus:ring-2 focus:ring-tg-accent-soft" in body
 
     # Groups/channels keep the non-interactive circle (that photo is the group, not a sender).
     assert "<div v-else" in html[html.index("</button>", start) :][:400]
@@ -3639,7 +3639,9 @@ class TestAudioBubbleMetadataStaysOnOneLine(unittest.TestCase):
 
     def test_the_specific_spans_reported_in_267(self) -> None:
         self.assertIn('<span v-if="msg.media?.duration" class="whitespace-nowrap">', self.bubble)
-        self.assertIn('<span v-if="isCurrentAudioMessage(msg)" class="text-blue-400 whitespace-nowrap">', self.bubble)
+        self.assertIn(
+            '<span v-if="isCurrentAudioMessage(msg)" class="text-tg-accent-soft whitespace-nowrap">', self.bubble
+        )
         self.assertIn('<span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>', self.bubble)
 
     def test_the_filename_span_keeps_its_own_protection(self) -> None:
@@ -3664,7 +3666,7 @@ class TestReplyQuoteNamesItsSender(unittest.TestCase):
         self.assertNotIn(">Reply to</div>", block)
         # A long sender name must not break per character either (#267's rule
         # applies to this block too — it is inside the same bubble).
-        self.assertIn('class="font-semibold text-blue-400 mb-0.5 truncate"', block)
+        self.assertIn('class="font-semibold text-tg-accent-soft mb-0.5 truncate"', block)
 
     def test_helpers_are_exported_to_the_template(self) -> None:
         self.assertIn("\n                    replyToLabel,\n", self.html)
