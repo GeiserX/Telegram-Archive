@@ -83,10 +83,10 @@ def _make_backup(**overrides):
     # Folder resolution reads the archived-chat snapshot; default to empty so
     # tests that exercise _backup_folders get an iterable, not a bare AsyncMock.
     backup.db.get_chats_for_folder_resolution = AsyncMock(return_value=[])
-    # No import rows by default: a bare AsyncMock return is truthy, and the
-    # adoption hook would short-circuit _process_media before the download
+    # No pre-existing media row by default: a bare AsyncMock return is truthy,
+    # and the reuse hook would short-circuit _process_media before the download
     # paths under test.
-    backup.db.adopt_import_media = AsyncMock(return_value=None)
+    backup.db.reconcile_media_row = AsyncMock(return_value=None)
     backup.client = overrides.get("client", AsyncMock())
     backup._owns_client = overrides.get("_owns_client", True)
     backup._cleaned_media_chats = set()

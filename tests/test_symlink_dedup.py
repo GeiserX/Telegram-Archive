@@ -165,7 +165,7 @@ class TestDownloadReturnValueCapture(unittest.TestCase):
         backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        backup.db.adopt_import_media = AsyncMock(return_value=None)
+        backup.db.reconcile_media_row = AsyncMock(return_value=None)
         backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
         # download_media returns the actual path with .mp4
         backup.client.download_media = AsyncMock(return_value=actual_returned_path)
@@ -219,7 +219,7 @@ class TestProcessMediaDedupSymlink(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -352,7 +352,7 @@ class TestVerifyCleanupDanglingSymlink(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
         _stream_verification_batches(self.backup.db)
         self.backup.client = AsyncMock()
 
@@ -482,7 +482,7 @@ class TestShutilMoveFallback(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -817,7 +817,7 @@ class TestBackupDedupSharedExistsPreUnlink(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):
@@ -932,7 +932,7 @@ class TestBackupNonDedupCapturesReturnValue(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows: a truthy mock would make the adoption hook
         # short-circuit _process_media before the non-dedup path under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -1001,7 +1001,7 @@ class TestBackupDedupSymlinkFailFallback(unittest.TestCase):
         self.backup.db = AsyncMock()
         # No import rows by default: a truthy mock would make the adoption
         # hook short-circuit _process_media before the paths under test.
-        self.backup.db.adopt_import_media = AsyncMock(return_value=None)
+        self.backup.db.reconcile_media_row = AsyncMock(return_value=None)
         self.backup.db.find_media_by_content_hash = AsyncMock(return_value=None)
 
     def tearDown(self):

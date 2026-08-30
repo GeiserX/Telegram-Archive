@@ -61,6 +61,7 @@ from .message_utils import (
 )
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import absorb_media_floods, call_with_flood_retry
+from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
 
@@ -1354,11 +1355,32 @@ class TelegramListener:
                     # Download media immediately if enabled
                     if self.config.listen_new_messages_media and self.config.should_download_media_for_chat(chat_id):
                         try:
-                            download_result = await self._download_media(message, chat_id)
+                            # BEFORE the download, not after: if this message already
+                            # has a row whose file is on disk (an import, or a replay
+                            # of a message we have seen), downloading would fetch a
+                            # second copy under the listener's own filename, repoint
+                            # the row at it and orphan the original.
+                            _existing = await self.db.reconcile_media_row(
+                                chat_id, message.id, media_type, account_id=self.account_id
+                            )
+                            _on_disk = (
+                                resolve_stored_media_path(_existing.get("file_path"), self.config.media_path)
+                                if _existing and _existing.get("downloaded")
+                                else None
+                            )
+                            if _on_disk and os.path.lexists(_on_disk):
+                                ws_media = _existing
+                                download_result = None
+                            else:
+                                download_result = await self._download_media(message, chat_id)
                             if download_result:
                                 media_path, media_file_name, content_hash = download_result
-                                # Create media record (FK to messages now satisfied)
-                                media_id = f"{chat_id}_{message.id}_{media_type}"
+                                # Create media record (FK to messages now satisfied).
+                                # The row keeps whatever id it was first filed under: an
+                                # edit that swaps the media's kind would otherwise plant a
+                                # second row, the same way a reclassified round video did
+                                # in the sweep.
+                                media_id = _existing["id"] if _existing else f"{chat_id}_{message.id}_{media_type}"
                                 # Same metadata the scheduled sweep records (#263) — without it
                                 # live-captured voice notes had a NULL duration and rendered
                                 # without it while sweep-captured ones showed it.

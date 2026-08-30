@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -2508,52 +2508,107 @@ class DatabaseAdapter:
             ).first()
             return row is not None
 
-    async def adopt_import_media(
-        self, chat_id: int, message_id: int, new_media_id: str, *, account_id: int
-    ) -> dict[str, Any] | None:
-        """Re-key an HTML/JSON-import media row to the sweep's name and return it.
-
-        Telegram Desktop imports store media as ``import_{chat}_{msg}`` with
-        the file already on disk. When the API sweep later reaches the same
-        message it would re-download those bytes under its own id — a
-        duplicate row AND a duplicate download. Re-keying converges the
-        sweep's upsert onto the existing row (and file) from then on.
-
-        None when there is no downloaded import row. When the sweep name
-        already exists (an earlier sweep archived its own copy), nothing is
-        touched — this path adopts records, it never deletes data.
-        """
-        import_media_id = f"import_{chat_id}_{message_id}"
+    async def get_chats_with_media_type(self, media_type: str, *, account_id: int) -> list[int]:
+        """Chat ids holding at least one media row of this type."""
         async with self.db_manager.async_session_factory() as session:
-            existing_sweep_row = (
-                await session.execute(
-                    select(Media.id).where(and_(Media.account_id == account_id, Media.id == new_media_id))
-                )
-            ).first()
-            if existing_sweep_row is not None:
-                return None
-            row = (
-                await session.execute(
-                    select(Media).where(
+            rows = await session.execute(
+                select(Media.chat_id).where(and_(Media.account_id == account_id, Media.type == media_type)).distinct()
+            )
+            return [c for (c,) in rows if c is not None]
+
+    async def retype_media_for_messages(
+        self, chat_id: int, message_ids: Sequence[int], media_type: str, *, account_id: int
+    ) -> int:
+        """Set the media type for these messages, returning how many rows moved.
+
+        Rows are corrected in place. Nothing is re-keyed and nothing is deleted:
+        ``Media.id`` is an opaque token (see reconcile_media_row) and every
+        reader resolves a row by its (chat, message, type) columns, so changing
+        the type is the whole of the change.
+        """
+        if not message_ids:
+            return 0
+        moved = 0
+        async with self.db_manager.async_session_factory() as session:
+            # Chunked so a chat with thousands of matches cannot build an IN ()
+            # list past SQLite's variable limit.
+            for start in range(0, len(message_ids), 500):
+                chunk = list(message_ids[start : start + 500])
+                result = await session.execute(
+                    update(Media)
+                    .where(
                         and_(
                             Media.account_id == account_id,
-                            Media.id == import_media_id,
-                            Media.downloaded == 1,
+                            Media.chat_id == chat_id,
+                            Media.message_id.in_(chunk),
+                            Media.type != media_type,
                         )
                     )
+                    .values(type=media_type)
                 )
-            ).scalar_one_or_none()
+                moved += result.rowcount or 0
+            await session.commit()
+        return moved
+
+    async def reconcile_media_row(
+        self, chat_id: int, message_id: int, media_type: str, *, account_id: int
+    ) -> dict[str, Any] | None:
+        """The media row this message already has, re-typed to the current
+        judgement, or None when the message has no media row yet.
+
+        ``Media.id`` used to be minted fresh on every capture from
+        ``{chat}_{msg}_{type}`` -- so it cached a JUDGEMENT (what kind of thing
+        this media is) and then that string was used as the row's identity. The
+        moment the judgement changed, the writer stopped talking about the row
+        it already had: a re-processed round video reclassified from ``video``
+        to ``video_note`` became a SECOND row, the original stayed
+        ``downloaded=0`` with its attempt counter untouched, and the pending
+        retry re-requested it from Telegram every cycle without ever reaching
+        the attempt cap.
+
+        So the id stops being identity. A message's media row is found by its
+        ``(account_id, chat_id, message_id)`` COLUMNS and keeps whatever id it
+        was first filed under -- opaque, stable, and never re-keyed. Nothing
+        reads its shape any more: the viewer builds URL keys from the message
+        and type columns, and ``get_media_for_message`` looks rows up the same
+        way. Only ``type`` is corrected, which is the value every reader
+        actually consults.
+
+        Ordered exactly like ``get_media_for_message`` (downloaded first, then
+        lowest id) so the writer and the reader always agree on which row is
+        canonical when an archive holds more than one for a message.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(Media)
+                        .where(
+                            and_(
+                                Media.account_id == account_id,
+                                Media.chat_id == chat_id,
+                                Media.message_id == message_id,
+                            )
+                        )
+                        .order_by(Media.downloaded.desc(), Media.id)
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
             if row is None:
                 return None
-            await session.execute(
-                update(Media)
-                .where(and_(Media.account_id == account_id, Media.id == import_media_id))
-                .values(id=new_media_id)
-            )
-            await session.commit()
+            if media_type and row.type != media_type:
+                await session.execute(
+                    update(Media)
+                    .where(and_(Media.account_id == account_id, Media.id == row.id))
+                    .values(type=media_type)
+                )
+                await session.commit()
             return {
-                "id": new_media_id,
-                "type": row.type,
+                "id": row.id,
+                "type": media_type or row.type,
                 "message_id": row.message_id,
                 "chat_id": row.chat_id,
                 "file_name": row.file_name,
@@ -2564,7 +2619,7 @@ class DatabaseAdapter:
                 "height": row.height,
                 "duration": row.duration,
                 "content_hash": row.content_hash,
-                "downloaded": True,
+                "downloaded": bool(row.downloaded),
                 "download_date": row.download_date,
             }
 
