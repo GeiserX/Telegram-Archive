@@ -139,8 +139,17 @@ INDEX_HTML = pathlib.Path(__file__).resolve().parent.parent / "src" / "web" / "t
 
 class TestViewerRendersRoundVideos:
     @pytest.fixture(scope="class")
-    def html(self):
+    def html(self) -> str:
         return INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_the_sound_toggle_is_reachable_without_a_mouse(self, html: str) -> None:
+        """A bare <video> with no native controls has no focus target and no key
+        handler, so the toggle was mouse-only."""
+        block = html[html.index('class="round-video gif-video cursor-pointer"') :][:700]
+        assert 'tabindex="0"' in block
+        assert ':aria-label="roundVideoHint"' in block
+        assert "@keydown.enter.prevent" in block
+        assert "@keydown.space.prevent" in block
 
     def test_the_bubble_has_a_branch_for_video_note(self, html):
         assert "msg.media?.type === 'video_note'" in html

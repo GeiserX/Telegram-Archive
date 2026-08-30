@@ -1840,12 +1840,19 @@
                                                 </svg>
                                                 <span>Media not found</span>
                                             </div>
+                                            <!-- The element carries no native controls, so the sound
+                                                 toggle needs its own affordance: focusable, named, and
+                                                 reachable with Enter or Space, not click alone. -->
                                             <video v-else
                                                 :data-src="getMediaUrl(msg)"
                                                 class="round-video gif-video cursor-pointer"
                                                 loop muted playsinline
+                                                tabindex="0" role="button"
+                                                :aria-label="roundVideoHint"
                                                 :title="roundVideoHint"
                                                 @click="toggleRoundVideoSound($event)"
+                                                @keydown.enter.prevent="toggleRoundVideoSound($event)"
+                                                @keydown.space.prevent="toggleRoundVideoSound($event)"
                                                 @error="handleMediaError($event, msg)">
                                             </video>
                                         </div>
