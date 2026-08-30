@@ -234,3 +234,97 @@ class TestReclassifyRoundVideos:
 
         assert summary["chats_scanned"] == 1
         backup.db.get_chats_with_media_type.assert_not_awaited()
+
+
+class TestReclassifyRunnerAccountHandling:
+    """The CLI runner. It resolves an account per configured account, exactly
+    like run_backup and run_fill_gaps -- passing neither an account_id nor a
+    resolver is what made the command die before it reached Telegram, and no
+    unit test caught it because they all build the backup with __new__."""
+
+    def _config(self, n_accounts):
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        config.accounts = [MagicMock(index=i) for i in range(1, n_accounts + 1)]
+        config.for_account = MagicMock(side_effect=lambda i: config)
+        return config
+
+    def _patch(self, monkeypatch, summaries):
+        """Stand in for TelegramBackup.create so the account plumbing is what is
+        under test, not Telethon."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import src.telegram_backup as mod
+
+        calls = []
+
+        async def _create(cfg, **kwargs):
+            calls.append(kwargs)
+            backup = MagicMock()
+            backup.connect = AsyncMock()
+            backup.disconnect = AsyncMock()
+            backup.db = MagicMock(close=AsyncMock())
+            outcome = summaries[len(calls) - 1]
+            if isinstance(outcome, Exception):
+                backup.reclassify_round_videos = AsyncMock(side_effect=outcome)
+            else:
+                backup.reclassify_round_videos = AsyncMock(return_value=outcome)
+            return backup
+
+        monkeypatch.setattr(mod.TelegramBackup, "create", _create)
+        return calls
+
+    def test_each_account_gets_a_resolver(self, monkeypatch):
+        from src.telegram_backup import run_reclassify_round_videos
+
+        calls = self._patch(
+            monkeypatch, [{"chats_scanned": 1, "round_videos_found": 2, "rows_retyped": 2, "errors": 0}]
+        )
+
+        summary = _run(run_reclassify_round_videos(self._config(1)))
+
+        assert summary["rows_retyped"] == 2
+        # The bug this test exists for: neither of these may be missing.
+        assert calls[0]["account"] is not None
+        assert calls[0]["account_resolver"] is not None
+
+    def test_summaries_are_summed_across_accounts(self, monkeypatch):
+        from src.telegram_backup import run_reclassify_round_videos
+
+        self._patch(
+            monkeypatch,
+            [
+                {"chats_scanned": 1, "round_videos_found": 2, "rows_retyped": 2, "errors": 0},
+                {"chats_scanned": 3, "round_videos_found": 1, "rows_retyped": 1, "errors": 0},
+            ],
+        )
+
+        summary = _run(run_reclassify_round_videos(self._config(2)))
+
+        assert summary == {"chats_scanned": 4, "round_videos_found": 3, "rows_retyped": 3, "errors": 0}
+
+    def test_one_failing_account_does_not_take_the_other_down(self, monkeypatch):
+        from src.telegram_backup import run_reclassify_round_videos
+
+        self._patch(
+            monkeypatch,
+            [RuntimeError("boom"), {"chats_scanned": 1, "round_videos_found": 1, "rows_retyped": 1, "errors": 0}],
+        )
+
+        summary = _run(run_reclassify_round_videos(self._config(2)))
+
+        assert summary["errors"] == 1
+        assert summary["rows_retyped"] == 1
+
+    def test_a_single_account_failure_propagates(self, monkeypatch):
+        """With one account there is nothing to shield, so the caller sees it --
+        the same rule run_backup and run_fill_gaps follow."""
+        import pytest
+
+        from src.telegram_backup import run_reclassify_round_videos
+
+        self._patch(monkeypatch, [RuntimeError("boom")])
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _run(run_reclassify_round_videos(self._config(1)))
