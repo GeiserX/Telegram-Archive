@@ -7,7 +7,6 @@ backup execution, scheduling, and data export.
 
 import argparse
 import asyncio
-import contextlib
 import os
 import sys
 from pathlib import Path
@@ -355,39 +354,26 @@ def run_schedule(args) -> int:
     return asyncio.run(scheduler_main())
 
 
-async def run_reclassify_round_videos(args) -> int:
+def run_reclassify_round_videos(args) -> int:
     """Ask Telegram which archived videos are round, and re-type those rows."""
     from .config import Config, setup_logging
-    from .db import create_adapter
-    from .telegram_backup import TelegramBackup
+    from .telegram_backup import run_reclassify_round_videos as reclassify
 
-    db = None
-    backup = None
     try:
         config = Config()
         setup_logging(config)
-        db = await create_adapter()
-        backup = TelegramBackup(config, db)
-        await backup.connect()
-        summary = await backup.reclassify_round_videos(chat_id=args.chat_id, dry_run=args.dry_run)
+        summary = asyncio.run(reclassify(config, chat_id=args.chat_id, dry_run=args.dry_run))
     except Exception as e:
         print(f"Reclassification failed: {e}", file=sys.stderr)
         return 1
-    finally:
-        if backup is not None:
-            with contextlib.suppress(Exception):
-                await backup.disconnect()
-        if db is not None:
-            with contextlib.suppress(Exception):
-                await db.close()
 
     prefix = "[DRY RUN] " if args.dry_run else ""
     print(f"\n{prefix}Round-video reclassification complete:")
-    print(f"  Chats scanned:     {summary['chats_scanned']}")
+    print(f"  Chats scanned:      {summary['chats_scanned']}")
     print(f"  Round videos found: {summary['round_videos_found']}")
-    print(f"  Rows re-typed:     {summary['rows_retyped']}")
+    print(f"  Rows re-typed:      {summary['rows_retyped']}")
     if summary["errors"]:
-        print(f"  Chats with errors: {summary['errors']}")
+        print(f"  Chats with errors:  {summary['errors']}")
     return 0
 
 
@@ -457,7 +443,7 @@ def main() -> int:
     elif args.command == "backup":
         return run_backup(args)
     elif args.command == "reclassify-round-videos":
-        return asyncio.run(run_reclassify_round_videos(args))
+        return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":
         return run_backfill_topics(args)
     elif args.command == "schedule":

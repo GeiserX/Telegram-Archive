@@ -4499,6 +4499,47 @@ async def _execute_fill_gaps(backup: TelegramBackup, config: Config, chat_id: in
         await backup.db.close()
 
 
+async def _execute_reclassify(backup: TelegramBackup, chat_id: int | None, dry_run: bool) -> dict:
+    """connect -> reclassify -> teardown, for one account."""
+    try:
+        await backup.connect()
+        return await backup.reclassify_round_videos(chat_id=chat_id, dry_run=dry_run)
+    finally:
+        await backup.disconnect()
+        await backup.db.close()
+
+
+async def run_reclassify_round_videos(config: Config, chat_id: int | None = None, dry_run: bool = False) -> dict:
+    """Re-type archived round videos, for every configured account.
+
+    Same account handling as run_backup/run_fill_gaps: each configured account
+    resolves its own accounts row after its client is authorized, and with more
+    than one account a single failure counts into ``errors`` instead of taking
+    the others down with it.
+    """
+    summaries: list[dict] = []
+    failed = 0
+    for account in config.accounts:
+        try:
+            backup = await TelegramBackup.create(
+                config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
+            )
+            summaries.append(await _execute_reclassify(backup, chat_id, dry_run))
+        except Exception as e:
+            # Same continuation rule as run_backup, same type-name-only logging.
+            if len(config.accounts) == 1:
+                raise
+            failed += 1
+            logger.error(f"account {account.index} failed: {type(e).__name__}")
+    if failed and failed == len(config.accounts):
+        raise RuntimeError(f"all {failed} configured accounts failed to reclassify")
+    total = {"chats_scanned": 0, "round_videos_found": 0, "rows_retyped": 0, "errors": failed}
+    for summary in summaries:
+        for key in ("chats_scanned", "round_videos_found", "rows_retyped", "errors"):
+            total[key] += summary.get(key, 0)
+    return total
+
+
 async def run_fill_gaps(
     config: Config,
     client: TelegramClient | None = None,
