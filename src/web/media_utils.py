@@ -4,6 +4,8 @@ Centralizes the Telegram marked-ID convention so it's defined once
 and used consistently across serve_media, thumbnails, and ACL checks.
 """
 
+import os
+
 CHANNEL_ID_OFFSET: int = 1_000_000_000_000
 
 IMAGE_EXTENSIONS: set[str] = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"}
@@ -60,3 +62,36 @@ def derive_stale_folder(chat_id: int) -> str | None:
     if raw > CHANNEL_ID_OFFSET:
         return str(raw - CHANNEL_ID_OFFSET)
     return str(raw)
+
+
+def resolve_stored_media_path(file_path: str | None, media_root: str) -> str | None:
+    """Absolute on-disk path for a stored ``Media.file_path``, or None.
+
+    Two shapes exist in the wild and both are legitimate:
+
+    * **absolute** — what the API sweep and the realtime listener write, since
+      ``config.media_path`` is an ``os.path.abspath`` (config.py:449, :631).
+    * **media-root-relative** (``"{chat_id}/{name}"``) — what the Telegram
+      Desktop importer writes (telegram_import.py:1131), because the viewer
+      serves media by root-relative path.
+
+    The capture layer only ever knew the first shape, so it stat()ed the stored
+    value directly and every imported row resolved against the process CWD
+    (``/app``) instead of the media root: the file was judged missing and
+    re-downloaded, or skipped by a delete that still dropped its row (#310).
+
+    An absolute value is returned unchanged — byte-identical to the behaviour
+    that shipped before this helper, so nothing about swept archives moves. A
+    relative value is joined to the media root and must stay inside it; a value
+    that escapes the root yields None rather than a path outside the archive,
+    because callers delete and replace what this returns.
+    """
+    if not file_path:
+        return None
+    if os.path.isabs(file_path):
+        return file_path
+    root = os.path.abspath(media_root)
+    candidate = os.path.abspath(os.path.join(root, file_path))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        return None
+    return candidate

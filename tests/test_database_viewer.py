@@ -121,6 +121,7 @@ class TestAsyncDatabaseAdapter(unittest.TestCase):
             # Phase 4 (chat-ref viewer) surface
             "get_chat_by_ref",
             "get_media_by_id",
+            "get_media_for_message",
             "get_message_sender_id",
         ]
 

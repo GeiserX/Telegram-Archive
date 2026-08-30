@@ -62,7 +62,7 @@ def _mock_db():
     db.get_chat_by_ref = AsyncMock(
         side_effect=lambda ref, **kwargs: {"id": 1, "account_id": 1, "ref": ref, "type": "group"}
     )
-    db.get_media_by_id = AsyncMock(return_value=None)
+    db.get_media_for_message = AsyncMock(return_value=None)
     db.get_message_sender_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_pinned_messages = AsyncMock(return_value=[])
@@ -337,7 +337,7 @@ class TestServeMedia(_WebTestBase):
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            self.mock_db.get_media_by_id = AsyncMock(
+            self.mock_db.get_media_for_message = AsyncMock(
                 return_value={"id": "1_5_photo", "file_path": "../etc/passwd", "file_name": "passwd"}
             )
             from fastapi import HTTPException
@@ -378,20 +378,21 @@ class TestServeMedia(_WebTestBase):
             self.mock_db.get_chat_by_ref = AsyncMock(
                 return_value={"id": 123, "account_id": 1, "ref": "servesFileRef000123AB", "type": "group"}
             )
-            self.mock_db.get_media_by_id = AsyncMock(
+            self.mock_db.get_media_for_message = AsyncMock(
                 return_value={"id": "123_5_document", "file_path": "123/test.txt", "file_name": "test.txt"}
             )
             async with self._client() as client:
                 resp = await client.get("/media/servesFileRef000123AB/5_document")
             self.assertEqual(resp.status_code, 200)
-            # The storage key is reconstructed from the resolved chat, not the URL
-            self.mock_db.get_media_by_id.assert_awaited_once_with("123_5_document", account_id=1)
+            # The chat comes from the resolved chat, not the URL — now as an
+            # explicit column predicate rather than a reconstructed storage key.
+            self.mock_db.get_media_for_message.assert_awaited_once_with(123, 5, "document", account_id=1)
 
     async def test_media_404_for_nonexistent_file(self):
         """serve_media returns 404 when the row's file is gone from disk."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            self.mock_db.get_media_by_id = AsyncMock(
+            self.mock_db.get_media_for_message = AsyncMock(
                 return_value={"id": "1_5_photo", "file_path": "1/gone.jpg", "file_name": "gone.jpg"}
             )
             async with self._client() as client:
@@ -436,7 +437,7 @@ class TestServeMedia(_WebTestBase):
             self.mock_db.get_chat_by_ref = AsyncMock(
                 return_value={"id": -999, "account_id": 1, "ref": "legacyFolderRef0099AB", "type": "group"}
             )
-            self.mock_db.get_media_by_id = AsyncMock(
+            self.mock_db.get_media_for_message = AsyncMock(
                 return_value={"id": "-999_5_photo", "file_path": "999/photo.jpg", "file_name": "photo.jpg"}
             )
             async with self._client() as client:
@@ -580,7 +581,7 @@ class TestServeThumbnail(_WebTestBase):
         """A media row whose file_path has no folder segment cannot be thumbnailed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            self.mock_db.get_media_by_id = AsyncMock(
+            self.mock_db.get_media_for_message = AsyncMock(
                 return_value={"id": "1_5_photo", "file_path": "bare.jpg", "file_name": "bare.jpg"}
             )
             async with self._client() as client:
@@ -591,7 +592,7 @@ class TestServeThumbnail(_WebTestBase):
         """serve_thumbnail returns 404 when thumbnail generation returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             web_main._media_root = web_main.Path(tmpdir)
-            self.mock_db.get_media_by_id = AsyncMock(return_value=self._media_row())
+            self.mock_db.get_media_for_message = AsyncMock(return_value=self._media_row())
             with patch("src.web.thumbnails.ensure_thumbnail", new_callable=AsyncMock, return_value=None):
                 async with self._client() as client:
                     resp = await client.get("/media/thumb/200/someChatRef000000123A/5_photo")
@@ -604,7 +605,7 @@ class TestServeThumbnail(_WebTestBase):
             thumb_file = os.path.join(tmpdir, "thumb.webp")
             with open(thumb_file, "wb") as f:
                 f.write(b"\x00" * 10)
-            self.mock_db.get_media_by_id = AsyncMock(return_value=self._media_row())
+            self.mock_db.get_media_for_message = AsyncMock(return_value=self._media_row())
             with patch(
                 "src.web.thumbnails.ensure_thumbnail",
                 new_callable=AsyncMock,

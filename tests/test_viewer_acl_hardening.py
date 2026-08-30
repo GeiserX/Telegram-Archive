@@ -65,7 +65,7 @@ def _mock_db():
     # Phase 4: chat-scoped routes resolve their {chat_ref} through these two
     # reads. None = "no such chat/media", the fail-closed default.
     db.get_chat_by_ref = AsyncMock(return_value=None)
-    db.get_media_by_id = AsyncMock(return_value=None)
+    db.get_media_for_message = AsyncMock(return_value=None)
     return db
 
 
@@ -221,7 +221,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
     async def test_a_media_row_carrying_a_traversal_path_serves_nothing(self):
         """file_path is data; a ``..`` planted there must not select bytes."""
         cookies = self._session("tv-row", allowed_chat_refs={self.ALLOWED_REF})
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_9_photo", "file_path": "-1001/../-1002/secret.jpg", "file_name": "secret.jpg"}
         )
         generated = AsyncMock(return_value=(Path(self.tmp.name) / "thumb.webp", "-1001"))
@@ -237,7 +237,7 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
         """Absolute stored paths are honoured ONLY under the media root."""
         cookies = self._session("tv-abs", allowed_chat_refs={self.ALLOWED_REF})
         outside = Path(self.tmp.name).parent / "outside-secret.jpg"
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_9_photo", "file_path": str(outside), "file_name": "outside-secret.jpg"}
         )
         async with self._client() as client:
@@ -268,15 +268,16 @@ class TestThumbnailPathTraversal(unittest.IsolatedAsyncioTestCase):
         cookies = self._session("tv-allowed", allowed_chat_refs={self.ALLOWED_REF})
         thumb = Path(self.tmp.name) / "thumb.webp"
         thumb.write_bytes(b"\x00" * 8)
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_9_photo", "file_path": "-1001/9_photo.jpg", "file_name": "9_photo.jpg"}
         )
         with patch("src.web.thumbnails.ensure_thumbnail", AsyncMock(return_value=(thumb, "-1001"))):
             async with self._client() as client:
                 resp = await client.get(f"/media/thumb/200/{self.ALLOWED_REF}/9_photo", cookies=cookies)
         self.assertEqual(200, resp.status_code)
-        # The row was looked up under the resolved chat's account + storage key.
-        web_main.db.get_media_by_id.assert_awaited_once_with("-1001_9_photo", account_id=1)
+        # The chat bound comes from the RESOLVED chat and rides into SQL as a
+        # predicate — it is no longer smuggled inside a reconstructed id string.
+        web_main.db.get_media_for_message.assert_awaited_once_with(-1001, 9, "photo", account_id=1)
 
 
 # ============================================================================
@@ -412,7 +413,7 @@ class TestMediaServingHeaders(unittest.IsolatedAsyncioTestCase):
         # message 77, type "report.html", and the media row's file_path picks
         # the actual bytes — the phase-4 shape, where the row selects the file.
         (self.chat_dir / name).write_bytes(b"<script>archive.exfiltrate()</script>")
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": f"-1001_{name}", "file_path": f"-1001/{name}", "file_name": name}
         )
         async with self._client() as client:
@@ -463,7 +464,7 @@ class TestMediaServingHeaders(unittest.IsolatedAsyncioTestCase):
     async def test_thumbnail_cache_control_is_private(self):
         thumb = self.root / "thumb.webp"
         thumb.write_bytes(b"\x00" * 8)
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_77_photo", "file_path": "-1001/77_photo.jpg", "file_name": "77_photo.jpg"}
         )
         saved_cache_dir = web_main._thumb_cache_dir
@@ -513,7 +514,7 @@ class TestExceptionHandlerRedaction(unittest.TestCase):
         # The failure is planted INSIDE the handler (ensure_thumbnail), so the
         # resolver and the media row lookup must both succeed first.
         web_main.db.get_chat_by_ref = AsyncMock(return_value=_chat_row(-1001234567890, self.CHAT_REF))
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={
                 "id": f"{self.CHAT_FOLDER}_{self.FILE_NAME}",
                 "file_path": f"{self.CHAT_FOLDER}/{self.FILE_NAME}",
@@ -634,7 +635,7 @@ class TestUnhandledExceptionNeverReachesTheServer(unittest.TestCase):
         # Resolve the ref and the media row so the request reaches the planted
         # ensure_thumbnail failure — the row's file_path is the PII-bearing path.
         web_main.db.get_chat_by_ref = AsyncMock(return_value=_chat_row(-1001234567890, self.CHAT_REF))
-        web_main.db.get_media_by_id = AsyncMock(
+        web_main.db.get_media_for_message = AsyncMock(
             return_value={
                 "id": f"{self.CHAT_FOLDER}_{self.FILE_NAME}",
                 "file_path": f"{self.CHAT_FOLDER}/{self.FILE_NAME}",
@@ -737,7 +738,16 @@ class TestNoDownloadGalleryThumbnails(unittest.IsolatedAsyncioTestCase):
         self.mock_db = _mock_db()
         self.mock_db.get_chat_by_ref = AsyncMock(return_value=_chat_row(-1001, self.REF))
         self.mock_db.get_media_paginated = AsyncMock(
-            side_effect=lambda *a, **k: {"items": [{"id": "-1001_123_photo", "file_path": "-1001/photo_123.jpg"}]}
+            side_effect=lambda *a, **k: {
+                "items": [
+                    {
+                        "id": "-1001_123_photo",
+                        "message_id": 123,
+                        "type": "photo",
+                        "file_path": "-1001/photo_123.jpg",
+                    }
+                ]
+            }
         )
         web_main.db = self.mock_db
 

@@ -207,8 +207,13 @@ async def restore_chat(
     logger.info(f"\nWill restore {len(messages)} messages ({media_count} with media)")
     logger.info(f"Estimated time: ~{len(messages) * delay / 60:.1f} minutes (with {delay}s delay)")
 
-    # Get media base path
-    media_base_path = os.getenv("BACKUP_PATH", "/data/backups")
+    # Media base path. The export carries Media.file_path verbatim, and that
+    # column holds two shapes: absolute (API sweep, realtime listener) and
+    # media-root-relative (Telegram Desktop import). Joining against BACKUP_PATH
+    # was accidentally right for the first — os.path.join discards the base for an
+    # absolute value — and wrong for the second, producing a path missing the
+    # "media" segment, so every imported attachment showed as MISSING (#310).
+    media_base_path = os.path.join(os.getenv("BACKUP_PATH", "/data/backups"), "media")
 
     if dry_run:
         logger.info("\n--- DRY RUN PREVIEW (first 10 messages) ---")
