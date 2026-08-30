@@ -4738,7 +4738,7 @@
                     mediaGalleryLoading.value = true
                     try {
                         const typeMap = {
-                            photos: 'photo,video,animation',
+                            photos: 'photo,video,animation,video_note',
                             voice: 'voice,audio',
                             files: 'document',
                         }
@@ -6548,13 +6548,15 @@
                         return 'document'
                     }
 
-                    const storagePrefix = media?.id ? `${media.id}_` : ''
-                    if (storagePrefix && name.startsWith(storagePrefix)) {
-                        name = name.slice(storagePrefix.length)
-                    }
-
-                    // Old backups may prefix message_id (e.g. 12345_original.png) – strip that prefix
-                    const withoutPrefix = name.replace(/^[0-9]+_/, '')
+                    // Mirror of _MEDIA_STORAGE_PREFIX_RE in src/message_utils.py, which
+                    // names the download the same way this labels it — change both together.
+                    // Every ingest path prefixes the stored name for uniqueness: the sweep
+                    // with `<telegram_file_id>_`, the Telegram Desktop importer with
+                    // `import_<chat>_<msg>_`. This used to strip `media.id + '_'`, which only
+                    // ever matched imported files, and only while media.id still WAS the
+                    // storage id — the very bug (#423) that left them unplayable. media.id is
+                    // now the chat-free URL key, so the prefix is matched on its own shape.
+                    const withoutPrefix = name.replace(/^(?:import_-?[0-9]+_[0-9]+_|[0-9]+_)/, '')
                     return withoutPrefix || name
                 }
 

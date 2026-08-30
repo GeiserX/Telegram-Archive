@@ -1415,6 +1415,22 @@ def _parse_media_key(media_key: str) -> tuple[int, str] | None:
     return message_id, type_part
 
 
+def _url_media_key(message_id: object, media_type: object) -> str | None:
+    """The chat-free URL key ``{message_id}_{type}`` for a media row, or None.
+
+    Built from the two values the key actually names, never by slicing the
+    storage id. The sweep spells that id ``{chat}_{msg}_{type}`` so slicing
+    happened to work; the Telegram Desktop importer spells it
+    ``import_{chat}_{msg}``, so slicing produced no key at all and the media
+    silently lost its URL (#423). The row carries ``message_id`` and ``type``
+    whatever it is filed under, so this is correct for every ingest path —
+    including any future one.
+    """
+    if message_id is None or not media_type or not isinstance(media_type, str):
+        return None
+    return f"{message_id}_{media_type}"
+
+
 def _media_relative_path(file_path: str | None) -> str | None:
     """Normalize a media row's file_path to a media-root-relative path, or None.
 
@@ -1476,16 +1492,23 @@ def _resolve_media_file(relative_path: str):
 async def _entitled_media_row(chat: ChatContext, media_key: str) -> dict:
     """Media row for an already-entitled chat + URL key, or the uniform 404.
 
-    The row lookup IS the authorization for the bytes: the storage key is
-    reconstructed as ``{chat_id}_{message_id}_{type}`` from the resolved chat,
-    so a key can only ever select media belonging to the chat the ref named.
-    A malformed key and a missing row answer identically.
+    The row lookup IS the authorization for the bytes: the chat id comes from
+    the resolved chat and rides into SQL as a predicate, so a key can only ever
+    select media belonging to the chat the ref named. A malformed key and a
+    missing row answer identically.
+
+    This used to REBUILD the storage id (``{chat_id}_{message_id}_{type}``) and
+    query by it, which made the chat bound a property of one f-string. It also
+    found nothing for a Telegram Desktop import, whose rows are filed under
+    ``import_{chat}_{msg}`` — the file was on disk and the viewer said "Media
+    not found" (#423). Asking by column fixes both: the bound is explicit, and
+    the row is found whatever its id spells.
     """
     parsed = _parse_media_key(media_key)
     row = None
     if parsed is not None:
         message_id, media_type = parsed
-        row = await db.get_media_by_id(f"{chat.chat_id}_{message_id}_{media_type}", account_id=chat.account_id)
+        row = await db.get_media_for_message(chat.chat_id, message_id, media_type, account_id=chat.account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
     return row
@@ -2229,7 +2252,6 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
       download stays deferred — flood-sensitive); the initials circle is the
       always-available render, a served file is a bonus.
     """
-    prefix = f"{chat.chat_id}_"
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -2242,11 +2264,12 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
         media = message.get("media")
         if not isinstance(media, dict):
             continue
-        media_key = None
-        raw_id = media.get("id")
-        if isinstance(raw_id, str) and raw_id.startswith(prefix):
-            media_key = raw_id[len(prefix) :]
-            media["id"] = media_key
+        # Media.type is nullable, so a key is not always constructible. Blank the
+        # id rather than leaving the storage key: passing it through is what put
+        # the chat id in front of the browser (and back in a cursor query string),
+        # which the promise at the top of this docstring says never happens.
+        media_key = _url_media_key(message.get("id"), media.get("type"))
+        media["id"] = media_key
         if media_key and _media_relative_path(media.get("file_path")):
             media["url"] = f"/media/{chat.ref}/{_encode_media_key(media_key)}"
         else:
@@ -2526,26 +2549,23 @@ async def get_chat_media(
 
     media_types = [t.strip() for t in types.split(",") if t.strip()] or None
 
-    # The adapter's cursor is the storage key; the URL token is its chat-free
-    # suffix. An old-format (full) token reconstructs to a key that resolves to
-    # no row, which is the same empty page a deleted cursor yields.
-    key_prefix = f"{chat.chat_id}_"
-
+    # The URL token is the chat-free ``{message_id}_{type}`` key; the adapter
+    # resolves it against the row's own columns. It used to be turned back into
+    # a storage id by prepending the chat, which no imported row carries — so
+    # paging past the first imported item resolved no cursor and the gallery
+    # dead-ended (#423). A token that names no row still yields an empty page.
     try:
         result = await db.get_media_paginated(
             chat.chat_id,
             media_types=media_types,
             limit=limit,
-            before_id=f"{key_prefix}{before_id}" if before_id else None,
-            after_id=f"{key_prefix}{after_id}" if after_id else None,
+            before_key=_parse_media_key(before_id) if before_id else None,
+            after_key=_parse_media_key(after_id) if after_id else None,
             account_id=chat.account_id,
         )
         for item in result["items"]:
-            media_key = None
-            raw_id = item.get("id")
-            if isinstance(raw_id, str) and raw_id.startswith(key_prefix):
-                media_key = raw_id[len(key_prefix) :]
-                item["id"] = media_key
+            media_key = _url_media_key(item.get("message_id"), item.get("type"))
+            item["id"] = media_key
 
             relative = _media_relative_path(item.get("file_path", "") or "")
             if relative is None or media_key is None:

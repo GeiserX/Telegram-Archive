@@ -339,9 +339,14 @@ class Media(Base):
     __tablename__ = "media"
 
     account_id: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=str(DEFAULT_ACCOUNT_ID))
-    # NOT a Telegram file_id: the value is built as f"{chat_id}_{message.id}_{type}"
-    # (src/telegram_backup.py, src/listener.py), so two accounts archiving the
-    # same message produce the identical string. account_id leads the key.
+    # NOT a Telegram file_id, and NOT one single shape. The API sweep and the
+    # listener build f"{chat_id}_{message.id}_{type}"; the Telegram Desktop
+    # importer builds f"import_{chat_id}_{message.id}" (src/telegram_import.py),
+    # deliberately type-free so adoption can re-key it whichever type each side
+    # computed. Read a row by its (chat_id, message_id, type) COLUMNS rather than
+    # by re-spelling this key — assuming the first shape is #423. No shape carries
+    # the account, so two accounts archiving the same message produce the
+    # identical string. account_id leads the key.
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     message_id: Mapped[int | None] = mapped_column(BigInteger)
     chat_id: Mapped[int | None] = mapped_column(BigInteger)

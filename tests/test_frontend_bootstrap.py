@@ -148,14 +148,45 @@ class TestSenderPresentation(unittest.TestCase):
         self.assertIn("trigger?.focus()", self.html)
 
     def test_imported_document_display_name_hides_storage_prefix(self) -> None:
-        """Imported media IDs are storage details and should not appear in the gallery."""
+        """Imported media IDs are storage details and should not appear in the gallery.
+
+        The label used to be produced by stripping ``media.id + '_'`` off the
+        stored filename. That only ever matched imported files, and only while
+        media.id still WAS the storage id — i.e. only while #423 was unfixed.
+        media.id is now the chat-free URL key, so the prefix is matched on its
+        own shape, mirroring _MEDIA_STORAGE_PREFIX_RE in src/message_utils.py so
+        the visible label and the saved download name agree.
+        """
         start = self.html.index("const getMediaDisplayName = (media) =>")
         end = self.html.index("const getDocumentDisplayName = (msg) =>", start)
         body = self.html[start:end]
-        self.assertIn("media?.id", body)
-        self.assertIn("name.startsWith(storagePrefix)", body)
-        self.assertIn("name = name.slice(storagePrefix.length)", body)
+        # The storage prefix is recognised by shape, not by the id we happen to ship.
+        self.assertIn("/^(?:import_-?[0-9]+_[0-9]+_|[0-9]+_)/", body)
+        self.assertNotIn("storagePrefix", body)
         self.assertIn("{{ getMediaDisplayName(item) }}", self.html)
+
+    def test_media_display_name_matches_the_server_download_name(self) -> None:
+        """One rule, two places: the viewer's label and the server's saved
+        filename must strip the same prefixes, or a download lands under a name
+        the gallery never showed. Asserted against the real Python function."""
+        import re as _re
+
+        from src.message_utils import media_display_filename
+
+        start = self.html.index("const getMediaDisplayName = (media) =>")
+        end = self.html.index("const getDocumentDisplayName = (msg) =>", start)
+        js_pattern = _re.search(r"name\.replace\(/\^(.+?)/, ''\)", self.html[start:end]).group(1)
+        for stored in (
+            "import_-1002176572213_1453_holiday.mp4",  # imported, negative chat
+            "import_7654321_7_holiday.mp4",  # imported, positive chat
+            "5551234_holiday.jpg",  # swept
+            "holiday.jpg",  # no prefix at all
+        ):
+            with self.subTest(stored=stored):
+                self.assertEqual(
+                    media_display_filename(stored),
+                    _re.sub("^" + js_pattern, "", stored, count=1) or stored,
+                )
 
 
 def test_message_versions_are_loaded_only_from_click_handler():

@@ -187,8 +187,8 @@ class TestMediaPaginated:
             -1001,
             media_types=["photo", "video"],
             limit=50,
-            before_id=None,
-            after_id=None,
+            before_key=None,
+            after_key=None,
             account_id=1,
         )
 
@@ -200,13 +200,17 @@ class TestMediaPaginated:
             -1001,
             media_types=None,
             limit=20,
-            before_id=None,
-            after_id=None,
+            before_key=None,
+            after_key=None,
             account_id=1,
         )
 
     def test_passes_before_id(self, anon_env):
-        """The chat-free cursor is reconstructed into the storage key server-side."""
+        """The chat-free cursor is handed to the adapter as the natural key it is.
+
+        It used to be turned back into a storage id by prepending the chat, which
+        no imported row carries — so the gallery dead-ended at the first imported
+        item (#423)."""
         client, _, mock_db = _get_client()
         resp = client.get("/api/chats/opaque-media-a/media?before_id=90_photo")
         assert resp.status_code == 200
@@ -214,16 +218,16 @@ class TestMediaPaginated:
             -1001,
             media_types=None,
             limit=50,
-            before_id="-1001_90_photo",
-            after_id=None,
+            before_key=(90, "photo"),
+            after_key=None,
             account_id=1,
         )
 
     def test_passes_after_id(self, anon_env):
         """#266: the forward cursor is the CHAT-FREE key the endpoint returned as
-        item.id; the chat id is re-attached from the resolved chat, so an
-        old-format full-composite token reconstructs to a key that resolves to
-        no row (an empty page, never someone else's page)."""
+        item.id, and it is resolved against the row's own columns under the
+        RESOLVED chat — so an unresolvable token yields an empty page, never
+        someone else's page."""
         client, _, mock_db = _get_client()
         resp = client.get("/api/chats/opaque-media-a/media?after_id=2428_voice")
         assert resp.status_code == 200
@@ -231,19 +235,20 @@ class TestMediaPaginated:
             -1001,
             media_types=None,
             limit=50,
-            before_id=None,
-            after_id="-1001_2428_voice",
+            before_key=None,
+            after_key=(2428, "voice"),
             account_id=1,
         )
 
-    def test_old_full_composite_cursor_reconstructs_to_no_row(self, anon_env):
-        """A 7.x cursor ("-1001_2428_voice") gains a second chat prefix and can
-        only ever miss — the #266 empty-page semantics."""
+    def test_old_full_composite_cursor_resolves_to_no_row(self, anon_env):
+        """A 7.x cursor ("-1001_2428_voice") still can only ever miss — the #266
+        empty-page semantics, now reached by a different route: it parses as the
+        natural key (-1001, "2428_voice"), and no row has message_id -1001."""
         client, _, mock_db = _get_client()
         resp = client.get("/api/chats/opaque-media-a/media?after_id=-1001_2428_voice")
         assert resp.status_code == 200
-        called_after = mock_db.get_media_paginated.call_args.kwargs["after_id"]
-        assert called_after == "-1001_-1001_2428_voice"
+        called_after = mock_db.get_media_paginated.call_args.kwargs["after_key"]
+        assert called_after == (-1001, "2428_voice")
 
     def test_before_id_and_after_id_are_mutually_exclusive(self, anon_env):
         """#266: asking for both directions at once is rejected, not silently halved."""
@@ -261,8 +266,8 @@ class TestMediaPaginated:
             -1001,
             media_types=None,
             limit=50,
-            before_id=None,
-            after_id=None,
+            before_key=None,
+            after_key=None,
             account_id=1,
         )
 

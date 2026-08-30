@@ -305,3 +305,122 @@ class TestPageLimitCountsMessagesRealEngine:
         assert by_id[59]["media"]["id"] == "900101_59_photo"
         # A message without media stays None.
         assert by_id[20]["media"] is None
+
+
+class TestImportedMediaAddressingRealEngine:
+    """#423 against real SQL on both backends.
+
+    The rest of the #423 coverage (tests/test_import_media_addressing.py) drives
+    the web layer over a hand-rolled table, so it cannot catch a predicate that
+    is wrong in SQL or a tie-break the two databases order differently. This is
+    the leg that can.
+    """
+
+    async def _seed(self, real_adapter, chat_id: int) -> None:
+        await _seed_chat(real_adapter, chat_id)
+        for n in (10, 11, 12):
+            await real_adapter.insert_message(_message(chat_id, n, offset_minutes=n), account_id=1)
+        rows = [
+            # msg 10: imported only — the #423 case. Note the media-root-RELATIVE
+            # file_path, which is the shape src/telegram_import.py really writes;
+            # the older adoption fixture uses an absolute path the importer never
+            # produces, which is how #310 shipped unnoticed.
+            (f"import_{chat_id}_10", 10, "document", 1),
+            # msg 11: the duplicate class #310 could leave behind — an import row
+            # and a sweep row for one (message, type).
+            (f"{chat_id}_11_document", 11, "document", 1),
+            (f"import_{chat_id}_11", 11, "document", 1),
+            # msg 12: swept only — the control.
+            (f"{chat_id}_12_document", 12, "document", 1),
+        ]
+        for media_id, msg, media_type, downloaded in rows:
+            await real_adapter.insert_media(
+                {
+                    "id": media_id,
+                    "message_id": msg,
+                    "chat_id": chat_id,
+                    "type": media_type,
+                    "file_path": f"{chat_id}/{media_id}_report.pdf",
+                    "file_name": f"{media_id}_report.pdf",
+                    "file_size": 1,
+                    "mime_type": "application/pdf",
+                    "downloaded": downloaded,
+                },
+                account_id=1,
+            )
+
+    async def test_an_imported_row_is_found_by_its_natural_key(self, real_adapter):
+        """#423: reconstructing ``{chat}_{msg}_{type}`` found nothing for an
+        imported row, so the viewer said 'Media not found' about a file that was
+        on disk. Asking by column finds it whatever it is filed under."""
+        await self._seed(real_adapter, 900200)
+
+        row = await real_adapter.get_media_for_message(900200, 10, "document", account_id=1)
+
+        assert row is not None
+        assert row["id"] == "import_900200_10"
+
+    async def test_a_swept_row_is_found_the_same_way(self, real_adapter):
+        """Control: the majority case must be unaffected."""
+        await self._seed(real_adapter, 900201)
+
+        row = await real_adapter.get_media_for_message(900201, 12, "document", account_id=1)
+
+        assert row["id"] == "900201_12_document"
+
+    async def test_the_lookup_cannot_cross_a_chat_boundary(self, real_adapter):
+        """The chat bound is a predicate now, not a substring of a key the
+        caller happened to mint. get_media_by_id is account-scoped ONLY, so this
+        is the property that keeps one chat's ref from naming another's bytes."""
+        await self._seed(real_adapter, 900202)
+        await self._seed(real_adapter, 900203)
+
+        row = await real_adapter.get_media_for_message(900203, 10, "document", account_id=1)
+
+        assert row["id"] == "import_900203_10"  # never 900202's row
+
+    async def test_a_wrong_type_finds_nothing(self, real_adapter):
+        """The import id carries no type, so type must come from the column or
+        ``{msg}_anything`` would address it."""
+        await self._seed(real_adapter, 900204)
+
+        assert await real_adapter.get_media_for_message(900204, 10, "video", account_id=1) is None
+
+    async def test_a_duplicate_pair_picks_the_row_the_message_list_shows(self, real_adapter):
+        """get_messages attaches (downloaded desc, id asc); the byte route must
+        agree or the player and the gallery show different files. Both backends
+        must order the tie identically — that is why this test is here."""
+        await self._seed(real_adapter, 900205)
+
+        row = await real_adapter.get_media_for_message(900205, 11, "document", account_id=1)
+
+        assert row["id"] == "900205_11_document"  # digits sort below letters
+
+    async def test_a_full_gallery_walk_visits_every_row_and_skips_none(self, real_adapter):
+        """The gallery cursor is now the natural key, which the duplicate class
+        above makes ambiguous. Backward is the direction 'load more' uses: it
+        must be exact. Losing a row is the failure that matters — the walk is
+        how a viewer reaches media, so a skipped item is invisible."""
+        await self._seed(real_adapter, 900206)
+
+        seen: list[str] = []
+        key = None
+        for _ in range(6):
+            page = await real_adapter.get_media_paginated(
+                900206, limit=2, account_id=1, **({"before_key": key} if key else {})
+            )
+            if not page["items"]:
+                break
+            seen += [i["id"] for i in page["items"]]
+            last = page["items"][-1]
+            key = (last["message_id"], last["type"])
+            if not page["has_more"]:
+                break
+
+        assert len(seen) == len(set(seen)), f"the walk re-served a row: {seen}"
+        assert set(seen) == {
+            "import_900206_10",
+            "900206_11_document",
+            "import_900206_11",
+            "900206_12_document",
+        }, f"the walk skipped a row: {seen}"

@@ -2055,10 +2055,19 @@ class DatabaseAdapter:
         before_id: str | None = None,
         after_id: str | None = None,
         *,
+        before_key: tuple[int, str] | None = None,
+        after_key: tuple[int, str] | None = None,
         account_id: int | None = None,
     ) -> dict[str, Any]:
         """
         Get paginated media records for a chat with cursor-based pagination.
+
+        A cursor may be given either as a storage id (``before_id``/``after_id``)
+        or as the natural key ``(message_id, type)`` (``before_key``/``after_key``).
+        The gallery URL carries the natural key, because an imported row's
+        storage id is not derivable from it (#423) — resolving the cursor by
+        column keeps 'load more' working on archives built from an import
+        instead of dead-ending at the first imported item.
 
         ``account_id=None`` is unscoped until phase 4. The media↔message joins
         below carry the account equality UNCONDITIONALLY: a ``{chat}_{msg}_{type}``
@@ -2106,8 +2115,9 @@ class DatabaseAdapter:
         if before_id and after_id:
             raise ValueError("before_id and after_id are mutually exclusive")
 
-        forward = bool(after_id)
+        forward = bool(after_id or after_key)
         cursor_token = after_id if forward else before_id
+        cursor_key = after_key if forward else before_key
 
         async with self.db_manager.async_session_factory() as session:
             # Two-step page: pick the page's Media.ids from a NARROW statement
@@ -2125,12 +2135,24 @@ class DatabaseAdapter:
             if media_types:
                 key_stmt = key_stmt.where(Media.type.in_(media_types))
 
-            if cursor_token:
-                cursor_stmt = select(Media.id, Media.message_id).where(
-                    and_(Media.id == cursor_token, Media.chat_id == chat_id)
+            if cursor_token or cursor_key:
+                cursor_match = (
+                    Media.id == cursor_token
+                    if cursor_token
+                    else and_(Media.message_id == cursor_key[0], Media.type == cursor_key[1])
                 )
+                cursor_stmt = select(Media.id, Media.message_id).where(and_(cursor_match, Media.chat_id == chat_id))
                 if account_id is not None:
                     cursor_stmt = cursor_stmt.where(Media.account_id == account_id)
+                # A natural key is unique for every row this gallery serves EXCEPT
+                # the duplicate class #310 could leave behind (an import row and a
+                # sweep row sharing one message and type, documented at :3459). It
+                # is then ambiguous, so resolve it to whichever twin the walk
+                # reaches FIRST — lowest id going forward, highest going back.
+                # Resolving to the other end makes the walk step over the twin it
+                # has not served yet; this way the worst case is serving one row
+                # twice, and a gallery that repeats an item beats one that hides it.
+                cursor_stmt = cursor_stmt.order_by(Media.id.asc() if forward else Media.id.desc())
                 cursor_result = await session.execute(cursor_stmt)
                 # first(), not one_or_none(): unscoped (account_id=None) calls
                 # can match BOTH accounts' copies of the same media id, and the
@@ -2239,6 +2261,59 @@ class DatabaseAdapter:
                 stmt = stmt.where(Media.account_id == account_id)
             result = await session.execute(stmt)
             return {row[0]: row[1] for row in result.all()}
+
+    async def get_media_for_message(
+        self, chat_id: int, message_id: int, media_type: str, *, account_id: int
+    ) -> dict[str, Any] | None:
+        """One chat's media row for a (message, type), whatever its storage id.
+
+        ``Media.id`` is a DERIVED key, and two ingest paths spell it
+        differently: the API sweep and the listener mint
+        ``{chat}_{msg}_{type}``, while the Telegram Desktop importer mints
+        ``import_{chat}_{msg}`` — deliberately type-free, so adoption can
+        re-key the row whichever type each side computed. Reconstructing the
+        sweep spelling and querying by it therefore finds nothing for an
+        imported row, which is #423.
+
+        So this asks for what the caller actually means, using the columns
+        that hold it. Being predicate-scoped rather than string-scoped also
+        makes the chat bound explicit: ``get_media_by_id`` is account-scoped
+        only, so a chat bound smuggled inside an id string is a bound only for
+        as long as every caller keeps minting that string itself.
+
+        Ordered like ``get_messages`` attaches media (downloaded first, then
+        lowest id) so the bytes this serves are the bytes the message payload
+        described, even where a re-download left a duplicate row behind.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media)
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.chat_id == chat_id,
+                        Media.message_id == message_id,
+                        Media.type == media_type,
+                    )
+                )
+                .order_by(Media.downloaded.desc(), Media.id)
+                .limit(1)
+            )
+            media = (await session.execute(stmt)).scalars().first()
+            if not media:
+                return None
+            return {
+                "id": media.id,
+                "account_id": media.account_id,
+                "message_id": media.message_id,
+                "chat_id": media.chat_id,
+                "type": media.type,
+                "file_path": media.file_path,
+                "file_name": media.file_name,
+                "file_size": media.file_size,
+                "mime_type": media.mime_type,
+                "downloaded": media.downloaded,
+            }
 
     async def get_media_by_id(self, media_id: str, *, account_id: int) -> dict[str, Any] | None:
         """Get one media row by its ``{chat_id}_{message_id}_{type}`` storage key.

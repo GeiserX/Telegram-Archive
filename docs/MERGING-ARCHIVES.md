@@ -236,12 +236,18 @@ installs downloaded the same Telegram file — identical content, so keeping the
 target's copy is always right. Everything only the source had (its own chats'
 directories, its `_shared` blobs) copies over normally.
 
-The database stores media paths as absolute container paths. If both installs
-used the default `BACKUP_PATH=/data/backups`, imported rows point at the right
-places as soon as the files are copied — the script's `media roots match: yes`
-line confirms it. If it says `NO`, the installs used different `BACKUP_PATH`s,
-and the imported rows need their prefix rewritten once (adjust the two
-literals; the imported account's row id is in the merge summary):
+The database stores media paths in two shapes. Rows the API sweep and the
+realtime listener wrote are absolute container paths; rows a Telegram Desktop
+import wrote are relative to the media root (`<chat_id>/<filename>`). The
+relative ones carry no base at all, so they survive a `BACKUP_PATH` change
+untouched and never need the rewrite below.
+
+If both installs used the default `BACKUP_PATH=/data/backups`, the absolute rows
+point at the right places as soon as the files are copied — the script's
+`media roots match: yes` line confirms it. If it says `NO`, the installs used
+different `BACKUP_PATH`s, and those rows need their prefix rewritten once
+(adjust the two literals; the imported account's row id is in the merge
+summary). The `LIKE` guard leaves the relative rows alone, which is correct:
 
 ```sql
 -- Same statement on both backends (replace() exists in SQLite and PostgreSQL)

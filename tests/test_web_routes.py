@@ -50,7 +50,7 @@ def _mock_db():
     db.get_chat_by_ref = AsyncMock(
         side_effect=lambda ref, **kwargs: {"id": 1, "account_id": 1, "ref": ref, "type": "group"}
     )
-    db.get_media_by_id = AsyncMock(return_value=None)
+    db.get_media_for_message = AsyncMock(return_value=None)
     db.get_message_sender_id = AsyncMock(return_value=None)
     db.get_messages_paginated = AsyncMock(return_value=[])
     db.get_message_versions = AsyncMock(return_value=[])
