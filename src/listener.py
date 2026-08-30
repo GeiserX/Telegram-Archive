@@ -1357,8 +1357,14 @@ class TelegramListener:
                             download_result = await self._download_media(message, chat_id)
                             if download_result:
                                 media_path, media_file_name, content_hash = download_result
-                                # Create media record (FK to messages now satisfied)
-                                media_id = f"{chat_id}_{message.id}_{media_type}"
+                                # Create media record (FK to messages now satisfied).
+                                # Reuse the row this message already has, if any: an edit that
+                                # swaps the media's kind would otherwise plant a second row,
+                                # the same way a reclassified round video did in the sweep.
+                                _existing = await self.db.reconcile_media_row(
+                                    chat_id, message.id, media_type, account_id=self.account_id
+                                )
+                                media_id = _existing["id"] if _existing else f"{chat_id}_{message.id}_{media_type}"
                                 # Same metadata the scheduled sweep records (#263) — without it
                                 # live-captured voice notes had a NULL duration and rendered
                                 # without it while sweep-captured ones showed it.

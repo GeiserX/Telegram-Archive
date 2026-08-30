@@ -99,7 +99,7 @@ class TestSweepDownloadsPreviewPhoto(unittest.TestCase):
         backup.db = AsyncMock()
         # No import rows: a truthy mock would make the adoption hook
         # short-circuit _process_media before the preview paths under test.
-        backup.db.adopt_import_media = AsyncMock(return_value=None)
+        backup.db.reconcile_media_row = AsyncMock(return_value=None)
         backup.client = AsyncMock()
 
         async def fake_download(_message, path, _size, _chat_id):

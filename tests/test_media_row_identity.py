@@ -1,0 +1,148 @@
+"""A media row is identified by its message, not by a string that spells its type.
+
+``Media.id`` used to be minted on every capture from ``{chat}_{msg}_{type}``, so
+it cached a JUDGEMENT and was then used as the row's identity. The moment the
+judgement changed -- which is exactly what round-video classification does to
+every archived circular video -- the writer stopped talking about the row it
+already had:
+
+* the pending retry inserted a SECOND row under the new type and left the first
+  at ``downloaded=0`` with its attempt counter untouched, so it was re-requested
+  from Telegram on every cycle and could never reach the attempt cap;
+* the gallery showed one file as two tiles while the message timeline kept
+  showing the old one.
+
+The id is now an opaque token the row keeps for life. Only ``type`` is
+corrected, which is the value every reader consults.
+"""
+
+import os
+import sys
+import tempfile
+from datetime import datetime
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_identity_"))
+
+CHAT_ID = -1001
+MSG_ID = 42
+BASE_DATE = datetime(2026, 3, 1, 12, 0, 0)
+
+
+async def _seed(adapter, chat_id: int, message_id: int) -> None:
+    """A media row needs its message: PostgreSQL enforces the foreign key that
+    SQLite leaves off, so seeding media alone passes on one backend and fails on
+    the other."""
+    await adapter.upsert_chat({"id": chat_id, "type": "group", "title": "fixture"}, account_id=1)
+    await adapter.insert_message(
+        {
+            "id": message_id,
+            "chat_id": chat_id,
+            "sender_id": 4242,
+            "date": BASE_DATE,
+            "text": None,
+            "raw_data": {},
+        },
+        account_id=1,
+    )
+
+
+class TestRetypeInPlace:
+    """The rescan's write. It must move rows, not create them."""
+
+    async def test_retype_moves_the_existing_row(self, real_adapter):
+        await _seed(real_adapter, CHAT_ID, MSG_ID)
+        await real_adapter.insert_media(
+            {
+                "id": f"{CHAT_ID}_{MSG_ID}_video",
+                "message_id": MSG_ID,
+                "chat_id": CHAT_ID,
+                "type": "video",
+                "file_path": f"{CHAT_ID}/x.mp4",
+                "file_name": "x.mp4",
+                "file_size": 1,
+                "downloaded": True,
+            },
+            account_id=1,
+        )
+
+        moved = await real_adapter.retype_media_for_messages(CHAT_ID, [MSG_ID], "video_note", account_id=1)
+
+        assert moved == 1
+        row = await real_adapter.get_media_for_message(CHAT_ID, MSG_ID, "video_note", account_id=1)
+        assert row is not None
+        # SAME row: the id it was filed under is untouched.
+        assert row["id"] == f"{CHAT_ID}_{MSG_ID}_video"
+        # and the old type resolves to nothing, so there is exactly one row
+        assert await real_adapter.get_media_for_message(CHAT_ID, MSG_ID, "video", account_id=1) is None
+
+    async def test_retype_is_idempotent(self, real_adapter):
+        await _seed(real_adapter, CHAT_ID, 7)
+        await real_adapter.insert_media(
+            {
+                "id": f"{CHAT_ID}_7_video",
+                "message_id": 7,
+                "chat_id": CHAT_ID,
+                "type": "video_note",
+                "file_path": f"{CHAT_ID}/y.mp4",
+                "file_name": "y.mp4",
+                "file_size": 1,
+                "downloaded": True,
+            },
+            account_id=1,
+        )
+
+        assert await real_adapter.retype_media_for_messages(CHAT_ID, [7], "video_note", account_id=1) == 0
+
+    async def test_an_empty_id_list_touches_nothing(self, real_adapter):
+        assert await real_adapter.retype_media_for_messages(CHAT_ID, [], "video_note", account_id=1) == 0
+
+    async def test_candidate_chats_are_those_holding_that_type(self, real_adapter):
+        for chat, mtype in ((-2001, "video"), (-2002, "photo")):
+            await _seed(real_adapter, chat, 1)
+            await real_adapter.insert_media(
+                {
+                    "id": f"{chat}_1_{mtype}",
+                    "message_id": 1,
+                    "chat_id": chat,
+                    "type": mtype,
+                    "file_path": f"{chat}/z",
+                    "file_name": "z",
+                    "file_size": 1,
+                    "downloaded": True,
+                },
+                account_id=1,
+            )
+
+        chats = await real_adapter.get_chats_with_media_type("video", account_id=1)
+
+        assert -2001 in chats
+        assert -2002 not in chats
+
+
+class TestReconcileKeepsOneRow:
+    async def test_a_changed_judgement_does_not_create_a_second_row(self, real_adapter):
+        """The whole point. Before this, a reclassified round video became a new
+        row and the original stayed pending forever."""
+        await _seed(real_adapter, CHAT_ID, 9)
+        await real_adapter.insert_media(
+            {
+                "id": f"{CHAT_ID}_9_video",
+                "message_id": 9,
+                "chat_id": CHAT_ID,
+                "type": "video",
+                "file_path": f"{CHAT_ID}/a.mp4",
+                "file_name": "a.mp4",
+                "file_size": 1,
+                "downloaded": False,
+            },
+            account_id=1,
+        )
+
+        reconciled = await real_adapter.reconcile_media_row(CHAT_ID, 9, "video_note", account_id=1)
+        # the writer now upserts under THIS id, so the row is updated not twinned
+        await real_adapter.insert_media({**reconciled, "downloaded": True, "file_size": 2}, account_id=1)
+
+        counts = await real_adapter.get_media_counts(CHAT_ID, account_id=1)
+        assert counts == {"video_note": 1}, counts
