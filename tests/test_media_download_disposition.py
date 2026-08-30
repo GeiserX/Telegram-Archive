@@ -49,7 +49,7 @@ def _wire_chat_and_media(main_mod, filename: str, chat_id: int = -1001, folder: 
     main_mod.db.get_chat_by_ref = AsyncMock(
         return_value={"id": chat_id, "account_id": 1, "ref": CHAT_REF, "type": "channel"}
     )
-    main_mod.db.get_media_by_id = AsyncMock(
+    main_mod.db.get_media_for_message = AsyncMock(
         return_value={
             "id": f"{chat_id}_5_photo",
             "file_path": f"{folder or chat_id}/{filename}",

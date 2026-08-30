@@ -155,7 +155,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:8.4.1 \
+  drumsergio/telegram-archive:8.4.2 \
   python -m src auth
 ```
 
@@ -166,7 +166,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:8.4.1 \
+  drumsergio/telegram-archive:8.4.2 \
   python -m src auth
 
 # Then restart the backup container
@@ -207,7 +207,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.4.1
+    image: drumsergio/telegram-archive-viewer:8.4.2
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -623,9 +623,9 @@ want and run `docker compose up -d`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.4.1
+    image: drumsergio/telegram-archive:8.4.2
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.4.1
+    image: drumsergio/telegram-archive-viewer:8.4.2
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available
@@ -640,8 +640,8 @@ start:
 
 ```bash
 git pull
-docker build -t drumsergio/telegram-archive:8.4.1 .
-docker build -t drumsergio/telegram-archive-viewer:8.4.1 -f Dockerfile.viewer .
+docker build -t drumsergio/telegram-archive:8.4.2 .
+docker build -t drumsergio/telegram-archive-viewer:8.4.2 -f Dockerfile.viewer .
 docker compose up -d
 ```
 

@@ -84,6 +84,7 @@ from .parallel_download import (
     ParallelDownloadUnavailable,
     supports_parallel_download,
 )
+from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
 
@@ -1647,7 +1648,14 @@ class TelegramBackup:
         async for batch in self.db.iter_media_for_verification(account_id=self.account_id):
             for record in batch:
                 checked += 1
-                file_path = record.get("file_path")
+                # Resolve BEFORE stat()ing. A Telegram Desktop import stores
+                # file_path relative to the media root, so the raw value used to
+                # resolve against the process CWD and every imported file was
+                # judged missing and re-downloaded (#310). Stash the resolved
+                # value on the record: Phase 2 and the recovery path must stat
+                # exactly the file Phase 1 judged.
+                file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
+                record["_resolved_path"] = file_path
                 if not file_path:
                     continue
 
@@ -1757,7 +1765,13 @@ class TelegramBackup:
                         # (9t6.5.12) — and for media that cannot be re-fetched at
                         # all (HTML-imported, #310) it was guaranteed loss.
                         # lexists catches dangling symlinks.
-                        file_path = record.get("file_path")
+                        # The resolved path, not the raw one: the comment above
+                        # names HTML-imported media as the reason this sidestep
+                        # exists, yet the raw value never resolved for exactly
+                        # those rows, so the net was inert where it mattered most.
+                        file_path = record.get("_resolved_path") or resolve_stored_media_path(
+                            record.get("file_path"), self.config.media_path
+                        )
                         if file_path and os.path.lexists(file_path):
                             backup_path = file_path + ".verify-bak"
                             os.replace(file_path, backup_path)
@@ -1807,13 +1821,22 @@ class TelegramBackup:
         retry owns it instead of the row lying about a file that is not there.
         Never raises: recovery failing must not abort the verification sweep.
         """
-        file_path = record.get("file_path")
+        file_path = record.get("_resolved_path") or resolve_stored_media_path(
+            record.get("file_path"), self.config.media_path
+        )
         if backup_path and file_path and os.path.lexists(backup_path):
             try:
                 os.replace(backup_path, file_path)
                 return  # original preserved; the row stays truthful
             except OSError as e:
                 logger.warning(f"Could not restore sidestepped media file: {type(e).__name__}")
+        # Nothing was sidestepped and the file is still there: the re-download
+        # failed for its own reasons (deleted upstream, expired, inaccessible),
+        # not because the archive lost bytes. Flipping downloaded=0 here would
+        # discard a good file's pointer and queue a pointless retry — which is
+        # what every imported row got, since none of them ever resolved (#310).
+        if file_path and os.path.lexists(file_path):
+            return
         media_id = record.get("id")
         if media_id is None:
             return
@@ -3338,7 +3361,10 @@ class TelegramBackup:
             freed_bytes = 0
 
             for record in media_records:
-                file_path = record.get("file_path")
+                # Imported rows never resolved here either, so the file survived
+                # while delete_media_for_chat below still dropped its row —
+                # orphaning bytes nothing in this codebase ever reclaims (#310).
+                file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
                 if file_path and os.path.exists(file_path):
                     try:
                         if os.path.islink(file_path):

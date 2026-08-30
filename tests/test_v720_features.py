@@ -332,7 +332,7 @@ class TestNoDownload:
         db.get_chat_by_ref = AsyncMock(
             return_value={"id": -1001, "account_id": 1, "ref": "v720ChatRef01001ABCD", "type": "channel"}
         )
-        db.get_media_by_id = AsyncMock(
+        db.get_media_for_message = AsyncMock(
             return_value={"id": "-1001_5_photo", "file_path": "-1001/photo.jpg", "file_name": "photo.jpg"}
         )
 
