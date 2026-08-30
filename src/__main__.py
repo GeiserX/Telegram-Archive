@@ -361,21 +361,25 @@ async def run_reclassify_round_videos(args) -> int:
     from .db import create_adapter
     from .telegram_backup import TelegramBackup
 
-    config = Config()
-    setup_logging(config)
-    db = await create_adapter()
-    backup = TelegramBackup(config, db)
+    db = None
+    backup = None
     try:
+        config = Config()
+        setup_logging(config)
+        db = await create_adapter()
+        backup = TelegramBackup(config, db)
         await backup.connect()
         summary = await backup.reclassify_round_videos(chat_id=args.chat_id, dry_run=args.dry_run)
     except Exception as e:
         print(f"Reclassification failed: {e}", file=sys.stderr)
         return 1
     finally:
-        with contextlib.suppress(Exception):
-            await backup.disconnect()
-        with contextlib.suppress(Exception):
-            await db.close()
+        if backup is not None:
+            with contextlib.suppress(Exception):
+                await backup.disconnect()
+        if db is not None:
+            with contextlib.suppress(Exception):
+                await db.close()
 
     prefix = "[DRY RUN] " if args.dry_run else ""
     print(f"\n{prefix}Round-video reclassification complete:")
