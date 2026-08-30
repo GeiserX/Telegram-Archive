@@ -194,6 +194,7 @@ def build_media_filename(file_id: str, original_name: str, name_max_bytes: int) 
 _FALLBACK_MEDIA_EXTENSIONS = {
     "photo": "jpg",
     "video": "mp4",
+    "video_note": "mp4",
     "animation": "mp4",
     "voice": "ogg",
     "audio": "mp3",
@@ -566,6 +567,93 @@ def _photo_size_bytes(size: object) -> int:
         if candidates:
             return max(candidates)
     return 0
+
+
+def classify_media_type(media: object) -> str | None:
+    """The archive's name for a Telegram media object, or None when there is
+    nothing to record.
+
+    THE single classifier, for the same reason ``extract_media_attributes``
+    below is the single extractor: the scheduled sweep and the realtime
+    listener each carried their own byte-identical copy of this ladder, and a
+    copy only one of them updates is how a message ends up classified
+    differently depending on which lane captured it. Round videos were exactly
+    that -- the Telegram Desktop importer has always written ``video_note`` and
+    neither capture lane ever did, because neither ladder looked at
+    ``round_message``.
+
+    Dispatch is on the type NAME, not isinstance, which is what lets this live
+    in a module the viewer image imports: that image installs no telethon (see
+    Dockerfile.viewer and the viewer-runtime group), so a module-level
+    ``from telethon.tl.types import ...`` here would break it. The two forms are
+    equivalent for these types -- none of them has a subclass, and
+    MessageMediaGeoLive is a sibling of MessageMediaGeo rather than a subclass,
+    so it still falls through to classify_extended_media as "geo_live".
+    """
+    # ``__class__``, not ``type()``: that is the attribute isinstance consults, so
+    # this keeps the exact semantics of the isinstance ladder it replaces --
+    # including for the spec'd mocks the tests classify.
+    kind = media.__class__.__name__
+    if kind == "MessageMediaPhoto":
+        return "photo"
+    if kind == "MessageMediaDocument":
+        # DocumentEmpty is truthy but carries no .attributes at all. Its reference
+        # is unusable, so treat it exactly like a missing document rather than
+        # classifying it as a real one and sending it down the download path.
+        document = getattr(media, "document", None)
+        if not document:
+            return None  # document reference unavailable (e.g., forwarded from private channel)
+        attributes = getattr(document, "attributes", None)
+        if attributes is None:
+            return None
+        is_animated = False
+        for attr in attributes:
+            attr_type = type(attr).__name__
+            if "Animated" in attr_type:
+                is_animated = True
+            if "Video" in attr_type:
+                # A round message is the circular "video note" every official
+                # client renders as a circle. It is a Video attribute like any
+                # other, distinguished only by this flag -- the same shape as the
+                # voice/audio split one branch below.
+                # ``is True``, not truthiness: Telethon's parser sets a real bool
+                # (``_round_message = bool(flags & 1)``), while a bare MagicMock
+                # answers truthy to every getattr -- so a test fixture that never
+                # mentions the flag would silently become a round video. Same
+                # reasoning, and the same wording, as the strict check at
+                # telegram_backup.py's config gate.
+                if getattr(attr, "round_message", False) is True:
+                    return "video_note"
+                # If animated, it's a GIF
+                return "animation" if is_animated else "video"
+            elif "Audio" in attr_type:
+                # Voice notes have .voice=True on DocumentAttributeAudio
+                if getattr(attr, "voice", False):
+                    return "voice"
+                return "audio"
+            elif "Sticker" in attr_type:
+                return "sticker"
+        # If animated but no video attribute, still an animation
+        if is_animated:
+            return "animation"
+        return "document"
+    if kind == "MessageMediaContact":
+        return "contact"
+    if kind == "MessageMediaGeo":
+        return "geo"
+    if kind == "MessageMediaPoll":
+        return "poll"
+    # The nine kinds this ladder used to flatten to None (venue, dice,
+    # invoice, story, giveaways, live location, game, unsupported):
+    # metadata-only types with a typed viewer chip, never downloaded.
+    if kind == "MessageMediaWebPage":
+        webpage = getattr(media, "webpage", None)
+        if type(webpage).__name__ == "WebPage" and (
+            getattr(webpage, "photo", None) is not None or getattr(webpage, "document", None) is not None
+        ):
+            return "webpage"
+        return None  # card-only preview (raw_data.webpage): nothing to download
+    return classify_extended_media(media)
 
 
 def extract_media_attributes(media: object) -> dict[str, Any]:

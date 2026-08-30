@@ -1291,6 +1291,7 @@ class TestGetMediaType(unittest.TestCase):
         media.document = MagicMock()
         video_attr = MagicMock()
         type(video_attr).__name__ = "DocumentAttributeVideo"
+        video_attr.round_message = False
         media.document.attributes = [video_attr]
         self.assertEqual(self.backup._get_media_type(media), "video")
 
@@ -1302,6 +1303,7 @@ class TestGetMediaType(unittest.TestCase):
         type(anim_attr).__name__ = "DocumentAttributeAnimated"
         video_attr = MagicMock()
         type(video_attr).__name__ = "DocumentAttributeVideo"
+        video_attr.round_message = False
         media.document.attributes = [anim_attr, video_attr]
         self.assertEqual(self.backup._get_media_type(media), "animation")
 

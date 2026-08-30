@@ -22,11 +22,6 @@ from typing import Any
 
 from telethon import TelegramClient, events
 from telethon.tl.types import (
-    MessageMediaContact,
-    MessageMediaDocument,
-    MessageMediaGeo,
-    MessageMediaPhoto,
-    MessageMediaPoll,
     UpdateMessageReactions,
     UpdatePinnedChannelMessages,
     UpdatePinnedMessages,
@@ -43,7 +38,7 @@ from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
     build_media_filename,
-    classify_extended_media,
+    classify_media_type,
     compute_file_hash_async,
     describe_exception,
     download_and_shard_media,
@@ -843,52 +838,13 @@ class TelegramListener:
             logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
     def _get_media_type(self, media) -> str | None:
-        """Get media type as string."""
-        if isinstance(media, MessageMediaPhoto):
-            return "photo"
-        elif isinstance(media, MessageMediaDocument):
-            # Check document attributes to determine specific type
-            if hasattr(media, "document") and media.document:
-                # DocumentEmpty is truthy but carries no .attributes at all. Its reference
-                # is unusable, so treat it exactly like a missing document rather than
-                # classifying it as a real one and sending it down the download path.
-                attributes = getattr(media.document, "attributes", None)
-                if attributes is None:
-                    return None
-                is_animated = False
-                for attr in attributes:
-                    attr_type = type(attr).__name__
-                    if "Animated" in attr_type:
-                        is_animated = True
-                    if "Video" in attr_type:
-                        return "animation" if is_animated else "video"
-                    elif "Audio" in attr_type:
-                        if hasattr(attr, "voice") and attr.voice:
-                            return "voice"
-                        return "audio"
-                    elif "Sticker" in attr_type:
-                        return "sticker"
-                if is_animated:
-                    return "animation"
-                return "document"
-            return None  # document reference unavailable (e.g., forwarded from private channel)
-        elif isinstance(media, MessageMediaContact):
-            return "contact"
-        elif isinstance(media, MessageMediaGeo):
-            return "geo"
-        elif isinstance(media, MessageMediaPoll):
-            return "poll"
-        # The nine kinds this ladder used to flatten to None (venue, dice,
-        # invoice, story, giveaways, live location, game, unsupported):
-        # metadata-only types with a typed viewer chip, never downloaded.
-        if type(media).__name__ == "MessageMediaWebPage":
-            webpage = getattr(media, "webpage", None)
-            if type(webpage).__name__ == "WebPage" and (
-                getattr(webpage, "photo", None) is not None or getattr(webpage, "document", None) is not None
-            ):
-                return "webpage"
-            return None  # card-only preview (raw_data.webpage): nothing to download
-        return classify_extended_media(media)
+        """Get media type as string.
+
+        Delegates to the shared classifier: this used to be a byte-identical
+        copy in each capture lane, which is how ``video_note`` ended up
+        unimplemented in both at once.
+        """
+        return classify_media_type(media)
 
     def _get_media_filename(self, message, media_type: str, telegram_file_id: str | None = None) -> str:
         """Generate a filename for media."""

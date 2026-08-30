@@ -370,6 +370,27 @@
             height: auto;
         }
 
+        /* A round video (a "video note") is the circular clip every official
+           Telegram client renders as a circle in the message list. This arm is
+           (0,2,1) so it outranks `.message-bubble video` directly above, which
+           is (0,1,1) and would otherwise stretch the circle to the bubble's
+           full width -- the same specificity trap the comment above documents
+           for Tailwind utilities.
+
+           ONE custom property drives both axes on purpose. Capping only the
+           width leaves `height: auto` from that rule in play, and the circle
+           becomes an ellipse as soon as the viewport is narrower than the cap. */
+        .message-bubble .round-video {
+            --round-video-size: min(240px, 60vw);
+            width: var(--round-video-size);
+            height: var(--round-video-size);
+            max-width: var(--round-video-size);
+            border-radius: 50%;
+            object-fit: cover;
+            display: block;
+            background: rgb(var(--tg-bg) / 1);
+        }
+
 
         /* Date Separator — floats/sticks at the top of the scroll pane while
            that day's messages are in view, like the native apps. Works in the
@@ -1450,11 +1471,11 @@
                                         <img v-if="item.thumb_url" :src="item.thumb_url" :alt="item.file_name"
                                             class="w-full h-full object-cover" loading="lazy" decoding="async">
                                         <div v-else class="w-full h-full bg-tg-n700 flex items-center justify-center">
-                                            <i class="fas fa-play-circle text-2xl text-tg-n400" v-if="item.type === 'video' || item.type === 'animation'"></i>
+                                            <i class="fas fa-play-circle text-2xl text-tg-n400" v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'"></i>
                                             <i class="fas fa-image text-2xl text-tg-n400" v-else></i>
                                         </div>
                                         <!-- Video overlay -->
-                                        <div v-if="item.type === 'video' || item.type === 'animation'"
+                                        <div v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'"
                                             class="absolute bottom-1 left-1 bg-black/70 text-tg-ink text-xs px-1 rounded">
                                             <i class="fas fa-play text-[10px] mr-0.5"></i>
                                             {{ formatDuration(item.duration) }}
@@ -1802,6 +1823,39 @@
                                             class="rounded-lg max-h-64 w-auto max-w-full gif-video" loop muted
                                             playsinline @click="openMedia(msg)">
                                         </video>
+
+                                        <!-- Round videos ("video notes") - Telegram plays these
+                                             in place as a circle; they never open fullscreen, so
+                                             there is deliberately no lightbox branch for them.
+                                             `gif-video` opts into the existing IntersectionObserver
+                                             that autoplays a clip while it is on screen and pauses
+                                             it when it leaves. Muted like every official client;
+                                             a click toggles the sound. -->
+                                        <div v-else-if="msg.media?.type === 'video_note'">
+                                            <!-- The player carries no native controls, so the sound
+                                                 toggle needs its own affordance: focusable, named, and
+                                                 reachable with Enter or Space, not click alone. -->
+                                            <div v-if="msg.mediaLoadFailed"
+                                                class="flex items-center gap-2 text-tg-n400 text-sm py-2">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                </svg>
+                                                <span>Media not found</span>
+                                            </div>
+                                            <video v-else
+                                                :data-src="getMediaUrl(msg)"
+                                                class="round-video gif-video cursor-pointer"
+                                                loop muted playsinline
+                                                tabindex="0" role="button"
+                                                :aria-label="roundVideoHint"
+                                                :title="roundVideoHint"
+                                                @click="toggleRoundVideoSound($event)"
+                                                @keydown.enter.prevent="toggleRoundVideoSound($event)"
+                                                @keydown.space.prevent="toggleRoundVideoSound($event)"
+                                                @error="handleMediaError($event, msg)">
+                                            </video>
+                                        </div>
 
                                         <!-- Videos - click to open in lightbox -->
                                         <div v-else-if="msg.media?.type === 'video'"
@@ -3189,6 +3243,11 @@
                 }
 
                 // Check if media should show as video in lightbox
+                // Deliberately NOT video_note: round videos play in place in the
+                // message list and never open fullscreen, in this viewer as in every
+                // official client. Adding one to a lightbox ENTRY POINT without also
+                // adding an arm here renders a black modal, because the overlay is
+                // `<img v-if>` / `<video v-else-if>` with no `v-else`.
                 const isLightboxVideo = (msg) => {
                     return msg.media?.type === 'video' || msg.media?.type === 'animation'
                 }
@@ -4599,6 +4658,22 @@
                 }
 
                 // Setup Intersection Observer for GIF autoplay
+                // A video note autoplays muted, like every official client, and a
+                // click toggles its sound rather than opening a lightbox -- Telegram
+                // has no fullscreen view for round videos, so there is nothing to
+                // open. Restarting on unmute matches the clients too: you clicked
+                // because you want to HEAR it, and it is at most a minute long.
+                const roundVideoHint = 'Click to toggle sound'
+                const toggleRoundVideoSound = (event) => {
+                    const video = event.currentTarget
+                    if (!video) return
+                    video.muted = !video.muted
+                    if (!video.muted) {
+                        video.currentTime = 0
+                        video.play().catch(() => { })
+                    }
+                }
+
                 const setupGifObserver = () => {
                     if (gifObserver) {
                         gifObserver.disconnect()
@@ -4791,7 +4866,7 @@
                             const data = await res.json()
                             if (selectedChat.value?.ref !== requestChatRef) return
                             mediaGalleryCounts.value = {
-                                photos: (data.photo || 0) + (data.video || 0) + (data.animation || 0),
+                                photos: (data.photo || 0) + (data.video || 0) + (data.animation || 0) + (data.video_note || 0),  // must mirror typeMap.photos above
                                 voice: (data.voice || 0) + (data.audio || 0),
                                 files: data.document || 0,
                             }
@@ -4813,6 +4888,13 @@
                 }
 
                 const openMediaItem = (item) => {
+                    // A round video has no fullscreen form, so the tile goes where the
+                    // voice tab's tiles go: to the message it belongs to. Before this
+                    // the click did nothing at all.
+                    if (item.type === 'video_note') {
+                        jumpToMessage(item)
+                        return
+                    }
                     if (item.type === 'photo' || item.type === 'video' || item.type === 'animation') {
                         const mediaList = mediaGalleryItems.value.filter(m =>
                             m.type === 'photo' || m.type === 'video' || m.type === 'animation'
@@ -6018,6 +6100,7 @@
                 const replyMediaLabels = {
                     photo: 'Photo',
                     video: 'Video',
+                    video_note: 'Video message',
                     voice: 'Voice message',
                     audio: 'Audio',
                     animation: 'GIF',
@@ -8250,6 +8333,8 @@
                 }
 
                 return {
+                    roundVideoHint,
+                    toggleRoundVideoSound,
                     toastMessage,
                     showToast,
                     chats,

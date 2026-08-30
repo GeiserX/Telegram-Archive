@@ -378,6 +378,7 @@ class TestGetMediaType:
         media = MagicMock(spec=MessageMediaDocument)
         attr = MagicMock()
         type(attr).__name__ = "DocumentAttributeVideo"
+        attr.round_message = False
         media.document = MagicMock()
         media.document.attributes = [attr]
         assert listener._get_media_type(media) == "video"
@@ -392,6 +393,7 @@ class TestGetMediaType:
         type(anim_attr).__name__ = "DocumentAttributeAnimated"
         video_attr = MagicMock()
         type(video_attr).__name__ = "DocumentAttributeVideo"
+        video_attr.round_message = False
         media.document = MagicMock()
         media.document.attributes = [anim_attr, video_attr]
         assert listener._get_media_type(media) == "animation"

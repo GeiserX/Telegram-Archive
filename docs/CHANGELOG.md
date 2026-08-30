@@ -4,9 +4,14 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
-## [8.4.2] - 2026-08-30
+## [8.5.0] - 2026-08-30
 
-Media brought in from a Telegram Desktop export works like every other file now.
+Round videos are circles, and media brought in from a Telegram Desktop export works like every other file.
+
+### Added
+
+- **Round videos are recognised and shown as circles.** Telegram's circular video messages were archived as ordinary videos, because neither the scheduled backup nor the live listener ever looked at the flag that marks one. They are now typed `video_note`, and the viewer plays them in place as a circle that autoplays while it is on screen, the way every official client does. Click one to toggle its sound. Archives built from a Telegram Desktop export already held round videos under this type and showed them as a grey file row; those are fixed by the same change, with no re-import needed.
+- **One media classifier instead of two.** The backup and the listener each carried their own copy of the rules that decide what a piece of media is, which is how round videos ended up unimplemented in both at once. There is now one, and a test fails if it is ever forked again.
 
 ### Fixed
 
