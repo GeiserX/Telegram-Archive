@@ -396,7 +396,7 @@ class TestImportedMediaAddressingRealEngine:
 
         assert row["id"] == "900205_11_document"  # digits sort below letters
 
-    async def _walk(self, real_adapter, chat_id, limit):
+    async def _walk(self, real_adapter, chat_id: int, limit: int) -> list[tuple[int, str]]:
         """Page the gallery the way the viewer does: send the last item's key back."""
         seen: list[tuple[int, str]] = []
         key = None
