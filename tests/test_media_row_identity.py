@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_identity_"))
 
+from tests.test_telegram_backup_extended import _run  # noqa: E402
+
 CHAT_ID = -1001
 MSG_ID = 42
 BASE_DATE = datetime(2026, 3, 1, 12, 0, 0)
@@ -146,3 +148,89 @@ class TestReconcileKeepsOneRow:
 
         counts = await real_adapter.get_media_counts(CHAT_ID, account_id=1)
         assert counts == {"video_note": 1}, counts
+
+
+class TestReclassifyRoundVideos:
+    """The rescan. It asks Telegram which messages are round and corrects those
+    rows in place: no download, no re-key, no deletion."""
+
+    def _backup(self, *, chats, found):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.telegram_backup import TelegramBackup
+
+        backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
+        backup.config = MagicMock()
+        backup.db = AsyncMock()
+        backup.db.get_chats_with_media_type = AsyncMock(return_value=list(chats))
+        backup.db.retype_media_for_messages = AsyncMock(side_effect=lambda c, ids, t, **kw: len(ids))
+        backup.client = MagicMock()
+        backup.client.get_entity = AsyncMock(side_effect=lambda c: f"entity{c}")
+
+        async def _iter(client, entity, **kwargs):
+            for mid in found.get(entity, []):
+                yield MagicMock(id=mid)
+
+        self._iter = _iter
+        return backup
+
+    def _run_it(self, backup, **kwargs):
+        import src.telegram_backup as mod
+
+        original = mod.iter_messages_with_flood_retry
+        mod.iter_messages_with_flood_retry = self._iter
+        try:
+            return _run(backup.reclassify_round_videos(**kwargs))
+        finally:
+            mod.iter_messages_with_flood_retry = original
+
+    def test_it_retypes_only_the_messages_telegram_calls_round(self):
+        backup = self._backup(chats=[-10, -20], found={"entity-10": [5, 9], "entity-20": []})
+
+        summary = self._run_it(backup)
+
+        assert summary["chats_scanned"] == 2
+        assert summary["round_videos_found"] == 2
+        assert summary["rows_retyped"] == 2
+        backup.db.retype_media_for_messages.assert_awaited_once_with(-10, [5, 9], "video_note", account_id=1)
+
+    def test_a_chat_with_no_round_videos_writes_nothing(self):
+        """The cheap case, and the common one: a filtered search that matches
+        nothing costs one request and must not touch the database."""
+        backup = self._backup(chats=[-20], found={"entity-20": []})
+
+        summary = self._run_it(backup)
+
+        assert summary["round_videos_found"] == 0
+        backup.db.retype_media_for_messages.assert_not_awaited()
+
+    def test_dry_run_reports_without_writing(self):
+        backup = self._backup(chats=[-10], found={"entity-10": [5]})
+
+        summary = self._run_it(backup, dry_run=True)
+
+        assert summary["round_videos_found"] == 1
+        assert summary["rows_retyped"] == 0
+        backup.db.retype_media_for_messages.assert_not_awaited()
+
+    def test_one_unreachable_chat_does_not_abort_the_rest(self):
+        from unittest.mock import AsyncMock
+
+        backup = self._backup(chats=[-10, -20], found={"entity-20": [7]})
+        backup.client.get_entity = AsyncMock(
+            side_effect=lambda c: (_ for _ in ()).throw(ValueError("nope")) if c == -10 else f"entity{c}"
+        )
+
+        summary = self._run_it(backup)
+
+        assert summary["errors"] == 1
+        assert summary["rows_retyped"] == 1  # the reachable chat still ran
+
+    def test_a_chat_id_scopes_the_run_and_skips_the_candidate_query(self):
+        backup = self._backup(chats=[-10, -20], found={"entity-99": [1]})
+
+        summary = self._run_it(backup, chat_id=-99)
+
+        assert summary["chats_scanned"] == 1
+        backup.db.get_chats_with_media_type.assert_not_awaited()

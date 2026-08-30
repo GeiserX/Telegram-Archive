@@ -1639,12 +1639,14 @@ class TelegramBackup:
             summary["chats_scanned"] += 1
             try:
                 entity = await call_with_flood_retry(self.client.get_entity, chat)
+                # iter_messages_with_flood_retry owns the flood handling for this
+                # walk; it resumes from the last id it yielded rather than
+                # restarting the search.
                 message_ids = []
                 async for message in iter_messages_with_flood_retry(
                     self.client, entity, min_id=0, reverse=True, filter=InputMessagesFilterRoundVideo()
                 ):
                     message_ids.append(message.id)
-                    await absorb_media_floods(self.client, len(message_ids))
                 summary["round_videos_found"] += len(message_ids)
                 if not message_ids:
                     continue
