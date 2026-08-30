@@ -328,3 +328,63 @@ class TestReclassifyRunnerAccountHandling:
 
         with pytest.raises(RuntimeError, match="boom"):
             _run(run_reclassify_round_videos(self._config(1)))
+
+
+class TestReclassifyCommandOutput:
+    """The CLI surface: what an operator actually sees, and its exit code."""
+
+    def _args(self, **kw):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(chat_id=kw.get("chat_id"), dry_run=kw.get("dry_run", False))
+
+    def test_it_reports_the_counts_and_exits_zero(self, monkeypatch, capsys):
+        import src.__main__ as cli
+        import src.telegram_backup as mod
+
+        async def _fake(config, chat_id=None, dry_run=False):
+            return {"chats_scanned": 4, "round_videos_found": 9, "rows_retyped": 9, "errors": 0}
+
+        monkeypatch.setattr(mod, "run_reclassify_round_videos", _fake)
+        monkeypatch.setattr(cli, "Config", lambda: None, raising=False)
+
+        rc = cli.run_reclassify_round_videos(self._args())
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Round videos found: 9" in out
+        assert "Rows re-typed:      9" in out
+        assert "Chats with errors" not in out  # only shown when there are some
+
+    def test_a_dry_run_says_so(self, monkeypatch, capsys):
+        import src.__main__ as cli
+        import src.telegram_backup as mod
+
+        async def _fake(config, chat_id=None, dry_run=False):
+            assert dry_run is True
+            return {"chats_scanned": 1, "round_videos_found": 9, "rows_retyped": 0, "errors": 2}
+
+        monkeypatch.setattr(mod, "run_reclassify_round_videos", _fake)
+        monkeypatch.setattr(cli, "Config", lambda: None, raising=False)
+
+        rc = cli.run_reclassify_round_videos(self._args(dry_run=True))
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "[DRY RUN]" in out
+        assert "Chats with errors:  2" in out
+
+    def test_a_failure_is_reported_and_exits_nonzero(self, monkeypatch, capsys):
+        import src.__main__ as cli
+        import src.telegram_backup as mod
+
+        async def _boom(config, chat_id=None, dry_run=False):
+            raise RuntimeError("no session")
+
+        monkeypatch.setattr(mod, "run_reclassify_round_videos", _boom)
+        monkeypatch.setattr(cli, "Config", lambda: None, raising=False)
+
+        rc = cli.run_reclassify_round_videos(self._args())
+
+        assert rc == 1
+        assert "Reclassification failed: no session" in capsys.readouterr().err
