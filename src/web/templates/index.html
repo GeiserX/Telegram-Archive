@@ -1832,6 +1832,9 @@
                                              it when it leaves. Muted like every official client;
                                              a click toggles the sound. -->
                                         <div v-else-if="msg.media?.type === 'video_note'">
+                                            <!-- The player carries no native controls, so the sound
+                                                 toggle needs its own affordance: focusable, named, and
+                                                 reachable with Enter or Space, not click alone. -->
                                             <div v-if="msg.mediaLoadFailed"
                                                 class="flex items-center gap-2 text-tg-n400 text-sm py-2">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1840,9 +1843,6 @@
                                                 </svg>
                                                 <span>Media not found</span>
                                             </div>
-                                            <!-- The element carries no native controls, so the sound
-                                                 toggle needs its own affordance: focusable, named, and
-                                                 reachable with Enter or Space, not click alone. -->
                                             <video v-else
                                                 :data-src="getMediaUrl(msg)"
                                                 class="round-video gif-video cursor-pointer"
