@@ -105,61 +105,89 @@ async def _media_ids(adapter_, account_id: int = 1) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Adapter: adopt_import_media
+# Adapter: reconcile_media_row
+#
+# This replaces adopt_import_media. Adoption re-KEYED an import row to the
+# sweep's spelling; reconciliation instead treats the id as an opaque token the
+# row keeps forever and corrects only the type, which is the value every reader
+# consults. Same purpose -- meet a message that already has its media and reuse
+# it instead of downloading again -- with the id no longer caching a judgement
+# that can change.
 # ---------------------------------------------------------------------------
 
 
-async def test_adopts_downloaded_import_row(adapter):
+async def test_reconciles_the_row_the_message_already_has(adapter):
     async with adapter.db_manager.async_session_factory() as session:
         session.add(_import_row())
         await session.commit()
 
-    record = await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1)
+    record = await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "photo", account_id=1)
 
     assert record is not None
-    assert record["id"] == SWEEP_ID
     assert record["downloaded"] is True
     assert record["file_path"] == f"/data/media/{CHAT_ID}/photo_1.jpg"
     assert record["file_name"] == "photo_1.jpg"
     assert record["type"] == "photo"
-    assert record["message_id"] == MSG_ID
-    assert record["chat_id"] == CHAT_ID
     assert record["content_hash"] == "ab" * 32
-    # The row was RE-KEYED, not copied: sweep id exists, import id is gone.
-    assert await _media_ids(adapter) == {SWEEP_ID}
+    # The id is KEPT, not re-keyed: it is an opaque token, and nothing reads it.
+    assert record["id"] == IMPORT_ID
+    assert await _media_ids(adapter) == {IMPORT_ID}
 
 
-async def test_existing_sweep_row_is_never_touched(adapter):
-    """An earlier sweep already archived its own copy: adopt nothing."""
+async def test_a_changed_judgement_corrects_the_type_in_place(adapter):
+    """The round-video case: the classifier now says video_note about a row
+    filed as video. One row, re-typed -- not a second row."""
     async with adapter.db_manager.async_session_factory() as session:
-        session.add(_import_row())
-        session.add(_import_row(media_id=SWEEP_ID, downloaded=0))
+        session.add(_import_row(media_id=SWEEP_ID))
         await session.commit()
 
-    assert await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1) is None
+    record = await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "video_note", account_id=1)
+
+    assert record["type"] == "video_note"
+    assert record["id"] == SWEEP_ID
+    assert await _media_ids(adapter) == {SWEEP_ID}
+    # and it is persisted, not just returned
+    again = await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "video_note", account_id=1)
+    assert again["type"] == "video_note"
+
+
+async def test_a_duplicate_pair_resolves_to_the_row_readers_see(adapter):
+    """An archive can hold two rows for one message. The writer must pick the
+    same one get_media_for_message does, or they describe different files."""
+    async with adapter.db_manager.async_session_factory() as session:
+        session.add(_import_row(media_id=SWEEP_ID, downloaded=0))
+        session.add(_import_row(downloaded=1))
+        await session.commit()
+
+    record = await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "photo", account_id=1)
+
+    assert record["id"] == IMPORT_ID  # downloaded wins over the pending twin
     assert await _media_ids(adapter) == {IMPORT_ID, SWEEP_ID}
 
 
-async def test_undownloaded_import_row_is_ignored(adapter):
-    """Adoption exists to reuse bytes on disk; a fileless row has none."""
+async def test_an_undownloaded_row_is_still_returned(adapter):
+    """Reconciliation reports the row; whether its BYTES can be reused is the
+    caller's call, and _process_media makes it by looking at the disk."""
     async with adapter.db_manager.async_session_factory() as session:
         session.add(_import_row(downloaded=0))
         await session.commit()
 
-    assert await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1) is None
-    assert await _media_ids(adapter) == {IMPORT_ID}
+    record = await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "photo", account_id=1)
+
+    assert record is not None
+    assert record["downloaded"] is False
 
 
-async def test_no_import_row_returns_none(adapter):
-    assert await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1) is None
+async def test_no_row_returns_none(adapter):
+    assert await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "photo", account_id=1) is None
 
 
-async def test_adoption_is_account_scoped(adapter):
+async def test_reconciliation_is_account_scoped(adapter):
     async with adapter.db_manager.async_session_factory() as session:
         session.add(_import_row(account_id=1))
         await session.commit()
 
-    assert await adapter.adopt_import_media(CHAT_ID, MSG_ID, SWEEP_ID, account_id=2) is None
+    assert await adapter.reconcile_media_row(CHAT_ID, MSG_ID, "photo", account_id=2) is None
     assert await _media_ids(adapter, account_id=1) == {IMPORT_ID}
 
 
@@ -233,24 +261,59 @@ class TestSweepAdoptionHook(unittest.TestCase):
         message.media = media
         return message
 
-    def test_adopted_record_short_circuits_the_download(self):
+    def test_an_existing_file_on_disk_short_circuits_the_download(self):
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        os.makedirs(os.path.join(media_root, str(CHAT_ID)))
+        rel = f"{CHAT_ID}/photo_1.jpg"
+        with open(os.path.join(media_root, rel), "wb") as fh:
+            fh.write(b"already here")
         backup = self._make_backup(media_root)
-        adopted = {"id": SWEEP_ID, "type": "photo", "downloaded": True, "file_path": "/x/photo_1.jpg"}
-        backup.db.adopt_import_media = AsyncMock(return_value=adopted)
+        existing = {"id": IMPORT_ID, "type": "photo", "downloaded": True, "file_path": rel}
+        backup.db.reconcile_media_row = AsyncMock(return_value=existing)
 
         result = self._run(backup._process_media(self._photo_message(), CHAT_ID))
 
-        self.assertIs(result, adopted)
-        backup.db.adopt_import_media.assert_awaited_once_with(CHAT_ID, MSG_ID, SWEEP_ID, account_id=1)
+        self.assertIs(result, existing)
+        backup.db.reconcile_media_row.assert_awaited_once_with(CHAT_ID, MSG_ID, "photo", account_id=1)
         backup._download_media_to_path.assert_not_awaited()
 
-    def test_without_an_import_row_the_sweep_downloads_normally(self):
+    def test_a_row_whose_file_is_gone_is_downloaded_again(self):
+        """THE control, and a real bug it closes: reuse used to be decided by the
+        row's downloaded flag alone, with no look at the disk. A verify pass
+        therefore counted a missing or corrupted import as re-downloaded and
+        removed the file it had just sidestepped, destroying the only copy."""
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
         backup = self._make_backup(media_root)
-        backup.db.adopt_import_media = AsyncMock(return_value=None)
+        backup.db.reconcile_media_row = AsyncMock(
+            return_value={"id": IMPORT_ID, "type": "photo", "downloaded": True, "file_path": f"{CHAT_ID}/gone.jpg"}
+        )
+
+        self._run(backup._process_media(self._photo_message(), CHAT_ID))
+
+        backup._download_media_to_path.assert_awaited()
+
+    def test_the_existing_row_keeps_its_id_so_the_upsert_lands_on_it(self):
+        """The id is an opaque token. Minting a fresh one from the type is what
+        turned a reclassified round video into a second row while the first
+        stayed pending forever."""
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        backup = self._make_backup(media_root)
+        backup.db.reconcile_media_row = AsyncMock(
+            return_value={"id": IMPORT_ID, "type": "photo", "downloaded": False, "file_path": None}
+        )
+
+        result = self._run(backup._process_media(self._photo_message(), CHAT_ID))
+
+        self.assertEqual(IMPORT_ID, result["id"])
+
+    def test_without_an_existing_row_the_sweep_downloads_normally(self):
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        backup = self._make_backup(media_root)
+        backup.db.reconcile_media_row = AsyncMock(return_value=None)
 
         result = self._run(backup._process_media(self._photo_message(), CHAT_ID))
 

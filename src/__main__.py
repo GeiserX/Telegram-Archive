@@ -177,6 +177,25 @@ For more information, visit: https://github.com/GeiserX/Telegram-Archive
     )
     backfill_parser.add_argument("-c", "--chat-id", type=int, required=True, help="Chat ID to backfill")
 
+    # Reclassify round videos
+    round_parser = subparsers.add_parser(
+        "reclassify-round-videos",
+        help="Re-type archived round videos ('video notes') captured before 8.5.0",
+        description=(
+            "Before 8.5.0 neither capture lane looked at the flag that marks a "
+            "circular video message, so round videos were archived as ordinary "
+            "videos and the viewer showed them as rectangles. Roundness is an "
+            "MTProto attribute that is not in the stored file, so this asks "
+            "Telegram which messages are round (a server-side filtered search, "
+            "so a chat with none costs one request) and corrects those rows in "
+            "place. Nothing is downloaded, re-keyed or deleted. Run it with the "
+            "viewer idle: an open tab holds the old media URLs and will show "
+            "'Media not found' for a re-typed video until it is reloaded."
+        ),
+    )
+    round_parser.add_argument("-c", "--chat-id", type=int, help="Only this chat (default: every chat with videos)")
+    round_parser.add_argument("--dry-run", action="store_true", help="Report what would change without writing")
+
     return parser
 
 
@@ -335,6 +354,29 @@ def run_schedule(args) -> int:
     return asyncio.run(scheduler_main())
 
 
+def run_reclassify_round_videos(args) -> int:
+    """Ask Telegram which archived videos are round, and re-type those rows."""
+    from .config import Config, setup_logging
+    from .telegram_backup import run_reclassify_round_videos as reclassify
+
+    try:
+        config = Config()
+        setup_logging(config)
+        summary = asyncio.run(reclassify(config, chat_id=args.chat_id, dry_run=args.dry_run))
+    except Exception as e:
+        print(f"Reclassification failed: {e}", file=sys.stderr)
+        return 1
+
+    prefix = "[DRY RUN] " if args.dry_run else ""
+    print(f"\n{prefix}Round-video reclassification complete:")
+    print(f"  Chats scanned:      {summary['chats_scanned']}")
+    print(f"  Round videos found: {summary['round_videos_found']}")
+    print(f"  Rows re-typed:      {summary['rows_retyped']}")
+    if summary["errors"]:
+        print(f"  Chats with errors:  {summary['errors']}")
+    return 0
+
+
 def run_backfill_topics(args) -> int:
     """Reset one chat's cursor and resweep it text-only (topic backfill)."""
     # The documented recovery procedure for imported forum chats, minus its
@@ -400,6 +442,8 @@ def main() -> int:
         return run_auth(args)
     elif args.command == "backup":
         return run_backup(args)
+    elif args.command == "reclassify-round-videos":
+        return run_reclassify_round_videos(args)
     elif args.command == "backfill-topics":
         return run_backfill_topics(args)
     elif args.command == "schedule":

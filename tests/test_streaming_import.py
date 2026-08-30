@@ -132,9 +132,11 @@ async def test_end_to_end_import_writes_real_rows(real_adapter, tmp_path):
     assert any(media_file.iterdir())
     # Clean completion clears the marker.
     assert not await real_adapter.get_metadata(MARKER_KEY)
-    # The sweep can adopt what the import created (the #405 contract).
-    adopted = await real_adapter.adopt_import_media(CHAT_B, 2, f"{CHAT_B}_2_document", account_id=1)
-    assert adopted is not None and adopted["downloaded"] is True
+    # The sweep can reuse what the import created (the #405 contract), and the
+    # row keeps the id it was filed under rather than being re-keyed.
+    reused = await real_adapter.reconcile_media_row(CHAT_B, 2, "document", account_id=1)
+    assert reused is not None and reused["downloaded"] is True
+    assert reused["id"] == f"import_{CHAT_B}_2"
 
 
 async def test_interrupted_import_resumes_to_identical_state(real_adapter, tmp_path):
@@ -201,18 +203,22 @@ async def test_replay_never_resurrects_an_adopted_media_row(real_adapter, tmp_pa
     finally:
         real_adapter.update_sync_status = real_sync
 
-    # The sweep reaches the message first and ADOPTS the import row (#405
-    # re-keys it to the sweep's own name).
-    adopted = await real_adapter.adopt_import_media(CHAT_B, 2, f"{CHAT_B}_2_document", account_id=1)
-    assert adopted is not None
+    # The sweep reaches the message first and reuses the import row (#405). It
+    # is no longer re-keyed: the id is an opaque token the row keeps, and only
+    # the type is corrected to whatever the sweep classified.
+    reused = await real_adapter.reconcile_media_row(CHAT_B, 2, "video", account_id=1)
+    assert reused is not None
+    assert reused["id"] == f"import_{CHAT_B}_2"
+    assert reused["type"] == "video"
 
     resumed = _importer(real_adapter, tmp_path)
     await resumed.run(str(tmp_path / "export"))
 
     state = await _state_snapshot(real_adapter)
-    # Exactly ONE media row for the message, and it is the sweep-named one:
-    # the replay must not re-create import_* next to it.
-    assert state["media"] == [(f"{CHAT_B}_2_document", CHAT_B, 2, 1)]
+    # Still exactly ONE media row for the message: the replay must not put a
+    # second one beside it. That is the property the test is here for; which
+    # string the row is filed under is not.
+    assert state["media"] == [(f"import_{CHAT_B}_2", CHAT_B, 2, 1)]
 
 
 async def test_truncated_export_fails_loudly_and_resumes_on_the_same_file(real_adapter, tmp_path):

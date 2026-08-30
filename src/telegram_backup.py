@@ -1611,6 +1611,64 @@ class TelegramBackup:
                 dialogs = await call_with_flood_retry(self.client.get_dialogs, folder=0)
         return dialogs
 
+    async def reclassify_round_videos(self, chat_id: int | None = None, dry_run: bool = False) -> dict:
+        """Re-type archived round videos that were captured before we could see them.
+
+        Until 8.5.0 neither capture lane inspected ``round_message``, so every
+        circular video message was archived as a plain ``video``. Roundness is
+        an MTProto document attribute: it is not in the stored file, and the
+        archive never kept the attributes, so it cannot be recovered offline.
+        Guessing from the dimensions would circle-crop ordinary square video.
+
+        So we ask Telegram, and cheaply: ``InputMessagesFilterRoundVideo`` is a
+        server-side search that returns only round videos, so a chat with none
+        costs one request. Matching rows are corrected in place -- no re-key, no
+        download, no deletion.
+        """
+        from telethon.tl.types import InputMessagesFilterRoundVideo
+
+        chats = (
+            [chat_id]
+            if chat_id is not None
+            else await self.db.get_chats_with_media_type("video", account_id=self.account_id)
+        )
+        summary = {"chats_scanned": 0, "round_videos_found": 0, "rows_retyped": 0, "errors": 0}
+        logger.info(f"Reclassifying round videos across {len(chats)} chat(s)...")
+
+        for chat in chats:
+            summary["chats_scanned"] += 1
+            try:
+                entity = await call_with_flood_retry(self.client.get_entity, chat)
+                # iter_messages_with_flood_retry owns the flood handling for this
+                # walk; it resumes from the last id it yielded rather than
+                # restarting the search.
+                message_ids = []
+                async for message in iter_messages_with_flood_retry(
+                    self.client, entity, min_id=0, reverse=True, filter=InputMessagesFilterRoundVideo()
+                ):
+                    message_ids.append(message.id)
+                summary["round_videos_found"] += len(message_ids)
+                if not message_ids:
+                    continue
+                if dry_run:
+                    logger.info(f"[DRY RUN] would re-type {len(message_ids)} row(s) in one chat")
+                    continue
+                moved = await self.db.retype_media_for_messages(
+                    chat, message_ids, "video_note", account_id=self.account_id
+                )
+                summary["rows_retyped"] += moved
+                logger.info(f"Re-typed {moved} round video(s) in one chat")
+            except Exception as e:
+                # Chat id stays out of the log line (PII), type only.
+                summary["errors"] += 1
+                logger.warning(f"Could not reclassify a chat: {describe_exception(e)}")
+
+        logger.info(
+            f"Round-video reclassification done: {summary['rows_retyped']} row(s) re-typed "
+            f"across {summary['chats_scanned']} chat(s), {summary['errors']} error(s)"
+        )
+        return summary
+
     async def _verify_and_redownload_media(self) -> None:
         """
         Verify all media files on disk and re-download missing/corrupted ones.
@@ -3574,8 +3632,13 @@ class TelegramBackup:
         if not media_type:
             return None
 
-        # Generate unique media ID
-        media_id = f"{chat_id}_{message.id}_{media_type}"
+        # The id belongs to the ROW, not to this classification. Reuse whatever
+        # the message's existing media row is filed under and correct only its
+        # type; mint a fresh id only when the message has no row yet. Minting
+        # from the type on every call is what made a reclassified round video
+        # (video -> video_note) a second row, leaving the first pending forever.
+        existing = await self.db.reconcile_media_row(chat_id, message.id, media_type, account_id=self.account_id)
+        media_id = existing["id"] if existing else f"{chat_id}_{message.id}_{media_type}"
 
         # Metadata-only kinds (contacts, locations, polls, and the nine
         # extended kinds) are Telegram message payloads rather than
@@ -3591,13 +3654,17 @@ class TelegramBackup:
                 "downloaded": False,
             }
 
-        # Adopt HTML/JSON-import media: the same (chat, message) may already
-        # carry its file from a Telegram Desktop export. Re-keying that row to
-        # this sweep name reuses the on-disk file instead of re-downloading it
-        # (rebuild-without-redownload for import-built archives).
-        adopted = await self.db.adopt_import_media(chat_id, message.id, media_id, account_id=self.account_id)
-        if adopted is not None:
-            return adopted
+        # Reuse the bytes already on disk instead of fetching them again. This
+        # subsumes the old import-adoption path: a Telegram Desktop export
+        # writes the file and the row, and the sweep meeting that message later
+        # should not re-download it. The FILE decides, not the row's flag --
+        # adoption used to answer "downloaded: True" without ever looking at the
+        # disk, so a verify pass counted a corrupted import as re-downloaded and
+        # deleted the sidestepped original, destroying the only copy.
+        if existing is not None and existing["downloaded"]:
+            on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
+            if on_disk and os.path.lexists(on_disk):
+                return existing
 
         # Get Telegram's file unique ID for deduplication. Webpage previews
         # keep their photo/document one level down — unwrap once so every
@@ -4430,6 +4497,47 @@ async def _execute_fill_gaps(backup: TelegramBackup, config: Config, chat_id: in
     finally:
         await backup.disconnect()
         await backup.db.close()
+
+
+async def _execute_reclassify(backup: TelegramBackup, chat_id: int | None, dry_run: bool) -> dict:
+    """connect -> reclassify -> teardown, for one account."""
+    try:
+        await backup.connect()
+        return await backup.reclassify_round_videos(chat_id=chat_id, dry_run=dry_run)
+    finally:
+        await backup.disconnect()
+        await backup.db.close()
+
+
+async def run_reclassify_round_videos(config: Config, chat_id: int | None = None, dry_run: bool = False) -> dict:
+    """Re-type archived round videos, for every configured account.
+
+    Same account handling as run_backup/run_fill_gaps: each configured account
+    resolves its own accounts row after its client is authorized, and with more
+    than one account a single failure counts into ``errors`` instead of taking
+    the others down with it.
+    """
+    summaries: list[dict] = []
+    failed = 0
+    for account in config.accounts:
+        try:
+            backup = await TelegramBackup.create(
+                config.for_account(account.index), account=account, account_resolver=_account_row_resolver(account)
+            )
+            summaries.append(await _execute_reclassify(backup, chat_id, dry_run))
+        except Exception as e:
+            # Same continuation rule as run_backup, same type-name-only logging.
+            if len(config.accounts) == 1:
+                raise
+            failed += 1
+            logger.error(f"account {account.index} failed: {type(e).__name__}")
+    if failed and failed == len(config.accounts):
+        raise RuntimeError(f"all {failed} configured accounts failed to reclassify")
+    total = {"chats_scanned": 0, "round_videos_found": 0, "rows_retyped": 0, "errors": failed}
+    for summary in summaries:
+        for key in ("chats_scanned", "round_videos_found", "rows_retyped", "errors"):
+            total[key] += summary.get(key, 0)
+    return total
 
 
 async def run_fill_gaps(

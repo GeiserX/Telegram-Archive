@@ -94,6 +94,9 @@ def _make_db():
     db.upsert_user = AsyncMock()
     db.insert_message = AsyncMock()
     db.insert_media = AsyncMock()
+    # No pre-existing media row by default: a bare AsyncMock return is truthy and
+    # the listener's reuse check would short-circuit the download under test.
+    db.reconcile_media_row = AsyncMock(return_value=None)
     db.set_metadata = AsyncMock()
     db.update_message_pinned = AsyncMock()
     db.close = AsyncMock()
@@ -2554,6 +2557,43 @@ def _media_event(media, message_id: int = 4242):
     event.message = msg
     event.get_chat = AsyncMock(return_value=MagicMock())
     return event
+
+
+class TestListenerReusesMediaAlreadyOnDisk:
+    """The listener must decide whether to fetch BEFORE fetching.
+
+    Reconciling only after the download meant a message that already had its
+    bytes -- a Telegram Desktop import, or a replay of a message we have seen --
+    got a second copy fetched under the listener's own filename, the row
+    repointed at it, and the original orphaned.
+    """
+
+    async def test_an_existing_file_on_disk_is_not_downloaded_again(self, tmp_path):
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        config.media_path = str(tmp_path)
+        (tmp_path / "-100").mkdir()
+        (tmp_path / "-100" / "held.ogg").write_bytes(b"already here")
+        db.reconcile_media_row = AsyncMock(
+            return_value={"id": "import_-100_4242", "type": "voice", "downloaded": True, "file_path": "-100/held.ogg"}
+        )
+        listener._download_media = AsyncMock()
+
+        await handlers[events.NewMessage](_media_event(_voice_media(duration=7, size=4321)))
+
+        listener._download_media.assert_not_awaited()
+
+    async def test_control_a_row_whose_file_is_gone_is_downloaded(self, tmp_path):
+        """The control: reuse must be decided by the disk, not by the flag."""
+        listener, handlers, db, config = _make_listener_with_handlers(listen_new_messages_media=True)
+        config.media_path = str(tmp_path)
+        db.reconcile_media_row = AsyncMock(
+            return_value={"id": "import_-100_4242", "type": "voice", "downloaded": True, "file_path": "-100/gone.ogg"}
+        )
+        listener._download_media = AsyncMock(return_value=("/tmp/media/-100/voice.ogg", "voice.ogg", "h"))
+
+        await handlers[events.NewMessage](_media_event(_voice_media(duration=7, size=4321)))
+
+        listener._download_media.assert_awaited()
 
 
 class TestRealtimeMediaAttributes:
