@@ -181,6 +181,7 @@ class TestSenderPresentation(unittest.TestCase):
             "import_7654321_7_holiday.mp4",  # imported, positive chat
             "5551234_holiday.jpg",  # swept
             "holiday.jpg",  # no prefix at all
+            "5551234_",  # prefix and nothing else: both sides keep the original
         ):
             with self.subTest(stored=stored):
                 self.assertEqual(

@@ -142,7 +142,6 @@ def test_media_with_no_type_gets_no_url_rather_than_a_broken_one(main_mod):
 
 
 # ----------------------------------------------------------------- #423 route
-@pytest.mark.anyio
 @pytest.mark.parametrize("storage_id", [IMPORT_ID, SWEEP_ID])
 async def test_route_resolves_the_row_whatever_the_storage_id(main_mod, storage_id):
     table = _MediaTable([_row(storage_id)])
@@ -155,7 +154,6 @@ async def test_route_resolves_the_row_whatever_the_storage_id(main_mod, storage_
     assert table.asked == [(CHAT_ID, MSG_ID, "video", 1)]
 
 
-@pytest.mark.anyio
 async def test_route_asks_for_the_resolved_chat_never_a_url_supplied_one(main_mod):
     """The chat bound is a SQL predicate built from the resolved chat, so a key
     cannot name another chat's media even though ids embed a chat id."""
@@ -170,7 +168,6 @@ async def test_route_asks_for_the_resolved_chat_never_a_url_supplied_one(main_mo
     assert table.asked == [(-4242, MSG_ID, "video", 1)]
 
 
-@pytest.mark.anyio
 async def test_a_wrong_type_in_the_key_does_not_reach_the_import_row(main_mod):
     """The import id carries no type, so a lookup that ignored type would let
     ``{msg}_anything`` serve it. The type is part of the predicate."""
@@ -184,7 +181,6 @@ async def test_a_wrong_type_in_the_key_does_not_reach_the_import_row(main_mod):
     assert exc.value.status_code == 404
 
 
-@pytest.mark.anyio
 async def test_a_duplicate_pair_serves_the_row_the_message_list_showed(main_mod):
     """#310's re-download bug left archives holding both an import row and a
     sweep row for one message. get_messages attaches (downloaded desc, id asc);

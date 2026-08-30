@@ -250,6 +250,19 @@ class TestMediaPaginated:
         called_after = mock_db.get_media_paginated.call_args.kwargs["after_key"]
         assert called_after == (-1001, "2428_voice")
 
+    def test_an_unparseable_cursor_ends_pagination_instead_of_restarting_it(self, anon_env):
+        """A cursor the endpoint cannot parse must yield the empty page a
+        cursor-to-no-row yields. Handing the adapter None would mean 'no cursor
+        given' and serve the FIRST page again, so 'load more' would loop back to
+        the newest media instead of stopping."""
+        client, _, mock_db = _get_client()
+
+        resp = client.get("/api/chats/opaque-media-a/media?before_id=notakey")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"items": [], "has_more": False}
+        mock_db.get_media_paginated.assert_not_called()
+
     def test_before_id_and_after_id_are_mutually_exclusive(self, anon_env):
         """#266: asking for both directions at once is rejected, not silently halved."""
         client, _, mock_db = _get_client()

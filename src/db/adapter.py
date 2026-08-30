@@ -2144,15 +2144,23 @@ class DatabaseAdapter:
                 cursor_stmt = select(Media.id, Media.message_id).where(and_(cursor_match, Media.chat_id == chat_id))
                 if account_id is not None:
                     cursor_stmt = cursor_stmt.where(Media.account_id == account_id)
-                # A natural key is unique for every row this gallery serves EXCEPT
-                # the duplicate class #310 could leave behind (an import row and a
-                # sweep row sharing one message and type, documented at :3459). It
-                # is then ambiguous, so resolve it to whichever twin the walk
-                # reaches FIRST — lowest id going forward, highest going back.
-                # Resolving to the other end makes the walk step over the twin it
-                # has not served yet; this way the worst case is serving one row
-                # twice, and a gallery that repeats an item beats one that hides it.
-                cursor_stmt = cursor_stmt.order_by(Media.id.asc() if forward else Media.id.desc())
+                # A natural key names ONE row for every archive except those
+                # holding the duplicate class #310 could leave behind: an import
+                # row and a sweep row sharing a message and a type (documented at
+                # :3459). There it names two, so it identifies a GROUP, and the
+                # cursor has to clear the whole group -- resolve it to the twin the
+                # walk reaches LAST, so the keyset predicate steps past both.
+                #
+                # Resolving to the first twin instead makes the page end on a
+                # cursor that resolves back to a row it already passed, and the
+                # walk stalls on that item forever instead of reaching older media.
+                #
+                # Skipping the second twin loses nothing a viewer can reach: both
+                # carry the same {message_id}_{type} item id and the same media
+                # URL, and that URL resolves through get_media_for_message to one
+                # canonical row. They are one item in the gallery, twice in the
+                # table.
+                cursor_stmt = cursor_stmt.order_by(Media.id.desc() if forward else Media.id.asc())
                 cursor_result = await session.execute(cursor_stmt)
                 # first(), not one_or_none(): unscoped (account_id=None) calls
                 # can match BOTH accounts' copies of the same media id, and the

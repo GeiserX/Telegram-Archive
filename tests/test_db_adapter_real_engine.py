@@ -396,31 +396,42 @@ class TestImportedMediaAddressingRealEngine:
 
         assert row["id"] == "900205_11_document"  # digits sort below letters
 
-    async def test_a_full_gallery_walk_visits_every_row_and_skips_none(self, real_adapter):
-        """The gallery cursor is now the natural key, which the duplicate class
-        above makes ambiguous. Backward is the direction 'load more' uses: it
-        must be exact. Losing a row is the failure that matters — the walk is
-        how a viewer reaches media, so a skipped item is invisible."""
-        await self._seed(real_adapter, 900206)
-
-        seen: list[str] = []
+    async def _walk(self, real_adapter, chat_id, limit):
+        """Page the gallery the way the viewer does: send the last item's key back."""
+        seen: list[tuple[int, str]] = []
         key = None
-        for _ in range(6):
+        for _ in range(10):  # a stalled cursor would spin here forever
             page = await real_adapter.get_media_paginated(
-                900206, limit=2, account_id=1, **({"before_key": key} if key else {})
+                chat_id, limit=limit, account_id=1, **({"before_key": key} if key else {})
             )
             if not page["items"]:
                 break
-            seen += [i["id"] for i in page["items"]]
+            seen += [(i["message_id"], i["type"]) for i in page["items"]]
             last = page["items"][-1]
             key = (last["message_id"], last["type"])
             if not page["has_more"]:
                 break
+        return seen
 
-        assert len(seen) == len(set(seen)), f"the walk re-served a row: {seen}"
-        assert set(seen) == {
-            "import_900206_10",
-            "900206_11_document",
-            "import_900206_11",
-            "900206_12_document",
-        }, f"the walk skipped a row: {seen}"
+    async def test_a_full_gallery_walk_visits_every_item_exactly_once(self, real_adapter):
+        """The cursor is the natural key, which the duplicate class above turns
+        into the name of a GROUP rather than a row. The walk must clear the whole
+        group: the two twins carry the same item id and the same media URL, so
+        they are one item to a viewer, and emitting both means the next cursor
+        points back at a row already passed.
+
+        Run at limit=1, which is where that goes wrong most sharply: the page
+        boundary lands inside the group every time."""
+        await self._seed(real_adapter, 900206)
+
+        seen = await self._walk(real_adapter, 900206, limit=1)
+
+        assert len(seen) == len(set(seen)), f"the walk stalled or repeated an item: {seen}"
+        assert set(seen) == {(10, "document"), (11, "document"), (12, "document")}, f"the walk skipped an item: {seen}"
+
+    async def test_the_walk_is_stable_across_page_sizes(self, real_adapter):
+        """Control: a limit that never splits the group must reach the same set,
+        so the test above is measuring the cursor and not the page size."""
+        await self._seed(real_adapter, 900207)
+
+        assert await self._walk(real_adapter, 900207, limit=1) == await self._walk(real_adapter, 900207, limit=2)

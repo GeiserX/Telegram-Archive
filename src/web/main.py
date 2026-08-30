@@ -2551,16 +2551,26 @@ async def get_chat_media(
 
     # The URL token is the chat-free ``{message_id}_{type}`` key; the adapter
     # resolves it against the row's own columns. It used to be turned back into
-    # a storage id by prepending the chat, which no imported row carries — so
+    # a storage id by prepending the chat, which no imported row carries, so
     # paging past the first imported item resolved no cursor and the gallery
-    # dead-ended (#423). A token that names no row still yields an empty page.
+    # dead-ended (#423).
+    #
+    # A token that resolves to no row yields an empty page, and so must one that
+    # does not even parse. Handing the adapter None for a cursor the caller DID
+    # supply would mean "no cursor at all" and serve the first page again,
+    # restarting pagination instead of ending it (#266 semantics).
+    before_key = _parse_media_key(before_id) if before_id else None
+    after_key = _parse_media_key(after_id) if after_id else None
+    if (before_id and before_key is None) or (after_id and after_key is None):
+        return {"items": [], "has_more": False}
+
     try:
         result = await db.get_media_paginated(
             chat.chat_id,
             media_types=media_types,
             limit=limit,
-            before_key=_parse_media_key(before_id) if before_id else None,
-            after_key=_parse_media_key(after_id) if after_id else None,
+            before_key=before_key,
+            after_key=after_key,
             account_id=chat.account_id,
         )
         for item in result["items"]:
