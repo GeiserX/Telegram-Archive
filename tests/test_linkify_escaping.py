@@ -15,6 +15,7 @@ rather than source text.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -79,6 +80,18 @@ PAYLOADS = {
 # The four characters that cannot sit raw inside href="..." and are therefore
 # percent-encoded on the way in. Everything else must reach the href untouched.
 HREF_PERCENT_ENCODED = {"<": "%3C", ">": "%3E", '"': "%22", "'": "%27"}
+
+
+# The host a reader takes from a link's visible text: the hostname run right
+# after the scheme. Parsed and compared whole, never prefix-matched — a
+# ``startswith("https://good.example")`` premise would also accept
+# ``https://good.example.evil.example/``.
+_VISIBLE_HOST = re.compile(r"^https?://([A-Za-z0-9.-]+)")
+
+
+def _visible_host(link_text: str) -> str | None:
+    match = _VISIBLE_HOST.match(link_text)
+    return match.group(1) if match else None
 
 
 def _expected_href(link_text: str) -> str:
@@ -227,7 +240,7 @@ def test_entity_smuggling_cannot_retarget_a_link(name: str) -> None:
     attributes, link_text = _only_anchor(name)
     href = attributes["href"] or ""
 
-    assert link_text.startswith("https://good.example")
+    assert _visible_host(link_text) == "good.example"
     assert urlsplit(href).hostname != "evil.example", href
 
 
