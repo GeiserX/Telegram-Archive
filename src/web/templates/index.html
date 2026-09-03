@@ -938,7 +938,7 @@
                     </div>
 
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
+                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search CHAT NAMEs..."
                             class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                         <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
@@ -946,16 +946,86 @@
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
                     </div>
+
+                    <div class="relative mb-3">
+                                        <div class="relative">
+                                            <input
+                                                v-model="globalSearchQuery"
+                                                @input="onGlobalSearchInput"
+                                                @keydown.enter.prevent="runGlobalSearch(false)"
+                                                type="text"
+                                                placeholder="GLOBAL search MESSAGEs..."
+                                                class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent"
+                                            />
+
+                                          <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="red"
+                                              viewBox="0 0 24 24">
+                                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                          </svg>
+
+                                            <button
+                                                v-if="globalSearchQuery"
+                                                @click="clearGlobalSearch"
+                                                type="button"
+                                                class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                            >×</button>
+                                        </div>
+
+                                        <div
+                                            v-if="globalSearchOpen && (globalSearchLoading || globalSearchResults.length || globalSearchQuery)"
+                                            class="mt-2 border border-gray-200 rounded bg-white shadow-sm max-h-[32rem] overflow-y-auto"
+                                        >
+                                            <div v-if="globalSearchLoading" class="px-3 py-2 text-sm text-gray-500">
+                                                Searching…
+                                            </div>
+
+                                            <button
+                                                v-for="row in globalSearchResults"
+                                                :key="`${row.chat_id}:${row.message_id}`"
+                                                @click="openGlobalSearchResult(row)"
+                                                type="button"
+                                                class="w-full text-left px-3 py-2 border-b border-gray-100 hover:bg-gray-50"
+                                            >
+                                                <div class="text-sm font-medium text-gray-800 truncate">
+                                                    {{ row.chat.title }}
+                                                </div>
+                                                <div class="text-xs text-gray-500">
+                                                    {{ formatGlobalSearchDate(row.date) }}
+                                                </div>
+                                                <div class="text-sm text-gray-700 mt-1">
+                                                    {{ row.text && row.text.length > 180 ? row.text.slice(0, 180) + '…' : row.text }}
+                                                </div>
+                                            </button>
+
+                                            <button
+                                                v-if="globalSearchHasMore && !globalSearchLoading"
+                                                @click="loadMoreGlobalSearch"
+                                                type="button"
+                                                class="w-full px-3 py-2 text-sm text-blue-600 hover:bg-gray-50"
+                                            >
+                                                More results…
+                                            </button>
+
+                                            <div
+                                                v-if="!globalSearchLoading && globalSearchQuery && !globalSearchResults.length"
+                                                class="px-3 py-2 text-sm text-gray-500"
+                                            >
+                                                No results
+                                            </div>
+                                        </div>
+                                    </div>
+
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()"
-                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
+                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-white' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             All Chats
                         </button>
                         <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
-                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
+                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-white' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             {{ folder.emoticon || '📁' }} {{ folder.title }}
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
@@ -1329,19 +1399,19 @@
                         </div>
 
                         <div class="flex items-center gap-1 sm:gap-2 shrink-0">
-                            <!-- Search Bar - responsive width -->
-                            <div class="relative w-28 sm:w-48 md:w-64">
-                                <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
-                                    placeholder="Search..."
-                                    class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
-                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-tg-n400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                                </svg>
-                            </div>
+                <!-- Search Bar - responsive width -->
+                <div class="relative w-28 sm:w-48 md:w-64">
+                    <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
+                        placeholder="FILTER messages..."
+                        class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-tg-n400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
+                        stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                </div>
 
-                            <!-- Media Gallery Button -->
+                <!-- Media Gallery Button -->
                             <button @click="showMediaGallery = true"
                                 class="tap-target p-1.5 sm:p-2 text-tg-n400 hover:text-tg-ink rounded-lg hover:bg-tg-ink/10 transition shrink-0"
                                 title="Shared Media Gallery">
@@ -2761,6 +2831,14 @@
                 const selectedChat = ref(null)
                 const selectedPaneTopic = ref(null)
                 const searchQuery = ref('')
+                const globalSearchQuery = ref('')
+                const globalSearchResults = ref([])
+                const globalSearchLoading = ref(false)
+                const globalSearchHasMore = ref(false)
+                const globalSearchOffset = ref(0)
+                const globalSearchOpen = ref(false)
+                let globalSearchDebounceTimer = null
+                let globalSearchGeneration = 0
                 const messageSearchQuery = ref('')
                 const loading = ref(false)
                 const loadingChats = ref(true)  // Start as true, loading on init
@@ -2874,6 +2952,133 @@
                 }
 
                 // Server-side search
+                const clearGlobalSearch = () => {
+                    clearTimeout(globalSearchDebounceTimer)
+                    globalSearchGeneration++
+                    globalSearchQuery.value = ''
+                    globalSearchResults.value = []
+                    globalSearchLoading.value = false
+                    globalSearchHasMore.value = false
+                    globalSearchOffset.value = 0
+                    globalSearchOpen.value = false
+                }
+
+const runGlobalSearch = async (append = false) => {
+    const q = globalSearchQuery.value.trim()
+
+    if (!q) {
+        clearGlobalSearch()
+        return
+    }
+
+    const generation = ++globalSearchGeneration
+
+    if (!append) {
+        globalSearchOffset.value = 0
+        globalSearchResults.value = []
+    }
+
+    globalSearchLoading.value = true
+    globalSearchOpen.value = true
+
+    try {
+        const params = new URLSearchParams({
+            q,
+            limit: '20',
+            offset: String(globalSearchOffset.value)
+        })
+
+        const response = await fetch(
+            `/api/search/messages?${params.toString()}`,
+            { credentials: 'same-origin' }
+        )
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
+        }
+
+        const data = await response.json()
+
+        if (generation !== globalSearchGeneration) {
+            return
+        }
+
+        const rows = Array.isArray(data.results)
+            ? data.results
+            : []
+
+        globalSearchResults.value = append
+            ? globalSearchResults.value.concat(rows)
+            : rows
+
+        globalSearchOffset.value = globalSearchResults.value.length
+        globalSearchHasMore.value = Boolean(data.has_more)
+
+    } catch (error) {
+
+        if (generation !== globalSearchGeneration) {
+            return
+        }
+
+        console.error('Global message search failed:', error)
+
+        globalSearchResults.value = []
+        globalSearchHasMore.value = false
+
+    } finally {
+
+        if (generation === globalSearchGeneration) {
+            globalSearchLoading.value = false
+        }
+    }
+}
+
+const onGlobalSearchInput = () => {
+    clearTimeout(globalSearchDebounceTimer)
+
+    const q = globalSearchQuery.value.trim()
+
+    if (!q) {
+        clearGlobalSearch()
+        return
+    }
+
+    globalSearchOpen.value = true
+
+    globalSearchDebounceTimer = setTimeout(
+        () => runGlobalSearch(false),
+        300
+    )
+}
+
+const loadMoreGlobalSearch = () => {
+    if (!globalSearchLoading.value && globalSearchHasMore.value) {
+        runGlobalSearch(true)
+    }
+}
+
+const formatGlobalSearchDate = (value) => {
+    if (!value) return ''
+
+    const m = moment.utc(value)
+
+    return m.isValid()
+        ? m.local().format('DD.MM.YYYY HH:mm')
+        : String(value)
+}
+
+const openGlobalSearchResult = async (row) => {
+
+    if (!row || !row.chat || !row.chat.ref || row.message_id == null) {
+        console.warn('Invalid global search result:', row)
+        return
+    }
+
+    const chatRef = row.chat.ref
+    const messageId = row.message_id
+    globalSearchOpen.value = true
+    await openNotificationTarget(chatRef, messageId)
+}
                 const searchResults = ref([])
                 const searchLoading = ref(false)
                 let searchDebounceTimer = null
@@ -3587,7 +3792,7 @@
                     await loadTopics(chat.ref)
                 }
 
-                const selectTopic = async (chat, topic) => {
+                const selectTopic = async (chat, topic, options = {}) => {
                     // Invalidate any in-flight loads from previous chat/topic
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
@@ -3606,14 +3811,24 @@
                     showPinnedOnly.value = false
                     galleryReturnState = null  // topic switch repositions the view itself
                     showMediaGallery.value = false
-                    await loadMessages()
-                    if (chatVersion !== myVersion) return
-                    await loadChatStats(chat.ref)
-                    await nextTick()
-                    if (chatVersion !== myVersion) return
-                    scrollToBottom()
-                    setupMessagesScrollObserver()
-                    startMessageRefresh()
+
+                    if (!options.skipInitialLoad) {
+                        await loadMessages()
+                        if (chatVersion !== myVersion) return
+
+                        await loadChatStats(chat.ref)
+
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+
+                        scrollToBottom()
+                        setupMessagesScrollObserver()
+                        startMessageRefresh()
+                    } else {
+                        if (chatVersion !== myVersion) return
+
+                        await loadChatStats(chat.ref)
+                    }
                 }
 
                 // v6.2.0: Active folder tab tracking
@@ -3946,7 +4161,7 @@
                         showToast('Could not open that chat')
                         return false
                     }
-                    await selectChat(targetChat)
+                    await selectChat(targetChat, { skipInitialLoad: true })
                     if (!messageId) return true
                     if (targetChat.is_forum) {
                         // selectChat short-circuits a forum into its topics list
@@ -3970,7 +4185,7 @@
                                 showToast('Could not locate that topic')
                                 return false
                             }
-                            await selectTopic(targetChat, topic)
+                            await selectTopic(targetChat, topic, { skipInitialLoad: true })
                         } catch (e) {
                             showToast('Could not locate that topic')
                             return false
@@ -5347,7 +5562,7 @@
                     }
                 }
 
-                const selectChat = async (chat) => {
+                const selectChat = async (chat, options = {}) => {
                     // v6.2.0: If forum chat, open topics list instead
                     if (chat.is_forum) {
                         await openForumTopics(chat)
@@ -5370,17 +5585,27 @@
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     galleryReturnState = null  // chat switch repositions the view itself
                     showMediaGallery.value = false  // Exit media gallery when changing chat
-                    await loadMessages()
-                    if (chatVersion !== myVersion) return  // Another chat was selected, abort
-                    await loadChatStats(chat.ref)  // Load stats for this chat
-                    await loadPinnedMessages(chat.ref)  // Load pinned messages for this chat
-                    await nextTick()
-                    if (chatVersion !== myVersion) return
-                    scrollToBottom()
-                    // Setup observer for auto-loading older messages
-                    setupMessagesScrollObserver()
-                    // Start auto-refresh for new messages
-                    startMessageRefresh()
+
+                    if (!options.skipInitialLoad) {
+                        await loadMessages()
+                        if (chatVersion !== myVersion) return  // Another chat was selected, abort
+                        await loadChatStats(chat.ref)  // Load stats for this chat
+                        await loadPinnedMessages(chat.ref)  // Load pinned messages for this chat
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+                        scrollToBottom()
+                        // Setup observer for auto-loading older messages
+                        setupMessagesScrollObserver()
+                        // Start auto-refresh for new messages
+                        startMessageRefresh()
+                    } else {
+                        // The caller will populate the message window itself,
+                        // e.g. openNotificationTarget() via loadMessagesAroundId().
+                        if (chatVersion !== myVersion) return
+                        await loadChatStats(chat.ref)
+                        await loadPinnedMessages(chat.ref)
+                        if (chatVersion !== myVersion) return
+                    }
                 }
 
                 // Auto-refresh messages every 3 seconds to catch new messages
@@ -8349,6 +8574,17 @@
                     senderInfoCloseBtn,
                     sortedMessages,
                     searchQuery,
+                    // Global message search
+                    globalSearchQuery,
+                    globalSearchResults,
+                    globalSearchLoading,
+                    globalSearchHasMore,
+                    globalSearchOpen,
+                    onGlobalSearchInput,
+                    openGlobalSearchResult,
+                    loadMoreGlobalSearch,
+                    formatGlobalSearchDate,
+                    clearGlobalSearch,
                     messageSearchQuery,
                     loading,
                     isGroup,

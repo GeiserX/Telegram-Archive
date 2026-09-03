@@ -1691,6 +1691,45 @@ async def serve_media(
     return response
 
 
+@app.get("/api/search/messages")
+async def api_search_messages(
+    q: str = Query(..., min_length=1, max_length=500),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: UserContext = Depends(require_auth),
+):
+    """Search message text globally across every chat visible to the caller.
+
+    This is deliberately separate from the chat-scoped message
+    pagination API. It uses the existing v8.5 full-text index and the
+    same ChatScope that protects the chat list and chat resolver.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    from .global_search import search_messages_global
+
+    try:
+        results, has_more = await search_messages_global(
+            db,
+            query=q,
+            scope=_chat_scope(user),
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable") from e
+        raise
+
+    return {
+        "query": q,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "results": results,
+    }
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the main application page.
