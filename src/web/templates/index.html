@@ -77,6 +77,9 @@
             --tg-accent-bright: 147 197 253;
             --tg-accent-faint: 191 219 254;
             --tg-accent-dim: 30 58 138;
+            /* Foreground on a solid accent-strong fill. White in every palette:
+               ink is dark in the light themes and vanished on the blue. */
+            --tg-on-accent: 255 255 255;
             /* Neutral scale: exactly Tailwind's gray levels, so the dark
                palettes render byte-identically to the old gray-N utilities.
                The dark palettes share it (only the light ones override). */
@@ -749,6 +752,7 @@
                             'accent-bright': 'rgb(var(--tg-accent-bright) / <alpha-value>)',
                             'accent-faint': 'rgb(var(--tg-accent-faint) / <alpha-value>)',
                             'accent-dim': 'rgb(var(--tg-accent-dim) / <alpha-value>)',
+                            'on-accent': 'rgb(var(--tg-on-accent) / <alpha-value>)',
                             // Ink is "maximum-contrast foreground" (white on the
                             // dark palettes, near-black on the light ones); the
                             // n-scale plays the role the gray-N utilities played
@@ -937,25 +941,34 @@
                         </div>
                     </div>
 
+                    <!-- One field for chats AND messages, the way the official clients search -->
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search all chats..."
-                            class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
+                        <input v-model="searchQuery" @input="onSearchInput" ref="searchInput" type="text" placeholder="Search"
+                            aria-label="Search chats and messages" autocomplete="off" role="combobox" aria-autocomplete="list"
+                            aria-controls="search-results" :aria-expanded="searchActive ? 'true' : 'false'"
+                            :aria-activedescendant="searchActiveIndex >= 0 ? `search-option-${searchActiveIndex}` : null"
+                            @keydown.escape.prevent="onSearchEscape" @keydown.enter.prevent="onSearchEnter"
+                            @keydown.down.prevent="moveSearchSelection(1)" @keydown.up.prevent="moveSearchSelection(-1)"
+                            class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-10 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                         <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
+                        <button v-if="searchQuery" @click="clearSearch()" type="button" aria-label="Clear search"
+                            class="tap-target absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 rounded-lg text-lg leading-none text-tg-n400 hover:text-tg-ink focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">&times;</button>
                     </div>
+
                     <!-- v6.2.0: Folder Tabs -->
                     <div v-if="folders.length > 0" class="flex gap-1 mb-3 overflow-x-auto pb-1 scrollbar-thin">
                         <button @click="showAllChats()"
-                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
+                            :class="activeTab === 'all' ? 'bg-tg-accent-strong text-tg-on-accent' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             All Chats
                         </button>
                         <button v-for="folder in folders" :key="folder.id"
                             @click="selectFolder(folder.id)"
-                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
+                            :class="activeTab === 'folder_' + folder.id ? 'bg-tg-accent-strong text-tg-on-accent' : 'bg-tg-n700/50 text-tg-muted hover:bg-tg-n700'"
                             class="px-3 py-1 text-xs rounded-full whitespace-nowrap transition shrink-0">
                             {{ folder.emoticon || '📁' }} {{ folder.title }}
                             <span class="opacity-70 ml-0.5">({{ folder.chat_count }})</span>
@@ -1010,7 +1023,7 @@
                         </svg>
                         <span>Enable notifications for new messages</span>
                         <button @click="requestNotificationPermission()"
-                            class="ml-auto px-2 py-1 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-xs rounded transition">
+                            class="ml-auto px-2 py-1 bg-tg-accent-strong hover:bg-tg-accent text-tg-on-accent text-xs rounded transition">
                             Enable
                         </button>
                     </div>
@@ -1080,7 +1093,7 @@
                                 <template v-else>If this group uses Topics, they’ll appear after the next full backup completes.</template>
                             </span>
                             <button @click="selectTopic(topicsNavEntry.chat || { ref: topicsNavEntry.chatRef, is_forum: true }, { id: 'all', title: 'All messages' })"
-                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-tg-accent-strong text-tg-ink transition">
+                                class="mt-1 px-3 py-1.5 text-xs rounded-full bg-tg-active hover:bg-tg-accent-strong text-tg-on-accent transition">
                                 View all messages
                             </button>
                         </div>
@@ -1136,12 +1149,12 @@
                             <span class="text-sm">Loading chats...</span>
                         </div>
                         <!-- Empty state -->
-                        <div v-else-if="filteredChats.length === 0 && !chatsError" class="flex flex-col items-center justify-center py-12 text-tg-muted">
+                        <div v-else-if="filteredChats.length === 0 && !chatsError && !searchActive" class="flex flex-col items-center justify-center py-12 text-tg-muted">
                             <svg class="w-12 h-12 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
                             </svg>
-                            <span class="text-sm">{{ searchQuery ? 'No chats found' : 'No chats yet' }}</span>
+                            <span class="text-sm">No chats yet</span>
                         </div>
                         <template v-else>
                             <!-- v6.2.0: Archived Chats Row (only in "All Chats" view) -->
@@ -1162,10 +1175,21 @@
                                 </svg>
                             </div>
 
+                            <!-- While searching, the list is ONE listbox with two sections, Chats then
+                                 Messages: the input's aria-controls/aria-activedescendant point in here. -->
+                            <div :role="searchActive ? 'listbox' : null" :id="searchActive ? 'search-results' : null"
+                                :aria-label="searchActive ? 'Search results' : null">
+                            <div v-if="searchActive" role="presentation" class="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between">
+                                <span>Chats</span>
+                                <span v-if="filteredChats.length">{{ filteredChats.length }}</span>
+                            </div>
+                            <div v-if="searchActive && !filteredChats.length && !searchLoading" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">No chats found</div>
                             <!-- Chat items -->
-                            <div v-for="chat in filteredChats" :key="chat.ref" @click="selectChat(chat)"
+                            <div v-for="(chat, index) in filteredChats" :key="chat.ref" @click="selectChat(chat)"
+                                :id="searchActive ? `search-option-${index}` : null" :role="searchActive ? 'option' : null"
+                                :aria-selected="searchActive ? String(searchActiveIndex === index) : null"
                                 class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
-                                :class="{'bg-tg-active': selectedChat?.ref === chat.ref}">
+                                :class="{'bg-tg-active': selectedChat?.ref === chat.ref, 'ring-2 ring-inset ring-tg-accent': searchActive && searchActiveIndex === index}">
                                 <!-- Avatar -->
                                 <div
                                     class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
@@ -1206,6 +1230,53 @@
                                     </p>
                                 </div>
                             </div>
+                            <!-- Search: message hits across every entitled chat -->
+                            <template v-if="searchActive">
+                            <div role="presentation" class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between border-t border-tg-n700/50">
+                                <span>Messages</span>
+                                <span v-if="messageSearch.results.length">{{ messageSearch.results.length }}{{ messageSearch.hasMore ? '+' : '' }}</span>
+                            </div>
+                            <div v-if="messageSearch.error" role="presentation" class="px-3 pb-2 text-sm text-red-400">{{ messageSearch.error }}</div>
+                            <div v-else-if="!messageSearch.indexed" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">Message search needs the full-text index, which the backup builds when it starts on 8.5 or later.</div>
+                            <div v-else-if="!messageSearch.loading && !messageSearch.results.length" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">No messages found</div>
+                            <div v-for="(row, index) in messageSearch.results" :key="row.chat.ref + ':' + row.id"
+                                :id="`search-option-${filteredChats.length + index}`" role="option"
+                                :aria-selected="String(searchActiveIndex === filteredChats.length + index)"
+                                @click="openMessageSearchResult(row)"
+                                class="p-3 cursor-pointer hover:bg-tg-hover transition-colors flex items-center gap-3"
+                                :class="{'ring-2 ring-inset ring-tg-accent': searchActiveIndex === filteredChats.length + index, 'opacity-60': row.is_deleted}">
+                                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
+                                    <img v-if="row.chat.avatar_url" :src="row.chat.avatar_url" class="w-full h-full object-cover"
+                                        @error="row.chat.avatar_url = null" :alt="getChatName(row.chat)">
+                                    <template v-else>{{ getInitials(row.chat) }}</template>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex justify-between items-baseline gap-2">
+                                        <h3 class="font-semibold truncate text-tg-ink">
+                                            <span v-if="row.chat.is_forum" class="text-tg-accent-soft mr-1 text-xs" title="Forum">#</span>{{ getChatName(row.chat) }}<span v-if="row.topic_title" class="text-tg-muted font-normal"> › {{ row.topic_title }}</span>
+                                        </h3>
+                                        <span class="text-xs text-tg-muted shrink-0" :title="formatDateFull(row.date) + ' ' + formatTime(row.date)">{{ formatSearchResultDate(row.date) }}</span>
+                                    </div>
+                                    <p class="text-sm text-tg-muted line-clamp-2 break-words">
+                                        <span v-if="row.sender_name && row.chat.type !== 'private'" class="text-tg-ink/80">{{ row.sender_name }}: </span><span v-html="searchSnippetHtml(row.text)"></span>
+                                        <span v-if="row.is_deleted" class="ml-1 text-[10px] uppercase tracking-wide text-red-400">deleted</span>
+                                    </p>
+                                </div>
+                            </div>
+                            </template>
+                            </div>
+                            <template v-if="searchActive">
+                            <div v-if="messageSearch.hasMore || messageSearch.loading" ref="messageSearchSentinel" class="p-3 flex justify-center">
+                                <div class="flex items-center gap-2 text-tg-muted text-sm" role="status" aria-live="polite">
+                                    <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span>{{ messageSearch.results.length ? 'Loading more…' : 'Searching…' }}</span>
+                                </div>
+                            </div>
+                            <div v-if="messageSearch.truncated" class="px-3 py-2 text-xs text-tg-muted text-center">Showing the first 5,000 matches. Refine the search for older ones.</div>
+                            </template>
                         </template>
 
                         <!-- Infinite Scroll Sentinel (loads more when visible) -->
@@ -1222,11 +1293,6 @@
                             </div>
                         </div>
 
-                        <!-- Search results info -->
-                        <div v-if="searchQuery && !loadingChats" class="p-3 text-center text-xs text-tg-muted border-t border-tg-n700/50">
-                            <span v-if="searchResults.length > 0">Found {{ searchResults.length }} chats matching "{{ searchQuery }}"</span>
-                            <span v-else>No chats found</span>
-                        </div>
                     </template>
                 </div>
             </div>
@@ -1446,7 +1512,7 @@
                         <div class="flex gap-1 px-4 py-2 border-b border-tg-n700">
                             <button v-for="tab in mediaTabs" :key="tab.id"
                                 @click="switchMediaTab(tab.id)"
-                                :class="mediaGalleryTab === tab.id ? 'bg-tg-accent-strong text-tg-ink' : 'bg-tg-n700/50 text-tg-n400 hover:text-tg-ink'"
+                                :class="mediaGalleryTab === tab.id ? 'bg-tg-accent-strong text-tg-on-accent' : 'bg-tg-n700/50 text-tg-n400 hover:text-tg-ink'"
                                 class="px-3 py-1.5 rounded-lg text-sm font-medium transition">
                                 {{ tab.label }}
                                 <span v-if="mediaGalleryCounts[tab.id]" class="ml-1 text-xs opacity-75">
@@ -1766,7 +1832,7 @@
                                                 <button type="button" @click.stop="playAudioMessage(msg)"
                                                     :disabled="noDownload"
                                                     :aria-label="(isPlayingAudioMessage(msg) ? 'Pause ' : 'Play ') + getDocumentDisplayName(msg)"
-                                                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-tg-ink transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-tg-on-accent transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                                                     <svg v-if="isPlayingAudioMessage(msg)" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                                                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                                                     </svg>
@@ -2085,7 +2151,7 @@
                         Cancel
                     </button>
                     <button @click="jumpToDate"
-                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-ink rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-on-accent rounded-lg transition">
                         Jump
                     </button>
                 </div>
@@ -2185,7 +2251,7 @@
                         Cancel
                     </button>
                     <button @click="runExport"
-                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-ink rounded-lg transition">
+                        class="px-4 py-2 bg-tg-accent-strong hover:bg-tg-accent-hover text-tg-on-accent rounded-lg transition">
                         Export
                     </button>
                 </div>
@@ -2521,7 +2587,7 @@
                                 </label>
                                 <div class="flex-1"></div>
                                 <button v-if="adminEditingId" @click="cancelEdit" class="px-3 py-1.5 text-sm text-tg-n400 hover:text-tg-ink">Cancel</button>
-                                <button @click="saveViewer" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-sm rounded">
+                                <button @click="saveViewer" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-on-accent text-sm rounded">
                                     {{ adminEditingId ? 'Update' : 'Create' }}
                                 </button>
                             </div>
@@ -2575,7 +2641,7 @@
                                     <input type="checkbox" v-model="adminTokenForm.no_download" class="rounded" /> No Downloads
                                 </label>
                                 <div class="flex-1"></div>
-                                <button @click="createToken" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-ink text-sm rounded">
+                                <button @click="createToken" class="px-4 py-1.5 bg-tg-accent-strong hover:bg-tg-accent text-tg-on-accent text-sm rounded">
                                     Create Token
                                 </button>
                             </div>
@@ -2592,7 +2658,7 @@
                             <div class="flex items-center gap-2">
                                 <span class="text-xs text-tg-n400 w-16 shrink-0">Link</span>
                                 <code class="flex-1 bg-tg-n900 text-tg-accent-soft rounded px-3 py-2 text-xs font-mono break-all select-all">{{ adminNewTokenUrl }}</code>
-                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-tg-accent-hover hover:bg-tg-accent-strong text-tg-ink text-xs rounded whitespace-nowrap">Copy Link</button>
+                                <button @click="navigator.clipboard.writeText(adminNewTokenUrl); adminNewToken = ''" class="px-3 py-2 bg-tg-accent-hover hover:bg-tg-accent-strong text-tg-on-accent text-xs rounded whitespace-nowrap">Copy Link</button>
                             </div>
                             <div class="text-xs text-tg-n500 mt-2">Note: token may appear in server access logs when the link is opened.</div>
                         </div>
@@ -2674,7 +2740,7 @@
                 </button>
                 <button type="button" @click="toggleAudioPlayback()"
                     :aria-label="audioIsPlaying ? 'Pause audio' : 'Play audio'"
-                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent flex items-center justify-center text-tg-ink transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                    class="w-10 h-10 shrink-0 rounded-full bg-tg-accent-strong hover:bg-tg-accent flex items-center justify-center text-tg-on-accent transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                     <svg v-if="audioIsPlaying" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
                     </svg>
@@ -2712,7 +2778,7 @@
                     <button v-for="rate in audioSpeeds" :key="rate" type="button" @click="setAudioSpeed(rate)"
                         :aria-pressed="currentAudioSpeed === rate"
                         :aria-label="'Playback speed ' + rate + 'x'"
-                        :class="currentAudioSpeed === rate ? 'bg-tg-accent-strong text-tg-ink' : 'text-tg-n300 hover:bg-tg-ink/10'"
+                        :class="currentAudioSpeed === rate ? 'bg-tg-accent-strong text-tg-on-accent' : 'text-tg-n300 hover:bg-tg-ink/10'"
                         class="text-[11px] px-2 py-1 rounded transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
                         {{ rate }}x
                     </button>
@@ -2761,6 +2827,16 @@
                 const selectedChat = ref(null)
                 const selectedPaneTopic = ref(null)
                 const searchQuery = ref('')
+                // Sidebar search: one field, two result sections (chats, then messages).
+                const searchActive = computed(() => searchQuery.value.trim().length > 0)
+                const searchActiveIndex = ref(-1)
+                const searchInput = ref(null)
+                const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true })
+                // The API caps offset at 5000: past it the search must be refined, not paged.
+                const MESSAGE_SEARCH_MAX_OFFSET = 5000
+                const messageSearchSentinel = ref(null)
+                let searchGeneration = 0  // one counter for both halves: chats and messages
+                let messageSearchObserver = null
                 const messageSearchQuery = ref('')
                 const loading = ref(false)
                 const loadingChats = ref(true)  // Start as true, loading on init
@@ -3329,43 +3405,245 @@
                 const onSearchInput = () => {
                     if (searchDebounceTimer) {
                         clearTimeout(searchDebounceTimer)
+                        searchDebounceTimer = null
                     }
+                    searchActiveIndex.value = -1
 
                     const query = searchQuery.value.trim()
 
                     if (!query) {
-                        searchResults.value = []
-                        searchLoading.value = false
+                        // Whitespace is not a search, and not a reason to erase what was typed.
+                        resetSearchResults()
                         return
                     }
 
                     // A pasted t.me link is a navigation, not a search.
                     const telegramLink = parseTelegramLink(query)
                     if (telegramLink) {
-                        searchQuery.value = ''
-                        searchResults.value = []
-                        searchLoading.value = false
+                        clearSearch({ keepFocus: false })
                         openTelegramLink(telegramLink)
                         return
                     }
 
                     searchLoading.value = true
-                    searchDebounceTimer = setTimeout(async () => {
-                        try {
-                            // Search ALL chats server-side (no pagination limit)
-                            const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
-                                credentials: 'include'
-                            })
-                            if (res.ok) {
-                                const data = await res.json()
-                                searchResults.value = data.chats
-                            }
-                        } catch (e) {
-                            console.error('Search failed:', e)
-                        } finally {
-                            searchLoading.value = false
-                        }
+                    // Both sections read as searching from the first keystroke, so the
+                    // debounce never shows a "No messages found" that nothing has answered.
+                    messageSearch.value.loading = true
+                    messageSearch.value.error = ''
+                    searchDebounceTimer = setTimeout(() => {
+                        searchDebounceTimer = null
+                        dispatchSearch(query)
                     }, 300) // 300ms debounce
+                }
+
+                // One generation per dispatch, shared by both requests, so a slow answer
+                // for an older query can overwrite neither section.
+                const dispatchSearch = (query) => {
+                    const generation = ++searchGeneration
+                    runChatSearch(query, generation)
+                    runMessageSearch(false, generation)
+                }
+
+                const runChatSearch = async (query, generation) => {
+                    try {
+                        // Search ALL chats server-side (no pagination limit)
+                        const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
+                            credentials: 'include'
+                        })
+                        if (generation !== searchGeneration) return
+                        if (res.status === 401) {
+                            searchResults.value = []
+                            isAuthenticated.value = false
+                            return
+                        }
+                        // A failed lookup must not leave the previous query's chats on
+                        // show as if they matched this one.
+                        searchResults.value = res.ok ? (await res.json()).chats : []
+                    } catch (e) {
+                        if (generation !== searchGeneration) return
+                        console.error('Search failed:', e)
+                        searchResults.value = []
+                    } finally {
+                        if (generation === searchGeneration) searchLoading.value = false
+                    }
+                }
+
+                // Message hits across every entitled chat. A generation counter makes a
+                // slow answer for an older query harmless, and the visible rows stay put
+                // until the new set arrives instead of blinking empty on every keystroke.
+                const runMessageSearch = async (append = false, dispatched = null) => {
+                    const query = searchQuery.value.trim()
+                    const state = messageSearch.value
+                    if (!query) return
+                    if (append && (state.loading || !state.hasMore)) return
+                    const offset = append ? state.results.length : 0
+                    if (offset >= MESSAGE_SEARCH_MAX_OFFSET) {
+                        state.hasMore = false
+                        state.truncated = true
+                        return
+                    }
+                    // A dispatch hands its generation in; a scroll-driven append mints its own.
+                    const generation = dispatched ?? ++searchGeneration
+                    state.loading = true
+                    state.error = ''
+                    try {
+                        const params = new URLSearchParams({ q: query, limit: '20', offset: String(offset) })
+                        const res = await fetch(`/api/search/messages?${params}`, { credentials: 'include' })
+                        if (generation !== searchGeneration) return
+                        if (res.status === 401) {
+                            isAuthenticated.value = false
+                            return
+                        }
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                        const data = await res.json()
+                        if (generation !== searchGeneration) return
+                        const rows = Array.isArray(data.results) ? data.results : []
+                        state.results = append ? state.results.concat(rows) : rows
+                        state.hasMore = Boolean(data.has_more)
+                        state.indexed = data.indexed !== false
+                        if (!append) state.truncated = false
+                        await nextTick()
+                        if (generation === searchGeneration) observeMessageSearchSentinel()
+                    } catch (e) {
+                        if (generation !== searchGeneration) return
+                        // The status only: the query text never reaches the console.
+                        console.error('Message search failed:', e?.message || e)
+                        state.error = 'Search failed. Try again.'
+                        if (!append) {
+                            state.results = []
+                            state.hasMore = false
+                        }
+                    } finally {
+                        if (generation === searchGeneration) state.loading = false
+                    }
+                }
+
+                // The Messages section loads more as it is scrolled, like the chat list.
+                const observeMessageSearchSentinel = () => {
+                    if (messageSearchObserver) {
+                        messageSearchObserver.disconnect()
+                        messageSearchObserver = null
+                    }
+                    const sentinel = messageSearchSentinel.value
+                    if (!sentinel || typeof IntersectionObserver === 'undefined') return
+                    messageSearchObserver = new IntersectionObserver((entries) => {
+                        if (entries.some(entry => entry.isIntersecting)) runMessageSearch(true)
+                    }, { rootMargin: '200px' })
+                    messageSearchObserver.observe(sentinel)
+                }
+
+                const resetSearchResults = () => {
+                    if (searchDebounceTimer) {
+                        clearTimeout(searchDebounceTimer)
+                        searchDebounceTimer = null
+                    }
+                    searchGeneration++
+                    searchResults.value = []
+                    searchLoading.value = false
+                    searchActiveIndex.value = -1
+                    messageSearch.value = { results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true }
+                    if (messageSearchObserver) {
+                        messageSearchObserver.disconnect()
+                        messageSearchObserver = null
+                    }
+                }
+
+                const clearSearch = (options = {}) => {
+                    resetSearchResults()
+                    searchQuery.value = ''
+                    if (options.keepFocus !== false) searchInput.value?.focus()
+                }
+
+                // Esc clears the query first, and leaves the field on a second press.
+                const onSearchEscape = () => {
+                    if (searchQuery.value) clearSearch()
+                    else searchInput.value?.blur()
+                }
+
+                // Enter opens the highlighted row; with nothing highlighted it just
+                // stops waiting for the debounce.
+                const onSearchEnter = () => {
+                    if (searchActiveIndex.value >= 0) {
+                        openSearchSelection(searchActiveIndex.value)
+                        return
+                    }
+                    if (!searchDebounceTimer) return
+                    clearTimeout(searchDebounceTimer)
+                    searchDebounceTimer = null
+                    const query = searchQuery.value.trim()
+                    if (query) dispatchSearch(query)
+                }
+
+                // Up/Down walk one list: the chat hits first, then the message hits.
+                const moveSearchSelection = (delta) => {
+                    const count = searchActive.value ? filteredChats.value.length + messageSearch.value.results.length : 0
+                    if (!count) return
+                    const current = searchActiveIndex.value
+                    const next = current < 0
+                        ? (delta > 0 ? 0 : count - 1)
+                        : Math.min(count - 1, Math.max(0, current + delta))
+                    searchActiveIndex.value = next
+                    nextTick(() => document.getElementById(`search-option-${next}`)?.scrollIntoView({ block: 'nearest' }))
+                }
+
+                const openSearchSelection = (index) => {
+                    const chatCount = filteredChats.value.length
+                    if (index < chatCount) {
+                        selectChat(filteredChats.value[index])
+                        return
+                    }
+                    const row = messageSearch.value.results[index - chatCount]
+                    if (row) openMessageSearchResult(row)
+                }
+
+                // The results stay in the sidebar while the message opens, so the next
+                // hit is one click away — the official clients keep them too.
+                const openMessageSearchResult = async (row) => {
+                    if (!row?.chat?.ref || row.id == null) return
+                    await openNotificationTarget(row.chat.ref, row.id)
+                }
+
+                // Same word rule as the search itself: letters, digits and underscore.
+                const SEARCH_WORD_RE = /[\p{L}\p{N}_]+/gu
+                const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+                // A window of the message around its first matching word, with every
+                // matched word emphasised. Escaping happens per piece AFTER matching,
+                // so a query can never see (or split) an entity the escaper produced.
+                const searchSnippetHtml = (text) => {
+                    const raw = (text || '').replace(/\s+/g, ' ').trim()
+                    if (!raw) return ''
+                    const words = (searchQuery.value.match(SEARCH_WORD_RE) || []).filter(Boolean)
+                    const WINDOW = 180
+                    if (!words.length) return escapeHtml(raw.slice(0, WINDOW)) + (raw.length > WINDOW ? '…' : '')
+                    const pattern = new RegExp('(^|[^\\p{L}\\p{N}_])(' + words.map(escapeRegExp).join('|') + ')[\\p{L}\\p{N}_]*', 'giu')
+                    const firstMatch = pattern.exec(raw)
+                    pattern.lastIndex = 0
+                    const start = firstMatch && firstMatch.index > 60 ? firstMatch.index - 40 : 0
+                    const snippet = raw.slice(start, start + WINDOW)
+                    let html = ''
+                    let cursor = 0
+                    for (const match of snippet.matchAll(pattern)) {
+                        const wordStart = match.index + match[1].length
+                        const wordEnd = match.index + match[0].length
+                        html += escapeHtml(snippet.slice(cursor, wordStart))
+                        html += '<mark class="bg-tg-accent/30 text-tg-ink rounded-sm px-0.5">' + escapeHtml(snippet.slice(wordStart, wordEnd)) + '</mark>'
+                        cursor = wordEnd
+                    }
+                    html += escapeHtml(snippet.slice(cursor))
+                    return (start > 0 ? '…' : '') + html + (start + WINDOW < raw.length ? '…' : '')
+                }
+
+                // The chat list's relative style, read in the viewer's timezone like
+                // every other timestamp: time today, weekday this week, then the date.
+                const formatSearchResultDate = (dateStr) => {
+                    if (!dateStr) return ''
+                    const when = moment.utc(dateStr).tz(viewerTimezone.value)
+                    const now = moment().tz(viewerTimezone.value)
+                    if (when.isSame(now, 'day')) return when.format('HH:mm')
+                    if (now.diff(when, 'days') < 6) return when.format('ddd')
+                    if (when.isSame(now, 'year')) return when.format('D MMM')
+                    return when.format('ll')
                 }
 
                 // Setup infinite scroll observer for chats
@@ -3587,7 +3865,7 @@
                     await loadTopics(chat.ref)
                 }
 
-                const selectTopic = async (chat, topic) => {
+                const selectTopic = async (chat, topic, options = {}) => {
                     // Invalidate any in-flight loads from previous chat/topic
                     const myVersion = ++chatVersion
                     stopMessageRefresh()
@@ -3606,14 +3884,24 @@
                     showPinnedOnly.value = false
                     galleryReturnState = null  // topic switch repositions the view itself
                     showMediaGallery.value = false
-                    await loadMessages()
-                    if (chatVersion !== myVersion) return
-                    await loadChatStats(chat.ref)
-                    await nextTick()
-                    if (chatVersion !== myVersion) return
-                    scrollToBottom()
-                    setupMessagesScrollObserver()
-                    startMessageRefresh()
+
+                    if (!options.skipInitialLoad) {
+                        await loadMessages()
+                        if (chatVersion !== myVersion) return
+
+                        await loadChatStats(chat.ref)
+
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+
+                        scrollToBottom()
+                        setupMessagesScrollObserver()
+                        startMessageRefresh()
+                    } else {
+                        if (chatVersion !== myVersion) return
+
+                        await loadChatStats(chat.ref)
+                    }
                 }
 
                 // v6.2.0: Active folder tab tracking
@@ -3924,11 +4212,10 @@
                     const known = chats.value.find(c => c.ref === chatRef)
                     if (known) return known
                     try {
-                        const res = await fetch('/api/chats?limit=1000', { credentials: 'include' })
-                        if (res.ok) {
-                            const data = await res.json()
-                            return (data.chats || []).find(c => c.ref === chatRef) || null
-                        }
+                        // The sidebar holds one page; the ref route resolves any entitled
+                        // chat — archived, or thousands of chats down the list.
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}`, { credentials: 'include' })
+                        if (res.ok) return await res.json()
                     } catch (e) {
                         // No identifiers in the message, out of habit: the ref is opaque,
                         // but log-shape stability is worth keeping.
@@ -3946,7 +4233,10 @@
                         showToast('Could not open that chat')
                         return false
                     }
-                    await selectChat(targetChat)
+                    // With a message to land on, the window around it is the only load the
+                    // pane needs — the normal tail page would race it (its deferred
+                    // scroll-to-bottom fires after the jump has positioned the view).
+                    await selectChat(targetChat, { skipInitialLoad: Boolean(messageId) })
                     if (!messageId) return true
                     if (targetChat.is_forum) {
                         // selectChat short-circuits a forum into its topics list
@@ -3970,7 +4260,7 @@
                                 showToast('Could not locate that topic')
                                 return false
                             }
-                            await selectTopic(targetChat, topic)
+                            await selectTopic(targetChat, topic, { skipInitialLoad: true })
                         } catch (e) {
                             showToast('Could not locate that topic')
                             return false
@@ -3981,8 +4271,18 @@
                     // message is far outside the loaded page. scrollToMessage only
                     // worked for already-rendered rows — fine for a fresh push
                     // notification, silently a no-op for a shared link to history.
-                    await loadMessagesAroundId(messageId)
+                    const jumped = await loadMessagesAroundId(messageId)
+                    if (jumped === false) await reloadViewAfterFailedJump(targetChat)
                     return true
+                }
+
+                // A failed jump must not leave the pane empty: re-enter the view the way
+                // a plain click would, which loads its newest page.
+                const reloadViewAfterFailedJump = async (chat) => {
+                    if (messages.value.length) return
+                    const topic = selectedPaneTopic.value
+                    if (chat.is_forum && topic) await selectTopic(chat, topic)
+                    else await selectChat(chat)
                 }
 
                 // ---- Deep links: stable per-message URLs + t.me recognition ----
@@ -4957,7 +5257,7 @@
                 }
 
                 const loadMessagesAroundId = async (messageId, externalGuard = null) => {
-                    if (!selectedChat.value) return
+                    if (!selectedChat.value) return false
                     // Same stale-response idiom as selectChat/selectTopic: bump chatVersion so
                     // in-flight polls/loads for the previous view discard themselves, and re-check
                     // after every await so a stale jump can never overwrite another view's pane or
@@ -4981,7 +5281,7 @@
                         if (!isCurrentIntent()) return
                         if (!res.ok) {
                             showToast('Could not load messages around that message')
-                            return
+                            return false
                         }
                         const data = await res.json()
                         if (!isCurrentIntent()) return
@@ -5030,10 +5330,12 @@
                         if (!isCurrentIntent()) return
                         setupMessagesScrollObserver()
                         scrollToMessage(messageId)
+                        return true
                     } catch (e) {
                         if (!isCurrentIntent()) return
                         console.error('[Jump] Failed to load messages around id', e)
                         showToast('Could not load messages around that message')
+                        return false
                     } finally {
                         if (chatVersion === myVersion) {
                             loading.value = false
@@ -5347,7 +5649,7 @@
                     }
                 }
 
-                const selectChat = async (chat) => {
+                const selectChat = async (chat, options = {}) => {
                     // v6.2.0: If forum chat, open topics list instead
                     if (chat.is_forum) {
                         await openForumTopics(chat)
@@ -5370,17 +5672,26 @@
                     showPinnedOnly.value = false  // Exit pinned-only view when changing chat
                     galleryReturnState = null  // chat switch repositions the view itself
                     showMediaGallery.value = false  // Exit media gallery when changing chat
-                    await loadMessages()
-                    if (chatVersion !== myVersion) return  // Another chat was selected, abort
-                    await loadChatStats(chat.ref)  // Load stats for this chat
-                    await loadPinnedMessages(chat.ref)  // Load pinned messages for this chat
-                    await nextTick()
-                    if (chatVersion !== myVersion) return
-                    scrollToBottom()
-                    // Setup observer for auto-loading older messages
-                    setupMessagesScrollObserver()
-                    // Start auto-refresh for new messages
-                    startMessageRefresh()
+
+                    if (!options.skipInitialLoad) {
+                        await loadMessages()
+                        if (chatVersion !== myVersion) return  // Another chat was selected, abort
+                        await loadChatStats(chat.ref)  // Load stats for this chat
+                        await loadPinnedMessages(chat.ref)  // Load pinned messages for this chat
+                        await nextTick()
+                        if (chatVersion !== myVersion) return
+                        scrollToBottom()
+                        // Setup observer for auto-loading older messages
+                        setupMessagesScrollObserver()
+                        // Start auto-refresh for new messages
+                        startMessageRefresh()
+                    } else {
+                        // The caller will populate the message window itself,
+                        // e.g. openNotificationTarget() via loadMessagesAroundId().
+                        if (chatVersion !== myVersion) return
+                        await loadChatStats(chat.ref)
+                        await loadPinnedMessages(chat.ref)
+                    }
                 }
 
                 // Auto-refresh messages every 3 seconds to catch new messages
@@ -5780,11 +6091,16 @@
                         const myVersion = ++chatVersion  // invalidate in-flight pinned-window loads
                         loading.value = false
                         messages.value = []
-                        resetMessagePagination()  // clears viewingPinnedWindow → poll resumes
+                        resetMessagePagination()  // clears viewingPinnedWindow
                         await loadMessages()
                         if (chatVersion !== myVersion) return
                         await nextTick()
                         if (chatVersion !== myVersion) return
+                        // The view is live again: re-arm what the tail-inclusive entry arms.
+                        // A jump-only entry (selectChat with skipInitialLoad) never started
+                        // the poll, so clearing the pinned flag alone would resume nothing.
+                        setupMessagesScrollObserver()
+                        startMessageRefresh()
                     }
                     scrollToBottom(true)
                 }
@@ -7791,7 +8107,7 @@
                             audioError.value = "This track's chat is not in the archive view"
                             return
                         }
-                        await selectChat(chat)
+                        await selectChat(chat, { skipInitialLoad: true })
                         // A forum chat short-circuits selectChat into its topics list
                         // without touching selectedChat (that is what selectTopic is
                         // for) — continue into the track's own topic. selectChat just
@@ -7811,7 +8127,7 @@
                                 audioError.value = "The track's topic is no longer in the archive"
                                 return
                             }
-                            await selectTopic(chat, topic)
+                            await selectTopic(chat, topic, { skipInitialLoad: true })
                         }
                     }
                     // The pane must be the track's chat before loading a window by id.
@@ -7822,7 +8138,8 @@
                     // logged "Message not loaded yet" and did nothing. Mirror jumpToReply:
                     // fetch the window around the message first, which scrolls to it.
                     if (!findMessageElement(track.id)) {
-                        await loadMessagesAroundId(track.id)
+                        const jumped = await loadMessagesAroundId(track.id)
+                        if (jumped === false && selectedChat.value) await reloadViewAfterFailedJump(selectedChat.value)
                         return
                     }
                     scrollToMessage(track.id)
@@ -8349,6 +8666,19 @@
                     senderInfoCloseBtn,
                     sortedMessages,
                     searchQuery,
+                    // Sidebar search: chats and messages from the one field
+                    searchActive,
+                    searchActiveIndex,
+                    searchInput,
+                    messageSearch,
+                    messageSearchSentinel,
+                    clearSearch,
+                    onSearchEscape,
+                    onSearchEnter,
+                    moveSearchSelection,
+                    openMessageSearchResult,
+                    searchSnippetHtml,
+                    formatSearchResultDate,
                     messageSearchQuery,
                     loading,
                     isGroup,

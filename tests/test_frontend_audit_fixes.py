@@ -301,6 +301,145 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 
 # --------------------------------------------------------------------------------------
+# A deep link without a message id must still load the chat; a failed jump must not
+# strand an empty pane
+# --------------------------------------------------------------------------------------
+
+
+def test_deep_link_without_a_message_loads_the_chat_and_a_failed_jump_falls_back() -> None:
+    """The jump path skips selectChat's own load because loadMessagesAroundId replaces it.
+
+    With no message id there is no jump, so skipping would leave the pane empty
+    (``/?chat=<ref>`` opened a blank chat); and when the jump itself fails the
+    pane must re-enter the view the ordinary way rather than stay blank.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const chats = ref([{ id: 1, ref: 'plainRef', title: 'plain' }, { id: 2, ref: 'forumRef', title: 'forum', is_forum: true }]);
+const opened = [];
+const selectChat = async (chat, options = {}) => { opened.push([chat.ref, Boolean(options.skipInitialLoad)]); };
+const topicsOpened = [];
+const selectTopic = async (chat, topic, options = {}) => { topicsOpened.push([chat.ref, topic.id, Boolean(options.skipInitialLoad)]); };
+const messages = ref([]);
+const selectedPaneTopic = ref(null);
+let jumpResult = true;
+const jumps = [];
+const loadMessagesAroundId = async id => { jumps.push(id); return jumpResult; };
+const GENERAL_TOPIC_ID = 1;
+const topics = { value: [{ id: 1, title: 'General' }] };
+const nextTick = async () => {};
+const toasts = [];
+const showToast = message => { toasts.push(message); };
+const console = { error: () => {}, log: () => {}, warn: () => {} };
+const fetch = async () => ({ ok: true, json: async () => [] });
+""",
+            _extract_const_arrow_function(html, "resolveChatById", asynchronous=True),
+            _extract_const_arrow_function(html, "openNotificationTarget", asynchronous=True),
+            _extract_const_arrow_function(html, "reloadViewAfterFailedJump", asynchronous=True),
+            """
+(async () => {
+    // No message id: the ordinary entry, which loads the newest page itself.
+    assert.equal(await openNotificationTarget('plainRef', null), true);
+    assert.deepEqual(opened, [['plainRef', false]]);
+    assert.deepEqual(jumps, []);
+
+    // A message id: the window around it is the only load.
+    opened.length = 0;
+    assert.equal(await openNotificationTarget('plainRef', 4242), true);
+    assert.deepEqual(opened, [['plainRef', true]]);
+    assert.deepEqual(jumps, [4242]);
+
+    // The jump fails on an empty pane: fall back to the ordinary entry.
+    opened.length = 0; jumps.length = 0; jumpResult = false;
+    assert.equal(await openNotificationTarget('plainRef', 4243), true);
+    assert.deepEqual(opened, [['plainRef', true], ['plainRef', false]]);
+
+    // A stale-view abort is not a failure (undefined, not false): no fallback.
+    opened.length = 0; jumpResult = undefined;
+    assert.equal(await openNotificationTarget('plainRef', 4244), true);
+    assert.deepEqual(opened, [['plainRef', true]]);
+
+    // A forum jump enters its topic without the topic's own load; the fallback re-enters that topic.
+    opened.length = 0; topicsOpened.length = 0; jumpResult = false;
+    selectedPaneTopic.value = { id: 1, title: 'General' };
+    assert.equal(await openNotificationTarget('forumRef', 99), true);
+    assert.deepEqual(topicsOpened, [['forumRef', 1, true], ['forumRef', 1, false]]);
+    assert.deepEqual(toasts, []);
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
+
+
+# --------------------------------------------------------------------------------------
+# Scroll-to-latest from a detached jump window must re-arm the poll it never had
+# --------------------------------------------------------------------------------------
+
+
+def test_scroll_to_latest_restarts_the_poll_after_a_jump_only_entry() -> None:
+    """A jump-only entry (selectChat with skipInitialLoad) never starts the 3-second poll.
+
+    Before the skip existed the timer was always running and merely idled while a
+    detached window was pinned, so clearing the flag was enough to resume it. Now the
+    button that returns the user to the live tail has to start it, and re-arm the
+    older-messages observer, exactly as the ordinary chat entry does.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const showScrollToBottom = ref(true);
+const unseenMessageCount = ref(3);
+const viewingPinnedWindow = ref(true);
+const loading = ref(false);
+const messages = ref([{ id: 1 }]);
+let chatVersion = 7;
+const calls = [];
+const resetMessagePagination = () => { calls.push('reset'); viewingPinnedWindow.value = false; };
+const loadMessages = async () => { calls.push('load'); messages.value = [{ id: 2 }]; };
+const nextTick = async () => {};
+const setupMessagesScrollObserver = () => { calls.push('observer'); };
+const startMessageRefresh = () => { calls.push('poll'); };
+const scrollToBottom = () => { calls.push('scroll'); };
+""",
+            _extract_const_arrow_function(html, "scrollToLatest", asynchronous=True),
+            """
+(async () => {
+    await scrollToLatest();
+    assert.deepEqual(calls, ['reset', 'load', 'observer', 'poll', 'scroll']);
+    assert.equal(viewingPinnedWindow.value, false);
+
+    // Not pinned: nothing to reload, nothing to re-arm — just scroll.
+    calls.length = 0;
+    await scrollToLatest();
+    assert.deepEqual(calls, ['scroll']);
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
+
+
+# --------------------------------------------------------------------------------------
 # S16 — the push deep link silently did nothing outside the first 50 non-archived chats
 # --------------------------------------------------------------------------------------
 
@@ -341,7 +480,9 @@ const console = { error: () => {}, log: () => {} };
 const requested = [];
 const fetch = async url => {
     requested.push(url);
-    return { ok: true, json: async () => ({ chats: [archived] }) };
+    // The ref route answers one chat row, or 404; the list is never paged for a deep link.
+    if (url === '/api/chats/archivedTargetRef') return { ok: true, json: async () => archived };
+    return { ok: false, status: 404, json: async () => ({ detail: 'Chat not found' }) };
 };
 """,
             _extract_const_arrow_function(html, "resolveChatById", asynchronous=True),
@@ -354,9 +495,9 @@ const fetch = async url => {
     assert.deepEqual(scrolled, [4242]);
     assert.deepEqual(toasts, []);
     assert.equal(requested.length, 1, 'no wider lookup was issued');
-    assert.ok(requested[0].startsWith('/api/chats?'), requested[0]);
-    // No archived=false filter: an archived chat must be resolvable.
-    assert.equal(requested[0].includes('archived=false'), false, requested[0]);
+    // Resolved by ref through the chat route: any entitled chat, archived or
+    // thousands of rows down the list, never a paged scan of the sidebar.
+    assert.equal(requested[0], '/api/chats/archivedTargetRef');
 
     // A chat in the loaded page needs no request at all.
     requested.length = 0;

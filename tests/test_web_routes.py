@@ -2189,3 +2189,151 @@ class TestTagSearchEndpoint(_WebTestBase):
             self.assertEqual(kwargs["offset"], 50)
             # The viewer's entitlement rides in as a ChatScope, never recomputed downstream.
             self.assertIsInstance(kwargs["scope"], web_main.ChatScope)
+
+
+# ============================================================================
+# /api/search/messages — global message search, and /api/chats/{ref}
+# ============================================================================
+
+
+@_skip_unless_web
+class TestGlobalSearchEndpoint(_WebTestBase):
+    """Validation, scope passthrough and row shaping for the sidebar's Messages section."""
+
+    ROW = {
+        "id": 77,
+        "date": datetime(2026, 3, 4, 5, 6, 7),
+        "text": "hello there",
+        "sender_name": "Ana",
+        "is_deleted": False,
+        "account_id": 1,
+        "chat_id": -1001,
+        "chat_ref": "ref00000000000000000077",
+        "chat_title": None,
+        "chat_first_name": "Ana",
+        "chat_last_name": "Pérez",
+        "chat_username": "ana",
+        "chat_type": "private",
+        "chat_is_forum": False,
+        "topic_title": None,
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.mock_db.search_messages_global = AsyncMock(
+            return_value={"results": [], "has_more": False, "indexed": True}
+        )
+
+    async def test_validates_query_and_paging_bounds(self):
+        async with self._client() as client:
+            for bad in ("", "?limit=0", "?offset=-1", "?offset=5001", "?limit=101"):
+                url = f"/api/search/messages{bad}" if bad.startswith("?") else "/api/search/messages"
+                if bad.startswith("?"):
+                    url += "&q=hello"
+                resp = await client.get(url)
+                self.assertEqual(resp.status_code, 422, url)
+            resp = await client.get("/api/search/messages?q=" + "x" * 501)
+            self.assertEqual(resp.status_code, 422)
+        self.mock_db.search_messages_global.assert_not_awaited()
+
+    async def test_passes_the_viewer_scope_and_paging_through(self):
+        async with self._client() as client:
+            resp = await client.get("/api/search/messages?q=hello&limit=25&offset=50")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {"query": "hello", "limit": 25, "offset": 50, "has_more": False, "indexed": True, "results": []},
+        )
+        args, kwargs = self.mock_db.search_messages_global.await_args
+        self.assertEqual(args, ("hello",))
+        self.assertEqual((kwargs["limit"], kwargs["offset"]), (25, 50))
+        # The viewer's entitlement rides in as a ChatScope, never recomputed downstream.
+        self.assertIsInstance(kwargs["scope"], web_main.ChatScope)
+
+    async def test_rows_are_reshaped_for_the_chat_list_naming_and_carry_an_avatar_url(self):
+        self.mock_db.search_messages_global = AsyncMock(
+            return_value={"results": [dict(self.ROW)], "has_more": True, "indexed": True}
+        )
+        with patch.object(web_main, "_get_cached_avatar_path", return_value="/cache/avatar.jpg") as cached:
+            async with self._client() as client:
+                resp = await client.get("/api/search/messages?q=hello")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["has_more"])
+        self.assertEqual(
+            body["results"],
+            [
+                {
+                    "id": 77,
+                    "date": "2026-03-04T05:06:07",
+                    "text": "hello there",
+                    "sender_name": "Ana",
+                    "is_deleted": False,
+                    "topic_title": None,
+                    "chat": {
+                        "ref": "ref00000000000000000077",
+                        "title": None,
+                        "first_name": "Ana",
+                        "last_name": "Pérez",
+                        "username": "ana",
+                        "type": "private",
+                        "is_forum": False,
+                        "avatar_url": "/media/avatar/ref00000000000000000077",
+                    },
+                }
+            ],
+        )
+        cached.assert_called_once_with(-1001, "private")
+        # Internal addressing never leaks into the payload: the jump is by ref.
+        self.assertNotIn("chat_id", body["results"][0])
+        self.assertNotIn("account_id", body["results"][0])
+
+    async def test_database_failures_map_to_503_or_500_and_never_echo_the_query(self):
+        for exc, status in ((ConnectionRefusedError("db down"), 503), (RuntimeError("boom"), 500)):
+            self.mock_db.search_messages_global = AsyncMock(side_effect=exc)
+            with self.assertLogs("src.web.main", level="ERROR") as logs:
+                async with self._client() as client:
+                    resp = await client.get("/api/search/messages?q=secret+words")
+            self.assertEqual(resp.status_code, status)
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn(type(exc).__name__, logs.output[0])
+            self.assertNotIn("secret", logs.output[0])
+
+
+@_skip_unless_web
+class TestChatByRefEndpoint(_WebTestBase):
+    """The deep-link resolver: one chat by ref, entitlement-checked like every chat route."""
+
+    CHAT = {
+        "id": -1009999,
+        "account_id": 1,
+        "ref": "ref00000000000000009999",
+        "type": "channel",
+        "title": "Archived channel",
+        "username": None,
+        "first_name": None,
+        "last_name": None,
+        "is_forum": 0,
+        "is_archived": 1,
+    }
+
+    async def test_returns_the_row_with_an_avatar_url(self):
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=dict(self.CHAT))
+        with patch.object(web_main, "_get_cached_avatar_path", return_value=None):
+            async with self._client() as client:
+                resp = await client.get("/api/chats/ref00000000000000009999")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {**self.CHAT, "avatar_url": None})
+
+    async def test_unknown_and_out_of_scope_refs_are_the_same_404(self):
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
+        async with self._client() as client:
+            resp = await client.get("/api/chats/ref00000000000000000000")
+        self.assertEqual(resp.status_code, 404)
+
+        # DISPLAY_CHAT_IDS is the operator's filter: a chat outside it is invisible.
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=dict(self.CHAT))
+        web_main.config.display_chat_ids = {-1001}
+        async with self._client() as client:
+            resp = await client.get("/api/chats/ref00000000000000009999")
+        self.assertEqual(resp.status_code, 404)
