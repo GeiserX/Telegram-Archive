@@ -44,7 +44,7 @@
 - **Keyboard navigation** — Arrow keys to browse media, Esc to close
 - **Real-time updates** — WebSocket sync shows new messages instantly
 - **Push notifications** — Get notified even when browser is closed
-- **Chat search** — Find messages by text content
+- **Search** — Find chats by name and messages by text, across the whole archive or inside one chat
 - **JSON export** — Download chat history with date range filters
 
 ### 🔒 Security & Privacy
