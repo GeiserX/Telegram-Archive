@@ -244,6 +244,15 @@ def test_entity_smuggling_cannot_retarget_a_link(name: str) -> None:
     assert urlsplit(href).hostname != "evil.example", href
 
 
+def test_visible_host_reads_the_whole_hostname() -> None:
+    """The premise helper must reject a lookalike that merely starts with the host."""
+    assert _visible_host("https://good.example/x") == "good.example"
+    assert _visible_host("https://good.example.evil.example/") == "good.example.evil.example"
+    assert _visible_host("https://good.example&#x40;evil.example/") == "good.example"
+    assert _visible_host("https://good.example@evil.example/") == "good.example"
+    assert _visible_host("not a link") is None
+
+
 @pytest.mark.parametrize("name", sorted(PAYLOADS))
 def test_payloads_render_as_an_inert_anchor(name: str) -> None:
     """Nothing but the anchor itself may survive into the DOM."""
