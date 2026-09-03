@@ -938,7 +938,7 @@
                     </div>
 
                     <div class="relative mb-3">
-                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search CHAT NAMEs..."
+                        <input v-model="searchQuery" @input="onSearchInput" type="text" placeholder="Search chat names…"
                             class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent">
                         <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                             viewBox="0 0 24 24">
@@ -954,11 +954,11 @@
                                                 @input="onGlobalSearchInput"
                                                 @keydown.enter.prevent="runGlobalSearch(false)"
                                                 type="text"
-                                                placeholder="GLOBAL search MESSAGEs..."
+                                                placeholder="Search all messages…"
                                                 class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-tg-accent"
                                             />
 
-                                          <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="red"
+                                          <svg class="w-5 h-5 text-tg-n400 absolute left-3 top-2.5" fill="none" stroke="currentColor"
                                               viewBox="0 0 24 24">
                                               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                   d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -968,15 +968,15 @@
                                                 v-if="globalSearchQuery"
                                                 @click="clearGlobalSearch"
                                                 type="button"
-                                                class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                                class="absolute right-2 top-1/2 -translate-y-1/2 text-tg-muted hover:text-tg-ink"
                                             >×</button>
                                         </div>
 
                                         <div
                                             v-if="globalSearchOpen && (globalSearchLoading || globalSearchResults.length || globalSearchQuery)"
-                                            class="mt-2 border border-gray-200 rounded bg-white shadow-sm max-h-[32rem] overflow-y-auto"
+                                            class="mt-2 border border-tg-n600 rounded bg-tg-n800 shadow-sm max-h-[32rem] overflow-y-auto"
                                         >
-                                            <div v-if="globalSearchLoading" class="px-3 py-2 text-sm text-gray-500">
+                                            <div v-if="globalSearchLoading" class="px-3 py-2 text-sm text-tg-muted">
                                                 Searching…
                                             </div>
 
@@ -985,16 +985,16 @@
                                                 :key="`${row.chat_id}:${row.message_id}`"
                                                 @click="openGlobalSearchResult(row)"
                                                 type="button"
-                                                class="w-full text-left px-3 py-2 border-b border-gray-100 hover:bg-gray-50"
+                                                class="w-full text-left px-3 py-2 border-b border-tg-n600 hover:bg-tg-n700"
                                             >
-                                                <div class="text-sm font-medium text-gray-800 truncate">
+                                                <div class="text-sm font-medium text-tg-ink truncate">
                                                     {{ row.chat.title }}
                                                 </div>
                                                 <div class="text-xs text-gray-500">
                                                     {{ formatGlobalSearchDate(row.date) }}
                                                 </div>
-                                                <div class="text-sm text-gray-700 mt-1">
-                                                    {{ row.text && row.text.length > 180 ? row.text.slice(0, 180) + '…' : row.text }}
+                                                <div class="text-sm text-tg-ink mt-1">
+                                                    {{ truncateGlobalSearchText(row.text) }}
                                                 </div>
                                             </button>
 
@@ -1002,7 +1002,7 @@
                                                 v-if="globalSearchHasMore && !globalSearchLoading"
                                                 @click="loadMoreGlobalSearch"
                                                 type="button"
-                                                class="w-full px-3 py-2 text-sm text-blue-600 hover:bg-gray-50"
+                                                class="w-full px-3 py-2 text-sm text-tg-accent hover:bg-tg-n700"
                                             >
                                                 More results…
                                             </button>
@@ -1402,7 +1402,7 @@
                 <!-- Search Bar - responsive width -->
                 <div class="relative w-28 sm:w-48 md:w-64">
                     <input v-model="messageSearchQuery" @input="onMessageSearchInput" type="text"
-                        placeholder="FILTER messages..."
+                        placeholder="Filter messages…"
                         class="w-full bg-tg-n900 text-tg-ink rounded-lg pl-8 sm:pl-10 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-tg-accent">
                     <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-tg-n400 absolute left-2 sm:left-3 top-2 sm:top-2.5" fill="none"
                         stroke="currentColor" viewBox="0 0 24 24">
@@ -3022,7 +3022,9 @@ const runGlobalSearch = async (append = false) => {
 
         console.error('Global message search failed:', error)
 
-        globalSearchResults.value = []
+        if (!append) {
+            globalSearchResults.value = []
+        }
         globalSearchHasMore.value = false
 
     } finally {
@@ -3057,6 +3059,10 @@ const loadMoreGlobalSearch = () => {
     }
 }
 
+const truncateGlobalSearchText = (value) => {
+    if (!value) return ''
+    return value.length > 180 ? value.slice(0, 180) + '…' : value
+}
 const formatGlobalSearchDate = (value) => {
     if (!value) return ''
 
@@ -3076,7 +3082,7 @@ const openGlobalSearchResult = async (row) => {
 
     const chatRef = row.chat.ref
     const messageId = row.message_id
-    globalSearchOpen.value = true
+    globalSearchOpen.value = false
     await openNotificationTarget(chatRef, messageId)
 }
                 const searchResults = ref([])
@@ -8584,6 +8590,8 @@ const openGlobalSearchResult = async (row) => {
                     openGlobalSearchResult,
                     loadMoreGlobalSearch,
                     formatGlobalSearchDate,
+                    runGlobalSearch,
+                    truncateGlobalSearchText,
                     clearGlobalSearch,
                     messageSearchQuery,
                     loading,
