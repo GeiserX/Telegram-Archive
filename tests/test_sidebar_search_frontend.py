@@ -22,7 +22,7 @@ const focused = [];
 const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true });
 const MESSAGE_SEARCH_MAX_OFFSET = 5000;
 const messageSearchSentinel = ref(null);
-let messageSearchGeneration = 0;
+let searchGeneration = 0;
 let messageSearchObserver = null;
 const searchResults = ref([]);
 const searchLoading = ref(false);
@@ -60,6 +60,7 @@ const msgUrl = (q, offset = 0) => `/api/search/messages?q=${encodeURIComponent(q
 
 FUNCTIONS = (
     "onSearchInput",
+    "dispatchSearch",
     "runChatSearch",
     "runMessageSearch",
     "observeMessageSearchSentinel",
@@ -84,6 +85,7 @@ def _script(body: str) -> str:
                 "onSearchInput",
                 "observeMessageSearchSentinel",
                 "resetSearchResults",
+                "dispatchSearch",
                 "clearSearch",
                 "onSearchEscape",
                 "onSearchEnter",
@@ -352,6 +354,57 @@ def test_whitespace_is_not_a_search_and_the_sections_read_as_searching_at_once()
     assert.equal(searchLoading.value, false);
     await sleep(350);
     assert.equal(requests.length, 2, 'no request for whitespace');
+})().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
+""")
+    )
+
+
+def test_the_chat_half_ignores_stale_answers_and_a_401_clears_its_rows() -> None:
+    _run_node(
+        _script("""
+(async () => {
+    searchQuery.value = 'first';
+    onSearchInput();
+    await sleep(350);
+    searchQuery.value = 'second';
+    onSearchInput();
+    await sleep(350);
+    // The newer chat lookup answers first; the older one arrives late and must be ignored.
+    answer(chatUrl('second'), { chats: [{ ref: 'two', title: 'Two' }] });
+    await settle();
+    answer(chatUrl('first'), { chats: [{ ref: 'one', title: 'One' }] });
+    await settle();
+    assert.deepEqual(searchResults.value.map(c => c.ref), ['two'], 'the stale chat answer was discarded');
+    answer(msgUrl('first'), { results: [], has_more: false });
+    answer(msgUrl('second'), { results: [], has_more: false });
+    await settle();
+    assert.equal(searchLoading.value, false);
+
+    // Clearing invalidates an in-flight chat lookup too.
+    searchQuery.value = 'third';
+    onSearchInput();
+    await sleep(350);
+    clearSearch();
+    answer(chatUrl('third'), { chats: [{ ref: 'three', title: 'Three' }] });
+    await settle();
+    assert.deepEqual(searchResults.value, []);
+
+    // An expired session clears the rows on show and returns to the login.
+    searchQuery.value = 'fourth';
+    onSearchInput();
+    await sleep(350);
+    answer(chatUrl('fourth'), { chats: [{ ref: 'four', title: 'Four' }] });
+    answer(msgUrl('fourth'), { results: [], has_more: false });
+    await settle();
+    assert.deepEqual(searchResults.value.map(c => c.ref), ['four']);
+    searchQuery.value = 'fourthagain';
+    onSearchInput();
+    await sleep(350);
+    fail(chatUrl('fourthagain'), 401);
+    answer(msgUrl('fourthagain'), { results: [], has_more: false });
+    await settle();
+    assert.deepEqual(searchResults.value, []);
+    assert.equal(isAuthenticated.value, false);
 })().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
 """)
     )

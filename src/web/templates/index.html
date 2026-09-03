@@ -2835,7 +2835,7 @@
                 // The API caps offset at 5000: past it the search must be refined, not paged.
                 const MESSAGE_SEARCH_MAX_OFFSET = 5000
                 const messageSearchSentinel = ref(null)
-                let messageSearchGeneration = 0
+                let searchGeneration = 0  // one counter for both halves: chats and messages
                 let messageSearchObserver = null
                 const messageSearchQuery = ref('')
                 const loading = ref(false)
@@ -3432,18 +3432,27 @@
                     messageSearch.value.error = ''
                     searchDebounceTimer = setTimeout(() => {
                         searchDebounceTimer = null
-                        runChatSearch(query)
-                        runMessageSearch(false)
+                        dispatchSearch(query)
                     }, 300) // 300ms debounce
                 }
 
-                const runChatSearch = async (query) => {
+                // One generation per dispatch, shared by both requests, so a slow answer
+                // for an older query can overwrite neither section.
+                const dispatchSearch = (query) => {
+                    const generation = ++searchGeneration
+                    runChatSearch(query, generation)
+                    runMessageSearch(false, generation)
+                }
+
+                const runChatSearch = async (query, generation) => {
                     try {
                         // Search ALL chats server-side (no pagination limit)
                         const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
                             credentials: 'include'
                         })
+                        if (generation !== searchGeneration) return
                         if (res.status === 401) {
+                            searchResults.value = []
                             isAuthenticated.value = false
                             return
                         }
@@ -3451,17 +3460,18 @@
                         // show as if they matched this one.
                         searchResults.value = res.ok ? (await res.json()).chats : []
                     } catch (e) {
+                        if (generation !== searchGeneration) return
                         console.error('Search failed:', e)
                         searchResults.value = []
                     } finally {
-                        searchLoading.value = false
+                        if (generation === searchGeneration) searchLoading.value = false
                     }
                 }
 
                 // Message hits across every entitled chat. A generation counter makes a
                 // slow answer for an older query harmless, and the visible rows stay put
                 // until the new set arrives instead of blinking empty on every keystroke.
-                const runMessageSearch = async (append = false) => {
+                const runMessageSearch = async (append = false, dispatched = null) => {
                     const query = searchQuery.value.trim()
                     const state = messageSearch.value
                     if (!query) return
@@ -3472,29 +3482,30 @@
                         state.truncated = true
                         return
                     }
-                    const generation = ++messageSearchGeneration
+                    // A dispatch hands its generation in; a scroll-driven append mints its own.
+                    const generation = dispatched ?? ++searchGeneration
                     state.loading = true
                     state.error = ''
                     try {
                         const params = new URLSearchParams({ q: query, limit: '20', offset: String(offset) })
                         const res = await fetch(`/api/search/messages?${params}`, { credentials: 'include' })
-                        if (generation !== messageSearchGeneration) return
+                        if (generation !== searchGeneration) return
                         if (res.status === 401) {
                             isAuthenticated.value = false
                             return
                         }
                         if (!res.ok) throw new Error(`HTTP ${res.status}`)
                         const data = await res.json()
-                        if (generation !== messageSearchGeneration) return
+                        if (generation !== searchGeneration) return
                         const rows = Array.isArray(data.results) ? data.results : []
                         state.results = append ? state.results.concat(rows) : rows
                         state.hasMore = Boolean(data.has_more)
                         state.indexed = data.indexed !== false
                         if (!append) state.truncated = false
                         await nextTick()
-                        if (generation === messageSearchGeneration) observeMessageSearchSentinel()
+                        if (generation === searchGeneration) observeMessageSearchSentinel()
                     } catch (e) {
-                        if (generation !== messageSearchGeneration) return
+                        if (generation !== searchGeneration) return
                         // The status only: the query text never reaches the console.
                         console.error('Message search failed:', e?.message || e)
                         state.error = 'Search failed. Try again.'
@@ -3503,7 +3514,7 @@
                             state.hasMore = false
                         }
                     } finally {
-                        if (generation === messageSearchGeneration) state.loading = false
+                        if (generation === searchGeneration) state.loading = false
                     }
                 }
 
@@ -3526,7 +3537,7 @@
                         clearTimeout(searchDebounceTimer)
                         searchDebounceTimer = null
                     }
-                    messageSearchGeneration++
+                    searchGeneration++
                     searchResults.value = []
                     searchLoading.value = false
                     searchActiveIndex.value = -1
@@ -3560,9 +3571,7 @@
                     clearTimeout(searchDebounceTimer)
                     searchDebounceTimer = null
                     const query = searchQuery.value.trim()
-                    if (!query) return
-                    runChatSearch(query)
-                    runMessageSearch(false)
+                    if (query) dispatchSearch(query)
                 }
 
                 // Up/Down walk one list: the chat hits first, then the message hits.
