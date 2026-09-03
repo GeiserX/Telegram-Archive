@@ -1740,7 +1740,14 @@ async def search_messages(
                 },
             }
         )
-    return {"query": q, "limit": limit, "offset": offset, "has_more": payload["has_more"], "results": results}
+    return {
+        "query": q,
+        "limit": limit,
+        "offset": offset,
+        "has_more": payload["has_more"],
+        "indexed": payload["indexed"],
+        "results": results,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

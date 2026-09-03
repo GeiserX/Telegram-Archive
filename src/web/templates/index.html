@@ -1237,6 +1237,7 @@
                                 <span v-if="messageSearch.results.length">{{ messageSearch.results.length }}{{ messageSearch.hasMore ? '+' : '' }}</span>
                             </div>
                             <div v-if="messageSearch.error" role="presentation" class="px-3 pb-2 text-sm text-red-400">{{ messageSearch.error }}</div>
+                            <div v-else-if="!messageSearch.indexed" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">Message search needs the full-text index, which the backup builds when it starts on 8.5 or later.</div>
                             <div v-else-if="!messageSearch.loading && !messageSearch.results.length" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">No messages found</div>
                             <div v-for="(row, index) in messageSearch.results" :key="row.chat.ref + ':' + row.id"
                                 :id="`search-option-${filteredChats.length + index}`" role="option"
@@ -2830,7 +2831,7 @@
                 const searchActive = computed(() => searchQuery.value.trim().length > 0)
                 const searchActiveIndex = ref(-1)
                 const searchInput = ref(null)
-                const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false })
+                const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true })
                 // The API caps offset at 5000: past it the search must be refined, not paged.
                 const MESSAGE_SEARCH_MAX_OFFSET = 5000
                 const messageSearchSentinel = ref(null)
@@ -3461,7 +3462,7 @@
                     if (!query) return
                     if (append && (state.loading || !state.hasMore)) return
                     const offset = append ? state.results.length : 0
-                    if (offset > MESSAGE_SEARCH_MAX_OFFSET) {
+                    if (offset >= MESSAGE_SEARCH_MAX_OFFSET) {
                         state.hasMore = false
                         state.truncated = true
                         return
@@ -3483,6 +3484,7 @@
                         const rows = Array.isArray(data.results) ? data.results : []
                         state.results = append ? state.results.concat(rows) : rows
                         state.hasMore = Boolean(data.has_more)
+                        state.indexed = data.indexed !== false
                         if (!append) state.truncated = false
                         await nextTick()
                         if (generation === messageSearchGeneration) observeMessageSearchSentinel()
@@ -3524,7 +3526,7 @@
                     searchResults.value = []
                     searchLoading.value = false
                     searchActiveIndex.value = -1
-                    messageSearch.value = { results: [], loading: false, hasMore: false, error: '', truncated: false }
+                    messageSearch.value = { results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true }
                     if (messageSearchObserver) {
                         messageSearchObserver.disconnect()
                         messageSearchObserver = null

@@ -19,7 +19,7 @@ const searchActive = computed(() => searchQuery.value.trim().length > 0);
 const searchActiveIndex = ref(-1);
 const searchInput = ref({ focus() { focused.push('focus'); }, blur() { focused.push('blur'); } });
 const focused = [];
-const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false });
+const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false, indexed: true });
 const MESSAGE_SEARCH_MAX_OFFSET = 5000;
 const messageSearchSentinel = ref(null);
 let messageSearchGeneration = 0;
@@ -269,33 +269,35 @@ assert.equal(searchSnippetHtml('a <b> plus'), 'a &lt;b&gt; plus');
 
 
 def test_paging_stops_at_the_api_offset_ceiling_and_says_so() -> None:
-    """The API caps offset at 5000; the client must stop asking, not fail on a 422."""
+    """The API caps offset at 5000; the client stops asking at 5,000 rows instead of failing on a 422."""
     _run_node(
         _script("""
 (async () => {
+    const page = (q, offset) => Array.from({ length: 20 }, (_, i) => ({ id: offset + i + 1, chat: { ref: 'c' }, text: q }));
     searchQuery.value = 'common';
     onSearchInput();
     await sleep(350);
     answer(chatUrl('common'), { chats: [] });
-    // Pretend the archive already handed back 5,000 rows for this query.
-    const rows = Array.from({ length: 5000 }, (_, i) => ({ id: i + 1, chat: { ref: 'c' }, text: 'common' }));
-    answer(msgUrl('common'), { results: rows, has_more: true });
+    answer(msgUrl('common'), { results: page('common', 0), has_more: true });
     await settle();
+    // Page like the API does: twenty rows a time, up to the ceiling.
+    for (let offset = 20; offset < 5000; offset += 20) {
+        runMessageSearch(true);
+        await settle();
+        assert.equal(requests[requests.length - 1], msgUrl('common', offset));
+        answer(msgUrl('common', offset), { results: page('common', offset), has_more: true });
+        await settle();
+    }
     assert.equal(messageSearch.value.results.length, 5000);
     assert.equal(messageSearch.value.hasMore, true);
     assert.equal(messageSearch.value.truncated, false);
 
-    runMessageSearch(true);
-    await settle();
-    // offset 5000 is still inside the ceiling: one more page is requested...
-    assert.deepEqual(requests.slice(-1), [msgUrl('common', 5000)]);
-    answer(msgUrl('common', 5000), { results: [{ id: 5001, chat: { ref: 'c' }, text: 'common' }], has_more: true });
-    await settle();
-    // ...and the next append stops without a request, flagged as truncated.
+    // At 5,000 rows the next append stops without a request, flagged as truncated.
     const before = requests.length;
     runMessageSearch(true);
     await settle();
-    assert.equal(requests.length, before, 'no request past the ceiling');
+    assert.equal(requests.length, before, 'no request at the ceiling');
+    assert.equal(messageSearch.value.results.length, 5000);
     assert.equal(messageSearch.value.hasMore, false);
     assert.equal(messageSearch.value.truncated, true);
     assert.equal(messageSearch.value.error, '');
@@ -308,6 +310,16 @@ def test_paging_stops_at_the_api_offset_ceiling_and_says_so() -> None:
     answer(msgUrl('rare'), { results: [{ id: 1, chat: { ref: 'c' }, text: 'rare' }], has_more: false });
     await settle();
     assert.equal(messageSearch.value.truncated, false);
+    assert.equal(messageSearch.value.indexed, true);
+
+    // An archive without the full-text layer is reported, not shown as "no results".
+    searchQuery.value = 'more';
+    onSearchInput();
+    await sleep(350);
+    answer(chatUrl('more'), { chats: [] });
+    answer(msgUrl('more'), { results: [], has_more: false, indexed: false });
+    await settle();
+    assert.equal(messageSearch.value.indexed, false);
 })().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
 """)
     )

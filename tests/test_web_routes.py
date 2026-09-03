@@ -2220,7 +2220,9 @@ class TestGlobalSearchEndpoint(_WebTestBase):
 
     def setUp(self):
         super().setUp()
-        self.mock_db.search_messages_global = AsyncMock(return_value={"results": [], "has_more": False})
+        self.mock_db.search_messages_global = AsyncMock(
+            return_value={"results": [], "has_more": False, "indexed": True}
+        )
 
     async def test_validates_query_and_paging_bounds(self):
         async with self._client() as client:
@@ -2238,7 +2240,10 @@ class TestGlobalSearchEndpoint(_WebTestBase):
         async with self._client() as client:
             resp = await client.get("/api/search/messages?q=hello&limit=25&offset=50")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"query": "hello", "limit": 25, "offset": 50, "has_more": False, "results": []})
+        self.assertEqual(
+            resp.json(),
+            {"query": "hello", "limit": 25, "offset": 50, "has_more": False, "indexed": True, "results": []},
+        )
         args, kwargs = self.mock_db.search_messages_global.await_args
         self.assertEqual(args, ("hello",))
         self.assertEqual((kwargs["limit"], kwargs["offset"]), (25, 50))
@@ -2246,7 +2251,9 @@ class TestGlobalSearchEndpoint(_WebTestBase):
         self.assertIsInstance(kwargs["scope"], web_main.ChatScope)
 
     async def test_rows_are_reshaped_for_the_chat_list_naming_and_carry_an_avatar_url(self):
-        self.mock_db.search_messages_global = AsyncMock(return_value={"results": [dict(self.ROW)], "has_more": True})
+        self.mock_db.search_messages_global = AsyncMock(
+            return_value={"results": [dict(self.ROW)], "has_more": True, "indexed": True}
+        )
         with patch.object(web_main, "_get_cached_avatar_path", return_value="/cache/avatar.jpg") as cached:
             async with self._client() as client:
                 resp = await client.get("/api/search/messages?q=hello")

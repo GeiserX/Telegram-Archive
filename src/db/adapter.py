@@ -3561,10 +3561,12 @@ class DatabaseAdapter:
         Entitlements arrive as ``scope`` and apply in SQL exactly like the chat
         list and the tag view, so a restricted viewer's search only ever
         touches entitled chats. Matching is word-prefix through the same
-        predicate as the per-chat search (``_text_search_predicate``), with
-        the same ILIKE fallback when the database has no full-text layer. A
-        search carrying no word at all (punctuation, emoji) answers empty
-        rather than scanning the archive.
+        predicate as the per-chat search (``_text_search_predicate``). Unlike
+        the per-chat search there is no ILIKE fallback: without the full-text
+        layer a cross-chat substring scan reads the whole archive per
+        keystroke, so the answer is empty with ``indexed`` False and the
+        viewer says the index is missing. A search carrying no word at all
+        (punctuation, emoji) answers empty too.
 
         Rows carry ``chat_ref``/``chat_title``/``chat_first_name``/
         ``chat_last_name``/``chat_username``/``chat_type``/``chat_is_forum``
@@ -3575,11 +3577,11 @@ class DatabaseAdapter:
         ``dense_hits`` and ``walk_timeout_ms`` exist for tests that want to
         drive each PostgreSQL path with a handful of rows.
 
-        Returns ``{"results": [...], "has_more": bool}``; one extra row is
-        fetched to answer ``has_more``.
+        Returns ``{"results": [...], "has_more": bool, "indexed": bool}``; one
+        extra row is fetched to answer ``has_more``.
         """
         if not search_has_words(search):
-            return {"results": [], "has_more": False}
+            return {"results": [], "has_more": False, "indexed": True}
         if dense_hits is None:
             dense_hits = self.GLOBAL_SEARCH_DENSE_HITS
         if walk_timeout_ms is None:
@@ -3587,15 +3589,10 @@ class DatabaseAdapter:
 
         async with self.db_manager.async_session_factory() as session:
             predicate = await self._text_search_predicate(session, search)
-            indexed = predicate is not None
             if predicate is None:
-                escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-                predicate = Message.text.ilike(f"%{escaped}%", escape="\\")
+                return {"results": [], "has_more": False, "indexed": False}
 
-            if not indexed:
-                # No full-text layer: the ILIKE scan is the cost whatever the shape.
-                rows = await self._global_search_walk(session, predicate, scope, limit, offset)
-            elif (
+            if (
                 self._is_sqlite
                 or await self._global_search_hit_count(session, predicate, scope, dense_hits) < dense_hits
             ):
@@ -3631,7 +3628,7 @@ class DatabaseAdapter:
             }
             for row in rows[:limit]
         ]
-        return {"results": results, "has_more": len(rows) > limit}
+        return {"results": results, "has_more": len(rows) > limit, "indexed": True}
 
     @staticmethod
     def _global_search_scoped(stmt, scope: ChatScope):

@@ -99,7 +99,11 @@ class TestOrderingAndPaging:
         assert [row["id"] for row in last["results"]] == [1]
         assert last["has_more"] is False
 
-        assert (await _search(real_adapter, "budget", limit=3, offset=40)) == {"results": [], "has_more": False}
+        assert (await _search(real_adapter, "budget", limit=3, offset=40)) == {
+            "results": [],
+            "has_more": False,
+            "indexed": True,
+        }
 
     async def test_matches_the_per_chat_search_for_the_same_words(self, real_adapter):
         """The sidebar and the in-chat box must agree: same predicate, same prefix semantics."""
@@ -116,9 +120,27 @@ class TestOrderingAndPaging:
         await _seed_chat(real_adapter, 920005)
         await _seed_message(real_adapter, 920005, 1, "+++ signal +++")
 
-        assert (await _search(real_adapter, "+++")) == {"results": [], "has_more": False}
+        assert (await _search(real_adapter, "+++")) == {"results": [], "has_more": False, "indexed": True}
         # Control: the same row IS found through a word.
         assert [row["id"] for row in (await _search(real_adapter, "signal"))["results"]] == [1]
+
+
+class TestNoIndex:
+    async def test_without_the_full_text_layer_the_search_declines_instead_of_scanning(self, real_adapter, monkeypatch):
+        """The per-chat search falls back to ILIKE; across every chat that is a whole-archive scan per keystroke."""
+        await _seed_chat(real_adapter, 960001)
+        await _seed_message(real_adapter, 960001, 1, "findable text")
+
+        async def no_layer(session, search):
+            return None
+
+        monkeypatch.setattr(real_adapter, "_text_search_predicate", no_layer)
+        assert (await _search(real_adapter, "findable")) == {"results": [], "has_more": False, "indexed": False}
+        # Control: with the layer, the same row is found and the flag says so.
+        monkeypatch.undo()
+        found = await _search(real_adapter, "findable")
+        assert [row["id"] for row in found["results"]] == [1]
+        assert found["indexed"] is True
 
 
 class TestScope:
@@ -148,7 +170,11 @@ class TestScope:
         assert _keys(await _search(real_adapter, "keyword", scope=ChatScope.build(ids={930001}, accounts={2}))) == []
 
         for empty in (ChatScope.build(ids=set()), ChatScope.build(accounts=set()), ChatScope.build(refs=set())):
-            assert (await _search(real_adapter, "keyword", scope=empty)) == {"results": [], "has_more": False}
+            assert (await _search(real_adapter, "keyword", scope=empty)) == {
+                "results": [],
+                "has_more": False,
+                "indexed": True,
+            }
 
 
 class TestRowShape:
