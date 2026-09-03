@@ -1157,14 +1157,6 @@
                             <span class="text-sm">No chats yet</span>
                         </div>
                         <template v-else>
-                            <!-- Search: the list becomes two sections, Chats then Messages -->
-                            <div v-if="searchActive" id="search-results" role="listbox" aria-label="Search results" class="contents">
-                                <div class="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between">
-                                    <span>Chats</span>
-                                    <span v-if="filteredChats.length">{{ filteredChats.length }}</span>
-                                </div>
-                                <div v-if="!filteredChats.length && !searchLoading" class="px-3 pb-2 text-sm text-tg-muted">No chats found</div>
-                            </div>
                             <!-- v6.2.0: Archived Chats Row (only in "All Chats" view) -->
                             <div v-if="archivedCount > 0 && currentNav.filter === 'all' && !searchQuery"
                                 @click="showArchived()"
@@ -1183,6 +1175,15 @@
                                 </svg>
                             </div>
 
+                            <!-- While searching, the list is ONE listbox with two sections, Chats then
+                                 Messages: the input's aria-controls/aria-activedescendant point in here. -->
+                            <div :role="searchActive ? 'listbox' : null" :id="searchActive ? 'search-results' : null"
+                                :aria-label="searchActive ? 'Search results' : null">
+                            <div v-if="searchActive" role="presentation" class="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between">
+                                <span>Chats</span>
+                                <span v-if="filteredChats.length">{{ filteredChats.length }}</span>
+                            </div>
+                            <div v-if="searchActive && !filteredChats.length && !searchLoading" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">No chats found</div>
                             <!-- Chat items -->
                             <div v-for="(chat, index) in filteredChats" :key="chat.ref" @click="selectChat(chat)"
                                 :id="searchActive ? `search-option-${index}` : null" :role="searchActive ? 'option' : null"
@@ -1229,16 +1230,14 @@
                                     </p>
                                 </div>
                             </div>
-                        </template>
-
-                        <!-- Search: message hits across every entitled chat -->
-                        <template v-if="searchActive">
-                            <div class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between border-t border-tg-n700/50">
+                            <!-- Search: message hits across every entitled chat -->
+                            <template v-if="searchActive">
+                            <div role="presentation" class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-tg-muted flex justify-between border-t border-tg-n700/50">
                                 <span>Messages</span>
                                 <span v-if="messageSearch.results.length">{{ messageSearch.results.length }}{{ messageSearch.hasMore ? '+' : '' }}</span>
                             </div>
-                            <div v-if="messageSearch.error" class="px-3 pb-2 text-sm text-red-400">{{ messageSearch.error }}</div>
-                            <div v-else-if="!messageSearch.loading && !messageSearch.results.length" class="px-3 pb-2 text-sm text-tg-muted">No messages found</div>
+                            <div v-if="messageSearch.error" role="presentation" class="px-3 pb-2 text-sm text-red-400">{{ messageSearch.error }}</div>
+                            <div v-else-if="!messageSearch.loading && !messageSearch.results.length" role="presentation" class="px-3 pb-2 text-sm text-tg-muted">No messages found</div>
                             <div v-for="(row, index) in messageSearch.results" :key="row.chat.ref + ':' + row.id"
                                 :id="`search-option-${filteredChats.length + index}`" role="option"
                                 :aria-selected="String(searchActiveIndex === filteredChats.length + index)"
@@ -1263,6 +1262,9 @@
                                     </p>
                                 </div>
                             </div>
+                            </template>
+                            </div>
+                            <template v-if="searchActive">
                             <div v-if="messageSearch.hasMore || messageSearch.loading" ref="messageSearchSentinel" class="p-3 flex justify-center">
                                 <div class="flex items-center gap-2 text-tg-muted text-sm" role="status" aria-live="polite">
                                     <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -1272,6 +1274,8 @@
                                     <span>{{ messageSearch.results.length ? 'Loading more…' : 'Searching…' }}</span>
                                 </div>
                             </div>
+                            <div v-if="messageSearch.truncated" class="px-3 py-2 text-xs text-tg-muted text-center">Showing the first 5,000 matches. Refine the search for older ones.</div>
+                            </template>
                         </template>
 
                         <!-- Infinite Scroll Sentinel (loads more when visible) -->
@@ -2826,7 +2830,9 @@
                 const searchActive = computed(() => searchQuery.value.trim().length > 0)
                 const searchActiveIndex = ref(-1)
                 const searchInput = ref(null)
-                const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '' })
+                const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false })
+                // The API caps offset at 5000: past it the search must be refined, not paged.
+                const MESSAGE_SEARCH_MAX_OFFSET = 5000
                 const messageSearchSentinel = ref(null)
                 let messageSearchGeneration = 0
                 let messageSearchObserver = null
@@ -3431,12 +3437,16 @@
                         const res = await fetch(`/api/chats?search=${encodeURIComponent(query)}&limit=1000`, {
                             credentials: 'include'
                         })
-                        if (res.ok) {
-                            const data = await res.json()
-                            searchResults.value = data.chats
+                        if (res.status === 401) {
+                            isAuthenticated.value = false
+                            return
                         }
+                        // A failed lookup must not leave the previous query's chats on
+                        // show as if they matched this one.
+                        searchResults.value = res.ok ? (await res.json()).chats : []
                     } catch (e) {
                         console.error('Search failed:', e)
+                        searchResults.value = []
                     } finally {
                         searchLoading.value = false
                     }
@@ -3450,10 +3460,15 @@
                     const state = messageSearch.value
                     if (!query) return
                     if (append && (state.loading || !state.hasMore)) return
+                    const offset = append ? state.results.length : 0
+                    if (offset > MESSAGE_SEARCH_MAX_OFFSET) {
+                        state.hasMore = false
+                        state.truncated = true
+                        return
+                    }
                     const generation = ++messageSearchGeneration
                     state.loading = true
                     state.error = ''
-                    const offset = append ? state.results.length : 0
                     try {
                         const params = new URLSearchParams({ q: query, limit: '20', offset: String(offset) })
                         const res = await fetch(`/api/search/messages?${params}`, { credentials: 'include' })
@@ -3468,6 +3483,7 @@
                         const rows = Array.isArray(data.results) ? data.results : []
                         state.results = append ? state.results.concat(rows) : rows
                         state.hasMore = Boolean(data.has_more)
+                        if (!append) state.truncated = false
                         await nextTick()
                         if (generation === messageSearchGeneration) observeMessageSearchSentinel()
                     } catch (e) {
@@ -3508,7 +3524,7 @@
                     searchResults.value = []
                     searchLoading.value = false
                     searchActiveIndex.value = -1
-                    messageSearch.value = { results: [], loading: false, hasMore: false, error: '' }
+                    messageSearch.value = { results: [], loading: false, hasMore: false, error: '', truncated: false }
                     if (messageSearchObserver) {
                         messageSearchObserver.disconnect()
                         messageSearchObserver = null

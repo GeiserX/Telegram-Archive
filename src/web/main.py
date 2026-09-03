@@ -2282,7 +2282,8 @@ def _chat_avatar_url(chat_id: int | None, chat_type: str | None, ref: str | None
     try:
         return f"/media/avatar/{ref}" if _get_cached_avatar_path(chat_id, chat_type or "private") else None
     except Exception as e:
-        logger.error(f"Error finding avatar for a chat: {e}")
+        # Type name only: an OSError's text carries the chat-derived path.
+        logger.error(f"Error finding avatar for a chat: {type(e).__name__}")
         return None
 
 

@@ -19,7 +19,8 @@ const searchActive = computed(() => searchQuery.value.trim().length > 0);
 const searchActiveIndex = ref(-1);
 const searchInput = ref({ focus() { focused.push('focus'); }, blur() { focused.push('blur'); } });
 const focused = [];
-const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '' });
+const messageSearch = ref({ results: [], loading: false, hasMore: false, error: '', truncated: false });
+const MESSAGE_SEARCH_MAX_OFFSET = 5000;
 const messageSearchSentinel = ref(null);
 let messageSearchGeneration = 0;
 let messageSearchObserver = null;
@@ -265,3 +266,48 @@ assert.equal(searchSnippetHtml('a <b> plus'), 'a &lt;b&gt; plus');
         ]
     )
     _run_node(script)
+
+
+def test_paging_stops_at_the_api_offset_ceiling_and_says_so() -> None:
+    """The API caps offset at 5000; the client must stop asking, not fail on a 422."""
+    _run_node(
+        _script("""
+(async () => {
+    searchQuery.value = 'common';
+    onSearchInput();
+    await sleep(350);
+    answer(chatUrl('common'), { chats: [] });
+    // Pretend the archive already handed back 5,000 rows for this query.
+    const rows = Array.from({ length: 5000 }, (_, i) => ({ id: i + 1, chat: { ref: 'c' }, text: 'common' }));
+    answer(msgUrl('common'), { results: rows, has_more: true });
+    await settle();
+    assert.equal(messageSearch.value.results.length, 5000);
+    assert.equal(messageSearch.value.hasMore, true);
+    assert.equal(messageSearch.value.truncated, false);
+
+    runMessageSearch(true);
+    await settle();
+    // offset 5000 is still inside the ceiling: one more page is requested...
+    assert.deepEqual(requests.slice(-1), [msgUrl('common', 5000)]);
+    answer(msgUrl('common', 5000), { results: [{ id: 5001, chat: { ref: 'c' }, text: 'common' }], has_more: true });
+    await settle();
+    // ...and the next append stops without a request, flagged as truncated.
+    const before = requests.length;
+    runMessageSearch(true);
+    await settle();
+    assert.equal(requests.length, before, 'no request past the ceiling');
+    assert.equal(messageSearch.value.hasMore, false);
+    assert.equal(messageSearch.value.truncated, true);
+    assert.equal(messageSearch.value.error, '');
+
+    // A fresh query clears the flag.
+    searchQuery.value = 'rare';
+    onSearchInput();
+    await sleep(350);
+    answer(chatUrl('rare'), { chats: [] });
+    answer(msgUrl('rare'), { results: [{ id: 1, chat: { ref: 'c' }, text: 'rare' }], has_more: false });
+    await settle();
+    assert.equal(messageSearch.value.truncated, false);
+})().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
+""")
+    )

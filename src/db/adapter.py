@@ -3520,8 +3520,10 @@ class DatabaseAdapter:
     # rows. The walk keeps a statement timeout for the one shape neither path
     # bounds — a dense term whose newest hit is millions of rows back — and
     # the sorted hit set answers when it fires. SQLite's FTS5 always drives
-    # from the hit set (measured: cost tracks hits on every shape), so it
-    # takes one path unconditionally.
+    # from the hit set, and sorting the keys before the joins is what keeps a
+    # common word cheap there (measured on a 155k-row archive: 87 ms against
+    # 667 ms for the joined walk), so SQLite takes that one path
+    # unconditionally.
     GLOBAL_SEARCH_DENSE_HITS = 10_000
     GLOBAL_SEARCH_WALK_TIMEOUT_MS = 2_000
 
@@ -3590,9 +3592,13 @@ class DatabaseAdapter:
                 escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
                 predicate = Message.text.ilike(f"%{escaped}%", escape="\\")
 
-            if self._is_sqlite or not indexed:
+            if not indexed:
+                # No full-text layer: the ILIKE scan is the cost whatever the shape.
                 rows = await self._global_search_walk(session, predicate, scope, limit, offset)
-            elif await self._global_search_hit_count(session, predicate, scope, dense_hits) < dense_hits:
+            elif (
+                self._is_sqlite
+                or await self._global_search_hit_count(session, predicate, scope, dense_hits) < dense_hits
+            ):
                 rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset)
             else:
                 try:
