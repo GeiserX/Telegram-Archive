@@ -2827,6 +2827,109 @@
                 const selectedChat = ref(null)
                 const selectedPaneTopic = ref(null)
                 const searchQuery = ref('')
+
+                const searchHighlightMessageId = ref(null)
+                const searchHighlightChatRef = ref('')
+                const searchHighlightQuery = ref('')
+
+                const clearSearchHighlight = () => {
+                    searchHighlightMessageId.value = null
+                    searchHighlightChatRef.value = ''
+                    searchHighlightQuery.value = ''
+                }
+
+                const escapeSearchRegExp = (text) =>
+                    text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+                const applySearchHighlight = (messageId, query) => {
+                    const normalizedQuery = (query || '').trim()
+                    if (!messageId || !normalizedQuery) return
+
+                    const container = messagesContainer.value
+                    if (!container) return
+
+                    const row = container.querySelector(
+                        `[data-msg-id="${CSS.escape(String(messageId))}"]`
+                    )
+                    if (!row) return
+
+                    const messageText = row.querySelector('.message-text')
+                    if (!messageText) return
+
+                    // Remove a previous highlight without rebuilding the message HTML.
+                    messageText.querySelectorAll('mark[data-search-highlight="true"]')
+                        .forEach(mark => {
+                            mark.replaceWith(document.createTextNode(mark.textContent || ''))
+                        })
+
+                    const pattern = new RegExp(
+                        escapeSearchRegExp(normalizedQuery),
+                        'giu'
+                    )
+
+                    const walker = document.createTreeWalker(
+                        messageText,
+                        NodeFilter.SHOW_TEXT
+                    )
+
+                    const nodes = []
+                    let node
+
+                    while ((node = walker.nextNode())) {
+                        if (node.parentElement?.closest('script, style, mark')) continue
+                        if (pattern.test(node.nodeValue || '')) {
+                            nodes.push(node)
+                        }
+                        pattern.lastIndex = 0
+                    }
+
+                    for (const textNode of nodes) {
+                        const text = textNode.nodeValue || ''
+                        pattern.lastIndex = 0
+
+                        let lastIndex = 0
+                        let match
+                        const fragment = document.createDocumentFragment()
+
+                        while ((match = pattern.exec(text)) !== null) {
+                            if (match.index > lastIndex) {
+                                fragment.appendChild(
+                                    document.createTextNode(
+                                        text.slice(lastIndex, match.index)
+                                    )
+                                )
+                            }
+
+                            const mark = document.createElement('mark')
+                            mark.className =
+                                'bg-tg-accent/30 text-tg-ink rounded-sm px-0.5'
+                            mark.dataset.searchHighlight = 'true'
+                            mark.textContent = match[0]
+
+                            fragment.appendChild(mark)
+
+                            lastIndex = match.index + match[0].length
+                        }
+
+                        if (lastIndex < text.length) {
+                            fragment.appendChild(
+                                document.createTextNode(text.slice(lastIndex))
+                            )
+                        }
+
+                        textNode.parentNode?.replaceChild(fragment, textNode)
+                    }
+
+                    const firstMatch = messageText.querySelector(
+                        'mark[data-search-highlight="true"]'
+                    )
+
+                    firstMatch?.scrollIntoView({
+                        block: 'center',
+                        behavior: 'smooth'
+                    })
+                }
+
                 // Sidebar search: one field, two result sections (chats, then messages).
                 const searchActive = computed(() => searchQuery.value.trim().length > 0)
                 const searchActiveIndex = ref(-1)
@@ -3600,7 +3703,25 @@
                 // hit is one click away — the official clients keep them too.
                 const openMessageSearchResult = async (row) => {
                     if (!row?.chat?.ref || row.id == null) return
-                    await openNotificationTarget(row.chat.ref, row.id)
+
+                    const query = searchQuery.value.trim()
+                    if (!query) return
+
+                    clearSearchHighlight()
+
+                    const opened = await openNotificationTarget(row.chat.ref, row.id)
+
+                    // Search may have changed while the asynchronous navigation was running.
+                    if (!opened || searchQuery.value.trim() !== query) return
+
+                    searchHighlightMessageId.value = row.id
+                    searchHighlightChatRef.value = row.chat.ref
+                    searchHighlightQuery.value = query
+
+                    await nextTick()
+
+                    // The message itself is already rendered here.
+                    applySearchHighlight(row.id, query)
                 }
 
                 // Same word rule as the search itself: letters, digits and underscore.
@@ -4998,6 +5119,7 @@
 
                 // Subscribe to WebSocket updates when chat changes
                 watch(selectedChat, (newChat, oldChat) => {
+                    clearSearchHighlight()
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         // Unsubscribe from old chat
                         if (oldChat) {
