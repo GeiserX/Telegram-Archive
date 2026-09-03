@@ -3412,7 +3412,8 @@
                     const query = searchQuery.value.trim()
 
                     if (!query) {
-                        clearSearch()
+                        // Whitespace is not a search, and not a reason to erase what was typed.
+                        resetSearchResults()
                         return
                     }
 
@@ -3425,6 +3426,10 @@
                     }
 
                     searchLoading.value = true
+                    // Both sections read as searching from the first keystroke, so the
+                    // debounce never shows a "No messages found" that nothing has answered.
+                    messageSearch.value.loading = true
+                    messageSearch.value.error = ''
                     searchDebounceTimer = setTimeout(() => {
                         searchDebounceTimer = null
                         runChatSearch(query)
@@ -3516,13 +3521,12 @@
                     messageSearchObserver.observe(sentinel)
                 }
 
-                const clearSearch = (options = {}) => {
+                const resetSearchResults = () => {
                     if (searchDebounceTimer) {
                         clearTimeout(searchDebounceTimer)
                         searchDebounceTimer = null
                     }
                     messageSearchGeneration++
-                    searchQuery.value = ''
                     searchResults.value = []
                     searchLoading.value = false
                     searchActiveIndex.value = -1
@@ -3531,6 +3535,11 @@
                         messageSearchObserver.disconnect()
                         messageSearchObserver = null
                     }
+                }
+
+                const clearSearch = (options = {}) => {
+                    resetSearchResults()
+                    searchQuery.value = ''
                     if (options.keepFocus !== false) searchInput.value?.focus()
                 }
 
@@ -6073,11 +6082,16 @@
                         const myVersion = ++chatVersion  // invalidate in-flight pinned-window loads
                         loading.value = false
                         messages.value = []
-                        resetMessagePagination()  // clears viewingPinnedWindow → poll resumes
+                        resetMessagePagination()  // clears viewingPinnedWindow
                         await loadMessages()
                         if (chatVersion !== myVersion) return
                         await nextTick()
                         if (chatVersion !== myVersion) return
+                        // The view is live again: re-arm what the tail-inclusive entry arms.
+                        // A jump-only entry (selectChat with skipInitialLoad) never started
+                        // the poll, so clearing the pinned flag alone would resume nothing.
+                        setupMessagesScrollObserver()
+                        startMessageRefresh()
                     }
                     scrollToBottom(true)
                 }

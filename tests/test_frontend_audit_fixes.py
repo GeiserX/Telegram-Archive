@@ -383,6 +383,63 @@ const fetch = async () => ({ ok: true, json: async () => [] });
 
 
 # --------------------------------------------------------------------------------------
+# Scroll-to-latest from a detached jump window must re-arm the poll it never had
+# --------------------------------------------------------------------------------------
+
+
+def test_scroll_to_latest_restarts_the_poll_after_a_jump_only_entry() -> None:
+    """A jump-only entry (selectChat with skipInitialLoad) never starts the 3-second poll.
+
+    Before the skip existed the timer was always running and merely idled while a
+    detached window was pinned, so clearing the flag was enough to resume it. Now the
+    button that returns the user to the live tail has to start it, and re-arm the
+    older-messages observer, exactly as the ordinary chat entry does.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+const showScrollToBottom = ref(true);
+const unseenMessageCount = ref(3);
+const viewingPinnedWindow = ref(true);
+const loading = ref(false);
+const messages = ref([{ id: 1 }]);
+let chatVersion = 7;
+const calls = [];
+const resetMessagePagination = () => { calls.push('reset'); viewingPinnedWindow.value = false; };
+const loadMessages = async () => { calls.push('load'); messages.value = [{ id: 2 }]; };
+const nextTick = async () => {};
+const setupMessagesScrollObserver = () => { calls.push('observer'); };
+const startMessageRefresh = () => { calls.push('poll'); };
+const scrollToBottom = () => { calls.push('scroll'); };
+""",
+            _extract_const_arrow_function(html, "scrollToLatest", asynchronous=True),
+            """
+(async () => {
+    await scrollToLatest();
+    assert.deepEqual(calls, ['reset', 'load', 'observer', 'poll', 'scroll']);
+    assert.equal(viewingPinnedWindow.value, false);
+
+    // Not pinned: nothing to reload, nothing to re-arm — just scroll.
+    calls.length = 0;
+    await scrollToLatest();
+    assert.deepEqual(calls, ['scroll']);
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
+
+
+# --------------------------------------------------------------------------------------
 # S16 — the push deep link silently did nothing outside the first 50 non-archived chats
 # --------------------------------------------------------------------------------------
 

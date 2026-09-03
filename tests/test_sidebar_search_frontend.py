@@ -63,6 +63,7 @@ FUNCTIONS = (
     "runChatSearch",
     "runMessageSearch",
     "observeMessageSearchSentinel",
+    "resetSearchResults",
     "clearSearch",
     "onSearchEscape",
     "onSearchEnter",
@@ -82,6 +83,7 @@ def _script(body: str) -> str:
             not in (
                 "onSearchInput",
                 "observeMessageSearchSentinel",
+                "resetSearchResults",
                 "clearSearch",
                 "onSearchEscape",
                 "onSearchEnter",
@@ -320,6 +322,36 @@ def test_paging_stops_at_the_api_offset_ceiling_and_says_so() -> None:
     answer(msgUrl('more'), { results: [], has_more: false, indexed: false });
     await settle();
     assert.equal(messageSearch.value.indexed, false);
+})().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
+""")
+    )
+
+
+def test_whitespace_is_not_a_search_and_the_sections_read_as_searching_at_once() -> None:
+    _run_node(
+        _script("""
+(async () => {
+    // A keystroke marks BOTH sections as searching before the debounce fires,
+    // so "No messages found" cannot flash for a query nothing has answered.
+    searchQuery.value = 'x';
+    onSearchInput();
+    assert.equal(searchLoading.value, true);
+    assert.equal(messageSearch.value.loading, true);
+    await sleep(350);
+    answer(chatUrl('x'), { chats: [] });
+    answer(msgUrl('x'), { results: [{ id: 1, chat: { ref: 'c' }, text: 'x' }], has_more: false });
+    await settle();
+    assert.equal(messageSearch.value.results.length, 1);
+
+    // Whitespace only: results reset, but what was typed stays in the field.
+    searchQuery.value = '   ';
+    onSearchInput();
+    assert.equal(searchQuery.value, '   ');
+    assert.deepEqual(messageSearch.value.results, []);
+    assert.equal(messageSearch.value.loading, false);
+    assert.equal(searchLoading.value, false);
+    await sleep(350);
+    assert.equal(requests.length, 2, 'no request for whitespace');
 })().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
 """)
     )
