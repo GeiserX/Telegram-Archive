@@ -38,6 +38,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import DBAPIError
 
 from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
@@ -339,6 +340,12 @@ def retry_on_locked(
         return wrapper
 
     return decorator
+
+
+def _is_statement_timeout(exc: BaseException) -> bool:
+    """PostgreSQL's statement_timeout firing (SQLSTATE 57014), as SQLAlchemy wraps it."""
+    orig = getattr(exc, "orig", None)
+    return getattr(orig, "sqlstate", None) == "57014" or type(orig).__name__ == "QueryCanceledError"
 
 
 class DatabaseAdapter:
@@ -3496,6 +3503,209 @@ class DatabaseAdapter:
             "has_more": len(matched) > offset + limit,
             "truncated": truncated,
         }
+
+    # --- Global (cross-chat) text search: the sidebar's Messages section ------
+    #
+    # PostgreSQL has two ways to answer "the newest N messages matching q", and
+    # its planner cannot tell which one is right: the tsquery is built inside
+    # the database (PG_TSQUERY_FROM_SEARCH) and prefix terms get a flat row
+    # estimate either way, so it always walks idx_messages_date backwards and
+    # filters. That is 1 ms for a dense term and a full-table walk for a rare
+    # or absent one — 2 to 9 s on a 2.9M-row archive. The GIN index is the
+    # opposite: its cost is the number of hits, so a rare term is milliseconds
+    # and a single letter is over a second. So the search first asks the index
+    # how many hits there are, capped, and takes the path that is bounded for
+    # that answer: under GLOBAL_SEARCH_DENSE_HITS the hit set is materialised
+    # and sorted; at or above it the walk fills a page within a few thousand
+    # rows. The walk keeps a statement timeout for the one shape neither path
+    # bounds — a dense term whose newest hit is millions of rows back — and
+    # the sorted hit set answers when it fires. SQLite's FTS5 always drives
+    # from the hit set, and sorting the keys before the joins is what keeps a
+    # common word cheap there (measured on a 155k-row archive: 87 ms against
+    # 667 ms for the joined walk), so SQLite takes that one path
+    # unconditionally.
+    GLOBAL_SEARCH_DENSE_HITS = 10_000
+    GLOBAL_SEARCH_WALK_TIMEOUT_MS = 2_000
+
+    _GLOBAL_SEARCH_ORDER = (Message.date, Message.account_id, Message.chat_id, Message.id)
+    _GLOBAL_SEARCH_COLUMNS = (
+        Message.id,
+        Message.date,
+        Message.text,
+        Message.sender_name,
+        Message.is_deleted,
+        Message.account_id,
+        Message.chat_id,
+        Chat.ref.label("chat_ref"),
+        Chat.title.label("chat_title"),
+        Chat.first_name.label("chat_first_name"),
+        Chat.last_name.label("chat_last_name"),
+        Chat.username.label("chat_username"),
+        Chat.type.label("chat_type"),
+        Chat.is_forum.label("chat_is_forum"),
+        ForumTopic.title.label("topic_title"),
+    )
+
+    async def search_messages_global(
+        self,
+        search: str,
+        *,
+        scope: ChatScope,
+        limit: int = 50,
+        offset: int = 0,
+        dense_hits: int | None = None,
+        walk_timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Messages whose text matches ``search`` in ANY entitled chat, newest first.
+
+        Entitlements arrive as ``scope`` and apply in SQL exactly like the chat
+        list and the tag view, so a restricted viewer's search only ever
+        touches entitled chats. Matching is word-prefix through the same
+        predicate as the per-chat search (``_text_search_predicate``). Unlike
+        the per-chat search there is no ILIKE fallback: without the full-text
+        layer a cross-chat substring scan reads the whole archive per
+        keystroke, so the answer is empty with ``indexed`` False and the
+        viewer says the index is missing. A search carrying no word at all
+        (punctuation, emoji) answers empty too.
+
+        Rows carry ``chat_ref``/``chat_title``/``chat_first_name``/
+        ``chat_last_name``/``chat_username``/``chat_type``/``chat_is_forum``
+        so the viewer names the chat the way the chat list does (a private
+        chat has no title), ``topic_title`` for forum hits, and ``is_deleted``
+        so a soft-deleted hit can be dimmed like it is in the chat.
+
+        ``dense_hits`` and ``walk_timeout_ms`` exist for tests that want to
+        drive each PostgreSQL path with a handful of rows.
+
+        Returns ``{"results": [...], "has_more": bool, "indexed": bool}``; one
+        extra row is fetched to answer ``has_more``.
+        """
+        if not search_has_words(search):
+            return {"results": [], "has_more": False, "indexed": True}
+        if dense_hits is None:
+            dense_hits = self.GLOBAL_SEARCH_DENSE_HITS
+        if walk_timeout_ms is None:
+            walk_timeout_ms = self.GLOBAL_SEARCH_WALK_TIMEOUT_MS
+
+        async with self.db_manager.async_session_factory() as session:
+            predicate = await self._text_search_predicate(session, search)
+            if predicate is None:
+                return {"results": [], "has_more": False, "indexed": False}
+
+            if (
+                self._is_sqlite
+                or await self._global_search_hit_count(session, predicate, scope, dense_hits) < dense_hits
+            ):
+                rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset)
+            else:
+                try:
+                    rows = await self._global_search_walk(
+                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms
+                    )
+                except DBAPIError as exc:
+                    if not _is_statement_timeout(exc):
+                        raise
+                    await session.rollback()
+                    rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset)
+
+        results = [
+            {
+                "id": row["id"],
+                "date": row["date"],
+                "text": row["text"],
+                "sender_name": row["sender_name"],
+                "is_deleted": bool(row["is_deleted"]),
+                "account_id": row["account_id"],
+                "chat_id": row["chat_id"],
+                "chat_ref": row["chat_ref"],
+                "chat_title": row["chat_title"],
+                "chat_first_name": row["chat_first_name"],
+                "chat_last_name": row["chat_last_name"],
+                "chat_username": row["chat_username"],
+                "chat_type": row["chat_type"],
+                "chat_is_forum": bool(row["chat_is_forum"]),
+                "topic_title": row["topic_title"],
+            }
+            for row in rows[:limit]
+        ]
+        return {"results": results, "has_more": len(rows) > limit, "indexed": True}
+
+    @staticmethod
+    def _global_search_scoped(stmt, scope: ChatScope):
+        """Restrict a hit-set SELECT over ``messages`` to the entitled chats.
+
+        Applied INSIDE the hit set so a viewer entitled to one chat never pays
+        for the whole archive's hits; skipped entirely for an unrestricted
+        scope, where the join would only add work.
+        """
+        if scope.unrestricted:
+            return stmt
+        stmt = stmt.join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
+        for predicate in scope.sql_predicates():
+            stmt = stmt.where(predicate)
+        return stmt
+
+    @classmethod
+    def _global_search_joins(cls, stmt):
+        """The chat row and (for forum hits) the topic row behind each result."""
+        return stmt.join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id)).outerjoin(
+            ForumTopic,
+            and_(
+                ForumTopic.account_id == Message.account_id,
+                ForumTopic.chat_id == Message.chat_id,
+                ForumTopic.id == func.coalesce(Message.reply_to_top_id, 1),
+            ),
+        )
+
+    async def _global_search_hit_count(self, session, predicate, scope: ChatScope, cap: int) -> int:
+        """How many rows match, counted through the index and stopped at ``cap``."""
+        hits = self._global_search_scoped(select(literal(1)).select_from(Message).where(predicate), scope)
+        capped = hits.limit(cap).subquery("search_hits")
+        return int((await session.execute(select(func.count()).select_from(capped))).scalar_one())
+
+    async def _global_search_walk(
+        self, session, predicate, scope: ChatScope, limit: int, offset: int, *, timeout_ms: int | None = None
+    ):
+        """Newest-first walk that filters as it goes — the shape for dense terms."""
+        stmt = self._global_search_joins(select(*self._GLOBAL_SEARCH_COLUMNS).select_from(Message)).where(predicate)
+        for scope_predicate in scope.sql_predicates():
+            stmt = stmt.where(scope_predicate)
+        stmt = stmt.order_by(*(column.desc() for column in self._GLOBAL_SEARCH_ORDER)).limit(limit + 1).offset(offset)
+        if timeout_ms is not None:
+            # SET LOCAL: scoped to this transaction, so the pooled connection
+            # never carries it into another request.
+            await session.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
+        return (await session.execute(stmt)).mappings().all()
+
+    async def _global_search_sorted_hits(self, session, predicate, scope: ChatScope, limit: int, offset: int):
+        """Materialise the hit keys through the index, sort them, then fetch one page.
+
+        The keys are MATERIALIZED so the planner cannot flatten the CTE back
+        into the date walk it prefers, and the page is cut BEFORE the joins so
+        a dense term never joins every hit to fetch twenty rows.
+        """
+        keys = select(Message.account_id, Message.chat_id, Message.id, Message.date).select_from(Message)
+        hits = self._global_search_scoped(keys.where(predicate), scope).cte("search_hits").prefix_with("MATERIALIZED")
+        page = (
+            select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
+            .order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+            .subquery("search_page")
+        )
+        stmt = self._global_search_joins(
+            select(*self._GLOBAL_SEARCH_COLUMNS)
+            .select_from(page)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == page.c.account_id,
+                    Message.chat_id == page.c.chat_id,
+                    Message.id == page.c.id,
+                ),
+            )
+        ).order_by(page.c.date.desc(), page.c.account_id.desc(), page.c.chat_id.desc(), page.c.id.desc())
+        return (await session.execute(stmt)).mappings().all()
 
     async def _fts_ready(self, session) -> bool:
         """Whether migration 028's full-text layer exists in THIS database.

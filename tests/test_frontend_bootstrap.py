@@ -567,9 +567,9 @@ def test_pagination_reset_called_at_all_entry_points():
     """Every view-switching entry point must reset history pagination before loading."""
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    topic_start = html.index("const selectTopic = async (chat, topic) =>")
+    topic_start = html.index("const selectTopic = async (chat, topic, options = {}) =>")
     topic_body = html[topic_start : html.index("const activeTab = computed", topic_start)]
-    chat_start = html.index("const selectChat = async (chat) =>")
+    chat_start = html.index("const selectChat = async (chat, options = {}) =>")
     chat_body = html[chat_start : html.index("const startMessageRefresh = () =>", chat_start)]
     search_start = html.index("const searchMessages = async () =>")
     search_body = html[search_start : html.index("const handleScroll = (e) =>", search_start)]
@@ -871,12 +871,12 @@ def test_pane_topic_scope_survives_sidebar_navigation():
     assert "selectedPaneTopic.value?.id" in active_body
     assert "currentNav.value" not in active_body
 
-    topic_start = html.index("const selectTopic = async (chat, topic) =>")
+    topic_start = html.index("const selectTopic = async (chat, topic, options = {}) =>")
     topic_body = html[topic_start : html.index("const activeTab = computed", topic_start)]
     assert "selectedPaneTopic.value = topic" in topic_body
     assert topic_body.index("selectedPaneTopic.value = topic") < topic_body.index("await loadMessages()")
 
-    chat_start = html.index("const selectChat = async (chat) =>")
+    chat_start = html.index("const selectChat = async (chat, options = {}) =>")
     chat_body = html[chat_start : html.index("const startMessageRefresh", chat_start)]
     assert "selectedPaneTopic.value = null" in chat_body
 
@@ -2022,8 +2022,8 @@ const loadMessagesAroundId = async (messageId) => {
                 "const GENERAL_TOPIC_ID = ",
                 "const activeTopicId = () => {",
                 "const openForumTopics = async (chat) =>",
-                "const selectTopic = async (chat, topic) =>",
-                "const selectChat = async (chat) =>",
+                "const selectTopic = async (chat, topic, options = {}) =>",
+                "const selectChat = async (chat, options = {}) =>",
             ),
             prelude,
             # focusAudioTrackMessage is followed by audioEngine listener wiring,

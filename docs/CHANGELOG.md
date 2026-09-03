@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.6.0] - 2026-09-03
+
+Search finds messages across the whole archive, from the one field the sidebar already had.
+
+### Added
+
+- **Global message search.** The sidebar's search field now looks for message text across every chat you can see, not only chat names. Results come in two sections, Chats then Messages, the way the official clients show them: each message hit carries the chat's avatar and name, the sender, the matched words emphasised in a snippet windowed on the first match, the topic for forum hits, and the list loads more as it is scrolled. Arrow keys move through the hits, Enter opens one and Esc clears the field. Opening a hit lands on the message inside its chat and topic, with the results kept in the sidebar. Contributed by [@WalterLederer](https://github.com/WalterLederer) in [#429](https://github.com/GeiserX/Telegram-Archive/pull/429).
+- **`GET /api/search/messages` and `GET /api/chats/{ref}`.** The search route answers word-prefix matches newest first, scoped in SQL by the same entitlements as the chat list, and pages by offset up to 5,000 hits. The chat route resolves one chat by its opaque ref, which is how deep links now reach chats beyond the sidebar's first page.
+
+### Fixed
+
+- **Search stays fast on any archive.** On PostgreSQL the planner cannot see how selective a word-prefix term is, so it walked the whole date index for rare or absent words: 2 to 9 seconds on a 2.9M-message archive. The search now counts hits through the index first, capped, and takes the path that is bounded for that answer, so common, rare and absent words all answer in under 100 ms there. SQLite reads the sorted hit set directly.
+- **A deep link with no message id opens the chat, and a failed jump no longer leaves an empty pane.** The jump-to-message path skips the chat's normal first page because the window around the message replaces it; that skip now happens only when there is a message to jump to, and when the window cannot be loaded the chat falls back to its newest page. The playbar's jump to the playing track had the same race as notification links and gets the same fix.
+- **Deep links reach every chat.** A notification or shared link into a chat outside the sidebar's first thousand said "Could not open that chat". Chats resolve by ref now.
+- **Light themes: text on solid accent buttons and tabs is white in all thirteen places, not two.** Only the active folder tab had been fixed for Day and Paper; the other controls kept dark text on the blue.
+
+### Note
+
+No database change. The viewer half takes effect as soon as you pull the viewer image; the backup image carries no behaviour change.
+
 ## [8.5.0] - 2026-08-30
 
 Round videos are circles, and media brought in from a Telegram Desktop export works like every other file.
