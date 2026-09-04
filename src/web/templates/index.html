@@ -2849,7 +2849,17 @@
                 const escapeSearchRegExp = (text) =>
                     text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-                const applySearchHighlight = (messageId, query) => {
+                const clearSearchHighlightMarks = () => {
+                    messagesContainer.value
+                        ?.querySelectorAll('mark[data-search-highlight="true"]')
+                        .forEach(mark => {
+                            mark.replaceWith(
+                                document.createTextNode(mark.textContent || '')
+                            )
+                        })
+                }
+
+                const applySearchHighlight = (messageId, query, shouldScroll = true) => {
                     const normalizedQuery = (query || '').trim()
                     if (!messageId || !normalizedQuery) return
 
@@ -2964,10 +2974,12 @@
                         'mark[data-search-highlight="true"]'
                     )
 
-                    firstMatch?.scrollIntoView({
-                        block: 'center',
-                        behavior: 'smooth'
-                    })
+                    if (shouldScroll) {
+                        firstMatch?.scrollIntoView({
+                            block: 'center',
+                            behavior: 'smooth'
+                        })
+                    }
                 }
 
                 // Sidebar search: one field, two result sections (chats, then messages).
@@ -6150,6 +6162,53 @@
                     loadNewerMessages()
                 }
 
+                const applyCurrentChatSearchHighlights = async (query) => {
+                    const normalizedQuery = (query || '').trim()
+                    if (!normalizedQuery) return
+
+                    await nextTick()
+
+                    const container = messagesContainer.value
+                    if (!container) return
+
+                    // Remove previous marks without resetting global search state.
+                    clearSearchHighlightMarks()
+
+                    // Highlight every visible result in the current chat.
+                    // Album members are resolved to their visible album row.
+                    const highlightedRows = new Set()
+
+                    sortedMessages.value.forEach((msg, messageIndex) => {
+                        if (!msg?.id) return
+
+                        let visibleMessageId = msg.id
+
+                        if (isHiddenAlbumMessage(msg, messageIndex)) {
+                            const groupedId = getGroupedId(msg)
+
+                            if (groupedId) {
+                                const visibleAlbumMessage = sortedMessages.value.find(
+                                    (candidate, candidateIndex) =>
+                                        getGroupedId(candidate) === groupedId &&
+                                        isFirstInAlbum(candidate, candidateIndex)
+                                )
+
+                                if (visibleAlbumMessage) {
+                                    visibleMessageId = visibleAlbumMessage.id
+                                }
+                            }
+                        }
+
+                        const rowKey = String(visibleMessageId)
+                        if (highlightedRows.has(rowKey)) return
+
+                        highlightedRows.add(rowKey)
+
+                        // Do not scroll while processing multiple search results.
+                        applySearchHighlight(visibleMessageId, normalizedQuery, false)
+                    })
+                }
+
                 const searchMessages = async () => {
                     // Invalidate in-flight polls/loads: their post-await guards check chatVersion,
                     // so bumping it here keeps unfiltered rows out of fresh search results.
@@ -6160,7 +6219,16 @@
                     loading.value = false
                     messages.value = []
                     resetMessagePagination()
+
+                    // Clear highlights from the previous current-chat search.
+                    clearSearchHighlightMarks()
+
                     await loadMessages()
+
+                    const currentSearchQuery = messageSearchQuery.value.trim()
+                    if (currentSearchQuery) {
+                        await applyCurrentChatSearchHighlights(currentSearchQuery)
+                    }
                 }
 
                 // Every keystroke used to run searchMessages directly, and it defeats
