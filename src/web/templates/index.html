@@ -351,13 +351,6 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             overflow-x: hidden;
-            background-image:
-                linear-gradient(rgba(255, 255, 255, 0.60), rgba(255, 255, 255, 0.60)),
-                url('/static/telegram_background.jpg');
-            background-position: left;
-            background-size: cover;
-            background-repeat: no-repeat;
-            background-attachment: fixed;
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
@@ -401,9 +394,6 @@
             background: rgb(var(--tg-bg) / 1);
         }
 
-        .message-bubble {
-            background-color: #fff !important;
-        }
 
         /* Date Separator — floats/sticks at the top of the scroll pane while
            that day's messages are in view, like the native apps. Works in the
@@ -2815,7 +2805,7 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted, watch, nextTick } = Vue
+        const { createApp, ref, computed, onMounted, onUpdated, watch, nextTick } = Vue
 
         createApp({
             setup() {
@@ -2837,148 +2827,6 @@
                 const selectedChat = ref(null)
                 const selectedPaneTopic = ref(null)
                 const searchQuery = ref('')
-
-                const searchHighlightMessageId = ref(null)
-                const searchHighlightChatRef = ref('')
-                const searchHighlightQuery = ref('')
-
-                const clearSearchHighlight = () => {
-                    messagesContainer.value
-                        ?.querySelectorAll('mark[data-search-highlight="true"]')
-                        .forEach(mark => {
-                            mark.replaceWith(
-                                document.createTextNode(mark.textContent || '')
-                            )
-                        })
-
-                    searchHighlightMessageId.value = null
-                    searchHighlightChatRef.value = ''
-                    searchHighlightQuery.value = ''
-                }
-
-                const escapeSearchRegExp = (text) =>
-                    text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-                const applySearchHighlight = (messageId, query) => {
-                    const normalizedQuery = (query || '').trim()
-                    if (!messageId || !normalizedQuery) return
-
-                    const container = messagesContainer.value
-                    if (!container) return
-
-                    let row = container.querySelector(
-                        `[data-msg-id="${CSS.escape(String(messageId))}"]`
-                    )
-
-                    if (!row) {
-                        // The searched message may be a hidden member of an album.
-                        // In that case Vue renders the complete album under the first
-                        // message of the album, not under the searched message ID.
-                        const messageIndex = sortedMessages.value.findIndex(
-                            msg => Number(msg.id) === Number(messageId)
-                        )
-
-                        if (messageIndex >= 0) {
-                            const message = sortedMessages.value[messageIndex]
-                            const groupedId = getGroupedId(message)
-
-                            if (groupedId) {
-                                const visibleAlbumIndex = sortedMessages.value.findIndex(
-                                    (candidate, index) =>
-                                        getGroupedId(candidate) === groupedId &&
-                                        isFirstInAlbum(candidate, index)
-                                )
-
-                                if (visibleAlbumIndex >= 0) {
-                                    const visibleMessage =
-                                        sortedMessages.value[visibleAlbumIndex]
-
-                                    row = container.querySelector(
-                                        `[data-msg-id="${CSS.escape(String(visibleMessage.id))}"]`
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (!row) return
-
-                    const messageText = row.querySelector('.message-text')
-                    if (!messageText) return
-
-                    // Remove a previous highlight without rebuilding the message HTML.
-                    messageText.querySelectorAll('mark[data-search-highlight="true"]')
-                        .forEach(mark => {
-                            mark.replaceWith(document.createTextNode(mark.textContent || ''))
-                        })
-
-                    const pattern = new RegExp(
-                        escapeSearchRegExp(normalizedQuery),
-                        'giu'
-                    )
-
-                    const walker = document.createTreeWalker(
-                        messageText,
-                        NodeFilter.SHOW_TEXT
-                    )
-
-                    const nodes = []
-                    let node
-
-                    while ((node = walker.nextNode())) {
-                        if (node.parentElement?.closest('script, style, mark')) continue
-                        if (pattern.test(node.nodeValue || '')) {
-                            nodes.push(node)
-                        }
-                        pattern.lastIndex = 0
-                    }
-
-                    for (const textNode of nodes) {
-                        const text = textNode.nodeValue || ''
-                        pattern.lastIndex = 0
-
-                        let lastIndex = 0
-                        let match
-                        const fragment = document.createDocumentFragment()
-
-                        while ((match = pattern.exec(text)) !== null) {
-                            if (match.index > lastIndex) {
-                                fragment.appendChild(
-                                    document.createTextNode(
-                                        text.slice(lastIndex, match.index)
-                                    )
-                                )
-                            }
-
-                            const mark = document.createElement('mark')
-                            mark.className =
-                                'bg-tg-accent/30 text-tg-ink rounded-sm px-0.5'
-                            mark.dataset.searchHighlight = 'true'
-                            mark.textContent = match[0]
-
-                            fragment.appendChild(mark)
-
-                            lastIndex = match.index + match[0].length
-                        }
-
-                        if (lastIndex < text.length) {
-                            fragment.appendChild(
-                                document.createTextNode(text.slice(lastIndex))
-                            )
-                        }
-
-                        textNode.parentNode?.replaceChild(fragment, textNode)
-                    }
-
-                    const firstMatch = messageText.querySelector(
-                        'mark[data-search-highlight="true"]'
-                    )
-
-                    firstMatch?.scrollIntoView({
-                        block: 'center',
-                        behavior: 'smooth'
-                    })
-                }
 
                 // Sidebar search: one field, two result sections (chats, then messages).
                 const searchActive = computed(() => searchQuery.value.trim().length > 0)
@@ -3289,6 +3137,8 @@
                     // View-entry chokepoint: every message-list swap goes through here, so the
                     // unseen-badge from the previous view resets alongside pagination.
                     unseenMessageCount.value = 0
+                    // A new view: whatever the previous one emphasised no longer applies.
+                    messageHighlight.value = null
                 }
 
                 // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
@@ -3753,30 +3603,60 @@
                 // hit is one click away — the official clients keep them too.
                 const openMessageSearchResult = async (row) => {
                     if (!row?.chat?.ref || row.id == null) return
-
                     const query = searchQuery.value.trim()
-                    if (!query) return
-
-                    clearSearchHighlight()
                     const opened = await openNotificationTarget(row.chat.ref, row.id)
-
-
-                    // Search may have changed while the asynchronous navigation was running.
-                    if (!opened || searchQuery.value.trim() !== query) {
-                        return
-                    }
-
-                    searchHighlightMessageId.value = row.id
-                    searchHighlightChatRef.value = row.chat.ref
-                    searchHighlightQuery.value = query
-
-                    await nextTick()
-                    applySearchHighlight(row.id, query)
-               }
+                    // The search may have moved on while the navigation ran; only the
+                    // search that produced this hit gets to mark it.
+                    if (!opened || !query || searchQuery.value.trim() !== query) return
+                    if (selectedChat.value?.ref !== row.chat.ref) return
+                    messageHighlight.value = { query, messageId: row.id }
+                }
 
                 // Same word rule as the search itself: letters, digits and underscore.
                 const SEARCH_WORD_RE = /[\p{L}\p{N}_]+/gu
                 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+                // THE rule for emphasising a match, shared by the sidebar snippet and the
+                // marks inside an opened message: whole words that start with any query
+                // word, case-insensitive — the prefix semantics the server matched on.
+                // Null when the query carries no word (the search answers empty then).
+                const searchMatchPattern = (query) => {
+                    const words = (foldForMatch(query || '').folded.match(SEARCH_WORD_RE) || []).filter(Boolean)
+                    if (!words.length) return null
+                    return new RegExp('(^|[^\\p{L}\\p{N}_])(' + words.map(escapeRegExp).join('|') + ')[\\p{L}\\p{N}_]*', 'giu')
+                }
+
+                // SQLite's index folds diacritics (unicode61 remove_diacritics 2), so a
+                // search for "mas" finds "más" and the mark has to land on it. Match on a
+                // folded copy and keep an index back to the source, or the hit the server
+                // found would show with nothing emphasised at all.
+                const foldForMatch = (text) => {
+                    let folded = ''
+                    const offsets = []  // folded index -> source index
+                    let index = 0
+                    for (const char of text) {
+                        const piece = char.normalize('NFD').replace(/\p{M}+/gu, '')
+                        for (let i = 0; i < piece.length; i++) offsets.push(index)
+                        folded += piece
+                        index += char.length
+                    }
+                    offsets.push(index)
+                    return { folded, offsets }
+                }
+
+                // [start, end) of every matched word, as offsets into text. Pure, so node
+                // can test it, and the one place the rule is applied.
+                const searchMatchRanges = (text, pattern) => {
+                    const ranges = []
+                    if (!pattern || !text) return ranges
+                    const { folded, offsets } = foldForMatch(text)
+                    pattern.lastIndex = 0
+                    for (const match of folded.matchAll(pattern)) {
+                        const start = match.index + match[1].length
+                        ranges.push([offsets[start], offsets[match.index + match[0].length]])
+                    }
+                    return ranges
+                }
 
                 // A window of the message around its first matching word, with every
                 // matched word emphasised. Escaping happens per piece AFTER matching,
@@ -3784,19 +3664,15 @@
                 const searchSnippetHtml = (text) => {
                     const raw = (text || '').replace(/\s+/g, ' ').trim()
                     if (!raw) return ''
-                    const words = (searchQuery.value.match(SEARCH_WORD_RE) || []).filter(Boolean)
                     const WINDOW = 180
-                    if (!words.length) return escapeHtml(raw.slice(0, WINDOW)) + (raw.length > WINDOW ? '…' : '')
-                    const pattern = new RegExp('(^|[^\\p{L}\\p{N}_])(' + words.map(escapeRegExp).join('|') + ')[\\p{L}\\p{N}_]*', 'giu')
-                    const firstMatch = pattern.exec(raw)
-                    pattern.lastIndex = 0
-                    const start = firstMatch && firstMatch.index > 60 ? firstMatch.index - 40 : 0
+                    const pattern = searchMatchPattern(searchQuery.value)
+                    if (!pattern) return escapeHtml(raw.slice(0, WINDOW)) + (raw.length > WINDOW ? '…' : '')
+                    const first = searchMatchRanges(raw, pattern)[0]
+                    const start = first && first[0] > 60 ? first[0] - 40 : 0
                     const snippet = raw.slice(start, start + WINDOW)
                     let html = ''
                     let cursor = 0
-                    for (const match of snippet.matchAll(pattern)) {
-                        const wordStart = match.index + match[1].length
-                        const wordEnd = match.index + match[0].length
+                    for (const [wordStart, wordEnd] of searchMatchRanges(snippet, pattern)) {
                         html += escapeHtml(snippet.slice(cursor, wordStart))
                         html += '<mark class="bg-tg-accent/30 text-tg-ink rounded-sm px-0.5">' + escapeHtml(snippet.slice(wordStart, wordEnd)) + '</mark>'
                         cursor = wordEnd
@@ -3804,6 +3680,90 @@
                     html += escapeHtml(snippet.slice(cursor))
                     return (start > 0 ? '…' : '') + html + (start + WINDOW < raw.length ? '…' : '')
                 }
+
+                // ---- Marks inside the message pane ----
+                // What the pane should emphasise: the in-chat filter's query on every row,
+                // or a global hit's query on the one row it landed on. Null = nothing.
+                // Every view entry clears it through resetMessagePagination, and the
+                // marks are re-applied after any re-render, so they survive a poll upsert,
+                // an older page loading, or the jump window being replaced.
+                const messageHighlight = ref(null)
+
+                // Wrap the matched words of one rendered text block in <mark>. Only text
+                // nodes are touched — attributes and tags stay exactly as escape+linkify
+                // rendered them, so archived text cannot become markup through here.
+                // The nodes are matched as ONE string: an entity (bold, a link, a spoiler)
+                // splits a word across several of them, and the server matched the whole
+                // text, so per-node matching would miss exactly those words.
+                const markMatchesIn = (root, pattern) => {
+                    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+                    const nodes = []
+                    let joined = ''
+                    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                        nodes.push({ node, offset: joined.length })
+                        joined += node.nodeValue || ''
+                    }
+                    const matched = searchMatchRanges(joined, pattern)
+                    if (!matched.length) return
+                    for (const { node: textNode, offset } of nodes) {
+                        const text = textNode.nodeValue || ''
+                        const ranges = matched
+                            .map(([start, end]) => [Math.max(start - offset, 0), Math.min(end - offset, text.length)])
+                            .filter(([start, end]) => start < end)
+                        if (!ranges.length) continue
+                        const fragment = document.createDocumentFragment()
+                        let cursor = 0
+                        for (const [start, end] of ranges) {
+                            if (start > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, start)))
+                            const mark = document.createElement('mark')
+                            mark.className = 'bg-tg-accent/30 text-tg-ink rounded-sm px-0.5'
+                            mark.dataset.searchMark = ''
+                            mark.textContent = text.slice(start, end)
+                            fragment.appendChild(mark)
+                            cursor = end
+                        }
+                        if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)))
+                        textNode.replaceWith(fragment)
+                    }
+                }
+
+                // Idempotent: unwrap what the last pass marked, then mark what the current
+                // intent asks for. Cheap when there is no intent, which is nearly always.
+                // Every DOM change stays INSIDE .message-text, whose children are v-html
+                // output Vue does not manage. Never touch the container itself: Vue 3
+                // delimits its fragments with empty text nodes, and one normalize() on
+                // the container removed them and left every later patch of the list
+                // silently unrendered (the in-chat filter kept showing the tail).
+                const applyMessageHighlight = () => {
+                    const container = messagesContainer.value
+                    if (!container) return
+                    for (const block of container.querySelectorAll('.message-text')) {
+                        const marks = block.querySelectorAll('mark[data-search-mark]')
+                        if (!marks.length) continue
+                        marks.forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')))
+                        block.normalize()  // rejoin the text nodes the unwrap left behind
+                    }
+                    const intent = messageHighlight.value
+                    const pattern = intent ? searchMatchPattern(intent.query) : null
+                    if (!pattern) return
+                    // One hit marks its own row (findMessageElement owns the album rule the
+                    // jump already relies on); the in-chat filter marks every row it shows.
+                    const scope = intent.messageId == null ? container : findMessageElement(intent.messageId)
+                    if (!scope) return
+                    for (const block of scope.querySelectorAll('.message-text')) markMatchesIn(block, pattern)
+                }
+                watch(messageHighlight, () => nextTick(applyMessageHighlight))
+                // The mark on a hit belongs to the search that opened it: clearing the
+                // field, pressing Escape or typing a new query all take it away, so the
+                // pane never shows emphasis for a search that is no longer on screen.
+                // The in-chat filter's own marks (no messageId) answer to its own box.
+                const dropHitHighlight = () => {
+                    if (messageHighlight.value?.messageId != null) messageHighlight.value = null
+                }
+                watch(() => searchQuery.value.trim(), dropHitHighlight)
+                // Any re-render can rebuild a row's text from its bound string, which
+                // drops the marks: put them back once the DOM has settled.
+                onUpdated(() => { if (messageHighlight.value) applyMessageHighlight() })
 
                 // The chat list's relative style, read in the viewer's timezone like
                 // every other timestamp: time today, weekday this week, then the date.
@@ -5169,7 +5129,6 @@
 
                 // Subscribe to WebSocket updates when chat changes
                 watch(selectedChat, (newChat, oldChat) => {
-                    clearSearchHighlight()
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         // Unsubscribe from old chat
                         if (oldChat) {
@@ -6170,6 +6129,11 @@
                     loading.value = false
                     messages.value = []
                     resetMessagePagination()
+                    // Every row the filter shows matched this query: mark the words in each.
+                    // Set before the load so the marks land as soon as the rows render, on
+                    // this page and every page the scroll loads after it.
+                    const query = messageSearchQuery.value.trim()
+                    messageHighlight.value = query ? { query, messageId: null } : null
                     await loadMessages()
                 }
 
