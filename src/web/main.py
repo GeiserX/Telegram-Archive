@@ -689,21 +689,42 @@ def _sanitize_theme_slug(value: str) -> str:
     return value if re.fullmatch(r"[a-z]{3,16}", value) else ""
 
 
+def _sanitize_chat_background(value: str) -> str:
+    """The chat wallpaper's file name under /static, or "" for none.
+
+    A bare name: no separator can appear, so the value cannot address anything
+    outside the static directory, and no quote, parenthesis, semicolon or angle
+    bracket can appear, so it cannot break out of the CSS declaration it is
+    baked into. Anything else is dropped rather than escaped, like the theme
+    slug above. A name that matches but does not exist simply 404s and the pane
+    keeps its plain background.
+    """
+    value = value.strip()
+    return value if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) else ""
+
+
+def _chat_background_css(name: str) -> str:
+    """The declarations that turn the wallpaper on, or "" when there is none.
+
+    Injected at the end of :root so it overrides the defaults declared there.
+    The bubbles go opaque with it: the themes make them translucent so the flat
+    background shows through, and over a photo that would put a picture behind
+    running text. The tint is the theme's own background colour, so one image
+    sits correctly under a light and a dark palette instead of only one of them.
+    """
+    if not name:
+        return ""
+    return (
+        f"--viewer-chat-background: url('/static/{name}');"
+        " --viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55), rgb(var(--tg-bg) / 0.55));"
+        " --tg-bubble-alpha-own: 1; --tg-bubble-alpha-other: 1;"
+    )
+
+
 # Default palette for browsers with no saved choice. A user's picker choice
 # (localStorage) always wins over this.
-def _sanitize_chat_background(value: str) -> str:
-    """Return a safe CSS background-image value for a static viewer asset."""
-    value = value.strip()
-    if not value:
-        return "none"
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
-        return "none"
-    return f"url('/static/{value}')"
-
 VIEWER_DEFAULT_THEME = _sanitize_theme_slug(os.getenv("VIEWER_DEFAULT_THEME", ""))
-VIEWER_CHAT_BACKGROUND = _sanitize_chat_background(
-    os.getenv("VIEWER_CHAT_BACKGROUND", "")
-)
+VIEWER_CHAT_BACKGROUND = _sanitize_chat_background(os.getenv("VIEWER_CHAT_BACKGROUND", ""))
 
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
@@ -1772,7 +1793,7 @@ async def read_root():
     """
     html = (templates_dir / "index.html").read_text(encoding="utf-8")
     html = html.replace("__VIEWER_DEFAULT_THEME__", VIEWER_DEFAULT_THEME)
-    html = html.replace("__VIEWER_CHAT_BACKGROUND__", VIEWER_CHAT_BACKGROUND)
+    html = html.replace("__VIEWER_CHAT_BACKGROUND__", _chat_background_css(VIEWER_CHAT_BACKGROUND))
     return HTMLResponse(
         html,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},

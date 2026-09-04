@@ -59,7 +59,6 @@
            sets data-theme on <html>; every block below restates EVERY token
            (a missing one would silently fall through to Slate's value). */
         :root {
-            --viewer-chat-background: __VIEWER_CHAT_BACKGROUND__;
             --tg-bg: 15 23 42;
             --tg-sidebar: 30 41 59;
             --tg-hover: 51 65 85;
@@ -81,6 +80,16 @@
             /* Foreground on a solid accent-strong fill. White in every palette:
                ink is dark in the light themes and vanished on the blue. */
             --tg-on-accent: 255 255 255;
+            /* Chat wallpaper: off unless VIEWER_CHAT_BACKGROUND names a file in
+               /static. The server appends its declarations at the end of this
+               block (see _chat_background_css), so the defaults here are what
+               applies when it is unset, and the bubble alphas below are the
+               translucency the themes are drawn with. */
+            --viewer-chat-background: none;
+            --viewer-chat-tint: none;
+            --tg-bubble-alpha-own: 0.95;
+            --tg-bubble-alpha-other: 0.80;
+            __VIEWER_CHAT_BACKGROUND__
             /* Neutral scale: exactly Tailwind's gray levels, so the dark
                palettes render byte-identically to the old gray-N utilities.
                The dark palettes share it (only the light ones override). */
@@ -352,11 +361,16 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             overflow-x: hidden;
-            background-image: var(--viewer-chat-background);
-            background-position: left;
+            /* The tint layer sits over the image so one wallpaper works under a
+               light and a dark palette. Both are `none` unless the server turned
+               the wallpaper on. `attachment` stays at its default (`scroll`): the
+               pane IS the viewport here, so the image already stays put, and
+               `fixed` repaints the whole layer on every scroll frame in mobile
+               Safari, where this pane also carries -webkit-overflow-scrolling. */
+            background-image: var(--viewer-chat-tint), var(--viewer-chat-background);
+            background-position: center;
             background-size: cover;
             background-repeat: no-repeat;
-            background-attachment: fixed;
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
@@ -6713,24 +6727,13 @@
                 }
 
                 // Get background color for message bubble
-                const getMessageBackground = (msg) => {
-                    const isOwn = isOwnMessage(msg)
-                    const chatBackground = getComputedStyle(document.documentElement)
-                        .getPropertyValue('--viewer-chat-background')
-                        .trim()
-
-                    if (isOwn) {
-                        // Own messages: the theme's own-bubble color
-                        return chatBackground && chatBackground !== 'none'
-                            ? 'rgb(var(--tg-own) / 1)'
-                            : 'rgb(var(--tg-own) / 0.95)'
-                    } else {
-                        // Others: the theme's incoming-bubble color
-                        return chatBackground && chatBackground !== 'none'
-                            ? 'rgb(var(--tg-other) / 1)'
-                            : 'rgb(var(--tg-other) / 0.80)'
-                    }
-                }
+                // The alpha is a theme token, not a decision made here: reading a
+                // custom property off documentElement per bubble forces a style
+                // recalculation on every render, for a value that cannot change
+                // after the page is served. CSS switches it when a wallpaper is on.
+                const getMessageBackground = (msg) => isOwnMessage(msg)
+                    ? 'rgb(var(--tg-own) / var(--tg-bubble-alpha-own))'
+                    : 'rgb(var(--tg-other) / var(--tg-bubble-alpha-other))'
 
                 // Get color for sender name (unique per person)
                 const getSenderNameColor = (msg) => {

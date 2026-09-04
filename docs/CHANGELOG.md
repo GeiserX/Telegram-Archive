@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.8.0] - 2026-09-04
+
+An optional wallpaper behind the messages.
+
+### Added
+
+- **`VIEWER_CHAT_BACKGROUND` puts a picture behind the conversation**, the way the apps let you set a chat background. Name a file the viewer serves from `/static` and mount it into the container; leave it unset and the viewer looks exactly as it does today. While it is on, the message bubbles turn opaque, because the themes draw them translucent over a flat colour and a photo behind running text is not readable, and the image is tinted with the palette's own background colour, so one picture works under a light and a dark theme instead of only one of them. Contributed by [@WalterLederer](https://github.com/WalterLederer) in [#432](https://github.com/GeiserX/Telegram-Archive/pull/432).
+
+### Note
+
+The file name is validated as a bare name, so it cannot address anything outside the static directory or add declarations to the stylesheet it is baked into. A name that does not resolve simply leaves the pane plain.
+
 ## [8.7.0] - 2026-09-04
 
 Search results are emphasised inside the message, not only in the sidebar.
