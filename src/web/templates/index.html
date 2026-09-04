@@ -2833,6 +2833,14 @@
                 const searchHighlightQuery = ref('')
 
                 const clearSearchHighlight = () => {
+                    messagesContainer.value
+                        ?.querySelectorAll('mark[data-search-highlight="true"]')
+                        .forEach(mark => {
+                            mark.replaceWith(
+                                document.createTextNode(mark.textContent || '')
+                            )
+                        })
+
                     searchHighlightMessageId.value = null
                     searchHighlightChatRef.value = ''
                     searchHighlightQuery.value = ''
@@ -2848,9 +2856,41 @@
                     const container = messagesContainer.value
                     if (!container) return
 
-                    const row = container.querySelector(
+                    let row = container.querySelector(
                         `[data-msg-id="${CSS.escape(String(messageId))}"]`
                     )
+
+                    if (!row) {
+                        // The searched message may be a hidden member of an album.
+                        // In that case Vue renders the complete album under the first
+                        // message of the album, not under the searched message ID.
+                        const messageIndex = sortedMessages.value.findIndex(
+                            msg => Number(msg.id) === Number(messageId)
+                        )
+
+                        if (messageIndex >= 0) {
+                            const message = sortedMessages.value[messageIndex]
+                            const groupedId = getGroupedId(message)
+
+                            if (groupedId) {
+                                const visibleAlbumIndex = sortedMessages.value.findIndex(
+                                    (candidate, index) =>
+                                        getGroupedId(candidate) === groupedId &&
+                                        isFirstInAlbum(candidate, index)
+                                )
+
+                                if (visibleAlbumIndex >= 0) {
+                                    const visibleMessage =
+                                        sortedMessages.value[visibleAlbumIndex]
+
+                                    row = container.querySelector(
+                                        `[data-msg-id="${CSS.escape(String(visibleMessage.id))}"]`
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     if (!row) return
 
                     const messageText = row.querySelector('.message-text')
@@ -3709,10 +3749,38 @@
 
                     clearSearchHighlight()
 
+                    console.log('[HIGHLIGHT DEBUG] Start', {
+                        id: row.id,
+                        chat: row.chat.ref,
+                        query
+                    })
+
                     const opened = await openNotificationTarget(row.chat.ref, row.id)
 
+                    console.log(
+                        '[HIGHLIGHT DEBUG] messages nach openNotificationTarget:',
+                        messages.value
+                            .filter(m => Number(m.id) >= 15325 && Number(m.id) <= 15335)
+                            .map(m => ({
+                                id: m.id,
+                                reply_to_top_id: m.reply_to_top_id,
+                                text: (m.text || '').slice(0, 50)
+                            }))
+                    )
+                    console.log('[HIGHLIGHT DEBUG] openNotificationTarget fertig', {
+                        opened,
+                        currentQuery: searchQuery.value.trim(),
+                        originalQuery: query
+                    })
+
                     // Search may have changed while the asynchronous navigation was running.
-                    if (!opened || searchQuery.value.trim() !== query) return
+                    if (!opened || searchQuery.value.trim() !== query) {
+                        console.log('[HIGHLIGHT DEBUG] ABBRUCH vor Highlight', {
+                            opened,
+                            queryChanged: searchQuery.value.trim() !== query
+                        })
+                        return
+                    }
 
                     searchHighlightMessageId.value = row.id
                     searchHighlightChatRef.value = row.chat.ref
@@ -3720,8 +3788,25 @@
 
                     await nextTick()
 
-                    // The message itself is already rendered here.
+                    console.log('[HIGHLIGHT DEBUG] vor applySearchHighlight', {
+                        id: row.id,
+                        query,
+                        rows: messagesContainer.value?.querySelectorAll('[data-msg-id]').length,
+                        target: !!messagesContainer.value?.querySelector(
+                            `[data-msg-id="${CSS.escape(String(row.id))}"]`
+                        ),
+                        text: !!messagesContainer.value?.querySelector(
+                            `[data-msg-id="${CSS.escape(String(row.id))}"] .message-text`
+                        )
+                    })
+
                     applySearchHighlight(row.id, query)
+
+                    console.log('[HIGHLIGHT DEBUG] nach applySearchHighlight', {
+                        marks: messagesContainer.value?.querySelectorAll(
+                            'mark[data-search-highlight="true"]'
+                        ).length
+                    })
                 }
 
                 // Same word rule as the search itself: letters, digits and underscore.
