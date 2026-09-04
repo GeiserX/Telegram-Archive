@@ -351,6 +351,13 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             overflow-x: hidden;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.60), rgba(255, 255, 255, 0.60)),
+                url('/static/telegram_background.jpg');
+            background-position: left;
+            background-size: cover;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
@@ -394,6 +401,9 @@
             background: rgb(var(--tg-bg) / 1);
         }
 
+        .message-bubble {
+            background-color: #fff !important;
+        }
 
         /* Date Separator — floats/sticks at the top of the scroll pane while
            that day's messages are in view, like the native apps. Works in the
@@ -2849,17 +2859,7 @@
                 const escapeSearchRegExp = (text) =>
                     text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-                const clearSearchHighlightMarks = () => {
-                    messagesContainer.value
-                        ?.querySelectorAll('mark[data-search-highlight="true"]')
-                        .forEach(mark => {
-                            mark.replaceWith(
-                                document.createTextNode(mark.textContent || '')
-                            )
-                        })
-                }
-
-                const applySearchHighlight = (messageId, query, shouldScroll = true) => {
+                const applySearchHighlight = (messageId, query) => {
                     const normalizedQuery = (query || '').trim()
                     if (!messageId || !normalizedQuery) return
 
@@ -2974,12 +2974,10 @@
                         'mark[data-search-highlight="true"]'
                     )
 
-                    if (shouldScroll) {
-                        firstMatch?.scrollIntoView({
-                            block: 'center',
-                            behavior: 'smooth'
-                        })
-                    }
+                    firstMatch?.scrollIntoView({
+                        block: 'center',
+                        behavior: 'smooth'
+                    })
                 }
 
                 // Sidebar search: one field, two result sections (chats, then messages).
@@ -6162,53 +6160,6 @@
                     loadNewerMessages()
                 }
 
-                const applyCurrentChatSearchHighlights = async (query) => {
-                    const normalizedQuery = (query || '').trim()
-                    if (!normalizedQuery) return
-
-                    await nextTick()
-
-                    const container = messagesContainer.value
-                    if (!container) return
-
-                    // Remove previous marks without resetting global search state.
-                    clearSearchHighlightMarks()
-
-                    // Highlight every visible result in the current chat.
-                    // Album members are resolved to their visible album row.
-                    const highlightedRows = new Set()
-
-                    sortedMessages.value.forEach((msg, messageIndex) => {
-                        if (!msg?.id) return
-
-                        let visibleMessageId = msg.id
-
-                        if (isHiddenAlbumMessage(msg, messageIndex)) {
-                            const groupedId = getGroupedId(msg)
-
-                            if (groupedId) {
-                                const visibleAlbumMessage = sortedMessages.value.find(
-                                    (candidate, candidateIndex) =>
-                                        getGroupedId(candidate) === groupedId &&
-                                        isFirstInAlbum(candidate, candidateIndex)
-                                )
-
-                                if (visibleAlbumMessage) {
-                                    visibleMessageId = visibleAlbumMessage.id
-                                }
-                            }
-                        }
-
-                        const rowKey = String(visibleMessageId)
-                        if (highlightedRows.has(rowKey)) return
-
-                        highlightedRows.add(rowKey)
-
-                        // Do not scroll while processing multiple search results.
-                        applySearchHighlight(visibleMessageId, normalizedQuery, false)
-                    })
-                }
-
                 const searchMessages = async () => {
                     // Invalidate in-flight polls/loads: their post-await guards check chatVersion,
                     // so bumping it here keeps unfiltered rows out of fresh search results.
@@ -6219,16 +6170,7 @@
                     loading.value = false
                     messages.value = []
                     resetMessagePagination()
-
-                    // Clear highlights from the previous current-chat search.
-                    clearSearchHighlightMarks()
-
                     await loadMessages()
-
-                    const currentSearchQuery = messageSearchQuery.value.trim()
-                    if (currentSearchQuery) {
-                        await applyCurrentChatSearchHighlights(currentSearchQuery)
-                    }
                 }
 
                 // Every keystroke used to run searchMessages directly, and it defeats
