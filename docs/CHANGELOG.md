@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.7.0] - 2026-09-04
+
+Search results are emphasised inside the message, not only in the sidebar.
+
+### Added
+
+- **Matches are marked inside the message.** Opening a search result already jumped to the message and flashed it; the words that matched are now emphasised in the message itself, so a hit in a long message no longer has to be hunted for. The in-chat filter does the same for every row it shows, on each page the scroll loads. The marks end when their search does, and they survive the three-second refresh and a newly loaded page. Contributed by [@WalterLederer](https://github.com/WalterLederer) in [#431](https://github.com/GeiserX/Telegram-Archive/pull/431).
+
+### Fixed
+
+- **Search emphasis follows the rule the search itself used.** The sidebar preview marked whole words that start with any word of the query, which is what the archive matches on, but nothing else did. Matching now runs through one rule everywhere, so a two-word query emphasises both words wherever they appear, a prefix emphasises the whole word it found, and a query is no longer emphasised inside an unrelated word that was never a match.
+- **Accented words are emphasised.** On SQLite, the archive folds accents when it searches: a search for `mas` finds a message reading "más". The preview and the message showed that hit with nothing emphasised at all. Both fold accents now, which also fixes the sidebar preview shipped in 8.6.0.
+- **A word split by formatting is emphasised.** A word written half in bold, or inside a link, is one word to the archive and several pieces to the browser, so it was matched by the search and then emphasised nowhere.
+
+### Note
+
+No database change, and no change to what the search finds — only to what is emphasised once it has found it. The viewer half takes effect as soon as you pull the viewer image.
+
 ## [8.6.0] - 2026-09-03
 
 Search finds messages across the whole archive, from the one field the sidebar already had.

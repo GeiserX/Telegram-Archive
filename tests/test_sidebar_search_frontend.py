@@ -32,8 +32,11 @@ const filteredChats = computed(() => searchQuery.value.trim() ? searchResults.va
 const parseTelegramLink = () => null;
 const openTelegramLink = async () => {};
 const opened = [];
+const messageHighlight = ref(null);
+const selectedChat = ref(null);
+let openOutcome = true;
 const selectChat = async chat => { opened.push(['chat', chat.ref]); };
-const openNotificationTarget = async (chatRef, messageId) => { opened.push(['message', chatRef, messageId]); };
+const openNotificationTarget = async (chatRef, messageId) => { opened.push(['message', chatRef, messageId]); await new Promise(r => setTimeout(r, 5)); selectedChat.value = { ref: chatRef }; return openOutcome; };
 const requests = [];
 // Each request resolves when the test releases it, so answer order is under test control.
 const pending = new Map();
@@ -71,6 +74,7 @@ FUNCTIONS = (
     "moveSearchSelection",
     "openSearchSelection",
     "openMessageSearchResult",
+    "dropHitHighlight",
 )
 
 
@@ -91,6 +95,7 @@ def _script(body: str) -> str:
                 "onSearchEnter",
                 "moveSearchSelection",
                 "openSearchSelection",
+                "dropHitHighlight",
             ),
         )
         for name in FUNCTIONS
@@ -246,6 +251,9 @@ def test_snippet_windows_on_the_match_and_escapes_the_message() -> None:
             "const escapeHtml = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
             "const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
             "const SEARCH_WORD_RE = /[\\p{L}\\p{N}_]+/gu;",
+            _extract_const_arrow_function(html, "foldForMatch", asynchronous=False),
+            _extract_const_arrow_function(html, "searchMatchPattern", asynchronous=False),
+            _extract_const_arrow_function(html, "searchMatchRanges", asynchronous=False),
             _extract_const_arrow_function(html, "searchSnippetHtml", asynchronous=False),
             """
 const MARK = '<mark class="bg-tg-accent/30 text-tg-ink rounded-sm px-0.5">';
@@ -408,3 +416,115 @@ def test_the_chat_half_ignores_stale_answers_and_a_401_clears_its_rows() -> None
 })().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
 """)
     )
+
+
+def test_match_rule_is_word_prefix_any_order_case_insensitive() -> None:
+    """The one rule behind the sidebar snippet and the in-message marks: whole words that start with any query word."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            "const SEARCH_WORD_RE = /[\\p{L}\\p{N}_]+/gu;",
+            "const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+            _extract_const_arrow_function(html, "foldForMatch", asynchronous=False),
+            _extract_const_arrow_function(html, "searchMatchPattern", asynchronous=False),
+            _extract_const_arrow_function(html, "searchMatchRanges", asynchronous=False),
+            """
+const words = (text, query) => searchMatchRanges(text, searchMatchPattern(query)).map(([a, b]) => text.slice(a, b));
+// A prefix marks the whole word, case-insensitively, and each query word counts on its own, in any order.
+assert.deepEqual(words('Compra Zanahorias y numeros', 'zana'), ['Zanahorias']);
+assert.deepEqual(words('covid-19 numbers are in', 'num covid'), ['covid', 'numbers']);
+// A word boundary is required: nothing inside another word.
+assert.deepEqual(words('xzana zana', 'zana'), ['zana']);
+// Unicode letters are words; punctuation in the query is ignored; a query with no word matches nothing.
+assert.deepEqual(words('Año nuevo, niño', 'niñ'), ['niño']);
+assert.deepEqual(words('a+b (c)', '+++'), []);
+assert.equal(searchMatchPattern('+++'), null);
+// Regex metacharacters in a query word cannot escape into the pattern.
+assert.deepEqual(words('c++ and c#', 'c'), ['c', 'c']);
+assert.deepEqual(words('1.5 vs 1', '1.5'), ['1', '5', '1']);
+// Ranges are half-open offsets into the text.
+assert.deepEqual(searchMatchRanges('ab zanahoria', searchMatchPattern('zana')), [[3, 12]]);
+// SQLite folds diacritics, so the mark must land on the accented word the server matched —
+// both ways round, and on the ORIGINAL offsets whichever normal form the text arrives in.
+assert.deepEqual(words('cafe con leche', 'café'), ['cafe']);
+assert.deepEqual(words('café con leche', 'cafe'), ['café']);
+assert.deepEqual(words('mas o menos, más o menos', 'mas'), ['mas', 'más']);
+const decomposed = 'ma\u0301s tarde';   // NFD: m, a, combining acute, s
+assert.equal(decomposed.length, 10, 'the fixture must really be decomposed');
+assert.equal(decomposed.normalize('NFC').slice(0, 3), 'más');
+assert.deepEqual(words(decomposed, 'mas'), ['ma\u0301s']);
+assert.deepEqual(searchMatchRanges('un café', searchMatchPattern('cafe')), [[3, 7]]);
+// An entity splits a word across DOM text nodes; the applier joins them and matches once,
+// so the offsets have to be right across the seam.
+assert.deepEqual(searchMatchRanges('hola ' + 'mun' + 'do', searchMatchPattern('mundo')), [[5, 10]]);
+""",
+        ]
+    )
+    _run_node(script)
+
+
+def test_opening_a_hit_marks_that_message_only_for_the_search_that_produced_it() -> None:
+    _run_node(
+        _script("""
+(async () => {
+    // The hit opens and the query is unchanged: the intent names the row and the query.
+    searchQuery.value = 'zana';
+    await openMessageSearchResult({ id: 9, chat: { ref: 'chatB' } });
+    assert.deepEqual(opened, [['message', 'chatB', 9]]);
+    assert.deepEqual(messageHighlight.value, { query: 'zana', messageId: 9 });
+
+    // The chat could not be opened: nothing to mark.
+    messageHighlight.value = null; openOutcome = false;
+    await openMessageSearchResult({ id: 10, chat: { ref: 'chatC' } });
+    assert.equal(messageHighlight.value, null);
+    openOutcome = true;
+
+    // The query changed while the navigation ran: the old search does not mark the new one's pane.
+    searchQuery.value = 'first';
+    const opening = openMessageSearchResult({ id: 11, chat: { ref: 'chatD' } });
+    searchQuery.value = 'second';
+    await opening;
+    assert.equal(messageHighlight.value, null, 'a superseded search must not mark');
+
+    // An empty field still opens the hit (keyboard path) but marks nothing.
+    searchQuery.value = '';
+    await openMessageSearchResult({ id: 12, chat: { ref: 'chatE' } });
+    assert.equal(opened[opened.length - 1][1], 'chatE');
+    assert.equal(messageHighlight.value, null);
+})().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
+""")
+    )
+
+
+def test_a_hit_mark_belongs_to_the_search_that_opened_it() -> None:
+    """Clearing or retyping the field takes the mark away; the in-chat filter's own marks stay."""
+    _run_node(
+        _script("""
+(async () => {
+    // The field is watched, and the watcher is this function: any change drops a hit mark.
+    searchQuery.value = 'zana';
+    await openMessageSearchResult({ id: 9, chat: { ref: 'chatB' } });
+    assert.deepEqual(messageHighlight.value, { query: 'zana', messageId: 9 });
+    dropHitHighlight();
+    assert.equal(messageHighlight.value, null, 'a hit mark must not outlive its search');
+
+    // The in-chat filter marks every row and has no message id: its box owns those.
+    messageHighlight.value = { query: 'needle', messageId: null };
+    dropHitHighlight();
+    assert.deepEqual(messageHighlight.value, { query: 'needle', messageId: null });
+
+    // Nothing marked: nothing to do.
+    messageHighlight.value = null;
+    dropHitHighlight();
+    assert.equal(messageHighlight.value, null);
+})().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
+""")
+    )
+
+
+def test_the_field_watcher_is_wired_to_the_drop() -> None:
+    """The behaviour above only reaches the user if the field actually drives it."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "watch(() => searchQuery.value.trim(), dropHitHighlight)" in html
