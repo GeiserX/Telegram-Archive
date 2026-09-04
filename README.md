@@ -155,7 +155,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:8.7.0 \
+  drumsergio/telegram-archive:8.8.0 \
   python -m src auth
 ```
 
@@ -166,7 +166,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:8.7.0 \
+  drumsergio/telegram-archive:8.8.0 \
   python -m src auth
 
 # Then restart the backup container
@@ -207,7 +207,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.7.0
+    image: drumsergio/telegram-archive-viewer:8.8.0
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -355,6 +355,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VIEWER_PORT` | `8080` | B | Viewer port for SQLite realtime push from backup/listener. The shipped compose overrides it to `8000`, the viewer container's port |
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `VIEWER_DEFAULT_THEME` | *(unset — Slate)* | V | Default color theme for browsers with no saved choice: `slate`, `night`, `amoled`, `forest`, `aubergine`, `day`, `paper`. The in-app picker overrides it per browser |
+| `VIEWER_CHAT_BACKGROUND` | *(unset — none)* | V | Wallpaper behind the messages: a file name the viewer serves from `/static`, so mount the image into the container (`- ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro`). Bubbles turn opaque and the image is tinted with the palette's own background, so one picture suits a light and a dark theme |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
 | `THUMBNAIL_CACHE_DIR` | `$BACKUP_PATH/media/.thumbs` | V | Where generated thumbnails are cached. Falls back to `/tmp/telegram-archive-thumbs` when the media directory is not writable |
 | **Security** | | | |
@@ -623,9 +624,9 @@ want and run `docker compose up -d`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.7.0
+    image: drumsergio/telegram-archive:8.8.0
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.7.0
+    image: drumsergio/telegram-archive-viewer:8.8.0
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available
@@ -640,8 +641,8 @@ start:
 
 ```bash
 git pull
-docker build -t drumsergio/telegram-archive:8.7.0 .
-docker build -t drumsergio/telegram-archive-viewer:8.7.0 -f Dockerfile.viewer .
+docker build -t drumsergio/telegram-archive:8.8.0 .
+docker build -t drumsergio/telegram-archive-viewer:8.8.0 -f Dockerfile.viewer .
 docker compose up -d
 ```
 

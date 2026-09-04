@@ -80,6 +80,25 @@
             /* Foreground on a solid accent-strong fill. White in every palette:
                ink is dark in the light themes and vanished on the blue. */
             --tg-on-accent: 255 255 255;
+            /* Chat wallpaper: off unless VIEWER_CHAT_BACKGROUND names a file in
+               /static. The server appends its declarations at the end of this
+               block (see _chat_background_css), so the defaults here are what
+               applies when it is unset, and the bubble alphas below are the
+               translucency the themes are drawn with. */
+            --viewer-chat-background: none;
+            --viewer-chat-tint: none;
+            --tg-bubble-alpha-own: 0.95;
+            --tg-bubble-alpha-other: 0.80;
+            /* The other surfaces that float over the pane. Same story as the
+               bubbles: translucent by design over a flat colour, and unreadable
+               over a picture, so the server turns them opaque with the rest.
+               These defaults ARE today's values — with no wallpaper nothing
+               about the pane changes. */
+            --tg-chip-bg: rgb(var(--tg-sidebar) / 0.85);
+            --tg-service-bg: rgba(0, 0, 0, 0.3);
+            --tg-service-fg: rgba(255, 255, 255, 0.8);
+            --tg-pane-note-opacity: 0.5;
+            __VIEWER_CHAT_BACKGROUND__
             /* Neutral scale: exactly Tailwind's gray levels, so the dark
                palettes render byte-identically to the old gray-N utilities.
                The dark palettes share it (only the light ones override). */
@@ -351,6 +370,16 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             overflow-x: hidden;
+            /* The tint layer sits over the image so one wallpaper works under a
+               light and a dark palette. Both are `none` unless the server turned
+               the wallpaper on. `attachment` stays at its default (`scroll`): the
+               pane IS the viewport here, so the image already stays put, and
+               `fixed` repaints the whole layer on every scroll frame in mobile
+               Safari, where this pane also carries -webkit-overflow-scrolling. */
+            background-image: var(--viewer-chat-tint), var(--viewer-chat-background);
+            background-position: center;
+            background-size: cover;
+            background-repeat: no-repeat;
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
@@ -435,7 +464,7 @@
 
         .floating-date-pill button,
         .date-separator button {
-            background-color: rgb(var(--tg-sidebar) / 0.85);
+            background-color: var(--tg-chip-bg);
             -webkit-backdrop-filter: blur(6px);
             backdrop-filter: blur(6px);
             border: 0;
@@ -1647,7 +1676,7 @@
                                 <template v-for="view in [serviceMessageView(msg)]" :key="msg.id">
                                     <div v-if="view.tail || view.actor"
                                         class="service-message px-4 py-1.5 rounded-full text-xs text-center max-w-[80%]"
-                                        style="background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);">
+                                        style="background: var(--tg-service-bg); color: var(--tg-service-fg);">
                                         <button v-if="view.clickable" type="button"
                                             @click="openSenderInfo(msg, $event)"
                                             :aria-label="`Show sender details for ${view.actor}`"
@@ -2075,7 +2104,8 @@
                         <!-- Scroll sentinel for intersection observer - triggers loading when visible -->
                         <div v-if="hasMore && !loading && messages.length > 0" ref="loadMoreSentinel" class="h-1"></div>
 
-                        <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs opacity-50">
+                        <div v-if="!hasMore && messages.length > 0" class="text-center py-3 text-tg-muted text-xs"
+                            :style="{ opacity: 'var(--tg-pane-note-opacity)' }">
                             Beginning of chat history
                         </div>
 
@@ -6707,17 +6737,13 @@
                 }
 
                 // Get background color for message bubble
-                const getMessageBackground = (msg) => {
-                    const isOwn = isOwnMessage(msg)
-
-                    if (isOwn) {
-                        // Own messages: the theme's own-bubble color
-                        return 'rgb(var(--tg-own) / 0.95)'
-                    } else {
-                        // Others: the theme's incoming-bubble color
-                        return 'rgb(var(--tg-other) / 0.80)'
-                    }
-                }
+                // The alpha is a theme token, not a decision made here: reading a
+                // custom property off documentElement per bubble forces a style
+                // recalculation on every render, for a value that cannot change
+                // after the page is served. CSS switches it when a wallpaper is on.
+                const getMessageBackground = (msg) => isOwnMessage(msg)
+                    ? 'rgb(var(--tg-own) / var(--tg-bubble-alpha-own))'
+                    : 'rgb(var(--tg-other) / var(--tg-bubble-alpha-other))'
 
                 // Get color for sender name (unique per person)
                 const getSenderNameColor = (msg) => {
