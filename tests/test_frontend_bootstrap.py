@@ -602,6 +602,19 @@ def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
     assert "--viewer-chat-tint: none;" in root
     assert "--tg-bubble-alpha-own: 0.95;" in root
     assert "--tg-bubble-alpha-other: 0.80;" in root
+    # The other surfaces that float over the pane are translucent by design and
+    # unreadable over a picture, so they carry tokens too. Every default here is
+    # the value the pane already used: with no wallpaper, nothing changes.
+    assert "--tg-chip-bg: rgb(var(--tg-sidebar) / 0.85);" in root
+    assert "--tg-service-bg: rgba(0, 0, 0, 0.3);" in root
+    assert "--tg-service-fg: rgba(255, 255, 255, 0.8);" in root
+    assert "--tg-pane-note-opacity: 0.5;" in root
+    assert "background-color: var(--tg-chip-bg);" in html
+    assert 'style="background: var(--tg-service-bg); color: var(--tg-service-fg);"' in html
+    assert "opacity: 'var(--tg-pane-note-opacity)'" in html
+    # Nothing may keep the hardcoded fills those tokens replaced.
+    assert "background: rgba(0,0,0,0.3)" not in html
+    assert "background-color: rgb(var(--tg-sidebar) / 0.85)" not in html
     assert root.index("--tg-bubble-alpha-own: 0.95;") < root.index("__VIEWER_CHAT_BACKGROUND__")
     assert html.count("__VIEWER_CHAT_BACKGROUND__") == 1
 

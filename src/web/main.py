@@ -718,6 +718,9 @@ def _chat_background_css(name: str) -> str:
         f"--viewer-chat-background: url('/static/{name}');"
         " --viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55), rgb(var(--tg-bg) / 0.55));"
         " --tg-bubble-alpha-own: 1; --tg-bubble-alpha-other: 1;"
+        " --tg-chip-bg: rgb(var(--tg-sidebar));"
+        " --tg-service-bg: rgb(var(--tg-other)); --tg-service-fg: rgb(var(--tg-text));"
+        " --tg-pane-note-opacity: 1;"
     )
 
 
@@ -725,6 +728,15 @@ def _chat_background_css(name: str) -> str:
 # (localStorage) always wins over this.
 VIEWER_DEFAULT_THEME = _sanitize_theme_slug(os.getenv("VIEWER_DEFAULT_THEME", ""))
 VIEWER_CHAT_BACKGROUND = _sanitize_chat_background(os.getenv("VIEWER_CHAT_BACKGROUND", ""))
+_configured_chat_background = os.getenv("VIEWER_CHAT_BACKGROUND", "").strip()
+if _configured_chat_background and not VIEWER_CHAT_BACKGROUND:
+    # A name that cannot be a name: say so, or the pane is just silently plain.
+    logger.warning("VIEWER_CHAT_BACKGROUND is not a plain file name and was ignored")
+elif VIEWER_CHAT_BACKGROUND and not (Path(__file__).parent / "static" / VIEWER_CHAT_BACKGROUND).is_file():
+    logger.warning(
+        "VIEWER_CHAT_BACKGROUND names a file the viewer cannot see; mount it into the "
+        "container's static directory (see docker-compose.yml)"
+    )
 
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()

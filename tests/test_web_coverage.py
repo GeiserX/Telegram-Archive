@@ -8,6 +8,7 @@ push subscribe/unsubscribe/get_subscriptions with SQLAlchemy sessions.
 import asyncio
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -715,6 +716,10 @@ class TestRootEndpoint(_WebTestBase):
             self.assertIn("--tg-bubble-alpha-own: 1;", resp.text)
             self.assertIn("--tg-bubble-alpha-other: 1;", resp.text)
             self.assertIn("--viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55)", resp.text)
+            # Bubbles are not the only translucent surface over the pane.
+            self.assertIn("--tg-chip-bg: rgb(var(--tg-sidebar));", resp.text)
+            self.assertIn("--tg-service-bg: rgb(var(--tg-other));", resp.text)
+            self.assertIn("--tg-pane-note-opacity: 1;", resp.text)
             self.assertNotIn("__VIEWER_CHAT_BACKGROUND__", resp.text)
 
     async def test_root_without_a_chat_background_declares_nothing(self):
@@ -732,6 +737,14 @@ class TestRootEndpoint(_WebTestBase):
             self.assertIn(":root {  }", resp.text)
             self.assertNotIn("--viewer-chat-background:", resp.text)
             self.assertNotIn("__VIEWER_CHAT_BACKGROUND__", resp.text)
+
+    async def test_the_real_page_is_served_with_every_placeholder_substituted(self):
+        """The shipped template, not a stub: a placeholder nobody substitutes ships visibly broken."""
+        async with self._client() as client:
+            resp = await client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        left = re.findall(r"__[A-Z][A-Z0-9_]+__", resp.text)
+        self.assertEqual(left, [], f"unsubstituted placeholders in the served page: {sorted(set(left))}")
 
     def test_sanitize_chat_background(self):
         """A bare file name under /static, or nothing at all."""
