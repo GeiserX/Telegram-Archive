@@ -8,6 +8,7 @@ push subscribe/unsubscribe/get_subscriptions with SQLAlchemy sessions.
 import asyncio
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -696,6 +697,90 @@ class TestRootEndpoint(_WebTestBase):
                 async with self._client() as client:
                     resp = await client.get("/")
                 self.assertIn("theme=''", resp.text)
+
+    async def test_root_substitutes_the_chat_background(self):
+        """A configured wallpaper arrives as CSS declarations, not as a file name."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = os.path.join(tmpdir, "index.html")
+            with open(index_path, "w") as f:
+                f.write("<html><style>:root { __VIEWER_CHAT_BACKGROUND__ }</style></html>")
+            with (
+                patch.object(web_main, "templates_dir", web_main.Path(tmpdir)),
+                patch.object(web_main, "VIEWER_CHAT_BACKGROUND", "wall.jpg"),
+            ):
+                async with self._client() as client:
+                    resp = await client.get("/")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("--viewer-chat-background: url('/static/wall.jpg');", resp.text)
+            # The bubbles go opaque with it, and the tint rides the theme's own background.
+            self.assertIn("--tg-bubble-alpha-own: 1;", resp.text)
+            self.assertIn("--tg-bubble-alpha-other: 1;", resp.text)
+            self.assertIn("--viewer-chat-tint: linear-gradient(rgb(var(--tg-bg) / 0.55)", resp.text)
+            # Bubbles are not the only translucent surface over the pane.
+            self.assertIn("--tg-chip-bg: rgb(var(--tg-sidebar));", resp.text)
+            self.assertIn("--tg-service-bg: rgb(var(--tg-other));", resp.text)
+            self.assertIn("--tg-pane-note-opacity: 1;", resp.text)
+            self.assertNotIn("__VIEWER_CHAT_BACKGROUND__", resp.text)
+
+    async def test_root_without_a_chat_background_declares_nothing(self):
+        """Unset leaves the block empty, so the :root defaults apply untouched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = os.path.join(tmpdir, "index.html")
+            with open(index_path, "w") as f:
+                f.write("<html><style>:root { __VIEWER_CHAT_BACKGROUND__ }</style></html>")
+            with (
+                patch.object(web_main, "templates_dir", web_main.Path(tmpdir)),
+                patch.object(web_main, "VIEWER_CHAT_BACKGROUND", ""),
+            ):
+                async with self._client() as client:
+                    resp = await client.get("/")
+            self.assertIn(":root {  }", resp.text)
+            self.assertNotIn("--viewer-chat-background:", resp.text)
+            self.assertNotIn("__VIEWER_CHAT_BACKGROUND__", resp.text)
+
+    async def test_the_real_page_is_served_with_every_placeholder_substituted(self):
+        """The shipped template, not a stub: a placeholder nobody substitutes ships visibly broken."""
+        async with self._client() as client:
+            resp = await client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        left = re.findall(r"__[A-Z][A-Z0-9_]+__", resp.text)
+        self.assertEqual(left, [], f"unsubstituted placeholders in the served page: {sorted(set(left))}")
+
+    def test_sanitize_chat_background(self):
+        """A bare file name under /static, or nothing at all."""
+        accepted = ("wall.jpg", "Wall_2.PNG", "a", "bg-image.v2.webp", "9" * 128)
+        for value in accepted:
+            self.assertEqual(web_main._sanitize_chat_background(value), value, value)
+        self.assertEqual(web_main._sanitize_chat_background("  wall.jpg  "), "wall.jpg")
+
+        rejected = (
+            "",
+            "   ",
+            "../../etc/passwd",  # no separator can appear at all
+            "..%2Fetc%2Fpasswd",
+            "sub/dir.jpg",
+            "sub\\dir.jpg",
+            ".hidden.jpg",  # must start alphanumeric, so no dotfiles
+            "..",
+            "wall.jpg'); background: url('http://evil.example/x",  # cannot leave the url()
+            "wall.jpg; --tg-bg: 255 0 0",  # cannot append a declaration
+            "</style><script>alert(1)</script>",  # cannot leave the stylesheet
+            "http://evil.example/x.jpg",
+            "//evil.example/x.jpg",
+            "wall .jpg",
+            "wall\n.jpg",
+            "café.jpg",  # non-ASCII is dropped rather than encoded
+            "a" * 129,
+        )
+        for value in rejected:
+            self.assertEqual(web_main._sanitize_chat_background(value), "", repr(value))
+
+        # Nothing that survives can carry a character the CSS context reacts to.
+        for value in accepted:
+            css = web_main._chat_background_css(web_main._sanitize_chat_background(value))
+            self.assertNotIn("<", css)
+            self.assertEqual(css.count("'"), 2)
+        self.assertEqual(web_main._chat_background_css(""), "")
 
     def test_sanitize_theme_slug(self):
         """Only a strict slug survives; the value is baked into a JS string."""

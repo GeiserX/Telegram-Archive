@@ -579,6 +579,54 @@ def test_pagination_reset_called_at_all_entry_points():
     assert "resetMessagePagination()" in search_body
 
 
+def test_chat_wallpaper_is_a_theme_token_not_a_per_render_style_read():
+    """The bubble alpha switches in CSS, so no bubble reads computed style to draw itself.
+
+    getMessageBackground runs once per bubble per render, on every poll tick.
+    Reading a custom property off documentElement there forces a style
+    recalculation for a value the server fixed before the page was sent.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    start = html.index("const getMessageBackground = (msg) =>")
+    body = html[start : html.index("\n                const ", start + 10)]
+    assert "getComputedStyle" not in body
+    assert "rgb(var(--tg-own) / var(--tg-bubble-alpha-own))" in body
+    assert "rgb(var(--tg-other) / var(--tg-bubble-alpha-other))" in body
+
+    # The defaults are the translucency the themes are drawn with, and the
+    # server's block is the last thing in :root so it can override them.
+    root = html[html.index("        :root {\n            --tg-bg:") :]
+    root = root[: root.index("\n        }")]
+    assert "--viewer-chat-background: none;" in root
+    assert "--viewer-chat-tint: none;" in root
+    assert "--tg-bubble-alpha-own: 0.95;" in root
+    assert "--tg-bubble-alpha-other: 0.80;" in root
+    # The other surfaces that float over the pane are translucent by design and
+    # unreadable over a picture, so they carry tokens too. Every default here is
+    # the value the pane already used: with no wallpaper, nothing changes.
+    assert "--tg-chip-bg: rgb(var(--tg-sidebar) / 0.85);" in root
+    assert "--tg-service-bg: rgba(0, 0, 0, 0.3);" in root
+    assert "--tg-service-fg: rgba(255, 255, 255, 0.8);" in root
+    assert "--tg-pane-note-opacity: 0.5;" in root
+    assert "background-color: var(--tg-chip-bg);" in html
+    assert 'style="background: var(--tg-service-bg); color: var(--tg-service-fg);"' in html
+    assert "opacity: 'var(--tg-pane-note-opacity)'" in html
+    # Nothing may keep the hardcoded fills those tokens replaced.
+    assert "background: rgba(0,0,0,0.3)" not in html
+    assert "background-color: rgb(var(--tg-sidebar) / 0.85)" not in html
+    assert root.index("--tg-bubble-alpha-own: 0.95;") < root.index("__VIEWER_CHAT_BACKGROUND__")
+    assert html.count("__VIEWER_CHAT_BACKGROUND__") == 1
+
+    # The pane paints the tint over the image; both are none until the server says otherwise.
+    pane_start = html.index("        .messages-scroll {")
+    pane = html[pane_start : html.index("\n        }", pane_start)]
+    assert "background-image: var(--viewer-chat-tint), var(--viewer-chat-background);" in pane
+    # `fixed` repaints the whole layer per scroll frame in mobile Safari, and this
+    # pane is the viewport for its own scrolling, so the default already holds it still.
+    assert "background-attachment" not in pane
+
+
 def test_topic_filter_mirrors_backend_default():
     """The viewer's topic filter must mirror the backend's General-topic coalesce default."""
     html = INDEX_HTML.read_text(encoding="utf-8")
