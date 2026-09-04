@@ -440,6 +440,96 @@ const scrollToBottom = () => { calls.push('scroll'); };
 
 
 # --------------------------------------------------------------------------------------
+# In-chat filter marks: an intent set before the load, cleared by every view entry
+# --------------------------------------------------------------------------------------
+
+
+def test_in_chat_filter_sets_the_mark_intent_before_loading_and_every_view_entry_clears_it() -> None:
+    """The marks come from a reactive intent, never from the query read after an await.
+
+    searchMessages sets the intent BEFORE loadMessages, so the rows the load renders
+    (and every later page) are marked by the applier; an empty query clears it; and
+    resetMessagePagination, the chokepoint every view entry passes through, clears it
+    too, which is what keeps a chat switch mid-load from marking the wrong pane.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    script = "\n".join(
+        [
+            '"use strict";',
+            "const assert = require('node:assert/strict');",
+            """
+const ref = value => ({ value });
+let chatVersion = 0;
+const loading = ref(false);
+const messages = ref([{ id: 1 }]);
+const messageSearchQuery = ref('needle');
+const messageHighlight = ref({ query: 'stale', messageId: 4 });
+const order = [];
+const page = ref(3);
+const hasMore = ref(false);
+let oldestMessageCursor = 'x';
+let loadFailureStreak = 2;
+const hasMoreNewer = ref(true);
+const loadingNewer = ref(true);
+const newerLoadError = ref('e');
+let newestMessageId = 5;
+let newerLoadRequestSeq = 0;
+const resetCalendarAvailability = () => {};
+const viewingPinnedWindow = ref(true);
+const messageWindowIsContiguous = ref(true);
+const unseenMessageCount = ref(2);
+const loadMessages = async () => { order.push(['load', JSON.stringify(messageHighlight.value)]); };
+""",
+            _extract_const_arrow_function(html, "resetMessagePagination", asynchronous=False),
+            _extract_const_arrow_function(html, "searchMessages", asynchronous=True),
+            """
+(async () => {
+    await searchMessages();
+    // The load saw the intent already set for its own query.
+    assert.deepEqual(order, [['load', JSON.stringify({ query: 'needle', messageId: null })]]);
+    assert.deepEqual(messageHighlight.value, { query: 'needle', messageId: null });
+
+    // Clearing the box clears the intent.
+    messageSearchQuery.value = '   ';
+    await searchMessages();
+    assert.equal(messageHighlight.value, null);
+
+    // Any view entry drops whatever the previous view emphasised.
+    messageHighlight.value = { query: 'needle', messageId: 7 };
+    resetMessagePagination();
+    assert.equal(messageHighlight.value, null);
+})().catch(error => {
+    process.stderr.write(`${error.stack}\\n`);
+    process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+    _run_node(script)
+
+
+def test_search_marks_never_mutate_the_vue_managed_container() -> None:
+    """The applier may only rewrite nodes inside .message-text (v-html output).
+
+    Vue 3 delimits its fragments with empty text nodes. A normalize() on the
+    messages container removed them, and every later patch of the list failed
+    silently: the in-chat filter kept showing the tail on the real instance.
+    """
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    body = _extract_const_arrow_function(html, "applyMessageHighlight", asynchronous=False)
+    assert "container.normalize()" not in body
+    assert "block.normalize()" in body
+    # Unwrapping and marking both start from a .message-text block, never from the container.
+    assert "container.querySelectorAll('.message-text')" in body
+    assert "container.querySelectorAll('mark" not in body
+    marker = _extract_const_arrow_function(html, "markMatchesIn", asynchronous=False)
+    assert "textNode.replaceWith(fragment)" in marker
+    assert "normalize" not in marker
+
+
+# --------------------------------------------------------------------------------------
 # S16 — the push deep link silently did nothing outside the first 50 non-archived chats
 # --------------------------------------------------------------------------------------
 
