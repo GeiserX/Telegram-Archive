@@ -271,7 +271,10 @@ services:
       - ./data:/data
       # Wallpaper behind the messages (VIEWER_CHAT_BACKGROUND). The name must
       # match the variable, and the mount has to be re-stated after an image
-      # update — nothing written inside the container survives one.
+      # update — nothing written inside the container survives one, and this
+      # service runs with a read-only root filesystem, so a bind mount is the
+      # only way in. Mount the FILE: a directory mounted over the static one
+      # hides the app's own assets and the viewer comes up blank.
       # - ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro
     networks:
       - telegram-network
