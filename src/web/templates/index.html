@@ -59,6 +59,7 @@
            sets data-theme on <html>; every block below restates EVERY token
            (a missing one would silently fall through to Slate's value). */
         :root {
+            --viewer-chat-background: __VIEWER_CHAT_BACKGROUND__;
             --tg-bg: 15 23 42;
             --tg-sidebar: 30 41 59;
             --tg-hover: 51 65 85;
@@ -351,6 +352,11 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior-y: contain;
             overflow-x: hidden;
+            background-image: var(--viewer-chat-background);
+            background-position: left;
+            background-size: cover;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
         }
 
         /* Media and full-width link cards stretch to the bubble. The `a` arm is
@@ -6709,13 +6715,20 @@
                 // Get background color for message bubble
                 const getMessageBackground = (msg) => {
                     const isOwn = isOwnMessage(msg)
+                    const chatBackground = getComputedStyle(document.documentElement)
+                        .getPropertyValue('--viewer-chat-background')
+                        .trim()
 
                     if (isOwn) {
                         // Own messages: the theme's own-bubble color
-                        return 'rgb(var(--tg-own) / 0.95)'
+                        return chatBackground && chatBackground !== 'none'
+                            ? 'rgb(var(--tg-own) / 1)'
+                            : 'rgb(var(--tg-own) / 0.95)'
                     } else {
                         // Others: the theme's incoming-bubble color
-                        return 'rgb(var(--tg-other) / 0.80)'
+                        return chatBackground && chatBackground !== 'none'
+                            ? 'rgb(var(--tg-other) / 1)'
+                            : 'rgb(var(--tg-other) / 0.80)'
                     }
                 }
 

@@ -691,7 +691,19 @@ def _sanitize_theme_slug(value: str) -> str:
 
 # Default palette for browsers with no saved choice. A user's picker choice
 # (localStorage) always wins over this.
+def _sanitize_chat_background(value: str) -> str:
+    """Return a safe CSS background-image value for a static viewer asset."""
+    value = value.strip()
+    if not value:
+        return "none"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        return "none"
+    return f"url('/static/{value}')"
+
 VIEWER_DEFAULT_THEME = _sanitize_theme_slug(os.getenv("VIEWER_DEFAULT_THEME", ""))
+VIEWER_CHAT_BACKGROUND = _sanitize_chat_background(
+    os.getenv("VIEWER_CHAT_BACKGROUND", "")
+)
 
 VIEWER_USERNAME = os.getenv("VIEWER_USERNAME", "").strip()
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "").strip()
@@ -1760,6 +1772,7 @@ async def read_root():
     """
     html = (templates_dir / "index.html").read_text(encoding="utf-8")
     html = html.replace("__VIEWER_DEFAULT_THEME__", VIEWER_DEFAULT_THEME)
+    html = html.replace("__VIEWER_CHAT_BACKGROUND__", VIEWER_CHAT_BACKGROUND)
     return HTMLResponse(
         html,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
