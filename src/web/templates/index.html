@@ -2183,6 +2183,13 @@
                                 {{ selectedChat.title }}
                             </div>
 
+                            <div v-if="selectedChat.description" class="mt-2">
+                                <div class="text-tg-ink">Description:</div>
+                                <div class="mt-1 whitespace-pre-wrap break-words">
+                                    {{ selectedChat.description }}
+                                </div>
+                            </div>
+
                             <div>
                                 <span class="text-tg-ink">ID:</span>
                                 {{ selectedChat.id }}

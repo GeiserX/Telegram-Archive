@@ -2107,6 +2107,50 @@ class TelegramBackup:
 
         # Save chat information
         chat_data = self._extract_chat_data(entity, is_archived=is_archived)
+
+        # Optionally fetch the current Telegram group/channel description.
+        # The lightweight dialog entity does not contain the full "about" text.
+        if self.config.download_chat_description:
+            try:
+                logger.info(
+                    f"Downloading chat description for: "
+                    f"{getattr(entity, 'title', None) or chat_id}"
+                )
+
+                if isinstance(entity, Channel):
+                    from telethon.tl.functions.channels import GetFullChannelRequest
+
+                    full_chat = await call_with_flood_retry(
+                        self.client,
+                        GetFullChannelRequest(channel=entity),
+                    )
+                    description = getattr(full_chat.full_chat, "about", None)
+                    chat_data["description"] = description
+
+                elif isinstance(entity, Chat):
+                    from telethon.tl.functions.messages import GetFullChatRequest
+
+                    full_chat = await call_with_flood_retry(
+                        self.client,
+                        GetFullChatRequest(chat_id=entity.id),
+                    )
+                    description = getattr(full_chat.full_chat, "about", None)
+                    chat_data["description"] = description
+
+                else:
+                    description = None
+
+                logger.info(
+                    f"Chat description downloaded: "
+                    f"{len(description or '')} characters"
+                )
+
+            except Exception as e:
+                logger.warning(
+                    f"Could not fetch chat description for {chat_id}: "
+                    f"{e.__class__.__name__}: {e}"
+                )
+        
         await self.db.upsert_chat(chat_data, account_id=self.account_id)
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
