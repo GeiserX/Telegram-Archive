@@ -700,6 +700,29 @@
             word-break: break-word;
         }
 
+        /* ---- Message info panel resize ---- */
+        .info-panel-resize-handle {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 10px;
+            cursor: ew-resize;
+            z-index: 100;
+            user-select: none;
+            touch-action: none;
+        }
+
+        .info-panel-resize-handle:hover,
+        .info-panel-resize-handle.resizing {
+            background: rgb(var(--tg-accent) / 0.25);
+        }
+
+        body.info-panel-resizing {
+            cursor: ew-resize !important;
+            user-select: none !important;
+        }
+
         /* ---- Mobile polish (app-like feel) ---- */
         @media (max-width: 767px) {
             /* Comfortable reading rhythm, closer to the native apps. */
@@ -2177,7 +2200,17 @@
 
             <!-- Message Info Panel -->
             <aside v-if="showInfoPanel"
-                class="w-[360px] max-w-[40vw] shrink-0 bg-tg-sidebar border-l border-tg-n700 flex flex-col">
+                class="relative shrink-0 bg-tg-sidebar border-l border-tg-n700 flex flex-col"
+                :style="{ width: `${infoPanelWidth}px` }">
+
+                <!-- Resize handle -->
+                <div
+                    class="info-panel-resize-handle"
+                    @pointerdown="startInfoPanelResize"
+                    title="Resize information panel"
+                    aria-label="Resize information panel"
+                ></div>
+
                 <div class="flex items-center justify-between px-4 py-3 border-b border-tg-n700">
                     <h2 class="text-lg font-semibold text-tg-ink">Information</h2>
                 </div>
@@ -3171,6 +3204,67 @@
                 const selectedChat = ref(null)
                 const selectedMessage = ref(null)
                 const showInfoPanel = ref(false)
+
+                const INFO_PANEL_MIN_WIDTH = 280
+                const INFO_PANEL_MAX_WIDTH = 600
+
+                const storedInfoPanelWidth = Number(
+                    localStorage.getItem('infoPanelWidth')
+                )
+
+                const infoPanelWidth = ref(
+                    Number.isFinite(storedInfoPanelWidth) &&
+                    storedInfoPanelWidth >= INFO_PANEL_MIN_WIDTH &&
+                    storedInfoPanelWidth <= INFO_PANEL_MAX_WIDTH
+                        ? storedInfoPanelWidth
+                        : INFO_PANEL_MIN_WIDTH
+                )
+
+                const startInfoPanelResize = (event) => {
+                    if (event.button !== 0) return
+
+                    const handle = event.currentTarget
+                    const startX = event.clientX
+                    const startWidth = infoPanelWidth.value
+
+                    handle.setPointerCapture(event.pointerId)
+                    handle.classList.add('resizing')
+                    document.body.classList.add('info-panel-resizing')
+
+                    const onPointerMove = (moveEvent) => {
+                        const delta = startX - moveEvent.clientX
+
+                        infoPanelWidth.value = Math.min(
+                            INFO_PANEL_MAX_WIDTH,
+                            Math.max(
+                                INFO_PANEL_MIN_WIDTH,
+                                startWidth + delta
+                            )
+                        )
+                    }
+
+                    const onPointerUp = (upEvent) => {
+                        handle.releasePointerCapture(upEvent.pointerId)
+                        handle.classList.remove('resizing')
+                        document.body.classList.remove('info-panel-resizing')
+
+                        localStorage.setItem(
+                            'infoPanelWidth',
+                            String(Math.round(infoPanelWidth.value))
+                        )
+
+                        handle.removeEventListener('pointermove', onPointerMove)
+                        handle.removeEventListener('pointerup', onPointerUp)
+                        handle.removeEventListener('pointercancel', onPointerUp)
+                    }
+
+                    handle.addEventListener('pointermove', onPointerMove)
+                    handle.addEventListener('pointerup', onPointerUp)
+                    handle.addEventListener('pointercancel', onPointerUp)
+
+                    event.preventDefault()
+                }
+
                 const showCopyToast = ref(false)
                 let copyToastTimer = null
                 const selectedPaneTopic = ref(null)
