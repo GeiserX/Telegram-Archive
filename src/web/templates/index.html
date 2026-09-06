@@ -2244,122 +2244,126 @@
 
                     <!-- Chat Information -->
                     <div v-if="selectedChat">
-                        <div class="flex items-start gap-3">
-                            <!-- Chat avatar - same logic as chat list -->
-                            <div
-                                class="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
-                                <img v-if="selectedChat.avatar_url"
-                                    :src="selectedChat.avatar_url"
-                                    class="w-full h-full object-cover"
-                                    @error="selectedChat.avatar_url = null"
-                                    :alt="getChatName(selectedChat)">
-                                <template v-else-if="isDeletedChat(selectedChat)">
-                                    <!-- Deleted account icon -->
-                                    <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M5 21a7 7 0 0114 0" />
-                                    </svg>
-                                </template>
-                                <template v-else>
-                                    {{ getInitials(selectedChat) }}
-                                </template>
-                            </div>
+                        <h3 class="text-sm font-semibold text-tg-ink mb-1">
+                            Chat
+                        </h3>
 
-                            <div class="min-w-0 flex-1">
-                                <h3 class="text-sm font-semibold text-tg-ink mb-1">
-                                    Chat
-                                </h3>
+                        <div class="border border-tg-n700 rounded-lg p-3">
+                            <div class="flex items-start gap-3">
+                                <!-- Chat avatar - same logic as chat list -->
+                                <div
+                                    class="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
+                                    <img v-if="selectedChat.avatar_url"
+                                        :src="selectedChat.avatar_url"
+                                        class="w-full h-full object-cover"
+                                        @error="selectedChat.avatar_url = null"
+                                        :alt="getChatName(selectedChat)">
+                                    <template v-else-if="isDeletedChat(selectedChat)">
+                                        <!-- Deleted account icon -->
+                                        <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M5 21a7 7 0 0114 0" />
+                                        </svg>
+                                    </template>
+                                    <template v-else>
+                                        {{ getInitials(selectedChat) }}
+                                    </template>
+                                </div>
 
-                                <div class="text-sm space-y-1 text-tg-muted">
-                                    <div v-if="selectedChat.title">
-                                        <span class="text-tg-ink">Title:</span>
-                                        {{ selectedChat.title }}
-                                    </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-sm space-y-1 text-tg-muted">
+                                        <div v-if="selectedChat.title">
+                                            <span class="text-tg-ink">Title:</span>
+                                            {{ selectedChat.title }}
+                                        </div>
 
-                                    <div>
-                                        <span class="text-tg-ink">ID:</span>
-                                        {{ selectedChat.id }}
-                                    </div>
+                                        <div>
+                                            <span class="text-tg-ink">ID:</span>
+                                            {{ selectedChat.id }}
+                                        </div>
 
-                                    <div>
-                                        <span class="text-tg-ink">Type:</span>
-                                        {{ selectedChat.type }}
-                                    </div>
+                                        <div>
+                                            <span class="text-tg-ink">Type:</span>
+                                            {{ selectedChat.type }}
+                                        </div>
 
-                                    <div v-if="selectedChat.username">
-                                        <span class="text-tg-ink">Username:</span>
-                                        @{{ selectedChat.username }}
+                                        <div v-if="selectedChat.username">
+                                            <span class="text-tg-ink">Username:</span>
+                                            @{{ selectedChat.username }}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <div v-if="selectedChat.description" class="mt-3 text-sm text-tg-muted">
-                            <div class="text-tg-ink">Description:</div>
-                            <div class="mt-1 whitespace-pre-wrap break-words">
-                                {{ selectedChat.description }}
-                            </div>
-                        </div>
-
-                        <div class="mt-2 text-sm text-tg-muted space-y-1">
-                            <div v-if="selectedChat.participants_count">
-                                <span class="text-tg-ink">Participants:</span>
-                                {{ selectedChat.participants_count.toLocaleString('en-US') }}
+                            <div v-if="selectedChat.description" class="mt-3 text-sm text-tg-muted">
+                                <div class="text-tg-ink">Description:</div>
+                                <div class="mt-1 whitespace-pre-wrap break-words">
+                                    {{ selectedChat.description }}
+                                </div>
                             </div>
 
-                            <div v-if="selectedChat.is_forum">
-                                <span class="text-tg-ink">Forum:</span>
-                                Yes
+                            <div class="mt-2 text-sm text-tg-muted space-y-1">
+                                <div v-if="selectedChat.participants_count">
+                                    <span class="text-tg-ink">Participants:</span>
+                                    {{ selectedChat.participants_count.toLocaleString('en-US') }}
+                                </div>
+
+                                <div v-if="selectedChat.is_forum">
+                                    <span class="text-tg-ink">Forum:</span>
+                                    Yes
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <!-- Topic Information -->
                     <div v-if="selectedPaneTopic">
-                        <div class="flex items-start gap-3">
-                            <!-- Topic icon - same logic as topic list -->
-                            <div
-                                class="w-16 h-16 rounded-full flex items-center justify-center text-tg-ink shrink-0"
-                                :style="{ backgroundColor: getTopicColor(selectedPaneTopic.icon_color) }">
-                                <span v-if="selectedPaneTopic.icon_emoji" class="text-2xl">
-                                    {{ selectedPaneTopic.icon_emoji }}
-                                </span>
-                                <svg v-else class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
-                                </svg>
-                            </div>
+                        <h3 class="text-sm font-semibold text-tg-ink mb-2">
+                            Topic
+                        </h3>
 
-                            <div class="min-w-0 flex-1">
-                                <h3 class="text-sm font-semibold text-tg-ink mb-1">
-                                    Topic
-                                </h3>
+                        <div class="border border-tg-n700 rounded-lg p-3">
+                            <div class="flex items-start gap-3">
+                                <!-- Topic icon - same logic as topic list -->
+                                <div
+                                    class="w-16 h-16 rounded-full flex items-center justify-center text-tg-ink shrink-0"
+                                    :style="{ backgroundColor: getTopicColor(selectedPaneTopic.icon_color) }">
+                                    <span v-if="selectedPaneTopic.icon_emoji" class="text-2xl">
+                                        {{ selectedPaneTopic.icon_emoji }}
+                                    </span>
+                                    <svg v-else class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
+                                    </svg>
+                                </div>
 
-                                <div class="text-sm space-y-1 text-tg-muted">
-                                    <div v-if="selectedPaneTopic.title">
-                                        <span class="text-tg-ink">Title:</span>
-                                        {{ selectedPaneTopic.title }}
-                                    </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-sm space-y-1 text-tg-muted">
+                                        <div v-if="selectedPaneTopic.title">
+                                            <span class="text-tg-ink">Title:</span>
+                                            {{ selectedPaneTopic.title }}
+                                        </div>
 
-                                    <div>
-                                        <span class="text-tg-ink">ID:</span>
-                                        {{ selectedPaneTopic.id }}
+                                        <div>
+                                            <span class="text-tg-ink">ID:</span>
+                                            {{ selectedPaneTopic.id }}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <div class="mt-2 text-sm text-tg-muted space-y-1">
-                            <div v-if="selectedPaneTopic.is_pinned">
-                                <span class="text-tg-ink">Pinned:</span>
-                                Yes
-                            </div>
+                            <div class="mt-2 text-sm text-tg-muted space-y-1">
+                                <div v-if="selectedPaneTopic.is_pinned">
+                                    <span class="text-tg-ink">Pinned:</span>
+                                    Yes
+                                </div>
 
-                            <div v-if="selectedPaneTopic.is_closed">
-                                <span class="text-tg-ink">Closed:</span>
-                                Yes
+                                <div v-if="selectedPaneTopic.is_closed">
+                                    <span class="text-tg-ink">Closed:</span>
+                                    Yes
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2370,75 +2374,77 @@
                             Message
                         </h3>
 
-                        <div class="text-sm space-y-1 text-tg-muted">
-                            <div>
-                                <span class="text-tg-ink">ID:</span>
-                                {{ selectedMessage.id }}
-                            </div>
+                        <div class="border border-tg-n700 rounded-lg p-3">
+                            <div class="text-sm space-y-1 text-tg-muted">
+                                <div>
+                                    <span class="text-tg-ink">ID:</span>
+                                    {{ selectedMessage.id }}
+                                </div>
 
-                            <div v-if="selectedMessage.chat_id != null">
-                                <span class="text-tg-ink">Chat ID:</span>
-                                {{ selectedMessage.chat_id }}
-                            </div>
+                                <div v-if="selectedMessage.chat_id != null">
+                                    <span class="text-tg-ink">Chat ID:</span>
+                                    {{ selectedMessage.chat_id }}
+                                </div>
 
-                            <div v-if="selectedMessage.sender_id != null">
-                                <span class="text-tg-ink">Sender ID:</span>
-                                {{ selectedMessage.sender_id }}
-                            </div>
+                                <div v-if="selectedMessage.sender_id != null">
+                                    <span class="text-tg-ink">Sender ID:</span>
+                                    {{ selectedMessage.sender_id }}
+                                </div>
 
-                            <div v-if="selectedMessage.sender_name">
-                                <span class="text-tg-ink">Sender:</span>
-                                {{ selectedMessage.sender_name }}
-                            </div>
+                                <div v-if="selectedMessage.sender_name">
+                                    <span class="text-tg-ink">Sender:</span>
+                                    {{ selectedMessage.sender_name }}
+                                </div>
 
-                            <div>
-                                <span class="text-tg-ink">Date:</span>
-                                {{ selectedMessage.date }}
-                            </div>
+                                <div>
+                                    <span class="text-tg-ink">Date:</span>
+                                    {{ selectedMessage.date }}
+                                </div>
 
-                            <div v-if="selectedMessage.edit_date">
-                                <span class="text-tg-ink">Edited:</span>
-                                {{ selectedMessage.edit_date }}
-                            </div>
+                                <div v-if="selectedMessage.edit_date">
+                                    <span class="text-tg-ink">Edited:</span>
+                                    {{ selectedMessage.edit_date }}
+                                </div>
 
-                            <div v-if="selectedMessage.reply_to_msg_id != null">
-                                <span class="text-tg-ink">Reply to:</span>
-                                {{ selectedMessage.reply_to_msg_id }}
-                            </div>
+                                <div v-if="selectedMessage.reply_to_msg_id != null">
+                                    <span class="text-tg-ink">Reply to:</span>
+                                    {{ selectedMessage.reply_to_msg_id }}
+                                </div>
 
-                            <div v-if="selectedMessage.reply_to_top_id != null">
-                                <span class="text-tg-ink">Reply to topic:</span>
-                                {{ selectedMessage.reply_to_top_id }}
-                            </div>
+                                <div v-if="selectedMessage.reply_to_top_id != null">
+                                    <span class="text-tg-ink">Reply to topic:</span>
+                                    {{ selectedMessage.reply_to_top_id }}
+                                </div>
 
-                            <div v-if="selectedMessage.raw_data?.grouped_id != null">
-                                <span class="text-tg-ink">Album ID:</span>
-                                {{ selectedMessage.raw_data.grouped_id }}
-                            </div>
+                                <div v-if="selectedMessage.raw_data?.grouped_id != null">
+                                    <span class="text-tg-ink">Album ID:</span>
+                                    {{ selectedMessage.raw_data.grouped_id }}
+                                </div>
 
-                            <div>
-                                <span class="text-tg-ink">Direction:</span>
-                                {{ selectedMessage.is_outgoing ? 'Outgoing' : 'Incoming' }}
-                            </div>
+                                <div>
+                                    <span class="text-tg-ink">Direction:</span>
+                                    {{ selectedMessage.is_outgoing ? 'Outgoing' : 'Incoming' }}
+                                </div>
 
-                            <div v-if="selectedMessage.is_deleted">
-                                <span class="text-tg-ink">Deleted:</span>
-                                Yes
-                            </div>
+                                <div v-if="selectedMessage.is_deleted">
+                                    <span class="text-tg-ink">Deleted:</span>
+                                    Yes
+                                </div>
 
-                            <div v-if="selectedMessage.is_pinned">
-                                <span class="text-tg-ink">Pinned:</span>
-                                Yes
-                            </div>
+                                <div v-if="selectedMessage.is_pinned">
+                                    <span class="text-tg-ink">Pinned:</span>
+                                    Yes
+                                </div>
 
-                            <div v-if="selectedMessage.forward_from_id != null">
-                                <span class="text-tg-ink">Forwarded from:</span>
-                                {{ selectedMessage.forward_from_id }}
-                            </div>
+                                <div v-if="selectedMessage.forward_from_id != null">
+                                    <span class="text-tg-ink">Forwarded from:</span>
+                                    {{ selectedMessage.forward_from_id }}
+                                </div>
 
-                            <div v-if="selectedMessage.version_count">
-                                <span class="text-tg-ink">Versions:</span>
-                                {{ selectedMessage.version_count }}
+                                <div v-if="selectedMessage.version_count">
+                                    <span class="text-tg-ink">Versions:</span>
+                                    {{ selectedMessage.version_count }}
+                                </div>
                             </div>
                         </div>
                     </div>
