@@ -700,25 +700,38 @@
             word-break: break-word;
         }
 
-        /* ---- Message info panel resize ---- */
         .info-panel-resize-handle {
             position: absolute;
-            left: 0;
+            left: -5px;
             top: 0;
             bottom: 0;
             width: 10px;
             cursor: ew-resize;
-            z-index: 100;
+            z-index: 1000;
             user-select: none;
-            touch-action: none;
         }
 
-        .info-panel-resize-handle:hover,
-        .info-panel-resize-handle.resizing {
+        .chat-list-resize-handle {
+            position: absolute;
+            right: -5px;
+            top: 0;
+            bottom: 0;
+            width: 10px;
+            cursor: ew-resize;
+            z-index: 1000;
+            user-select: none;
+        }
+
+        body.info-panel-resizing .info-panel-resize-handle {
             background: rgb(var(--tg-accent) / 0.25);
         }
 
         body.info-panel-resizing {
+            cursor: ew-resize !important;
+            user-select: none !important;
+        }
+
+        body.info-panel-resizing * {
             cursor: ew-resize !important;
             user-select: none !important;
         }
@@ -900,9 +913,20 @@
         <!-- Main App -->
         <div v-else class="flex w-full h-full bg-tg-bg">
             <!-- Sidebar - hidden on mobile when chat is selected -->
-            <div class="bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
-                :class="{'hidden md:flex': selectedChat, 'w-full md:w-1/4 md:min-w-[300px]': true}">
-                <!-- User bar -->
+            <!-- Sidebar - hidden on mobile when chat is selected -->
+            <div
+                class="relative bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
+                :class="{'hidden md:flex': selectedChat}"
+                :style="{ width: `${chatListWidth}px` }">
+
+                <!-- Resize handle -->
+                <div
+                    class="chat-list-resize-handle"
+                    @pointerdown="startChatListResize"
+                    title="Resize chat list"
+                    aria-label="Resize chat list"
+                ></div>
+                                <!-- User bar -->
                 <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-tg-n700">
                     <span class="text-xs text-tg-n400 truncate flex-1">{{ currentUsername }}</span>
                     <button v-if="userRole === 'master'" @click="openStatusPanel" class="text-tg-n400 hover:text-tg-ink p-1" title="Archive Status">
@@ -2200,8 +2224,9 @@
 
             <!-- Message Info Panel -->
             <aside v-if="showInfoPanel"
-                class="relative shrink-0 bg-tg-sidebar border-l border-tg-n700 flex flex-col"
-                :style="{ width: `${infoPanelWidth}px` }">
+                class="relative bg-tg-sidebar border-l border-tg-n700 flex flex-col"
+                       :style="{ width: infoPanelWidth + 'px' }"
+                }">
 
                 <!-- Resize handle -->
                 <div
@@ -3205,11 +3230,26 @@
                 const selectedMessage = ref(null)
                 const showInfoPanel = ref(false)
 
-                const INFO_PANEL_MIN_WIDTH = 280
-                const INFO_PANEL_MAX_WIDTH = 600
+                const INFO_PANEL_MIN_WIDTH = 200
+                const INFO_PANEL_MAX_WIDTH = 999
+
+                const CHAT_LIST_MIN_WIDTH = 300
+                const CHAT_LIST_MAX_WIDTH = 600
+
+                const storedChatListWidth = Number(
+                    localStorage.getItem('chatListWidth')
+                )
+
+                const chatListWidth = ref(
+                    Number.isFinite(storedChatListWidth) &&
+                    storedChatListWidth >= CHAT_LIST_MIN_WIDTH &&
+                    storedChatListWidth <= CHAT_LIST_MAX_WIDTH
+                        ? storedChatListWidth
+                        : 320
+                )
 
                 const storedInfoPanelWidth = Number(
-                    localStorage.getItem('infoPanelWidth')
+                    localStorage.getItem('infoPanelWidthV2')
                 )
 
                 const infoPanelWidth = ref(
@@ -3221,48 +3261,80 @@
                 )
 
                 const startInfoPanelResize = (event) => {
-                    if (event.button !== 0) return
+                    event.preventDefault()
 
-                    const handle = event.currentTarget
                     const startX = event.clientX
                     const startWidth = infoPanelWidth.value
 
-                    handle.setPointerCapture(event.pointerId)
-                    handle.classList.add('resizing')
                     document.body.classList.add('info-panel-resizing')
 
                     const onPointerMove = (moveEvent) => {
-                        const delta = startX - moveEvent.clientX
+                        // Ziehen nach links = Panel kleiner
+                        // Ziehen nach rechts = Panel größer
+                        const deltaX = startX - moveEvent.clientX
 
-                        infoPanelWidth.value = Math.min(
+                        const newWidth = Math.min(
                             INFO_PANEL_MAX_WIDTH,
+                            Math.max(INFO_PANEL_MIN_WIDTH, startWidth + deltaX)
+                        )
+
+                        infoPanelWidth.value = newWidth
+                    }
+
+                    const onPointerUp = () => {
+                        document.removeEventListener('pointermove', onPointerMove)
+                        document.removeEventListener('pointerup', onPointerUp)
+
+                        document.body.classList.remove('info-panel-resizing')
+
+                        localStorage.setItem(
+                            'infoPanelWidthV2',
+                            String(infoPanelWidth.value)
+                        )
+                    }
+
+                    document.addEventListener('pointermove', onPointerMove)
+                    document.addEventListener('pointerup', onPointerUp)
+                }
+
+                const startChatListResize = (event) => {
+                    if (event.button !== 0) return
+
+                    const startX = event.clientX
+                    const startWidth = chatListWidth.value
+
+                    document.body.classList.add('info-panel-resizing')
+
+                    const onPointerMove = (moveEvent) => {
+                        // Ziehen nach rechts = Chatliste größer
+                        // Ziehen nach links = Chatliste kleiner
+                        const delta = moveEvent.clientX - startX
+
+                        chatListWidth.value = Math.min(
+                            CHAT_LIST_MAX_WIDTH,
                             Math.max(
-                                INFO_PANEL_MIN_WIDTH,
+                                CHAT_LIST_MIN_WIDTH,
                                 startWidth + delta
                             )
                         )
                     }
 
-                    const onPointerUp = (upEvent) => {
-                        handle.releasePointerCapture(upEvent.pointerId)
-                        handle.classList.remove('resizing')
+                    const onPointerUp = () => {
                         document.body.classList.remove('info-panel-resizing')
 
                         localStorage.setItem(
-                            'infoPanelWidth',
-                            String(Math.round(infoPanelWidth.value))
+                            'chatListWidth',
+                            String(Math.round(chatListWidth.value))
                         )
 
-                        handle.removeEventListener('pointermove', onPointerMove)
-                        handle.removeEventListener('pointerup', onPointerUp)
-                        handle.removeEventListener('pointercancel', onPointerUp)
+                        document.removeEventListener('pointermove', onPointerMove)
+                        document.removeEventListener('pointerup', onPointerUp)
+                        document.removeEventListener('pointercancel', onPointerUp)
                     }
 
-                    handle.addEventListener('pointermove', onPointerMove)
-                    handle.addEventListener('pointerup', onPointerUp)
-                    handle.addEventListener('pointercancel', onPointerUp)
-
-                    event.preventDefault()
+                    document.addEventListener('pointermove', onPointerMove)
+                    document.addEventListener('pointerup', onPointerUp)
+                    document.addEventListener('pointercancel', onPointerUp)
                 }
 
                 const showCopyToast = ref(false)
@@ -9288,6 +9360,10 @@
                     selectMessage,
                     copyMediaPath,
                     getInfoPanelMedia,
+                    startInfoPanelResize,
+                    infoPanelWidth,
+                    chatListWidth,
+                    startChatListResize,
                     messages,
                     versionsMessage,
                     versionsCloseBtn,
