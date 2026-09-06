@@ -330,6 +330,13 @@
             border-radius: 14px;
         }
 
+        .message-info-selected {
+            position: relative;
+            background: rgb(var(--tg-accent) / 0.10);
+            border-radius: 0.5rem;
+            box-shadow: inset 3px 0 0 rgb(var(--tg-accent));
+        }
+
         @media (min-width: 768px) {
             .message-bubble {
                 /* Roomier reading column on desktop, still content-sized. */
@@ -1711,7 +1718,13 @@
                             <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id"
                                 class="flex items-end gap-2"
                                 @click="selectMessage(msg)"
-                                :class="[isOwnMessage(msg) ? 'justify-end' : 'justify-start', isSenderBreak(index) ? 'message-run-break' : 'message-run-continue']">
+                                :class="[
+                                    isOwnMessage(msg) ? 'justify-end' : 'justify-start',
+                                    isSenderBreak(index) ? 'message-run-break' : 'message-run-continue',
+                                    selectedMessage && selectedMessage.id === msg.id && selectedMessage.chat_id === msg.chat_id
+                                        ? 'message-info-selected'
+                                        : ''
+                                ]">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      Circle renders at the run start (alongside the name);
                                      an empty gutter keeps the rest of the run aligned. Shows
