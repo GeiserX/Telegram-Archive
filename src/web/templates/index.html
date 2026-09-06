@@ -2333,29 +2333,67 @@
                             :key="mediaMsg.id"
                             class="border border-tg-n700 rounded-lg p-3 space-y-2"
                         >
-                            <div class="font-medium text-sm text-tg-ink break-all">
-                                {{ mediaMsg.media.file_name || 'Unnamed file' }}
-                            </div>
+                            <div class="flex items-start gap-3">
 
-                            <div class="text-xs text-tg-muted space-y-1">
-                                <div>
-                                    <span class="text-tg-ink">Type:</span>
-                                    {{ mediaMsg.media.type || '—' }}
+                                <!-- Preview of the original media, scaled to max. 80px height -->
+                                <div
+                                    class="flex-none w-[140px] h-[80px] rounded overflow-hidden bg-tg-bg flex items-center justify-center"
+                                >
+                                    <img
+                                        v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg)"
+                                        :src="getMediaUrl(mediaMsg)"
+                                        :alt="getMediaDisplayName(mediaMsg.media)"
+                                        class="max-w-full max-h-full w-auto h-auto object-contain"
+                                        loading="lazy"
+                                    />
+
+                                    <video
+                                        v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg)"
+                                        :src="getMediaUrl(mediaMsg)"
+                                        class="max-w-full max-h-full w-auto h-auto object-contain"
+                                        preload="metadata"
+                                        muted
+                                        playsinline
+                                    ></video>
+
+                                    <div
+                                        v-else
+                                        class="text-tg-muted text-2xl"
+                                        aria-hidden="true"
+                                    >
+                                        📄
+                                    </div>
                                 </div>
 
-                                <div v-if="mediaMsg.media.mime_type">
-                                    <span class="text-tg-ink">MIME:</span>
-                                    {{ mediaMsg.media.mime_type }}
-                                </div>
+                                <!-- Media information -->
+                                <div class="min-w-0 flex-1 space-y-2">
 
-                                <div v-if="mediaMsg.media.file_size != null">
-                                    <span class="text-tg-ink">Size:</span>
-                                    {{ formatFileSize(mediaMsg.media.file_size) }}
-                                </div>
+                                    <div class="font-medium text-sm text-tg-ink break-all">
+                                        {{ mediaMsg.media.file_name || 'Unnamed file' }}
+                                    </div>
 
-                                <div v-if="mediaMsg.media.width && mediaMsg.media.height">
-                                    <span class="text-tg-ink">Dimensions:</span>
-                                    {{ mediaMsg.media.width }} × {{ mediaMsg.media.height }}
+                                    <div class="text-xs text-tg-muted space-y-1">
+                                        <div>
+                                            <span class="text-tg-ink">Type:</span>
+                                            {{ mediaMsg.media.type || '—' }}
+                                        </div>
+
+                                        <div v-if="mediaMsg.media.mime_type">
+                                            <span class="text-tg-ink">MIME:</span>
+                                            {{ mediaMsg.media.mime_type }}
+                                        </div>
+
+                                        <div v-if="mediaMsg.media.file_size != null">
+                                            <span class="text-tg-ink">Size:</span>
+                                            {{ formatFileSize(mediaMsg.media.file_size) }}
+                                        </div>
+
+                                        <div v-if="mediaMsg.media.width && mediaMsg.media.height">
+                                            <span class="text-tg-ink">Dimensions:</span>
+                                            {{ mediaMsg.media.width }} × {{ mediaMsg.media.height }}
+                                        </div>
+                                    </div>
+
                                 </div>
                             </div>
 
@@ -7390,6 +7428,22 @@
                     return msg.media?.url || ''
                 }
 
+                const isVideoMedia = (msg) => {
+                    const type = (msg.media?.type || '').toLowerCase()
+                    if (type === 'video' || type === 'animation') {
+                        return true
+                    }
+
+                    const name = (
+                        msg.media?.file_name ||
+                        msg.media?.file_path ||
+                        ''
+                    ).toString().toLowerCase()
+
+                    return ['.mp4', '.m4v', '.mov', '.webm', '.avi', '.mkv', '.mpeg', '.mpg']
+                        .some(ext => name.endsWith(ext))
+                }
+
                 const getMediaDisplayName = (media) => {
                     // Prefer file name from media table when available
                     let name = media?.file_name || ''
@@ -9222,6 +9276,7 @@
                     formatLastBackupTime,
                     formatReactionEmoji,
                     getMediaUrl,
+                    isVideoMedia,
                     getMediaDisplayName,
                     getDocumentDisplayName,
                     isImageDocument,
