@@ -2529,13 +2529,31 @@
                                         Local path
                                     </div>
 
-                                    <button
-                                        type="button"
-                                        class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
-                                        @click.stop="copyMediaPath(mediaMsg.media.file_path)"
-                                    >
-                                        Copy path
-                                    </button>
+                                    <div class="flex items-center gap-1">
+                                        <button
+                                            type="button"
+                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
+                                            @click.stop="copyMediaPath(mediaMsg.media.file_path)"
+                                        >
+                                            Copy path
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
+                                            @click.stop="launchMediaFile(mediaMsg)"
+                                        >
+                                            Open
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
+                                            @click.stop="launchMediaFolder(mediaMsg)"
+                                        >
+                                            Open path
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div
@@ -3411,6 +3429,54 @@
                         }, 1800)
                     } catch (error) {
                         console.error('Fehler beim Kopieren des Pfades:', error)
+                    }
+                }
+
+                const launchMediaFile = async (mediaMsg) => {
+                    const mediaUrl = getMediaUrl(mediaMsg)
+
+                    if (!mediaUrl) {
+                        console.error('Missing media URL')
+                        return
+                    }
+
+                    const openUrl = mediaUrl.replace(
+                        /^\/media\//,
+                        '/media/open/'
+                    )
+
+                    try {
+                        const response = await fetch(openUrl)
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`)
+                        }
+                    } catch (error) {
+                        console.error('Failed to open media:', error)
+                    }
+                }
+
+                const launchMediaFolder = async (mediaMsg) => {
+                    const mediaUrl = getMediaUrl(mediaMsg)
+
+                    if (!mediaUrl) {
+                        console.error('Missing media URL')
+                        return
+                    }
+
+                    const openUrl = mediaUrl.replace(
+                        /^\/media\//,
+                        '/media/open-path/'
+                    )
+
+                    try {
+                        const response = await fetch(openUrl)
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`)
+                        }
+                    } catch (error) {
+                        console.error('Failed to open media folder:', error)
                     }
                 }
 
@@ -9407,6 +9473,8 @@
                     showCopyToast,
                     selectMessage,
                     copyMediaPath,
+                    launchMediaFolder,
+                    launchMediaFile,
                     getInfoPanelMedia,
                     startInfoPanelResize,
                     infoPanelWidth,

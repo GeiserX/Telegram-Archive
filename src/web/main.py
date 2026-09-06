@@ -15,6 +15,8 @@ import re
 import secrets
 import time
 import traceback
+import platform
+import subprocess
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -1734,6 +1736,113 @@ async def serve_media(
     # store it — never a proxy that skips the entitlement.
     response.headers["Cache-Control"] = "private"
     return response
+
+
+@app.get("/media/open/{chat_ref}/{media_key}")
+async def launch_media_file(
+    media_key: str,
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+):
+    """Open an entitled media file with the operating system's default application."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    row = await _entitled_media_row(chat, media_key)
+    relative = _media_relative_path(row.get("file_path"))
+    if relative is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    resolved = _resolve_media_file(relative)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        system = platform.system()
+
+        if system == "Windows":
+            os.startfile(str(resolved))
+        elif system == "Darwin":
+            subprocess.Popen(["open", str(resolved)])
+        elif system == "Linux":
+            subprocess.Popen(["xdg-open", str(resolved)])
+        else:
+            raise HTTPException(
+                status_code=501,
+                detail="Opening files is not supported on this operating system",
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to open media file ({type(e).__name__})")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to open media file",
+        ) from e
+
+    return {"ok": True}
+
+
+@app.get("/media/open-path/{chat_ref}/{media_key}")
+async def launch_media_folder(
+    media_key: str,
+    chat: ChatContext = Depends(require_chat),
+    user: UserContext = Depends(require_auth),
+):
+    """Open the directory containing an entitled media file."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+
+    row = await _entitled_media_row(chat, media_key)
+    relative = _media_relative_path(row.get("file_path"))
+    if relative is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    resolved = _resolve_media_file(relative)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        system = platform.system()
+
+        if system == "Windows":
+            subprocess.Popen([
+                "explorer.exe",
+                "/select,",
+                str(resolved),
+            ])
+        elif system == "Darwin":
+            subprocess.Popen([
+                "open",
+                "-R",
+                str(resolved),
+            ])
+        elif system == "Linux":
+            subprocess.Popen([
+                "xdg-open",
+                str(resolved.parent),
+            ])
+        else:
+            raise HTTPException(
+                status_code=501,
+                detail="Opening paths is not supported on this operating system",
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to open media directory ({type(e).__name__})")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to open media directory",
+        ) from e
+
+    return {"ok": True}
 
 
 @app.get("/api/search/messages")
