@@ -14,6 +14,7 @@ A chat info panel in the viewer, the way the apps have one.
 - **Both side panes can be resized.** Drag the edge of the chat list or of the info panel, or focus the edge and use the arrow keys. The widths are remembered per browser, and the messages keep a readable minimum width whatever you do to the panes.
 - **`DOWNLOAD_CHAT_DESCRIPTION` fetches each chat's description** (a group or channel's about text, a user's bio) and, for channels and supergroups, the member count the dialog list never carries, so the info panel can show them. Off by default, since it costs one extra request per chat per run.
 - **`MEDIA_OPEN_CMD` and `MEDIA_OPEN_PATH_CMD` add Open and Show in folder buttons** to the info panel's files, for a viewer that runs on the machine you sit at. Each runs the command you wrote, with the file's path filled in, on that machine. A container has no desktop, so in Docker they stay off. Master account only, and a button exists only when its command is set.
+- Dependency updates: `alembic` 1.19.2, `pywebpush` 2.5.0 and `ruff` 0.16.6, with the pre-commit ruff pin brought in step. ([#434](https://github.com/GeiserX/Telegram-Archive/pull/434))
 
 ### Note
 
