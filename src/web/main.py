@@ -1755,7 +1755,9 @@ async def serve_media(
 # press it. The values are quoted for the shell and substituted in one pass, so
 # a file name that spells a placeholder is never expanded a second time.
 
-_MEDIA_COMMAND_PLACEHOLDER = re.compile(r"%(PATH|DIR|FILENAME)%")
+_MEDIA_COMMAND_PLACEHOLDER = re.compile(r"%(PATH|DIR|FILENAME)%", re.IGNORECASE)
+# The command inherits the operator's shell environment minus the viewer's own secrets.
+_MEDIA_COMMAND_SECRET_KEYS = re.compile(r"PASSWORD|SECRET|TOKEN|API_HASH|PRIVATE_KEY|DATABASE_URL", re.IGNORECASE)
 
 
 def _quote_media_command_value(value: str) -> str:
@@ -1776,7 +1778,11 @@ def _render_media_command(template: str, file_path: Path) -> str:
         "DIR": _quote_media_command_value(str(file_path.parent)),
         "FILENAME": _quote_media_command_value(file_path.name),
     }
-    return _MEDIA_COMMAND_PLACEHOLDER.sub(lambda match: values[match.group(1)], template)
+    return _MEDIA_COMMAND_PLACEHOLDER.sub(lambda match: values[match.group(1).upper()], template)
+
+
+def _media_command_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if not _MEDIA_COMMAND_SECRET_KEYS.search(key)}
 
 
 async def _launch_media_command(template: str, chat: ChatContext, media_key: str) -> dict:
@@ -1795,16 +1801,26 @@ async def _launch_media_command(template: str, chat: ChatContext, media_key: str
     try:
         # asyncio reaps the child, so nothing is left as a zombie; a new session
         # keeps a long-lived viewer app from dying with the server's signals.
-        await asyncio.create_subprocess_shell(
+        process = await asyncio.create_subprocess_shell(
             command,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
+            env=_media_command_env(),
         )
     except OSError as e:
         logger.warning(f"Media open command failed to start ({type(e).__name__})")
         raise HTTPException(status_code=500, detail="Command failed to start") from e
+    # A viewer app keeps running; a command that cannot start (a missing binary,
+    # a bad flag) is gone within milliseconds, and that is worth saying.
+    try:
+        status = await asyncio.wait_for(process.wait(), timeout=0.5)
+    except TimeoutError:
+        return {"ok": True}
+    if status != 0:
+        logger.warning(f"Media open command exited with status {status}")
+        raise HTTPException(status_code=500, detail=f"Command exited with status {status}")
     return {"ok": True}
 
 

@@ -1036,6 +1036,7 @@ class TelegramBackup:
         Perform backup of all configured chats.
         This is the main entry point for scheduled backups.
         """
+        self._description_fetch_paused = False  # a FloodWait pauses the fetch until the next run
         try:
             logger.info("Starting backup process...")
 
@@ -3978,21 +3979,32 @@ class TelegramBackup:
         dict is merged into chat_data, and upsert_chat updates only the keys
         that are present.
         """
+        if getattr(self, "_description_fetch_paused", False):
+            return {}
+        if isinstance(entity, Channel):
+            from telethon.tl.functions.channels import GetFullChannelRequest
+
+            request = GetFullChannelRequest(channel=entity)
+        elif isinstance(entity, Chat):
+            from telethon.tl.functions.messages import GetFullChatRequest
+
+            request = GetFullChatRequest(chat_id=entity.id)
+        elif isinstance(entity, User):
+            from telethon.tl.functions.users import GetFullUserRequest
+
+            request = GetFullUserRequest(id=entity)
+        else:
+            return {}
+        # Called directly, not through call_with_flood_retry: that helper sleeps out
+        # a FloodWait (up to an hour) before the chat's messages get their turn, and
+        # a description is not worth stalling the archive for. One FloodWait pauses
+        # the fetch for the rest of the run; the next run tries again.
         try:
-            if isinstance(entity, Channel):
-                from telethon.tl.functions.channels import GetFullChannelRequest
-
-                full = await call_with_flood_retry(self.client, GetFullChannelRequest(channel=entity))
-            elif isinstance(entity, Chat):
-                from telethon.tl.functions.messages import GetFullChatRequest
-
-                full = await call_with_flood_retry(self.client, GetFullChatRequest(chat_id=entity.id))
-            elif isinstance(entity, User):
-                from telethon.tl.functions.users import GetFullUserRequest
-
-                full = await call_with_flood_retry(self.client, GetFullUserRequest(id=entity))
-            else:
-                return {}
+            full = await self.client(request)
+        except FloodWaitError as e:
+            self._description_fetch_paused = True
+            logger.warning(f"Chat descriptions are skipped for the rest of this run after a FloodWait of {e.seconds}s")
+            return {}
         except Exception as e:
             logger.warning(f"Could not fetch a chat description: {e.__class__.__name__}")
             return {}

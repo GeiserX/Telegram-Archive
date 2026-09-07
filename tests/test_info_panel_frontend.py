@@ -43,6 +43,12 @@ const getAlbumForMessage = msg => albums.get(msg.id) || null;
 const formatFileSize = bytes => `${bytes} B`;
 const isDeletedChat = chat => !!chat.deleted;
 const getMediaUrl = msg => msg.media?.url || '';
+const formatDuration = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const galleryCalls = [];
+const switchMediaTab = id => galleryCalls.push(id);
+const showMediaGallery = ref(false);
+const watchers = [];
+const watch = (source, fn) => watchers.push({ source, fn });
 const requests = [];
 let fetchOk = true;
 const fetch = async (url, init) => { requests.push([url, init && init.method]); return { ok: fetchOk, status: fetchOk ? 200 : 500 }; };
@@ -77,6 +83,7 @@ assert.equal(getChatTypeLabel({ type: 'group' }), 'Private group');
 assert.equal(getChatTypeLabel({ type: 'group', username: 'g', is_forum: 1 }), 'Public group with topics');
 assert.equal(getChatTypeLabel({ type: 'channel', username: 'c' }), 'Public channel');
 assert.equal(getChatTypeLabel({ type: 'channel' }), 'Private channel');
+assert.equal(getChatTypeLabel({ type: 'supergroup', username: 's' }), 'Public group', 'an imported supergroup is a group');
 assert.equal(getChatTypeLabel(null), '');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1234 }), '1,234 members');
 assert.equal(chatStatusLine({ type: 'group', participants_count: 1 }), '1 member');
@@ -85,11 +92,33 @@ assert.equal(chatStatusLine({ type: 'channel', participants_count: null }), 'Pri
 assert.equal(chatStatusLine({ type: 'private', username: 'x' }), 'Private chat');
 selectedChat.value = { type: 'private' }; assert.equal(infoPanelTitle.value, 'User Info');
 selectedChat.value = { type: 'group' }; assert.equal(infoPanelTitle.value, 'Group Info');
+selectedChat.value = { type: 'supergroup' }; assert.equal(infoPanelTitle.value, 'Group Info');
 selectedChat.value = { type: 'channel' }; assert.equal(infoPanelTitle.value, 'Channel Info');
 selectedChat.value = { type: 'weird' }; assert.equal(infoPanelTitle.value, 'Chat Info');
 assert.equal(mediaSummaryLine({ mime_type: 'image/jpeg', file_size: 10, width: 4, height: 3 }), 'image/jpeg · 10 B · 4 × 3');
 assert.equal(mediaSummaryLine({ type: 'photo' }), 'photo');
 assert.equal(mediaSummaryLine({ type: 'video', file_size: 0 }), 'video · 0 B');
+assert.equal(mediaSummaryLine({ type: 'video', duration: 754, file_size: 9 }), 'video · 12:34 · 9 B', 'duration leads, as the apps show it');
+
+// Long descriptions fold; the fold resets with the chat.
+selectedChat.value = { ref: 'a', type: 'group', description: 'short' };
+assert.equal(descriptionIsLong.value, false);
+selectedChat.value = { ref: 'a', type: 'group', description: 'x'.repeat(241) };
+assert.equal(descriptionIsLong.value, true);
+selectedChat.value = { ref: 'a', type: 'group', description: 'a\\nb\\nc\\nd\\ne' };
+assert.equal(descriptionIsLong.value, true);
+descriptionExpanded.value = true;
+watchers[0].fn();
+assert.equal(descriptionExpanded.value, false);
+
+openSharedMedia('files');
+assert.deepEqual(galleryCalls, ['files']);
+assert.equal(showMediaGallery.value, true);
+
+markPreviewFailed(4); markPreviewFailed(5);
+assert.deepEqual([...previewFailed.value], [4, 5]);
+userRole.value = 'viewer'; assert.equal(showArchivePath.value, false, 'the disk path belongs to the operator');
+userRole.value = 'master'; assert.equal(showArchivePath.value, true);
 """)
     )
 
@@ -107,6 +136,10 @@ assert.equal(showInfoPanel.value, true);
 assert.equal(listeners.keydown.length, 1, 'the panel listens for keys while open');
 selectMessage(msg, { target: { closest: sel => sel.includes('button') ? {} : null } });
 assert.equal(selectedMessage.value, null, 'a click on a control inside the row is not a selection');
+window.getSelection = () => ({ toString: () => 'some copied words' });
+selectMessage(msg, noEvent);
+assert.equal(selectedMessage.value, null, 'the click that ends a text selection is not a choice');
+window.getSelection = () => ({ toString: () => '' });
 selectMessage(msg, noEvent);
 assert.equal(selectedMessage.value, msg);
 assert.equal(isSelectedMessage({ id: 7, chat_id: -100123 }), true);
@@ -191,10 +224,11 @@ assert.equal(isVideoMedia({ media: { type: 'photo' } }), false);
 def test_pane_widths_are_validated_clamped_to_the_viewport_and_persisted() -> None:
     _run_node(
         _script("""
-assert.equal(chatListWidth.value, 320, 'nothing stored: the default');
+assert.equal(chatListWidth.value, 350, 'nothing stored: a quarter of the 1400px window, as the layout always was');
 assert.equal(infoPanelWidth.value, 320);
 stored.set('chatListWidth', 'garbage'); stored.set('infoPanelWidth', '9999');
-assert.equal(readStoredPaneWidth('chatList'), 320, 'garbage is not a width');
+assert.equal(readStoredPaneWidth('chatList'), 350, 'garbage is not a width');
+window.innerWidth = 3000; assert.equal(defaultPaneWidth('chatList'), 600, 'the quarter is capped'); window.innerWidth = 1400;
 assert.equal(readStoredPaneWidth('info'), 320, 'out of range is not a width');
 stored.set('chatListWidth', '450');
 assert.equal(readStoredPaneWidth('chatList'), 450);
@@ -297,6 +331,10 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert "formatDateFull(infoPanelMessage.date)" in aside and "formatTime(infoPanelMessage.date)" in aside
     assert "selectedMessage.date" not in aside, "raw timestamps never reach the panel"
     assert 'v-if="canOpenMedia.file' in aside and 'v-if="canOpenMedia.path' in aside
+    assert aside.count('@error="markPreviewFailed(mediaMsg.id)"') == 2, "a broken preview gives way to the icon"
+    assert 'v-if="showArchivePath && mediaMsg.media.file_path"' in aside, "the disk path is shown to the master only"
+    assert "forward_from_name" in aside
+    assert "line-clamp-4" in aside and "openSharedMedia(tab.id)" in aside
     assert (
         "@click=\"launchMedia(mediaMsg, 'open')\"" in aside and "@click=\"launchMedia(mediaMsg, 'open-path')\"" in aside
     )

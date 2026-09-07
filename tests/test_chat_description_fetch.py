@@ -12,6 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from telethon.errors import FloodWaitError
 from telethon.tl.types import Channel, Chat, User
 
 from src.telegram_backup import TelegramBackup
@@ -76,6 +77,18 @@ class TestFetchChatDescription(unittest.TestCase):
         self.assertIn("ChannelPrivateError", joined)
         self.assertNotIn("Secret Lair", joined)
         self.assertNotIn("1001234", joined)
+
+    def test_one_flood_wait_pauses_the_fetch_for_the_rest_of_the_run(self):
+        """A description is not worth sleeping an hour for: the chat goes on, later chats skip the request."""
+        error = FloodWaitError(request=None, capture=1800)
+        backup = _backup(AsyncMock(side_effect=error))
+        with self.assertLogs("src.telegram_backup", level="WARNING") as captured:
+            self.assertEqual(_run(backup._fetch_chat_description(MagicMock(spec=Channel))), {})
+        self.assertIn("1800", "\n".join(captured.output))
+        backup.client.reset_mock()
+        self.assertEqual(_run(backup._fetch_chat_description(MagicMock(spec=Chat))), {})
+        backup.client.assert_not_called()
+        self.assertTrue(backup._description_fetch_paused)
 
 
 class TestBackupDialogWiring(unittest.TestCase):

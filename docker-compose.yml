@@ -230,6 +230,8 @@ services:
       # Wallpaper behind the messages: a file name served from /static, so the
       # image must be mounted into the container (see the volumes block below).
       VIEWER_CHAT_BACKGROUND: ${VIEWER_CHAT_BACKGROUND:-}
+      # MEDIA_OPEN_CMD and MEDIA_OPEN_PATH_CMD are not passed on purpose: they run a
+      # command on the machine that serves the viewer, and a container has no desktop.
       SHOW_STATS: ${SHOW_STATS:-true}
       # Restrict viewer to specific chats (optional)
       DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}

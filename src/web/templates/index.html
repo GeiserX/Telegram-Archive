@@ -335,6 +335,7 @@
         .message-info-selected {
             background: rgb(var(--tg-accent) / 0.12);
             border-radius: 0.5rem;
+            box-shadow: inset 3px 0 0 rgb(var(--tg-accent));
         }
 
         @media (min-width: 768px) {
@@ -1505,7 +1506,7 @@
                                 aria-label="Chat information" title="Chat information"
                                 class="tap-target p-1.5 sm:p-2 rounded-lg transition shrink-0"
                                 :class="showInfoPanel ? 'text-tg-ink bg-tg-n700' : 'text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10'">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <circle cx="12" cy="12" r="9" stroke-width="2"></circle>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M12 10v6m0-9h.01"></path>
@@ -2219,7 +2220,7 @@
 
                 <header class="flex items-center gap-2 px-3 py-2 border-b border-tg-n700 shrink-0">
                     <button ref="infoPanelCloseBtn" type="button" @click="closeInfoPanel"
-                        class="tap-target p-1.5 rounded-lg text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft"
+                        class="tap-target p-1.5 rounded-lg text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-accent-soft"
                         aria-label="Close chat information">
                         <!-- A back arrow where the panel is a page (phones), a cross where it is a column -->
                         <svg class="w-5 h-5 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -2254,7 +2255,9 @@
                     <dl class="px-4 py-3 space-y-3 text-sm border-b border-tg-n700">
                         <div v-if="selectedChat.description">
                             <dt class="text-xs uppercase tracking-wide text-tg-muted">{{ selectedChat.type === 'private' ? 'Bio' : 'Description' }}</dt>
-                            <dd class="mt-1 whitespace-pre-wrap break-words text-tg-ink">{{ selectedChat.description }}</dd>
+                            <dd class="mt-1 whitespace-pre-wrap break-words text-tg-ink" :class="descriptionExpanded ? '' : 'line-clamp-4'">{{ selectedChat.description }}</dd>
+                            <button v-if="descriptionIsLong && !descriptionExpanded" type="button" @click="descriptionExpanded = true"
+                                class="mt-1 text-sm text-tg-accent hover:underline">Show more</button>
                         </div>
                         <div v-if="selectedChat.username">
                             <dt class="text-xs uppercase tracking-wide text-tg-muted">Username</dt>
@@ -2268,6 +2271,17 @@
                             <dd class="mt-1 font-mono text-tg-ink">{{ selectedChat.id }}</dd>
                         </div>
                     </dl>
+
+                    <!-- Shared media: the apps' Media / Voice / Files rows, opening the gallery on that tab -->
+                    <section class="px-2 py-2 border-b border-tg-n700">
+                        <button v-for="tab in mediaTabs" :key="tab.id" type="button" @click="openSharedMedia(tab.id)"
+                            class="w-full flex items-center justify-between px-2 py-2 rounded-lg text-sm text-tg-ink hover:bg-tg-n700/50 transition">
+                            <span>{{ tab.label }}</span>
+                            <svg class="w-4 h-4 text-tg-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
+                    </section>
 
                     <!-- The open topic, in forum chats -->
                     <section v-if="selectedPaneTopic" class="px-4 py-3 border-b border-tg-n700">
@@ -2329,9 +2343,12 @@
                                             class="text-tg-accent hover:underline">Message <span class="font-mono">{{ infoPanelMessage.reply_to_msg_id }}</span></button>
                                     </dd>
                                 </div>
-                                <div v-if="infoPanelMessage.forward_from_id != null">
+                                <div v-if="infoPanelMessage.raw_data?.forward_from_name || infoPanelMessage.forward_from_id != null">
                                     <dt class="text-xs uppercase tracking-wide text-tg-muted">Forwarded from</dt>
-                                    <dd class="mt-1 font-mono text-tg-ink">{{ infoPanelMessage.forward_from_id }}</dd>
+                                    <dd class="mt-1 text-tg-ink break-words">
+                                        {{ infoPanelMessage.raw_data?.forward_from_name || '' }}
+                                        <span v-if="infoPanelMessage.forward_from_id != null" class="font-mono text-xs text-tg-muted">{{ infoPanelMessage.forward_from_id }}</span>
+                                    </dd>
                                 </div>
                                 <div>
                                     <dt class="text-xs uppercase tracking-wide text-tg-muted">Message ID</dt>
@@ -2359,33 +2376,36 @@
                     <!-- The message's files; an album lists every item -->
                     <section v-if="infoPanelMedia.length" class="px-4 py-3">
                         <h4 class="text-xs uppercase tracking-wide text-tg-muted">{{ infoPanelMedia.length === 1 ? 'File' : infoPanelMedia.length + ' files' }}</h4>
-                        <div v-for="mediaMsg in infoPanelMedia" :key="mediaMsg.id" class="mt-2 rounded-lg bg-tg-bg p-3 space-y-2">
+                        <div v-for="mediaMsg in infoPanelMedia" :key="mediaMsg.id" class="mt-2 rounded-lg border border-tg-n700 bg-tg-bg p-3 space-y-2">
                             <div class="flex items-start gap-3">
-                                <div class="w-16 h-16 rounded overflow-hidden bg-tg-n800 flex items-center justify-center shrink-0">
-                                    <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg)" :src="getMediaUrl(mediaMsg)" alt=""
-                                        class="w-full h-full object-cover" loading="lazy">
-                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg)" :src="getMediaUrl(mediaMsg)"
-                                        class="w-full h-full object-cover" preload="metadata" muted playsinline></video>
+                                <button type="button" @click.stop="openMedia(mediaMsg)" :disabled="!getMediaUrl(mediaMsg)"
+                                    class="w-16 h-16 rounded overflow-hidden bg-tg-n800 flex items-center justify-center shrink-0 disabled:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-accent-soft"
+                                    :aria-label="getMediaUrl(mediaMsg) ? 'Open ' + (getMediaDisplayName(mediaMsg.media) || 'file') : 'File not available'">
+                                    <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg) && !previewFailed.has(mediaMsg.id)" :src="getMediaUrl(mediaMsg)" alt=""
+                                        class="w-full h-full object-cover" loading="lazy" @error="markPreviewFailed(mediaMsg.id)">
+                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg) && !previewFailed.has(mediaMsg.id)" :src="getMediaUrl(mediaMsg)"
+                                        class="w-full h-full object-cover" preload="metadata" muted playsinline aria-hidden="true" @error="markPreviewFailed(mediaMsg.id)"></video>
                                     <i v-else class="fas fa-file text-2xl text-tg-n400" aria-hidden="true"></i>
-                                </div>
+                                </button>
                                 <div class="min-w-0 flex-1">
                                     <div class="text-sm font-medium text-tg-ink break-all">{{ getMediaDisplayName(mediaMsg.media) || 'Unnamed file' }}</div>
                                     <div class="mt-0.5 text-xs text-tg-muted">{{ mediaSummaryLine(mediaMsg.media) }}</div>
                                 </div>
                             </div>
-                            <div v-if="mediaMsg.media.file_path">
+                            <!-- The path on the archive's disk is the operator's business: master only -->
+                            <div v-if="showArchivePath && mediaMsg.media.file_path">
                                 <div class="text-xs uppercase tracking-wide text-tg-muted">Archive path</div>
                                 <div class="mt-1 text-xs font-mono text-tg-ink break-all select-all">{{ mediaMsg.media.file_path }}</div>
                             </div>
                             <div class="flex flex-wrap gap-1">
-                                <button v-if="mediaMsg.media.file_path" type="button" @click="copyText(mediaMsg.media.file_path, 'Path copied')"
-                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Copy path</button>
+                                <button v-if="showArchivePath && mediaMsg.media.file_path" type="button" @click="copyText(mediaMsg.media.file_path, 'Path copied')"
+                                    class="tap-target px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Copy path</button>
                                 <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="getMediaUrl(mediaMsg) + '?download=1'" download
-                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Download</a>
+                                    class="tap-target px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Download</a>
                                 <button v-if="canOpenMedia.file && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open')"
-                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Open</button>
+                                    class="tap-target px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Open</button>
                                 <button v-if="canOpenMedia.path && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open-path')"
-                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Show in folder</button>
+                                    class="tap-target px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Show in folder</button>
                             </div>
                         </div>
                     </section>
@@ -3120,10 +3140,17 @@
                     info: { min: 260, max: 640, fallback: 320, key: 'infoPanelWidth' },
                 }
                 const MESSAGES_PANE_MIN_WIDTH = 360
+                // A browser with no saved width gets the look the layout always had: the
+                // chat list took a quarter of the window.
+                const defaultPaneWidth = (pane) => {
+                    const limits = PANE_LIMITS[pane]
+                    if (pane !== 'chatList') return limits.fallback
+                    return Math.min(limits.max, Math.max(limits.min, Math.round(window.innerWidth / 4)))
+                }
                 const readStoredPaneWidth = (pane) => {
                     const limits = PANE_LIMITS[pane]
                     const stored = Number(localStorage.getItem(limits.key))
-                    return Number.isFinite(stored) && stored >= limits.min && stored <= limits.max ? stored : limits.fallback
+                    return Number.isFinite(stored) && stored >= limits.min && stored <= limits.max ? stored : defaultPaneWidth(pane)
                 }
                 const chatListWidth = ref(readStoredPaneWidth('chatList'))
                 const infoPanelWidth = ref(readStoredPaneWidth('info'))
@@ -3164,10 +3191,12 @@
                 }
 
                 // ---- Info panel (#433): the apps' right-hand column ----
+                // The archive writes "group" for every group; "supergroup" comes from imports.
+                const isGroupChatType = (type) => type === 'group' || type === 'supergroup'
                 const infoPanelTitle = computed(() => {
                     const type = selectedChat.value?.type
                     if (type === 'private') return 'User Info'
-                    if (type === 'group') return 'Group Info'
+                    if (isGroupChatType(type)) return 'Group Info'
                     if (type === 'channel') return 'Channel Info'
                     return 'Chat Info'
                 })
@@ -3175,7 +3204,7 @@
                     if (!chat) return ''
                     const isPublic = !!chat.username
                     if (chat.type === 'private') return isDeletedChat(chat) ? 'Deleted account' : 'Private chat'
-                    if (chat.type === 'group') {
+                    if (isGroupChatType(chat.type)) {
                         const kind = chat.is_forum ? 'group with topics' : 'group'
                         return `${isPublic ? 'Public' : 'Private'} ${kind}`
                     }
@@ -3211,6 +3240,7 @@
                 const selectMessage = (msg, event) => {
                     if (!showInfoPanel.value) return
                     if (event?.target?.closest?.('a, button, video, audio, input, select, textarea, [role="button"]')) return
+                    if (window.getSelection?.()?.toString()) return  // the click that ends a text selection is not a choice
                     selectedMessage.value = msg
                 }
                 // The arrow keys walk the rendered rows. The pane is flex-col-reverse: the DOM's
@@ -3265,10 +3295,28 @@
                 })
                 const mediaSummaryLine = (media) => {
                     const parts = [media?.mime_type || media?.type]
+                    if (media?.duration) parts.push(formatDuration(media.duration))
                     if (media?.file_size != null) parts.push(formatFileSize(media.file_size))
                     if (media?.width && media?.height) parts.push(`${media.width} × ${media.height}`)
                     return parts.filter(Boolean).join(' · ')
                 }
+                // A preview that fails to load gives way to the file icon; the id set is
+                // replaced, not mutated, so the template sees the change.
+                const previewFailed = ref(new Set())
+                const markPreviewFailed = (id) => { previewFailed.value = new Set([...previewFailed.value, id]) }
+                // The path on the archive's disk means something only to whoever runs it.
+                const showArchivePath = computed(() => userRole.value === 'master')
+                const openSharedMedia = (tabId) => {
+                    switchMediaTab(tabId)
+                    showMediaGallery.value = true
+                }
+                // Long descriptions fold to four lines with a "Show more", as the apps do.
+                const descriptionExpanded = ref(false)
+                const descriptionIsLong = computed(() => {
+                    const text = selectedChat.value?.description || ''
+                    return text.length > 240 || text.split('\n').length > 4
+                })
+                watch(() => selectedChat.value?.ref, () => { descriptionExpanded.value = false })
                 const copyText = async (text, doneMessage) => {
                     if (!text) return
                     try {
@@ -9285,6 +9333,12 @@
                     chatStatusLine,
                     getChatTypeLabel,
                     mediaSummaryLine,
+                    previewFailed,
+                    markPreviewFailed,
+                    showArchivePath,
+                    openSharedMedia,
+                    descriptionExpanded,
+                    descriptionIsLong,
                     copyText,
                     canOpenMedia,
                     launchMedia,

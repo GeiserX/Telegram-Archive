@@ -76,6 +76,39 @@ class TestRenderMediaCommand(unittest.TestCase):
         # Path renders with the host's separator; the quoting is what is under test.
         self.assertEqual(command, '"C:\\Program Files\\IrfanView\\i_view64.exe" "C:/media/dir with space/a b.jpg"')
 
+    def test_placeholders_are_case_insensitive_so_a_lowercase_one_is_never_left_for_cmd_exe(self):
+        with patch.object(web_main.platform, "system", return_value="Linux"):
+            command = web_main._render_media_command("open %path% in %Dir%", Path("/root/a.jpg"))
+        self.assertEqual(command, "open /root/a.jpg in /root")
+
+    def test_a_hostile_name_cannot_leave_its_shell_word(self):
+        """Names survive sanitize_media_filename with ' ; & $ ` and placeholder text intact; none of it may run."""
+        from src.message_utils import sanitize_media_filename
+
+        hostile = sanitize_media_filename("pic'%DIR%;id;%PATH%'$(id)`id`&.jpg")
+        self.assertIn(";id;", hostile)  # the sanitizer keeps shell metacharacters, so the quoting has to hold
+        with patch.object(web_main.platform, "system", return_value="Linux"):
+            command = web_main._render_media_command("viewer %PATH% %FILENAME%", Path("/media/-100123") / hostile)
+        quoted_path = web_main.shlex.quote(f"/media/-100123/{hostile}")
+        self.assertEqual(command, f"viewer {quoted_path} {web_main.shlex.quote(hostile)}")
+        self.assertEqual(web_main.shlex.split(command), ["viewer", f"/media/-100123/{hostile}", hostile])
+
+    def test_the_command_environment_carries_no_viewer_secrets(self):
+        with patch.dict(
+            os.environ,
+            {
+                "VIEWER_PASSWORD": "x",
+                "INTERNAL_PUSH_SECRET": "y",
+                "DATABASE_URL": "z",
+                "VAPID_PRIVATE_KEY": "k",
+                "HOME": "/h",
+                "PATH": "/bin",
+            },
+            clear=True,
+        ):
+            env = web_main._media_command_env()
+        self.assertEqual(env, {"HOME": "/h", "PATH": "/bin"})
+
     def test_windows_refuses_a_percent_sign_in_the_name(self):
         """cmd.exe expands %NAME% inside quotes and has no escape for it: refuse rather than guess."""
         with (
@@ -124,7 +157,14 @@ class _OpenEndpointBase(unittest.IsolatedAsyncioTestCase):
         web_main.app.dependency_overrides[web_main.require_master] = lambda: web_main.UserContext(
             username="admin-test", role="master"
         )
-        self.spawn = AsyncMock(return_value=MagicMock())
+        # A launched viewer app keeps running: wait() outlives the 0.5 s early-exit probe.
+        self.process = MagicMock()
+
+        async def still_running():
+            await asyncio.sleep(5)
+
+        self.process.wait = still_running
+        self.spawn = AsyncMock(return_value=self.process)
         self._spawn_patch = patch.object(web_main.asyncio, "create_subprocess_shell", self.spawn)
         self._spawn_patch.start()
         self._platform_patch = patch.object(web_main.platform, "system", return_value="Linux")
@@ -181,6 +221,7 @@ class TestOpenEndpoints(_OpenEndpointBase):
             f"filer {web_main.shlex.quote(str(self.file.parent))} --select {web_main.shlex.quote(self.file.name)}",
         )
         self.assertTrue(kwargs["start_new_session"])
+        self.assertNotIn("VIEWER_PASSWORD", kwargs["env"])
         self.assertEqual(
             (kwargs["stdin"], kwargs["stdout"], kwargs["stderr"]),
             (asyncio.subprocess.DEVNULL, asyncio.subprocess.DEVNULL, asyncio.subprocess.DEVNULL),
@@ -218,6 +259,24 @@ class TestOpenEndpoints(_OpenEndpointBase):
                 resp = await client.post("/media/open/c1/12_photo")
         self.assertEqual(resp.status_code, 400)
         self.spawn.assert_not_called()
+
+    async def test_a_command_that_dies_at_once_is_reported_not_swallowed(self):
+        """shell=True always starts a shell; a missing binary shows up as a fast non-zero exit."""
+        web_main.config.media_open_cmd = "no-such-viewer %PATH%"
+        self.process.wait = AsyncMock(return_value=127)
+        with self.assertLogs(web_main.logger, level="WARNING") as captured:
+            async with self._client() as client:
+                resp = await client.post("/media/open/c1/12_photo")
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("127", resp.json()["detail"])
+        self.assertNotIn(str(self.file), "\n".join(captured.output))
+
+    async def test_a_command_that_exits_cleanly_at_once_is_fine(self):
+        web_main.config.media_open_cmd = "true %PATH%"
+        self.process.wait = AsyncMock(return_value=0)
+        async with self._client() as client:
+            resp = await client.post("/media/open/c1/12_photo")
+        self.assertEqual(resp.status_code, 200)
 
     async def test_a_command_that_fails_to_start_is_a_500_without_the_path_in_the_log(self):
         web_main.config.media_open_cmd = "viewer %PATH%"

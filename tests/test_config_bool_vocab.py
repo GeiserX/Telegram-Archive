@@ -28,6 +28,7 @@ BASE_ENV = {
 # Every boolean flag with its documented default (attr, env name, default).
 FLAGS = [
     ("download_media", "DOWNLOAD_MEDIA", True),
+    ("download_chat_description", "DOWNLOAD_CHAT_DESCRIPTION", False),
     ("skip_media_delete_existing", "SKIP_MEDIA_DELETE_EXISTING", True),
     ("sync_deletions_edits", "SYNC_DELETIONS_EDITS", False),
     ("verify_media", "VERIFY_MEDIA", False),
