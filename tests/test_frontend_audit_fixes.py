@@ -465,6 +465,7 @@ const loading = ref(false);
 const messages = ref([{ id: 1 }]);
 const messageSearchQuery = ref('needle');
 const messageHighlight = ref({ query: 'stale', messageId: 4 });
+const selectedMessage = ref({ id: 4 });
 const order = [];
 const page = ref(3);
 const hasMore = ref(false);

@@ -155,7 +155,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:8.8.0 \
+  drumsergio/telegram-archive:8.9.0 \
   python -m src auth
 ```
 
@@ -166,7 +166,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:8.8.0 \
+  drumsergio/telegram-archive:8.9.0 \
   python -m src auth
 
 # Then restart the backup container
@@ -207,7 +207,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.8.0
+    image: drumsergio/telegram-archive-viewer:8.9.0
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -255,6 +255,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `SCHEDULE` | `0 */6 * * *` | B | Cron expression for backup frequency |
 | `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
 | `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
+| `DOWNLOAD_CHAT_DESCRIPTION` | `false` | B | Fetch each chat's description on every run (a group or channel's about text, a user's bio, and the member count of channels and supergroups) for the viewer's chat info panel. One extra API request per chat per run |
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
 | `MEDIA_MAX_FILENAME_BYTES` | `143` | B | Usable filename byte budget for downloaded media. Raise to `255` on plain ext4/xfs; keep `143` for Synology/eCryptfs encrypted shares |
 | `MEDIA_MAX_DOWNLOAD_ATTEMPTS` | `5` | B | Stop retrying a file's download after this many failed attempts. Re-requesting the download resets the counter |
@@ -356,6 +357,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `VIEWER_TIMEZONE` | `Europe/Madrid` | V | Timezone for displayed timestamps ([tz database names](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `VIEWER_DEFAULT_THEME` | *(unset — Slate)* | V | Default color theme for browsers with no saved choice: `slate`, `night`, `amoled`, `forest`, `aubergine`, `day`, `paper`. The in-app picker overrides it per browser |
 | `VIEWER_CHAT_BACKGROUND` | *(unset — none)* | V | Wallpaper behind the messages: a file name the viewer serves from `/static`, so mount the image into the container (`- ./wallpaper.jpg:/app/src/web/static/wallpaper.jpg:ro`). Bubbles turn opaque and the image is tinted with the palette's own background, so one picture suits a light and a dark theme |
+| `MEDIA_OPEN_CMD` | - | V | Adds an **Open** button to the files in the chat info panel, for the master account only. Runs this command on the machine serving the viewer with `%PATH%`, `%DIR%` and `%FILENAME%` filled in, so it is for native runs on the machine you sit at, not for a container. Example: `open %PATH%` |
+| `MEDIA_OPEN_PATH_CMD` | - | V | Same for a **Show in folder** button. Example: `open -R %PATH%` on macOS, `explorer.exe /select,%PATH%` on Windows, `xdg-open %DIR%` on Linux |
 | `SHOW_STATS` | `true` | V | Show backup statistics dropdown in viewer header |
 | `THUMBNAIL_CACHE_DIR` | `$BACKUP_PATH/media/.thumbs` | V | Where generated thumbnails are cached. Falls back to `/tmp/telegram-archive-thumbs` when the media directory is not writable |
 | **Security** | | | |
@@ -624,9 +627,9 @@ want and run `docker compose up -d`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.8.0
+    image: drumsergio/telegram-archive:8.9.0
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.8.0
+    image: drumsergio/telegram-archive-viewer:8.9.0
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available
@@ -641,8 +644,8 @@ start:
 
 ```bash
 git pull
-docker build -t drumsergio/telegram-archive:8.8.0 .
-docker build -t drumsergio/telegram-archive-viewer:8.8.0 -f Dockerfile.viewer .
+docker build -t drumsergio/telegram-archive:8.9.0 .
+docker build -t drumsergio/telegram-archive-viewer:8.9.0 -f Dockerfile.viewer .
 docker compose up -d
 ```
 

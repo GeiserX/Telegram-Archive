@@ -330,11 +330,11 @@
             border-radius: 14px;
         }
 
+        /* The row the info panel is describing (#433): the tint the apps give a
+           selected message, on the whole row like theirs. */
         .message-info-selected {
-            position: relative;
-            background: rgb(var(--tg-accent) / 0.10);
+            background: rgb(var(--tg-accent) / 0.12);
             border-radius: 0.5rem;
-            box-shadow: inset 3px 0 0 rgb(var(--tg-accent));
         }
 
         @media (min-width: 768px) {
@@ -700,44 +700,35 @@
             word-break: break-word;
         }
 
-        .info-panel-resize-handle {
+        /* Resizable side panes (#433): a 10px grab strip on each pane's inner edge,
+           desktop only. The widths are CSS variables the app sets from localStorage;
+           below md the chat list stays full-width and the info panel is a page. */
+        .chat-list-pane { width: 100%; }
+        .pane-resize-handle {
             position: absolute;
-            left: -5px;
             top: 0;
             bottom: 0;
             width: 10px;
             cursor: ew-resize;
-            z-index: 1000;
+            z-index: 30;
             user-select: none;
+            touch-action: none;
         }
-
-        .chat-list-resize-handle {
-            position: absolute;
-            right: -5px;
-            top: 0;
-            bottom: 0;
-            width: 10px;
-            cursor: ew-resize;
-            z-index: 1000;
-            user-select: none;
-        }
-
-        body.info-panel-resizing .info-panel-resize-handle {
+        .chat-list-pane > .pane-resize-handle { right: -5px; }
+        .info-panel > .pane-resize-handle { left: -5px; }
+        .pane-resize-handle:focus-visible,
+        body.pane-resizing .pane-resize-handle {
             background: rgb(var(--tg-accent) / 0.25);
+            outline: none;
         }
-
-        body.info-panel-resizing {
+        body.pane-resizing,
+        body.pane-resizing * {
             cursor: ew-resize !important;
             user-select: none !important;
         }
-
-        body.info-panel-resizing * {
-            cursor: ew-resize !important;
-            user-select: none !important;
-        }
-
-        .info-panel {
-            background-color: rgb(var(--tg-bg));
+        @media (min-width: 768px) {
+            .chat-list-pane { width: var(--chat-list-width, 320px); }
+            .info-panel { width: var(--info-panel-width, 320px); }
         }
 
         /* ---- Mobile polish (app-like feel) ---- */
@@ -917,20 +908,14 @@
         <!-- Main App -->
         <div v-else class="flex w-full h-full bg-tg-bg">
             <!-- Sidebar - hidden on mobile when chat is selected -->
-            <!-- Sidebar - hidden on mobile when chat is selected -->
-            <div
-                class="relative bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
+            <div class="chat-list-pane relative bg-tg-sidebar flex flex-col border-r border-tg-n700 shrink-0"
                 :class="{'hidden md:flex': selectedChat}"
-                :style="{ width: `${chatListWidth}px` }">
-
-                <!-- Resize handle -->
-                <div
-                    class="chat-list-resize-handle"
-                    @pointerdown="startChatListResize"
-                    title="Resize chat list"
-                    aria-label="Resize chat list"
-                ></div>
-                                <!-- User bar -->
+                :style="{ '--chat-list-width': chatListWidth + 'px' }">
+                <!-- Drag to resize (#433); with the keyboard, focus it and use the arrow keys -->
+                <div class="pane-resize-handle hidden md:block" role="separator" aria-orientation="vertical"
+                    aria-label="Resize chat list" title="Drag to resize" tabindex="0"
+                    @pointerdown="startPaneResize('chatList', $event)" @keydown="resizePaneByKey('chatList', $event)"></div>
+                <!-- User bar -->
                 <div v-if="authRequired && isAuthenticated" class="flex items-center gap-2 px-3 py-1 border-b border-tg-n700">
                     <span class="text-xs text-tg-n400 truncate flex-1">{{ currentUsername }}</span>
                     <button v-if="userRole === 'master'" @click="openStatusPanel" class="text-tg-n400 hover:text-tg-ink p-1" title="Archive Status">
@@ -1137,7 +1122,7 @@
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
-                        <div class="p-3 border-b-2 border-tg-n700 flex items-center gap-2 sticky top-0 bg-tg-bg z-10">
+                        <div class="p-3 border-b border-tg-n700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
                             <button @click="navigateBackToChats()" class="p-1.5 hover:bg-tg-n700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
@@ -1514,22 +1499,18 @@
                                 </svg>
                             </button>
 
-                            <!-- Info Button -->
-                            <button
-                                @click="showInfoPanel = !showInfoPanel"
-                                :aria-expanded="showInfoPanel ? 'true' : 'false'"
-                                aria-label="Show/hide message information"
-                                title="Message information"
-                                :class="showInfoPanel
-                                    ? 'tap-target p-1.5 sm:p-2 text-tg-ink bg-tg-n700 rounded-lg transition shrink-0'
-                                    : 'tap-target p-1.5 sm:p-2 text-tg-n400 hover:text-tg-ink rounded-lg hover:bg-tg-ink/10 transition shrink-0'">
+                            <!-- Info panel toggle (#433): the apps' right-hand "Chat Info" column -->
+                            <button ref="infoPanelToggleBtn" type="button" @click="toggleInfoPanel"
+                                :aria-expanded="showInfoPanel ? 'true' : 'false'" aria-controls="info-panel"
+                                aria-label="Chat information" title="Chat information"
+                                class="tap-target p-1.5 sm:p-2 rounded-lg transition shrink-0"
+                                :class="showInfoPanel ? 'text-tg-ink bg-tg-n700' : 'text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10'">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <circle cx="12" cy="12" r="9" stroke-width="2"></circle>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M12 10v6m0-9h.01"></path>
                                 </svg>
                             </button>
-
                         </div>
                     </div>
 
@@ -1768,13 +1749,11 @@
                                  decided by the service branch above; see isRenderedMessageRow. -->
                             <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id"
                                 class="flex items-end gap-2"
-                                @click="selectMessage(msg)"
+                                @click="selectMessage(msg, $event)"
                                 :class="[
                                     isOwnMessage(msg) ? 'justify-end' : 'justify-start',
                                     isSenderBreak(index) ? 'message-run-break' : 'message-run-continue',
-                                    selectedMessage && selectedMessage.id === msg.id && selectedMessage.chat_id === msg.chat_id
-                                        ? 'message-info-selected'
-                                        : ''
+                                    isSelectedMessage(msg) ? 'message-info-selected' : ''
                                 ]">
                                 <!-- Sender avatar gutter (#229): group + non-own only.
                                      Circle renders at the run start (alongside the name);
@@ -2226,368 +2205,192 @@
                 </template>
             </div>
 
-            <!-- Message Info Panel -->
-            <aside v-if="showInfoPanel"
-                class="relative bg-tg-sidebar border-l border-tg-n700 flex flex-col"
-                :style="{ width: infoPanelWidth + 'px' }"
-                >
+            <!-- Info panel (#433): the apps' right-hand "Chat Info" column. A resizable
+                 column on desktop; on a phone it takes the whole screen, like the apps'
+                 info page, and the back arrow returns to the messages. The Open buttons
+                 exist only for the master account and only when MEDIA_OPEN_CMD /
+                 MEDIA_OPEN_PATH_CMD name the command behind them. -->
+            <aside v-if="showInfoPanel && selectedChat" id="info-panel" role="complementary" :aria-label="infoPanelTitle"
+                class="info-panel fixed inset-0 z-40 md:relative md:inset-auto md:z-auto bg-tg-sidebar md:border-l md:border-tg-n700 flex flex-col shrink-0"
+                :style="{ '--info-panel-width': infoPanelWidth + 'px' }">
+                <div class="pane-resize-handle hidden md:block" role="separator" aria-orientation="vertical"
+                    aria-label="Resize information panel" title="Drag to resize" tabindex="0"
+                    @pointerdown="startPaneResize('info', $event)" @keydown="resizePaneByKey('info', $event)"></div>
 
-                <!-- Resize handle -->
-                <div
-                    class="info-panel-resize-handle"
-                    @pointerdown="startInfoPanelResize"
-                    title="Resize information panel"
-                    aria-label="Resize information panel"
-                ></div>
+                <header class="flex items-center gap-2 px-3 py-2 border-b border-tg-n700 shrink-0">
+                    <button ref="infoPanelCloseBtn" type="button" @click="closeInfoPanel"
+                        class="tap-target p-1.5 rounded-lg text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10 transition focus:outline-none focus:ring-2 focus:ring-tg-accent-soft"
+                        aria-label="Close chat information">
+                        <!-- A back arrow where the panel is a page (phones), a cross where it is a column -->
+                        <svg class="w-5 h-5 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                        </svg>
+                        <svg class="w-5 h-5 hidden md:block" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                    <h2 class="flex-1 text-base font-semibold text-tg-ink truncate">{{ infoPanelTitle }}</h2>
+                </header>
 
-                <div class="flex items-center justify-between px-4 py-3 border-b border-tg-n700">
-                    <h2 class="text-lg font-semibold text-tg-ink">Information</h2>
-                </div>
+                <div class="flex-1 overflow-y-auto overscroll-contain">
+                    <!-- Profile block: avatar, name and status line, as the apps open with -->
+                    <section class="px-4 pt-6 pb-4 flex flex-col items-center text-center border-b border-tg-n700">
+                        <div class="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-3xl font-bold text-tg-ink overflow-hidden select-none">
+                            <img v-if="selectedChat.avatar_url" :src="selectedChat.avatar_url" class="w-full h-full object-cover"
+                                @error="selectedChat.avatar_url = null" alt="">
+                            <template v-else-if="isDeletedChat(selectedChat)">
+                                <svg class="w-10 h-10 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 21a7 7 0 0114 0" />
+                                </svg>
+                            </template>
+                            <template v-else>{{ getInitials(selectedChat) }}</template>
+                        </div>
+                        <h3 class="mt-3 max-w-full text-lg font-bold text-tg-ink break-words">{{ getChatName(selectedChat) }}</h3>
+                        <p class="mt-0.5 text-sm text-tg-muted">{{ chatStatusLine(selectedChat) }}</p>
+                    </section>
 
-                <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <dl class="px-4 py-3 space-y-3 text-sm border-b border-tg-n700">
+                        <div v-if="selectedChat.description">
+                            <dt class="text-xs uppercase tracking-wide text-tg-muted">{{ selectedChat.type === 'private' ? 'Bio' : 'Description' }}</dt>
+                            <dd class="mt-1 whitespace-pre-wrap break-words text-tg-ink">{{ selectedChat.description }}</dd>
+                        </div>
+                        <div v-if="selectedChat.username">
+                            <dt class="text-xs uppercase tracking-wide text-tg-muted">Username</dt>
+                            <dd class="mt-1">
+                                <button type="button" @click="copyText('@' + selectedChat.username, 'Username copied')"
+                                    class="text-left break-all text-tg-accent hover:underline" title="Copy username">@{{ selectedChat.username }}</button>
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs uppercase tracking-wide text-tg-muted">Telegram ID</dt>
+                            <dd class="mt-1 font-mono text-tg-ink">{{ selectedChat.id }}</dd>
+                        </div>
+                    </dl>
 
-                    <!-- Chat Information -->
-                    <div v-if="selectedChat">
-                        <h3 class="text-sm font-semibold text-tg-ink mb-1">
-                            Chat:
-                            <span
-                                class="inline-flex items-center px-2 py-0.5 rounded text-sm font-semibold text-tg-ink mb-1"
-                                :class="{
-                                    'bg-blue-500/15 text-blue-600': selectedChat.username,
-                                    'bg-tg-n700 text-tg-muted': !selectedChat.username
-                                }"
-                            >
-                                {{ getChatTypeLabel(selectedChat) }}
-                            </span>
-                        </h3>
-
-                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
-                            <div class="flex items-start gap-3">
-                                <!-- Chat avatar - same logic as chat list -->
-                                <div
-                                    class="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg font-bold text-tg-ink shrink-0 overflow-hidden relative">
-                                    <img v-if="selectedChat.avatar_url"
-                                        :src="selectedChat.avatar_url"
-                                        class="w-full h-full object-cover"
-                                        @error="selectedChat.avatar_url = null"
-                                        :alt="getChatName(selectedChat)">
-                                    <template v-else-if="isDeletedChat(selectedChat)">
-                                        <!-- Deleted account icon -->
-                                        <svg class="w-7 h-7 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M12 14c2.21 0 4-1.343 4-3s-1.79-3-4-3-4 1.343-4 3 1.79 3 4 3z" />
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M5 21a7 7 0 0114 0" />
-                                        </svg>
-                                    </template>
-                                    <template v-else>
-                                        {{ getInitials(selectedChat) }}
-                                    </template>
+                    <!-- The open topic, in forum chats -->
+                    <section v-if="selectedPaneTopic" class="px-4 py-3 border-b border-tg-n700">
+                        <h4 class="text-xs uppercase tracking-wide text-tg-muted">Topic</h4>
+                        <div class="mt-2 flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-tg-ink shrink-0"
+                                :style="{ backgroundColor: getTopicColor(selectedPaneTopic.icon_color) }">
+                                <span v-if="selectedPaneTopic.icon_emoji" class="text-xl">{{ selectedPaneTopic.icon_emoji }}</span>
+                                <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <div class="font-medium text-tg-ink break-words">{{ selectedPaneTopic.title }}</div>
+                                <div class="text-xs text-tg-muted">
+                                    <span class="font-mono">ID {{ selectedPaneTopic.id }}</span>
+                                    <template v-if="selectedPaneTopic.is_pinned"> · Pinned</template>
+                                    <template v-if="selectedPaneTopic.is_closed"> · Closed</template>
                                 </div>
+                            </div>
+                        </div>
+                    </section>
 
+                    <!-- The selected message -->
+                    <section class="px-4 py-3 border-b border-tg-n700">
+                        <h4 class="text-xs uppercase tracking-wide text-tg-muted">Message</h4>
+                        <p v-if="!infoPanelMessage" class="mt-2 text-sm text-tg-muted">
+                            Click a message to see its details. The arrow keys move between messages.
+                        </p>
+                        <template v-else>
+                            <dl class="mt-2 space-y-3 text-sm">
+                                <div>
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">From</dt>
+                                    <dd class="mt-1 text-tg-ink">
+                                        <template v-if="isOwnMessage(infoPanelMessage)">You</template>
+                                        <button v-else type="button" @click="openSenderInfo(infoPanelMessage, $event)"
+                                            class="text-left break-words text-tg-accent hover:underline">{{ getSenderName(infoPanelMessage) }}</button>
+                                        <span v-if="infoPanelMessage.sender_id != null" class="ml-1 font-mono text-xs text-tg-muted">{{ infoPanelMessage.sender_id }}</span>
+                                    </dd>
+                                </div>
+                                <div>
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Sent</dt>
+                                    <dd class="mt-1 text-tg-ink">{{ formatDateFull(infoPanelMessage.date) }} at {{ formatTime(infoPanelMessage.date) }}</dd>
+                                </div>
+                                <div v-if="infoPanelMessage.edit_date">
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Edited</dt>
+                                    <dd class="mt-1 text-tg-ink">
+                                        {{ formatDateFull(infoPanelMessage.edit_date) }} at {{ formatTime(infoPanelMessage.edit_date) }}
+                                        <button v-if="infoPanelMessage.version_count" type="button" @click="loadMessageVersions(infoPanelMessage)"
+                                            class="ml-1 text-tg-accent hover:underline">
+                                            {{ infoPanelMessage.version_count }} {{ infoPanelMessage.version_count === 1 ? 'version' : 'versions' }}
+                                        </button>
+                                    </dd>
+                                </div>
+                                <div v-if="infoPanelMessage.reply_to_msg_id != null && infoPanelMessage.reply_to_msg_id !== infoPanelMessage.reply_to_top_id">
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Reply to</dt>
+                                    <dd class="mt-1">
+                                        <button type="button" @click="jumpToReply(infoPanelMessage.reply_to_msg_id)"
+                                            class="text-tg-accent hover:underline">Message <span class="font-mono">{{ infoPanelMessage.reply_to_msg_id }}</span></button>
+                                    </dd>
+                                </div>
+                                <div v-if="infoPanelMessage.forward_from_id != null">
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Forwarded from</dt>
+                                    <dd class="mt-1 font-mono text-tg-ink">{{ infoPanelMessage.forward_from_id }}</dd>
+                                </div>
+                                <div>
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Message ID</dt>
+                                    <dd class="mt-1 font-mono text-tg-ink">
+                                        {{ infoPanelMessage.id }}<template v-if="infoPanelMessage.raw_data?.grouped_id"> · album {{ infoPanelMessage.raw_data.grouped_id }}</template>
+                                    </dd>
+                                </div>
+                                <div v-if="infoPanelMessage.is_pinned || infoPanelMessage.is_deleted">
+                                    <dt class="text-xs uppercase tracking-wide text-tg-muted">Status</dt>
+                                    <dd class="mt-1 flex flex-wrap gap-1">
+                                        <span v-if="infoPanelMessage.is_pinned" class="px-2 py-0.5 rounded-full text-xs bg-tg-n700 text-tg-ink">Pinned</span>
+                                        <span v-if="infoPanelMessage.is_deleted" class="px-2 py-0.5 rounded-full text-xs bg-tg-n700 text-tg-ink">Deleted</span>
+                                    </dd>
+                                </div>
+                            </dl>
+                            <div class="mt-3">
+                                <button type="button" @click="copyMessageLink(infoPanelMessage)"
+                                    class="px-3 py-1.5 text-sm bg-tg-n700 hover:bg-tg-n600 text-tg-ink rounded-lg transition">
+                                    <i class="fa-solid fa-link mr-1"></i> Copy message link
+                                </button>
+                            </div>
+                        </template>
+                    </section>
+
+                    <!-- The message's files; an album lists every item -->
+                    <section v-if="infoPanelMedia.length" class="px-4 py-3">
+                        <h4 class="text-xs uppercase tracking-wide text-tg-muted">{{ infoPanelMedia.length === 1 ? 'File' : infoPanelMedia.length + ' files' }}</h4>
+                        <div v-for="mediaMsg in infoPanelMedia" :key="mediaMsg.id" class="mt-2 rounded-lg bg-tg-bg p-3 space-y-2">
+                            <div class="flex items-start gap-3">
+                                <div class="w-16 h-16 rounded overflow-hidden bg-tg-n800 flex items-center justify-center shrink-0">
+                                    <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg)" :src="getMediaUrl(mediaMsg)" alt=""
+                                        class="w-full h-full object-cover" loading="lazy">
+                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg)" :src="getMediaUrl(mediaMsg)"
+                                        class="w-full h-full object-cover" preload="metadata" muted playsinline></video>
+                                    <i v-else class="fas fa-file text-2xl text-tg-n400" aria-hidden="true"></i>
+                                </div>
                                 <div class="min-w-0 flex-1">
-                                    <div class="text-sm space-y-1 text-tg-muted">
-                                        <div v-if="selectedChat.title">
-                                            <span class="text-tg-ink">Title:</span>
-                                            {{ selectedChat.title }}
-                                        </div>
-
-                                        <div>
-                                            <span class="text-tg-ink">ID:</span>
-                                            {{ selectedChat.id }}
-                                        </div>
-
-                                        <div v-if="selectedChat.username">
-                                            <span class="text-tg-ink">Username:</span>
-                                            @{{ selectedChat.username }}
-                                        </div>
-                                    </div>
+                                    <div class="text-sm font-medium text-tg-ink break-all">{{ getMediaDisplayName(mediaMsg.media) || 'Unnamed file' }}</div>
+                                    <div class="mt-0.5 text-xs text-tg-muted">{{ mediaSummaryLine(mediaMsg.media) }}</div>
                                 </div>
                             </div>
-
-                            <div v-if="selectedChat.description" class="mt-3 text-sm text-tg-muted">
-                                <div class="text-tg-ink">Description:</div>
-                                <div class="mt-1 whitespace-pre-wrap break-words">
-                                    {{ selectedChat.description }}
-                                </div>
-                            </div>
-
-                            <div class="mt-2 text-sm text-tg-muted space-y-1">
-                                <div v-if="selectedChat.participants_count">
-                                    <span class="text-tg-ink">Participants:</span>
-                                    {{ selectedChat.participants_count.toLocaleString('en-US') }}
-                                </div>
-
-                                <div v-if="selectedChat.is_forum">
-                                    <span class="text-tg-ink">Forum:</span>
-                                    Yes
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Topic Information -->
-                    <div v-if="selectedPaneTopic">
-                        <h3 class="text-sm font-semibold text-tg-ink mb-2">
-                            Topic
-                        </h3>
-
-                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
-                            <div class="flex items-start gap-3">
-                                <!-- Topic icon - same logic as topic list -->
-                                <div
-                                    class="w-16 h-16 rounded-full flex items-center justify-center text-tg-ink shrink-0"
-                                    :style="{ backgroundColor: getTopicColor(selectedPaneTopic.icon_color) }">
-                                    <span v-if="selectedPaneTopic.icon_emoji" class="text-2xl">
-                                        {{ selectedPaneTopic.icon_emoji }}
-                                    </span>
-                                    <svg v-else class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
-                                    </svg>
-                                </div>
-
-                                <div class="min-w-0 flex-1">
-                                    <div class="text-sm space-y-1 text-tg-muted">
-                                        <div v-if="selectedPaneTopic.title">
-                                            <span class="text-tg-ink">Title:</span>
-                                            {{ selectedPaneTopic.title }}
-                                        </div>
-
-                                        <div>
-                                            <span class="text-tg-ink">ID:</span>
-                                            {{ selectedPaneTopic.id }}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="mt-2 text-sm text-tg-muted space-y-1">
-                                <div v-if="selectedPaneTopic.is_pinned">
-                                    <span class="text-tg-ink">Pinned:</span>
-                                    Yes
-                                </div>
-
-                                <div v-if="selectedPaneTopic.is_closed">
-                                    <span class="text-tg-ink">Closed:</span>
-                                    Yes
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Message Information -->
-                    <div v-if="selectedMessage">
-                        <h3 class="text-sm font-semibold text-tg-ink mb-2">
-                            Message
-                        </h3>
-
-                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
-                            <div class="text-sm space-y-1 text-tg-muted">
-                                <div>
-                                    <span class="text-tg-ink">ID:</span>
-                                    {{ selectedMessage.id }}
-                                </div>
-
-                                <div v-if="selectedMessage.chat_id != null">
-                                    <span class="text-tg-ink">Chat ID:</span>
-                                    {{ selectedMessage.chat_id }}
-                                </div>
-
-                                <div v-if="selectedMessage.sender_id != null">
-                                    <span class="text-tg-ink">Sender ID:</span>
-                                    {{ selectedMessage.sender_id }}
-                                </div>
-
-                                <div v-if="selectedMessage.sender_name">
-                                    <span class="text-tg-ink">Sender:</span>
-                                    {{ selectedMessage.sender_name }}
-                                </div>
-
-                                <div>
-                                    <span class="text-tg-ink">Date:</span>
-                                    {{ selectedMessage.date }}
-                                </div>
-
-                                <div v-if="selectedMessage.edit_date">
-                                    <span class="text-tg-ink">Edited:</span>
-                                    {{ selectedMessage.edit_date }}
-                                </div>
-
-                                <div v-if="selectedMessage.reply_to_msg_id != null">
-                                    <span class="text-tg-ink">Reply to:</span>
-                                    {{ selectedMessage.reply_to_msg_id }}
-                                </div>
-
-                                <div v-if="selectedMessage.reply_to_top_id != null">
-                                    <span class="text-tg-ink">Reply to topic:</span>
-                                    {{ selectedMessage.reply_to_top_id }}
-                                </div>
-
-                                <div v-if="selectedMessage.raw_data?.grouped_id != null">
-                                    <span class="text-tg-ink">Album ID:</span>
-                                    {{ selectedMessage.raw_data.grouped_id }}
-                                </div>
-
-                                <div>
-                                    <span class="text-tg-ink">Direction:</span>
-                                    {{ selectedMessage.is_outgoing ? 'Outgoing' : 'Incoming' }}
-                                </div>
-
-                                <div v-if="selectedMessage.is_deleted">
-                                    <span class="text-tg-ink">Deleted:</span>
-                                    Yes
-                                </div>
-
-                                <div v-if="selectedMessage.is_pinned">
-                                    <span class="text-tg-ink">Pinned:</span>
-                                    Yes
-                                </div>
-
-                                <div v-if="selectedMessage.forward_from_id != null">
-                                    <span class="text-tg-ink">Forwarded from:</span>
-                                    {{ selectedMessage.forward_from_id }}
-                                </div>
-
-                                <div v-if="selectedMessage.version_count">
-                                    <span class="text-tg-ink">Versions:</span>
-                                    {{ selectedMessage.version_count }}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div v-if="selectedMessage && getInfoPanelMedia(selectedMessage).length">
-                        <h3 class="text-sm font-semibold text-tg-ink mb-2">
-                            Media
-                        </h3>
-
-                        <div
-                            v-for="mediaMsg in getInfoPanelMedia(selectedMessage)"
-                            :key="mediaMsg.id"
-                            class="border border-tg-n700 info-panel rounded-lg p-3 space-y-2"
-                        >
-                            <div class="flex items-start gap-3">
-
-                                <!-- Preview of the original media, scaled to max. 80px height -->
-                                <div
-                                    class="flex-none w-[140px] h-[80px] rounded overflow-hidden bg-tg-bg flex items-center justify-center"
-                                >
-                                    <img
-                                        v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg)"
-                                        :src="getMediaUrl(mediaMsg)"
-                                        :alt="getMediaDisplayName(mediaMsg.media)"
-                                        class="max-w-full max-h-full w-auto h-auto object-contain"
-                                        loading="lazy"
-                                    />
-
-                                    <video
-                                        v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg)"
-                                        :src="getMediaUrl(mediaMsg)"
-                                        class="max-w-full max-h-full w-auto h-auto object-contain"
-                                        preload="metadata"
-                                        muted
-                                        playsinline
-                                    ></video>
-
-                                    <div
-                                        v-else
-                                        class="text-tg-muted text-2xl"
-                                        aria-hidden="true"
-                                    >
-                                        📄
-                                    </div>
-                                </div>
-
-                                <!-- Media information -->
-                                <div class="min-w-0 flex-1 space-y-2">
-
-                                    <div class="font-medium text-sm text-tg-ink break-all">
-                                        {{ mediaMsg.media.file_name || 'Unnamed file' }}
-                                    </div>
-
-                                    <div class="text-xs text-tg-muted space-y-1">
-                                        <div>
-                                            <span class="text-tg-ink">Type:</span>
-                                            {{ mediaMsg.media.type || '—' }}
-                                        </div>
-
-                                        <div v-if="mediaMsg.media.mime_type">
-                                            <span class="text-tg-ink">MIME:</span>
-                                            {{ mediaMsg.media.mime_type }}
-                                        </div>
-
-                                        <div v-if="mediaMsg.media.file_size != null">
-                                            <span class="text-tg-ink">Size:</span>
-                                            {{ formatFileSize(mediaMsg.media.file_size) }}
-                                        </div>
-
-                                        <div v-if="mediaMsg.media.width && mediaMsg.media.height">
-                                            <span class="text-tg-ink">Dimensions:</span>
-                                            {{ mediaMsg.media.width }} × {{ mediaMsg.media.height }}
-                                        </div>
-                                    </div>
-
-                                </div>
-                            </div>
-
                             <div v-if="mediaMsg.media.file_path">
-                                <div class="flex items-center justify-between mb-1">
-                                    <div class="text-xs font-medium text-tg-ink">
-                                        Local path
-                                    </div>
-
-                                    <div class="flex items-center gap-1">
-                                        <button
-                                            type="button"
-                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
-                                            @click.stop="copyMediaPath(mediaMsg.media.file_path)"
-                                        >
-                                            Copy path
-                                        </button>
-
-                                        <button
-                                            type="button"
-                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
-                                            @click.stop="launchMediaFile(mediaMsg)"
-                                        >
-                                            Open
-                                        </button>
-
-                                        <button
-                                            type="button"
-                                            class="text-xs text-tg-muted hover:text-tg-ink px-2 py-1 rounded hover:bg-tg-n700/50"
-                                            @click.stop="launchMediaFolder(mediaMsg)"
-                                        >
-                                            Open path
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div
-                                    class="text-xs text-tg-muted break-all bg-tg-bg rounded p-2 select-text"
-                                >
-                                    {{ mediaMsg.media.file_path }}
-                                </div>
+                                <div class="text-xs uppercase tracking-wide text-tg-muted">Archive path</div>
+                                <div class="mt-1 text-xs font-mono text-tg-ink break-all select-all">{{ mediaMsg.media.file_path }}</div>
                             </div>
-
+                            <div class="flex flex-wrap gap-1">
+                                <button v-if="mediaMsg.media.file_path" type="button" @click="copyText(mediaMsg.media.file_path, 'Path copied')"
+                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Copy path</button>
+                                <a v-if="!noDownload && getMediaUrl(mediaMsg)" :href="getMediaUrl(mediaMsg) + '?download=1'" download
+                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Download</a>
+                                <button v-if="canOpenMedia.file && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open')"
+                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Open</button>
+                                <button v-if="canOpenMedia.path && getMediaUrl(mediaMsg)" type="button" @click="launchMedia(mediaMsg, 'open-path')"
+                                    class="px-2 py-1 text-xs rounded bg-tg-n700 hover:bg-tg-n600 text-tg-ink transition">Show in folder</button>
+                            </div>
                         </div>
-                    </div>
-
-                    <div v-else-if="selectedMessage" class="text-sm text-tg-muted">
-                        This message has no local media.
-                    </div>
+                    </section>
                 </div>
-
             </aside>
-
-            <!-- Copy Toast -->
-            <div
-                v-if="showCopyToast"
-                class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-gray-800 text-white text-sm shadow-xl"
-            >
-                Path copied
-            </div>
 
         </div>
 
@@ -3303,222 +3106,198 @@
                 const selectedChat = ref(null)
                 const selectedMessage = ref(null)
                 const showInfoPanel = ref(false)
+                const infoPanelToggleBtn = ref(null)
+                const infoPanelCloseBtn = ref(null)
+                // Substituted at serve time: which Open buttons the operator wrote a command for.
+                const VIEWER_MEDIA_OPEN = __VIEWER_MEDIA_OPEN__
 
-                const INFO_PANEL_MIN_WIDTH = 200
-                const INFO_PANEL_MAX_WIDTH = 999
-
-                const CHAT_LIST_MIN_WIDTH = 300
-                const CHAT_LIST_MAX_WIDTH = 600
-
-                const storedChatListWidth = Number(
-                    localStorage.getItem('chatListWidth')
-                )
-
-                const chatListWidth = ref(
-                    Number.isFinite(storedChatListWidth) &&
-                    storedChatListWidth >= CHAT_LIST_MIN_WIDTH &&
-                    storedChatListWidth <= CHAT_LIST_MAX_WIDTH
-                        ? storedChatListWidth
-                        : 320
-                )
-
-                const storedInfoPanelWidth = Number(
-                    localStorage.getItem('infoPanelWidthV2')
-                )
-
-                const infoPanelWidth = ref(
-                    Number.isFinite(storedInfoPanelWidth) &&
-                    storedInfoPanelWidth >= INFO_PANEL_MIN_WIDTH &&
-                    storedInfoPanelWidth <= INFO_PANEL_MAX_WIDTH
-                        ? storedInfoPanelWidth
-                        : INFO_PANEL_MIN_WIDTH
-                )
-
-                const startInfoPanelResize = (event) => {
-                    event.preventDefault()
-
-                    const startX = event.clientX
-                    const startWidth = infoPanelWidth.value
-
-                    document.body.classList.add('info-panel-resizing')
-
-                    const onPointerMove = (moveEvent) => {
-                        // Ziehen nach links = Panel kleiner
-                        // Ziehen nach rechts = Panel größer
-                        const deltaX = startX - moveEvent.clientX
-
-                        const newWidth = Math.min(
-                            INFO_PANEL_MAX_WIDTH,
-                            Math.max(INFO_PANEL_MIN_WIDTH, startWidth + deltaX)
-                        )
-
-                        infoPanelWidth.value = newWidth
-                    }
-
-                    const onPointerUp = () => {
-                        document.removeEventListener('pointermove', onPointerMove)
-                        document.removeEventListener('pointerup', onPointerUp)
-
-                        document.body.classList.remove('info-panel-resizing')
-
-                        localStorage.setItem(
-                            'infoPanelWidthV2',
-                            String(infoPanelWidth.value)
-                        )
-                    }
-
-                    document.addEventListener('pointermove', onPointerMove)
-                    document.addEventListener('pointerup', onPointerUp)
+                // ---- Resizable side panes (#433) ----
+                // Widths live in CSS variables (.chat-list-pane / .info-panel, desktop only)
+                // and persist per browser. The messages pane keeps MESSAGES_PANE_MIN_WIDTH:
+                // a side pane that can grow into it is a side pane that can hide the chat.
+                const PANE_LIMITS = {
+                    chatList: { min: 300, max: 600, fallback: 320, key: 'chatListWidth' },
+                    info: { min: 260, max: 640, fallback: 320, key: 'infoPanelWidth' },
                 }
-
-                const startChatListResize = (event) => {
+                const MESSAGES_PANE_MIN_WIDTH = 360
+                const readStoredPaneWidth = (pane) => {
+                    const limits = PANE_LIMITS[pane]
+                    const stored = Number(localStorage.getItem(limits.key))
+                    return Number.isFinite(stored) && stored >= limits.min && stored <= limits.max ? stored : limits.fallback
+                }
+                const chatListWidth = ref(readStoredPaneWidth('chatList'))
+                const infoPanelWidth = ref(readStoredPaneWidth('info'))
+                const paneWidthRef = (pane) => pane === 'info' ? infoPanelWidth : chatListWidth
+                const clampPaneWidth = (pane, width) => {
+                    const limits = PANE_LIMITS[pane]
+                    const other = pane === 'info' ? chatListWidth.value : (showInfoPanel.value ? infoPanelWidth.value : 0)
+                    const room = window.innerWidth - other - MESSAGES_PANE_MIN_WIDTH
+                    return Math.max(limits.min, Math.min(limits.max, room, Math.round(width)))
+                }
+                const setPaneWidth = (pane, width) => { paneWidthRef(pane).value = clampPaneWidth(pane, width) }
+                const persistPaneWidth = (pane) => localStorage.setItem(PANE_LIMITS[pane].key, String(paneWidthRef(pane).value))
+                const startPaneResize = (pane, event) => {
                     if (event.button !== 0) return
-
+                    event.preventDefault()
                     const startX = event.clientX
-                    const startWidth = chatListWidth.value
-
-                    document.body.classList.add('info-panel-resizing')
-
-                    const onPointerMove = (moveEvent) => {
-                        // Ziehen nach rechts = Chatliste größer
-                        // Ziehen nach links = Chatliste kleiner
-                        const delta = moveEvent.clientX - startX
-
-                        chatListWidth.value = Math.min(
-                            CHAT_LIST_MAX_WIDTH,
-                            Math.max(
-                                CHAT_LIST_MIN_WIDTH,
-                                startWidth + delta
-                            )
-                        )
+                    const startWidth = paneWidthRef(pane).value
+                    const direction = pane === 'info' ? -1 : 1  // the info panel grows to the left
+                    document.body.classList.add('pane-resizing')
+                    const onMove = (moveEvent) => setPaneWidth(pane, startWidth + direction * (moveEvent.clientX - startX))
+                    const stop = () => {
+                        document.removeEventListener('pointermove', onMove)
+                        document.removeEventListener('pointerup', stop)
+                        document.removeEventListener('pointercancel', stop)
+                        document.body.classList.remove('pane-resizing')
+                        persistPaneWidth(pane)
                     }
-
-                    const onPointerUp = () => {
-                        document.body.classList.remove('info-panel-resizing')
-
-                        localStorage.setItem(
-                            'chatListWidth',
-                            String(Math.round(chatListWidth.value))
-                        )
-
-                        document.removeEventListener('pointermove', onPointerMove)
-                        document.removeEventListener('pointerup', onPointerUp)
-                        document.removeEventListener('pointercancel', onPointerUp)
-                    }
-
-                    document.addEventListener('pointermove', onPointerMove)
-                    document.addEventListener('pointerup', onPointerUp)
-                    document.addEventListener('pointercancel', onPointerUp)
+                    document.addEventListener('pointermove', onMove)
+                    document.addEventListener('pointerup', stop)
+                    document.addEventListener('pointercancel', stop)
+                }
+                const resizePaneByKey = (pane, event) => {
+                    const step = event.key === 'ArrowRight' ? 16 : event.key === 'ArrowLeft' ? -16 : 0
+                    if (!step) return
+                    event.preventDefault()
+                    setPaneWidth(pane, paneWidthRef(pane).value + (pane === 'info' ? -step : step))
+                    persistPaneWidth(pane)
                 }
 
-                const showCopyToast = ref(false)
-                let copyToastTimer = null
-                const selectedPaneTopic = ref(null)
-                const searchQuery = ref('')
-
-                const selectMessage = (msg) => {
+                // ---- Info panel (#433): the apps' right-hand column ----
+                const infoPanelTitle = computed(() => {
+                    const type = selectedChat.value?.type
+                    if (type === 'private') return 'User Info'
+                    if (type === 'group') return 'Group Info'
+                    if (type === 'channel') return 'Channel Info'
+                    return 'Chat Info'
+                })
+                const getChatTypeLabel = (chat) => {
+                    if (!chat) return ''
+                    const isPublic = !!chat.username
+                    if (chat.type === 'private') return isDeletedChat(chat) ? 'Deleted account' : 'Private chat'
+                    if (chat.type === 'group') {
+                        const kind = chat.is_forum ? 'group with topics' : 'group'
+                        return `${isPublic ? 'Public' : 'Private'} ${kind}`
+                    }
+                    if (chat.type === 'channel') return `${isPublic ? 'Public' : 'Private'} channel`
+                    return ''
+                }
+                // The line under the name: the member count when the archive knows it
+                // (basic groups always; channels and supergroups once DOWNLOAD_CHAT_DESCRIPTION
+                // has fetched their full info), otherwise the kind of chat.
+                const chatStatusLine = (chat) => {
+                    const count = Number(chat?.participants_count)
+                    if (count > 0) {
+                        const noun = chat.type === 'channel' ? 'subscriber' : 'member'
+                        return `${count.toLocaleString()} ${count === 1 ? noun : noun + 's'}`
+                    }
+                    return getChatTypeLabel(chat)
+                }
+                // The row the panel describes. The list is re-fetched every few seconds and a
+                // jump replaces it wholesale, so the panel reads the live row carrying the
+                // selected id when there is one and falls back to the object that was clicked.
+                const infoPanelMessage = computed(() => {
+                    const selected = selectedMessage.value
+                    if (!selected) return null
+                    return messages.value.find(m => m.id === selected.id && m.chat_id === selected.chat_id) || selected
+                })
+                const isSelectedMessage = (msg) => {
+                    const selected = selectedMessage.value
+                    return !!selected && showInfoPanel.value && msg.id === selected.id && msg.chat_id === selected.chat_id
+                }
+                // Click-to-select only while the panel is open: with it closed, a tinted row
+                // would announce nothing. Clicks on the row's own controls (links, media, the
+                // sender avatar, buttons) keep their meaning and do not select.
+                const selectMessage = (msg, event) => {
+                    if (!showInfoPanel.value) return
+                    if (event?.target?.closest?.('a, button, video, audio, input, select, textarea, [role="button"]')) return
                     selectedMessage.value = msg
                 }
-
-                const copyMediaPath = async (path) => {
-                    if (!path) return
-
-                    try {
-                        await navigator.clipboard.writeText(path)
-
-                        showCopyToast.value = true
-
-                        if (copyToastTimer) {
-                            clearTimeout(copyToastTimer)
-                        }
-
-                        copyToastTimer = setTimeout(() => {
-                            showCopyToast.value = false
-                        }, 1800)
-                    } catch (error) {
-                        console.error('Fehler beim Kopieren des Pfades:', error)
+                // The arrow keys walk the rendered rows. The pane is flex-col-reverse: the DOM's
+                // first row is the newest and sits lowest on screen, so "down" is one DOM row back.
+                const moveMessageSelection = (direction) => {
+                    const container = messagesContainer.value
+                    const rows = container ? Array.from(container.querySelectorAll('[data-msg-id]')) : []
+                    if (!rows.length) return false
+                    const currentId = selectedMessage.value?.id
+                    const at = rows.findIndex(row => String(row.dataset.msgId) === String(currentId))
+                    const next = at < 0 ? (direction > 0 ? 0 : rows.length - 1) : at - direction
+                    if (next < 0 || next >= rows.length) return false
+                    const id = rows[next].dataset.msgId
+                    const msg = messages.value.find(m => String(m.id) === id)
+                    if (!msg) return false
+                    selectedMessage.value = msg
+                    rows[next].scrollIntoView({ block: 'nearest' })
+                    return true
+                }
+                const handleInfoPanelKeydown = (event) => {
+                    if (event.defaultPrevented) return
+                    if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+                    if (document.querySelector('[role="dialog"], [aria-modal="true"]')) return  // a dialog on top owns the keys
+                    if (event.key === 'Escape') {
+                        event.preventDefault()
+                        closeInfoPanel()
+                    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && moveMessageSelection(event.key === 'ArrowDown' ? 1 : -1)) {
+                        event.preventDefault()
                     }
                 }
+                const openInfoPanel = () => {
+                    if (showInfoPanel.value) return
+                    showInfoPanel.value = true
+                    document.addEventListener('keydown', handleInfoPanelKeydown)
+                    nextTick(() => infoPanelCloseBtn.value?.focus?.())
+                }
+                const closeInfoPanel = () => {
+                    if (!showInfoPanel.value) return
+                    showInfoPanel.value = false
+                    selectedMessage.value = null
+                    document.removeEventListener('keydown', handleInfoPanelKeydown)
+                    nextTick(() => infoPanelToggleBtn.value?.focus?.())
+                }
+                const toggleInfoPanel = () => showInfoPanel.value ? closeInfoPanel() : openInfoPanel()
 
-                const launchMediaFile = async (mediaMsg) => {
+                // Every file of the message the panel shows; an album contributes each item.
+                const infoPanelMedia = computed(() => {
+                    const msg = infoPanelMessage.value
+                    if (!msg) return []
+                    const album = getAlbumForMessage(msg)
+                    return (album && album.length ? album : [msg]).filter(m => m.media)
+                })
+                const mediaSummaryLine = (media) => {
+                    const parts = [media?.mime_type || media?.type]
+                    if (media?.file_size != null) parts.push(formatFileSize(media.file_size))
+                    if (media?.width && media?.height) parts.push(`${media.width} × ${media.height}`)
+                    return parts.filter(Boolean).join(' · ')
+                }
+                const copyText = async (text, doneMessage) => {
+                    if (!text) return
+                    try {
+                        await navigator.clipboard.writeText(text)
+                        showToast(doneMessage)
+                    } catch (error) {
+                        showToast('Clipboard unavailable')
+                    }
+                }
+                // Open / Show in folder run the operator's command on the machine serving the
+                // viewer (native runs). Master only, and only the buttons that have a command.
+                const canOpenMedia = computed(() => ({
+                    file: userRole.value === 'master' && !!VIEWER_MEDIA_OPEN.file,
+                    path: userRole.value === 'master' && !!VIEWER_MEDIA_OPEN.path,
+                }))
+                const launchMedia = async (mediaMsg, action) => {
                     const mediaUrl = getMediaUrl(mediaMsg)
-
-                    if (!mediaUrl) {
-                        console.error('Missing media URL')
-                        return
-                    }
-
-                    const openUrl = mediaUrl.replace(
-                        /^\/media\//,
-                        '/media/open/'
-                    )
-
+                    if (!mediaUrl) return
                     try {
-                        const response = await fetch(openUrl)
-
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`)
-                        }
+                        const response = await fetch(mediaUrl.replace(/^\/media\//, `/media/${action}/`), { method: 'POST' })
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+                        showToast(action === 'open' ? 'Opening the file' : 'Showing the folder', 1500)
                     } catch (error) {
-                        console.error('Failed to open media:', error)
+                        showToast(action === 'open' ? 'Could not open the file' : 'Could not show the folder')
                     }
                 }
 
-                const launchMediaFolder = async (mediaMsg) => {
-                    const mediaUrl = getMediaUrl(mediaMsg)
-
-                    if (!mediaUrl) {
-                        console.error('Missing media URL')
-                        return
-                    }
-
-                    const openUrl = mediaUrl.replace(
-                        /^\/media\//,
-                        '/media/open-path/'
-                    )
-
-                    try {
-                        const response = await fetch(openUrl)
-
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`)
-                        }
-                    } catch (error) {
-                        console.error('Failed to open media folder:', error)
-                    }
-                }
-
-                const getChatTypeLabel = (chat) => {
-                    if (!chat) return 'Unknown'
-
-                    const type = (chat.type || '').toLowerCase()
-                    const isPublic = !!chat.username
-                    const hasTopics = !!chat.is_forum
-
-                    if (type === 'private') {
-                        return 'User Chat'
-                    }
-
-                    if (type === 'group') {
-                        if (hasTopics) {
-                            return isPublic
-                                ? 'Public Group with Topics'
-                                : 'Private Group with Topics'
-                        }
-
-                        return isPublic
-                            ? 'Public Group'
-                            : 'Private Group'
-                    }
-
-                    if (type === 'channel') {
-                        return isPublic
-                            ? 'Public Channel'
-                            : 'Private Channel'
-                    }
-
-                    return 'Unknown'
-                }
+                const selectedPaneTopic = ref(null)
+                const searchQuery = ref('')
 
                 // Sidebar search: one field, two result sections (chats, then messages).
                 const searchActive = computed(() => searchQuery.value.trim().length > 0)
@@ -3831,6 +3610,8 @@
                     unseenMessageCount.value = 0
                     // A new view: whatever the previous one emphasised no longer applies.
                     messageHighlight.value = null
+                    // ...and the info panel's selected row belonged to the old list (#433).
+                    selectedMessage.value = null
                 }
 
                 // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
@@ -6269,16 +6050,6 @@
                     return sortedMessages.value.filter(m => getGroupedId(m) === groupedId)
                 }
 
-                const getInfoPanelMedia = (msg) => {
-                    const album = getAlbumForMessage(msg)
-
-                    if (album) {
-                        return album.filter(m => m.media?.file_path)
-                    }
-
-                    return msg?.media?.file_path ? [msg] : []
-                }
-
                 // Check if this message is the first in its album (render the album here)
                 const isFirstInAlbum = (msg, index) => {
                     const groupedId = getGroupedId(msg)
@@ -7768,20 +7539,12 @@
                     return msg.media?.url || ''
                 }
 
+                // The rows' own rule (video, animation and round video notes all render as
+                // <video>), plus the MIME hint isImageDocument also honours for documents.
                 const isVideoMedia = (msg) => {
                     const type = (msg.media?.type || '').toLowerCase()
-                    if (type === 'video' || type === 'animation') {
-                        return true
-                    }
-
-                    const name = (
-                        msg.media?.file_name ||
-                        msg.media?.file_path ||
-                        ''
-                    ).toString().toLowerCase()
-
-                    return ['.mp4', '.m4v', '.mov', '.webm', '.avi', '.mkv', '.mpeg', '.mpg']
-                        .some(ext => name.endsWith(ext))
+                    if (type === 'video' || type === 'animation' || type === 'video_note') return true
+                    return (msg.media?.mime_type || '').toLowerCase().startsWith('video/')
                 }
 
                 const getMediaDisplayName = (media) => {
@@ -9510,17 +9273,25 @@
                     selectedPaneTopic,
                     selectedMessage,
                     showInfoPanel,
-                    showCopyToast,
+                    infoPanelToggleBtn,
+                    infoPanelCloseBtn,
+                    infoPanelTitle,
+                    infoPanelMessage,
+                    infoPanelMedia,
+                    isSelectedMessage,
                     selectMessage,
-                    copyMediaPath,
-                    launchMediaFolder,
-                    launchMediaFile,
-                    getInfoPanelMedia,
-                    startInfoPanelResize,
-                    infoPanelWidth,
+                    toggleInfoPanel,
+                    closeInfoPanel,
+                    chatStatusLine,
                     getChatTypeLabel,
+                    mediaSummaryLine,
+                    copyText,
+                    canOpenMedia,
+                    launchMedia,
                     chatListWidth,
-                    startChatListResize,
+                    infoPanelWidth,
+                    startPaneResize,
+                    resizePaneByKey,
                     messages,
                     versionsMessage,
                     versionsCloseBtn,

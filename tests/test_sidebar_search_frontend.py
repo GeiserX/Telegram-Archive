@@ -33,6 +33,7 @@ const parseTelegramLink = () => null;
 const openTelegramLink = async () => {};
 const opened = [];
 const messageHighlight = ref(null);
+const selectedMessage = ref(null);
 const selectedChat = ref(null);
 let openOutcome = true;
 const selectChat = async chat => { opened.push(['chat', chat.ref]); };

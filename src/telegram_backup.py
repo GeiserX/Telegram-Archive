@@ -2108,49 +2108,8 @@ class TelegramBackup:
         # Save chat information
         chat_data = self._extract_chat_data(entity, is_archived=is_archived)
 
-        # Optionally fetch the current Telegram group/channel description.
-        # The lightweight dialog entity does not contain the full "about" text.
         if self.config.download_chat_description:
-            try:
-                logger.info(
-                    f"Downloading chat description for: "
-                    f"{getattr(entity, 'title', None) or chat_id}"
-                )
-
-                if isinstance(entity, Channel):
-                    from telethon.tl.functions.channels import GetFullChannelRequest
-
-                    full_chat = await call_with_flood_retry(
-                        self.client,
-                        GetFullChannelRequest(channel=entity),
-                    )
-                    description = getattr(full_chat.full_chat, "about", None)
-                    chat_data["description"] = description
-
-                elif isinstance(entity, Chat):
-                    from telethon.tl.functions.messages import GetFullChatRequest
-
-                    full_chat = await call_with_flood_retry(
-                        self.client,
-                        GetFullChatRequest(chat_id=entity.id),
-                    )
-                    description = getattr(full_chat.full_chat, "about", None)
-                    chat_data["description"] = description
-
-                else:
-                    description = None
-
-                logger.info(
-                    f"Chat description downloaded: "
-                    f"{len(description or '')} characters"
-                )
-
-            except Exception as e:
-                logger.warning(
-                    f"Could not fetch chat description for {chat_id}: "
-                    f"{e.__class__.__name__}: {e}"
-                )
-        
+            chat_data.update(await self._fetch_chat_description(entity))
         await self.db.upsert_chat(chat_data, account_id=self.account_id)
 
         # Fetch forum topics early (cheap, message-independent API call) so the viewer
@@ -4007,6 +3966,43 @@ class TelegramBackup:
                 logger.warning(f"Could not determine archived status for whitelisted chats: {e.__class__.__name__}")
                 return None
         return archived
+
+    async def _fetch_chat_description(self, entity) -> dict:
+        """The current "about" text of a chat, from Telegram's full-info request.
+
+        The dialog entity never carries it (``about`` lives only in the *Full
+        objects), so this is one extra request per chat per run and runs only
+        when DOWNLOAD_CHAT_DESCRIPTION is on. For channels and supergroups the
+        same answer carries the member count the dialog entity also lacks. On
+        any failure the chat keeps whatever the row already holds: the returned
+        dict is merged into chat_data, and upsert_chat updates only the keys
+        that are present.
+        """
+        try:
+            if isinstance(entity, Channel):
+                from telethon.tl.functions.channels import GetFullChannelRequest
+
+                full = await call_with_flood_retry(self.client, GetFullChannelRequest(channel=entity))
+            elif isinstance(entity, Chat):
+                from telethon.tl.functions.messages import GetFullChatRequest
+
+                full = await call_with_flood_retry(self.client, GetFullChatRequest(chat_id=entity.id))
+            elif isinstance(entity, User):
+                from telethon.tl.functions.users import GetFullUserRequest
+
+                full = await call_with_flood_retry(self.client, GetFullUserRequest(id=entity))
+            else:
+                return {}
+        except Exception as e:
+            logger.warning(f"Could not fetch a chat description: {e.__class__.__name__}")
+            return {}
+        info = getattr(full, "full_chat", None) or getattr(full, "full_user", None)
+        about = getattr(info, "about", None)
+        fields: dict = {"description": about if isinstance(about, str) and about else None}
+        count = getattr(info, "participants_count", None)
+        if isinstance(count, int):
+            fields["participants_count"] = count
+        return fields
 
     def _extract_chat_data(self, entity, is_archived: bool | None = False) -> dict:
         """Extract chat data from entity.

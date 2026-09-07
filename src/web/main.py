@@ -11,12 +11,13 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import secrets
+import shlex
+import subprocess
 import time
 import traceback
-import platform
-import subprocess
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -724,6 +725,11 @@ def _chat_background_css(name: str) -> str:
         " --tg-service-bg: rgb(var(--tg-other)); --tg-service-fg: rgb(var(--tg-text));"
         " --tg-pane-note-opacity: 1;"
     )
+
+
+def _media_open_capabilities() -> dict:
+    """Which of the info panel's Open buttons the operator configured a command for."""
+    return {"file": bool(config.media_open_cmd), "path": bool(config.media_open_path_cmd)}
 
 
 # Default palette for browsers with no saved choice. A user's picker choice
@@ -1738,147 +1744,92 @@ async def serve_media(
     return response
 
 
+# ---- Info panel "Open" buttons: operator-configured commands (native runs) ----
+#
+# A browser cannot open a file on the machine that serves it, so these buttons
+# only make sense where the viewer and the browser share that machine: a native
+# run, not the Docker deployment, where the container has no desktop and the
+# buttons would do nothing. Hence no implicit platform default (xdg-open / open /
+# os.startfile would execute whatever a sender uploaded), a button exists only
+# when the operator wrote the command for it, and only the master account can
+# press it. The values are quoted for the shell and substituted in one pass, so
+# a file name that spells a placeholder is never expanded a second time.
+
+_MEDIA_COMMAND_PLACEHOLDER = re.compile(r"%(PATH|DIR|FILENAME)%")
+
+
 def _quote_media_command_value(value: str) -> str:
-    """Quote a path value for substitution into an operator-configured command."""
+    """One shell word for a substituted path, on the shell shell=True actually runs."""
     if platform.system() == "Windows":
+        # cmd.exe expands %NAME% inside double quotes too and has no escape for
+        # it, so a name containing '%' cannot be passed through faithfully.
+        if "%" in value:
+            raise ValueError("percent sign in path")
         return subprocess.list2cmdline([value])
-    import shlex
     return shlex.quote(value)
 
 
-def _run_media_command(command_template: str, *, file_path: Path, directory: Path) -> None:
-    """Run a configured media command with safe path substitution."""
-    replacements = {
-        "%PATH%": _quote_media_command_value(str(file_path)),
-        "%DIR%": _quote_media_command_value(str(directory)),
-        "%FILENAME%": _quote_media_command_value(file_path.name),
+def _render_media_command(template: str, file_path: Path) -> str:
+    """The operator's template with %PATH%, %DIR% and %FILENAME% filled in."""
+    values = {
+        "PATH": _quote_media_command_value(str(file_path)),
+        "DIR": _quote_media_command_value(str(file_path.parent)),
+        "FILENAME": _quote_media_command_value(file_path.name),
     }
-    command = command_template
-    for placeholder, value in replacements.items():
-        command = command.replace(placeholder, value)
- 
-    logger.info("Shell command: %s", command)
- 
-    subprocess.Popen(command, shell=True)
+    return _MEDIA_COMMAND_PLACEHOLDER.sub(lambda match: values[match.group(1)], template)
 
 
-@app.get("/media/open/{chat_ref}/{media_key}")
+async def _launch_media_command(template: str, chat: ChatContext, media_key: str) -> dict:
+    """Start the operator's command on an entitled media file; the process is not awaited."""
+    if not _media_root:
+        raise HTTPException(status_code=404, detail="Media directory not configured")
+    row = await _entitled_media_row(chat, media_key)
+    relative = _media_relative_path(row.get("file_path"))
+    resolved = _resolve_media_file(relative) if relative else None
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        command = _render_media_command(template, resolved)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="File name cannot be passed to the command") from None
+    try:
+        # asyncio reaps the child, so nothing is left as a zombie; a new session
+        # keeps a long-lived viewer app from dying with the server's signals.
+        await asyncio.create_subprocess_shell(
+            command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        logger.warning(f"Media open command failed to start ({type(e).__name__})")
+        raise HTTPException(status_code=500, detail="Command failed to start") from e
+    return {"ok": True}
+
+
+@app.post("/media/open/{chat_ref}/{media_key}")
 async def launch_media_file(
     media_key: str,
     chat: ChatContext = Depends(require_chat),
-    user: UserContext = Depends(require_auth),
+    user: UserContext = Depends(require_master),
 ):
-    """Open an entitled media file with the operating system's default application."""
-    if not _media_root:
-        raise HTTPException(status_code=404, detail="Media directory not configured")
-    if user.no_download:
-        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
-
-    row = await _entitled_media_row(chat, media_key)
-    relative = _media_relative_path(row.get("file_path"))
-    if relative is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    resolved = _resolve_media_file(relative)
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    try:
-        system = platform.system()
-
-        if config.media_open_cmd:
-            _run_media_command(
-                config.media_open_cmd,
-                file_path=resolved,
-                directory=resolved.parent,
-            )
-        elif system == "Windows":
-            os.startfile(str(resolved))
-        elif system == "Darwin":
-            subprocess.Popen(["open", str(resolved)])
-        elif system == "Linux":
-            subprocess.Popen(["xdg-open", str(resolved)])
-        else:
-            raise HTTPException(
-                status_code=501,
-                detail="Opening files is not supported on this operating system",
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Failed to open media file ({type(e).__name__})")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to open media file",
-        ) from e
-
-    return {"ok": True}
+    """Run MEDIA_OPEN_CMD on an entitled media file. 404 unless the operator configured it."""
+    if not config.media_open_cmd:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return await _launch_media_command(config.media_open_cmd, chat, media_key)
 
 
-@app.get("/media/open-path/{chat_ref}/{media_key}")
+@app.post("/media/open-path/{chat_ref}/{media_key}")
 async def launch_media_folder(
     media_key: str,
     chat: ChatContext = Depends(require_chat),
-    user: UserContext = Depends(require_auth),
+    user: UserContext = Depends(require_master),
 ):
-    """Open the directory containing an entitled media file."""
-    if not _media_root:
-        raise HTTPException(status_code=404, detail="Media directory not configured")
-    if user.no_download:
-        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
-
-    row = await _entitled_media_row(chat, media_key)
-    relative = _media_relative_path(row.get("file_path"))
-    if relative is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    resolved = _resolve_media_file(relative)
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    try:
-        system = platform.system()
-
-        if config.media_open_path_cmd:
-            _run_media_command(
-                config.media_open_path_cmd,
-                file_path=resolved,
-                directory=resolved.parent,
-            )
-        elif system == "Windows":
-            subprocess.Popen([
-                "explorer.exe",
-                "/select,",
-                str(resolved),
-            ])
-        elif system == "Darwin":
-            subprocess.Popen([
-                "open",
-                "-R",
-                str(resolved),
-            ])
-        elif system == "Linux":
-            subprocess.Popen([
-                "xdg-open",
-                str(resolved.parent),
-            ])
-        else:
-            raise HTTPException(
-                status_code=501,
-                detail="Opening paths is not supported on this operating system",
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Failed to open media directory ({type(e).__name__})")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to open media directory",
-        ) from e
-
-    return {"ok": True}
+    """Run MEDIA_OPEN_PATH_CMD for an entitled media file. 404 unless the operator configured it."""
+    if not config.media_open_path_cmd:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return await _launch_media_command(config.media_open_path_cmd, chat, media_key)
 
 
 @app.get("/api/search/messages")
@@ -1951,6 +1902,7 @@ async def read_root():
     html = (templates_dir / "index.html").read_text(encoding="utf-8")
     html = html.replace("__VIEWER_DEFAULT_THEME__", VIEWER_DEFAULT_THEME)
     html = html.replace("__VIEWER_CHAT_BACKGROUND__", _chat_background_css(VIEWER_CHAT_BACKGROUND))
+    html = html.replace("__VIEWER_MEDIA_OPEN__", json.dumps(_media_open_capabilities()))
     return HTMLResponse(
         html,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
