@@ -333,9 +333,23 @@
         /* The row the info panel is describing (#433): the tint the apps give a
            selected message, on the whole row like theirs. */
         .message-info-selected {
+            position: relative;
             background: rgb(var(--tg-accent) / 0.12);
             border-radius: 0.5rem;
-            box-shadow: inset 3px 0 0 rgb(var(--tg-accent));
+        }
+        /* The bar is a pseudo-element above the bubble: in a one-to-one chat there
+           is no avatar gutter and the incoming bubble sits flush on the row edge. */
+        .message-info-selected::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            border-radius: 2px;
+            background: rgb(var(--tg-accent));
+            z-index: 1;
+            pointer-events: none;
         }
 
         @media (min-width: 768px) {
@@ -722,10 +736,13 @@
             background: rgb(var(--tg-accent) / 0.25);
             outline: none;
         }
-        body.pane-resizing,
-        body.pane-resizing * {
-            cursor: ew-resize !important;
-            user-select: none !important;
+        body.pane-resizing {
+            cursor: ew-resize;
+            user-select: none;
+        }
+        body.pane-resizing .chat-list-pane > :not(.pane-resize-handle),
+        body.pane-resizing .info-panel > :not(.pane-resize-handle) {
+            pointer-events: none;
         }
         @media (min-width: 768px) {
             .chat-list-pane { width: var(--chat-list-width, 320px); }
@@ -2306,7 +2323,7 @@
                     </section>
 
                     <!-- The selected message -->
-                    <section class="px-4 py-3 border-b border-tg-n700">
+                    <section class="px-4 py-3 border-b border-tg-n700" aria-live="polite">
                         <h4 class="text-xs uppercase tracking-wide text-tg-muted">Message</h4>
                         <p v-if="!infoPanelMessage" class="mt-2 text-sm text-tg-muted">
                             Click a message to see its details. The arrow keys move between messages.
@@ -2330,7 +2347,7 @@
                                     <dt class="text-xs uppercase tracking-wide text-tg-muted">Edited</dt>
                                     <dd class="mt-1 text-tg-ink">
                                         {{ formatDateFull(infoPanelMessage.edit_date) }} at {{ formatTime(infoPanelMessage.edit_date) }}
-                                        <button v-if="infoPanelMessage.version_count" type="button" @click="loadMessageVersions(infoPanelMessage)"
+                                        <button v-if="infoPanelMessage.version_count" type="button" @click="toggleMessageVersions(infoPanelMessage)"
                                             class="ml-1 text-tg-accent hover:underline">
                                             {{ infoPanelMessage.version_count }} {{ infoPanelMessage.version_count === 1 ? 'version' : 'versions' }}
                                         </button>
@@ -2343,11 +2360,12 @@
                                             class="text-tg-accent hover:underline">Message <span class="font-mono">{{ infoPanelMessage.reply_to_msg_id }}</span></button>
                                     </dd>
                                 </div>
-                                <div v-if="infoPanelMessage.raw_data?.forward_from_name || infoPanelMessage.forward_from_id != null">
+                                <div v-if="infoPanelMessage.forward_from_id || getForwardName(infoPanelMessage) || infoPanelMessage.raw_data?.forward_origin">
                                     <dt class="text-xs uppercase tracking-wide text-tg-muted">Forwarded from</dt>
                                     <dd class="mt-1 text-tg-ink break-words">
-                                        {{ infoPanelMessage.raw_data?.forward_from_name || '' }}
-                                        <span v-if="infoPanelMessage.forward_from_id != null" class="font-mono text-xs text-tg-muted">{{ infoPanelMessage.forward_from_id }}</span>
+                                        <button v-if="getForwardOriginChat(infoPanelMessage)" type="button" @click="openForwardOrigin(infoPanelMessage)"
+                                            class="text-left text-tg-accent hover:underline">{{ getForwardName(infoPanelMessage) || getForwardOriginChat(infoPanelMessage)?.title || 'Forwarded message' }}</button>
+                                        <template v-else>{{ getForwardName(infoPanelMessage) || 'Forwarded message' }}</template>
                                     </dd>
                                 </div>
                                 <div>
@@ -2381,9 +2399,9 @@
                                 <button type="button" @click.stop="openMedia(mediaMsg)" :disabled="!getMediaUrl(mediaMsg)"
                                     class="w-16 h-16 rounded overflow-hidden bg-tg-n800 flex items-center justify-center shrink-0 disabled:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-accent-soft"
                                     :aria-label="getMediaUrl(mediaMsg) ? 'Open ' + (getMediaDisplayName(mediaMsg.media) || 'file') : 'File not available'">
-                                    <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg) && !previewFailed.has(mediaMsg.id)" :src="getMediaUrl(mediaMsg)" alt=""
+                                    <img v-if="isImageDocument(mediaMsg) && getMediaUrl(mediaMsg) && !previewHidden(mediaMsg.id)" :src="previewSrc(mediaMsg)" alt=""
                                         class="w-full h-full object-cover" loading="lazy" @error="markPreviewFailed(mediaMsg.id)">
-                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg) && !previewFailed.has(mediaMsg.id)" :src="getMediaUrl(mediaMsg)"
+                                    <video v-else-if="isVideoMedia(mediaMsg) && getMediaUrl(mediaMsg) && !previewHidden(mediaMsg.id)" :src="getMediaUrl(mediaMsg)"
                                         class="w-full h-full object-cover" preload="metadata" muted playsinline aria-hidden="true" @error="markPreviewFailed(mediaMsg.id)"></video>
                                     <i v-else class="fas fa-file text-2xl text-tg-n400" aria-hidden="true"></i>
                                 </button>
@@ -3136,7 +3154,7 @@
                 // and persist per browser. The messages pane keeps MESSAGES_PANE_MIN_WIDTH:
                 // a side pane that can grow into it is a side pane that can hide the chat.
                 const PANE_LIMITS = {
-                    chatList: { min: 300, max: 600, fallback: 320, key: 'chatListWidth' },
+                    chatList: { min: 300, max: 960, fallback: 320, key: 'chatListWidth' },
                     info: { min: 260, max: 640, fallback: 320, key: 'infoPanelWidth' },
                 }
                 const MESSAGES_PANE_MIN_WIDTH = 360
@@ -3162,6 +3180,14 @@
                     return Math.max(limits.min, Math.min(limits.max, room, Math.round(width)))
                 }
                 const setPaneWidth = (pane, width) => { paneWidthRef(pane).value = clampPaneWidth(pane, width) }
+                // A width saved on a wide window must not squeeze the messages on a narrow
+                // one: re-clamp on load, when the panel opens, and whenever the window changes.
+                const clampPanes = () => {
+                    setPaneWidth('chatList', chatListWidth.value)
+                    setPaneWidth('info', infoPanelWidth.value)
+                }
+                clampPanes()
+                window.addEventListener('resize', clampPanes)
                 const persistPaneWidth = (pane) => localStorage.setItem(PANE_LIMITS[pane].key, String(paneWidthRef(pane).value))
                 const startPaneResize = (pane, event) => {
                     if (event.button !== 0) return
@@ -3274,6 +3300,7 @@
                 const openInfoPanel = () => {
                     if (showInfoPanel.value) return
                     showInfoPanel.value = true
+                    clampPanes()
                     document.addEventListener('keydown', handleInfoPanelKeydown)
                     nextTick(() => infoPanelCloseBtn.value?.focus?.())
                 }
@@ -3300,10 +3327,20 @@
                     if (media?.width && media?.height) parts.push(`${media.width} × ${media.height}`)
                     return parts.filter(Boolean).join(' · ')
                 }
-                // A preview that fails to load gives way to the file icon; the id set is
-                // replaced, not mutated, so the template sees the change.
-                const previewFailed = ref(new Set())
-                const markPreviewFailed = (id) => { previewFailed.value = new Set([...previewFailed.value, id]) }
+                // Previews come from the thumbnail lane (a cached 200px WebP), fall back to
+                // the original where no thumbnail exists for the type, and to the file icon
+                // when that fails too. The record is replaced, not mutated, so the template
+                // sees each step.
+                const previewFallback = ref({})
+                const previewSrc = (msg) => {
+                    const url = getMediaUrl(msg)
+                    return previewFallback.value[msg.id] === 'original' ? url : url.replace(/^\/media\//, '/media/thumb/200/')
+                }
+                const previewHidden = (id) => previewFallback.value[id] === 'hidden'
+                const markPreviewFailed = (id) => {
+                    const next = previewFallback.value[id] === 'original' ? 'hidden' : 'original'
+                    previewFallback.value = { ...previewFallback.value, [id]: next }
+                }
                 // The path on the archive's disk means something only to whoever runs it.
                 const showArchivePath = computed(() => userRole.value === 'master')
                 const openSharedMedia = (tabId) => {
@@ -9333,7 +9370,8 @@
                     chatStatusLine,
                     getChatTypeLabel,
                     mediaSummaryLine,
-                    previewFailed,
+                    previewSrc,
+                    previewHidden,
                     markPreviewFailed,
                     showArchivePath,
                     openSharedMedia,

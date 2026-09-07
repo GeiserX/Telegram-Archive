@@ -109,13 +109,18 @@ class TestRenderMediaCommand(unittest.TestCase):
             env = web_main._media_command_env()
         self.assertEqual(env, {"HOME": "/h", "PATH": "/bin"})
 
-    def test_windows_refuses_a_percent_sign_in_the_name(self):
-        """cmd.exe expands %NAME% inside quotes and has no escape for it: refuse rather than guess."""
-        with (
-            patch.object(web_main.platform, "system", return_value="Windows"),
-            self.assertRaises(ValueError),
-        ):
-            web_main._render_media_command("open %PATH%", Path("C:/media/%COMSPEC%.jpg"))
+    def test_windows_refuses_what_cmd_exe_would_read_as_syntax(self):
+        """cmd.exe expands %NAME% inside quotes and splits a bare token on & | < > ^: refuse rather than guess."""
+        for name in ("%COMSPEC%.jpg", "a&calc.exe&.jpg", "a|b.jpg", "a<b.jpg", "a>b.jpg", "a^b.jpg"):
+            with (
+                self.subTest(name=name),
+                patch.object(web_main.platform, "system", return_value="Windows"),
+                self.assertRaises(ValueError),
+            ):
+                web_main._render_media_command("explorer.exe /select,%PATH%", Path("C:/media/-100123") / name)
+        with patch.object(web_main.platform, "system", return_value="Windows"):
+            command = web_main._render_media_command("open %PATH%", Path("C:/media/-100123/plain (1).jpg"))
+        self.assertEqual(command, 'open "C:/media/-100123/plain (1).jpg"')
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +256,19 @@ class TestOpenEndpoints(_OpenEndpointBase):
             resp = await client.post("/media/open/c1/12_photo")
         self.assertEqual(resp.status_code, 404)
         self.spawn.assert_not_called()
+
+    async def test_open_hands_over_only_what_the_viewer_renders_inline(self):
+        """A sender's .exe or .command is never the file a configured opener receives; a folder reveal may show anything."""
+        web_main.config.media_open_cmd = "viewer %PATH%"
+        web_main.config.media_open_path_cmd = "filer %DIR%"
+        exe = self.media_root / "-100123" / "12_document tool.exe"
+        exe.write_bytes(b"MZ")
+        self.mock_db.get_media_for_message.return_value = {"file_path": str(exe)}
+        async with self._client() as client:
+            self.assertEqual((await client.post("/media/open/c1/12_document")).status_code, 415)
+            self.spawn.assert_not_called()
+            self.assertEqual((await client.post("/media/open-path/c1/12_document")).status_code, 200)
+        self.spawn.assert_awaited_once()
 
     async def test_a_name_the_shell_cannot_take_is_refused_rather_than_mangled(self):
         web_main.config.media_open_cmd = "viewer %PATH%"

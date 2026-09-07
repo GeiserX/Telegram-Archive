@@ -49,6 +49,8 @@ const switchMediaTab = id => galleryCalls.push(id);
 const showMediaGallery = ref(false);
 const watchers = [];
 const watch = (source, fn) => watchers.push({ source, fn });
+const windowListeners = [];
+window.addEventListener = (type, fn) => windowListeners.push([type, fn]);
 const requests = [];
 let fetchOk = true;
 const fetch = async (url, init) => { requests.push([url, init && init.method]); return { ok: fetchOk, status: fetchOk ? 200 : 500 }; };
@@ -115,8 +117,14 @@ openSharedMedia('files');
 assert.deepEqual(galleryCalls, ['files']);
 assert.equal(showMediaGallery.value, true);
 
-markPreviewFailed(4); markPreviewFailed(5);
-assert.deepEqual([...previewFailed.value], [4, 5]);
+const pic = { id: 4, media: { url: '/media/c1/4_photo' } };
+assert.equal(previewSrc(pic), '/media/thumb/200/c1/4_photo', 'the thumbnail lane first');
+markPreviewFailed(4);
+assert.equal(previewSrc(pic), '/media/c1/4_photo', 'then the original');
+assert.equal(previewHidden(4), false);
+markPreviewFailed(4);
+assert.equal(previewHidden(4), true, 'then the icon');
+assert.equal(previewHidden(5), false, 'one file at a time');
 userRole.value = 'viewer'; assert.equal(showArchivePath.value, false, 'the disk path belongs to the operator');
 userRole.value = 'master'; assert.equal(showArchivePath.value, true);
 """)
@@ -228,13 +236,22 @@ assert.equal(chatListWidth.value, 350, 'nothing stored: a quarter of the 1400px 
 assert.equal(infoPanelWidth.value, 320);
 stored.set('chatListWidth', 'garbage'); stored.set('infoPanelWidth', '9999');
 assert.equal(readStoredPaneWidth('chatList'), 350, 'garbage is not a width');
-window.innerWidth = 3000; assert.equal(defaultPaneWidth('chatList'), 600, 'the quarter is capped'); window.innerWidth = 1400;
+window.innerWidth = 3000; assert.equal(defaultPaneWidth('chatList'), 750, 'a quarter, as the old layout gave'); window.innerWidth = 4400; assert.equal(defaultPaneWidth('chatList'), 960, 'and capped'); window.innerWidth = 1400;
+
+// A width saved on a wide window is re-clamped when the window shrinks.
+assert.deepEqual(windowListeners.map(l => l[0]), ['resize'], 'the window resize is watched from setup');
+chatListWidth.value = 600; showInfoPanel.value = true; infoPanelWidth.value = 640;
+window.innerWidth = 1000;
+windowListeners[0][1]();
+assert.equal(chatListWidth.value, 300, 'shrunk to what the window leaves');
+assert.equal(infoPanelWidth.value, 340, 'the info panel gives way after the chat list has');
+window.innerWidth = 1400; showInfoPanel.value = false;
 assert.equal(readStoredPaneWidth('info'), 320, 'out of range is not a width');
 stored.set('chatListWidth', '450');
 assert.equal(readStoredPaneWidth('chatList'), 450);
 
 setPaneWidth('chatList', 5000);
-assert.equal(chatListWidth.value, 600, 'the pane never exceeds its own maximum');
+assert.equal(chatListWidth.value, 960, 'the pane never exceeds its own maximum (a quarter of a 4K window)');
 setPaneWidth('chatList', 10);
 assert.equal(chatListWidth.value, 300, 'nor shrinks below its minimum');
 
@@ -333,7 +350,11 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert 'v-if="canOpenMedia.file' in aside and 'v-if="canOpenMedia.path' in aside
     assert aside.count('@error="markPreviewFailed(mediaMsg.id)"') == 2, "a broken preview gives way to the icon"
     assert 'v-if="showArchivePath && mediaMsg.media.file_path"' in aside, "the disk path is shown to the master only"
-    assert "forward_from_name" in aside
+    assert "toggleMessageVersions(infoPanelMessage)" in aside, "the bubble's own versions toggle"
+    assert "openForwardOrigin(infoPanelMessage)" in aside and "getForwardName(infoPanelMessage)" in aside
+    assert ':src="previewSrc(mediaMsg)"' in aside
+    assert 'aria-live="polite"' in aside
+    assert ".message-info-selected::before" in html, "the selection bar paints above the bubble"
     assert "line-clamp-4" in aside and "openSharedMedia(tab.id)" in aside
     assert (
         "@click=\"launchMedia(mediaMsg, 'open')\"" in aside and "@click=\"launchMedia(mediaMsg, 'open-path')\"" in aside

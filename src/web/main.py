@@ -1758,15 +1758,19 @@ async def serve_media(
 _MEDIA_COMMAND_PLACEHOLDER = re.compile(r"%(PATH|DIR|FILENAME)%", re.IGNORECASE)
 # The command inherits the operator's shell environment minus the viewer's own secrets.
 _MEDIA_COMMAND_SECRET_KEYS = re.compile(r"PASSWORD|SECRET|TOKEN|API_HASH|PRIVATE_KEY|DATABASE_URL", re.IGNORECASE)
+# What cmd.exe reads as syntax even in a bare token: list2cmdline quotes only on
+# whitespace, so a name with none of it reaches cmd.exe verbatim.
+_WINDOWS_CMD_UNSAFE = frozenset('%&|<>^"\r\n')
 
 
 def _quote_media_command_value(value: str) -> str:
     """One shell word for a substituted path, on the shell shell=True actually runs."""
     if platform.system() == "Windows":
         # cmd.exe expands %NAME% inside double quotes too and has no escape for
-        # it, so a name containing '%' cannot be passed through faithfully.
-        if "%" in value:
-            raise ValueError("percent sign in path")
+        # it, and it splits a bare token on & | < > ^; such a name cannot be
+        # passed through faithfully, so it is refused.
+        if _WINDOWS_CMD_UNSAFE & set(value):
+            raise ValueError("shell metacharacter in path")
         return subprocess.list2cmdline([value])
     return shlex.quote(value)
 
@@ -1785,8 +1789,14 @@ def _media_command_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not _MEDIA_COMMAND_SECRET_KEYS.search(key)}
 
 
-async def _launch_media_command(template: str, chat: ChatContext, media_key: str) -> dict:
-    """Start the operator's command on an entitled media file; the process is not awaited."""
+async def _launch_media_command(template: str, chat: ChatContext, media_key: str, *, inline_only: bool) -> dict:
+    """Start the operator's command on an entitled media file; the process is not awaited.
+
+    ``inline_only`` limits the file to the families the viewer renders inline
+    (images, video, audio, PDF): "Open" hands the file to an application, and
+    a sender's ``.exe``, ``.command`` or ``.desktop`` must never be that file.
+    Showing a folder reveals the file without running it, so it takes any type.
+    """
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
     row = await _entitled_media_row(chat, media_key)
@@ -1794,6 +1804,8 @@ async def _launch_media_command(template: str, chat: ChatContext, media_key: str
     resolved = _resolve_media_file(relative) if relative else None
     if resolved is None:
         raise HTTPException(status_code=404, detail="File not found")
+    if inline_only and _inline_media_type(resolved.name) is None:
+        raise HTTPException(status_code=415, detail="File type cannot be opened")
     try:
         command = _render_media_command(template, resolved)
     except ValueError:
@@ -1833,7 +1845,7 @@ async def launch_media_file(
     """Run MEDIA_OPEN_CMD on an entitled media file. 404 unless the operator configured it."""
     if not config.media_open_cmd:
         raise HTTPException(status_code=404, detail="Not configured")
-    return await _launch_media_command(config.media_open_cmd, chat, media_key)
+    return await _launch_media_command(config.media_open_cmd, chat, media_key, inline_only=True)
 
 
 @app.post("/media/open-path/{chat_ref}/{media_key}")
@@ -1845,7 +1857,7 @@ async def launch_media_folder(
     """Run MEDIA_OPEN_PATH_CMD for an entitled media file. 404 unless the operator configured it."""
     if not config.media_open_path_cmd:
         raise HTTPException(status_code=404, detail="Not configured")
-    return await _launch_media_command(config.media_open_path_cmd, chat, media_key)
+    return await _launch_media_command(config.media_open_path_cmd, chat, media_key, inline_only=False)
 
 
 @app.get("/api/search/messages")
