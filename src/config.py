@@ -452,6 +452,11 @@ class Config:
 
         self.download_chat_description = _parse_bool_env("DOWNLOAD_CHAT_DESCRIPTION", False)
 
+        # Optional external commands for the media info panel's Open buttons.
+        # Empty values keep the platform-default behavior.
+        self.media_open_cmd = os.getenv("MEDIA_OPEN_CMD", "").strip()
+        self.media_open_path_cmd = os.getenv("MEDIA_OPEN_PATH_CMD", "").strip()
+
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = _parse_int_env("DOWNLOAD_TIMEOUT_SECONDS", 3600)
         # Absorb short mid-download FloodWaits (up to this many seconds) so the
