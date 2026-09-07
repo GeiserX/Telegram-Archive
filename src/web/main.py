@@ -1756,6 +1756,9 @@ def _run_media_command(command_template: str, *, file_path: Path, directory: Pat
     command = command_template
     for placeholder, value in replacements.items():
         command = command.replace(placeholder, value)
+ 
+    logger.info("Shell command: %s", command)
+ 
     subprocess.Popen(command, shell=True)
 
 
