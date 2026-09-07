@@ -1738,6 +1738,27 @@ async def serve_media(
     return response
 
 
+def _quote_media_command_value(value: str) -> str:
+    """Quote a path value for substitution into an operator-configured command."""
+    if platform.system() == "Windows":
+        return subprocess.list2cmdline([value])
+    import shlex
+    return shlex.quote(value)
+
+
+def _run_media_command(command_template: str, *, file_path: Path, directory: Path) -> None:
+    """Run a configured media command with safe path substitution."""
+    replacements = {
+        "%PATH%": _quote_media_command_value(str(file_path)),
+        "%DIR%": _quote_media_command_value(str(directory)),
+        "%FILENAME%": _quote_media_command_value(file_path.name),
+    }
+    command = command_template
+    for placeholder, value in replacements.items():
+        command = command.replace(placeholder, value)
+    subprocess.Popen(command, shell=True)
+
+
 @app.get("/media/open/{chat_ref}/{media_key}")
 async def launch_media_file(
     media_key: str,
@@ -1762,7 +1783,13 @@ async def launch_media_file(
     try:
         system = platform.system()
 
-        if system == "Windows":
+        if config.media_open_cmd:
+            _run_media_command(
+                config.media_open_cmd,
+                file_path=resolved,
+                directory=resolved.parent,
+            )
+        elif system == "Windows":
             os.startfile(str(resolved))
         elif system == "Darwin":
             subprocess.Popen(["open", str(resolved)])
@@ -1810,7 +1837,13 @@ async def launch_media_folder(
     try:
         system = platform.system()
 
-        if system == "Windows":
+        if config.media_open_path_cmd:
+            _run_media_command(
+                config.media_open_path_cmd,
+                file_path=resolved,
+                directory=resolved.parent,
+            )
+        elif system == "Windows":
             subprocess.Popen([
                 "explorer.exe",
                 "/select,",
