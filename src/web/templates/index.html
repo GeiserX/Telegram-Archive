@@ -736,6 +736,10 @@
             user-select: none !important;
         }
 
+        .info-panel {
+            background-color: rgb(var(--tg-bg));
+        }
+
         /* ---- Mobile polish (app-like feel) ---- */
         @media (max-width: 767px) {
             /* Comfortable reading rhythm, closer to the native apps. */
@@ -2225,8 +2229,8 @@
             <!-- Message Info Panel -->
             <aside v-if="showInfoPanel"
                 class="relative bg-tg-sidebar border-l border-tg-n700 flex flex-col"
-                       :style="{ width: infoPanelWidth + 'px' }"
-                }">
+                :style="{ width: infoPanelWidth + 'px' }"
+                >
 
                 <!-- Resize handle -->
                 <div
@@ -2257,7 +2261,7 @@
                             </span>
                         </h3>
 
-                        <div class="border border-tg-n700 rounded-lg p-3">
+                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
                             <div class="flex items-start gap-3">
                                 <!-- Chat avatar - same logic as chat list -->
                                 <div
@@ -2328,7 +2332,7 @@
                             Topic
                         </h3>
 
-                        <div class="border border-tg-n700 rounded-lg p-3">
+                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
                             <div class="flex items-start gap-3">
                                 <!-- Topic icon - same logic as topic list -->
                                 <div
@@ -2378,7 +2382,7 @@
                             Message
                         </h3>
 
-                        <div class="border border-tg-n700 rounded-lg p-3">
+                        <div class="border border-tg-n700 info-panel rounded-lg p-3">
                             <div class="text-sm space-y-1 text-tg-muted">
                                 <div>
                                     <span class="text-tg-ink">ID:</span>
@@ -2461,7 +2465,7 @@
                         <div
                             v-for="mediaMsg in getInfoPanelMedia(selectedMessage)"
                             :key="mediaMsg.id"
-                            class="border border-tg-n700 rounded-lg p-3 space-y-2"
+                            class="border border-tg-n700 info-panel rounded-lg p-3 space-y-2"
                         >
                             <div class="flex items-start gap-3">
 
