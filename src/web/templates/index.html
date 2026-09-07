@@ -1133,7 +1133,7 @@
                     <!-- v6.2.0: Topics View (when navigated into a forum chat) -->
                     <template v-if="topicsNavEntry">
                         <!-- Back button + chat name header -->
-                        <div class="p-3 border-b border-tg-n700/50 flex items-center gap-2 sticky top-0 bg-tg-sidebar z-10">
+                        <div class="p-3 border-b-2 border-tg-n700 flex items-center gap-2 sticky top-0 bg-tg-bg z-10">
                             <button @click="navigateBackToChats()" class="p-1.5 hover:bg-tg-n700 rounded-full transition">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
@@ -2245,7 +2245,16 @@
                     <!-- Chat Information -->
                     <div v-if="selectedChat">
                         <h3 class="text-sm font-semibold text-tg-ink mb-1">
-                            Chat
+                            Chat:
+                            <span
+                                class="inline-flex items-center px-2 py-0.5 rounded text-sm font-semibold text-tg-ink mb-1"
+                                :class="{
+                                    'bg-blue-500/15 text-blue-600': selectedChat.username,
+                                    'bg-tg-n700 text-tg-muted': !selectedChat.username
+                                }"
+                            >
+                                {{ getChatTypeLabel(selectedChat) }}
+                            </span>
                         </h3>
 
                         <div class="border border-tg-n700 rounded-lg p-3">
@@ -2282,11 +2291,6 @@
                                         <div>
                                             <span class="text-tg-ink">ID:</span>
                                             {{ selectedChat.id }}
-                                        </div>
-
-                                        <div>
-                                            <span class="text-tg-ink">Type:</span>
-                                            {{ selectedChat.type }}
                                         </div>
 
                                         <div v-if="selectedChat.username">
@@ -3478,6 +3482,38 @@
                     } catch (error) {
                         console.error('Failed to open media folder:', error)
                     }
+                }
+
+                const getChatTypeLabel = (chat) => {
+                    if (!chat) return 'Unknown'
+
+                    const type = (chat.type || '').toLowerCase()
+                    const isPublic = !!chat.username
+                    const hasTopics = !!chat.is_forum
+
+                    if (type === 'private') {
+                        return 'User Chat'
+                    }
+
+                    if (type === 'group') {
+                        if (hasTopics) {
+                            return isPublic
+                                ? 'Public Group with Topics'
+                                : 'Private Group with Topics'
+                        }
+
+                        return isPublic
+                            ? 'Public Group'
+                            : 'Private Group'
+                    }
+
+                    if (type === 'channel') {
+                        return isPublic
+                            ? 'Public Channel'
+                            : 'Private Channel'
+                    }
+
+                    return 'Unknown'
                 }
 
                 // Sidebar search: one field, two result sections (chats, then messages).
@@ -9478,6 +9514,7 @@
                     getInfoPanelMedia,
                     startInfoPanelResize,
                     infoPanelWidth,
+                    getChatTypeLabel,
                     chatListWidth,
                     startChatListResize,
                     messages,
