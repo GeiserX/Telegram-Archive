@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
-## [8.9.0] - 2026-09-07
+## [8.9.0] - 2026-09-08
 
 A chat info panel in the viewer, the way the apps have one.
 
