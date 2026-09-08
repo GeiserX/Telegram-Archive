@@ -1484,27 +1484,33 @@ def _url_media_key(message_id: object, media_type: object) -> str | None:
 
 
 def _media_relative_path(file_path: str | None) -> str | None:
-    """Normalize a media row's file_path to a media-root-relative path, or None.
+    """Normalize a media row's file_path to a media-root-relative path.
 
-    Same rules the gallery has always applied before building URLs: absolute
-    paths must live under the media root (older archives stored them absolute),
-    and the result must pass the traversal predicate _checked_media_path
-    enforces — a row whose path cannot be proven to stay inside the root serves
-    nothing.
+    Handles both Unix-style and Windows absolute paths. Absolute paths are
+    accepted only when they resolve inside the configured media root.
+    Relative paths are kept relative, but traversal is rejected.
     """
-    if not file_path:
+    if not file_path or not _media_root:
         return None
-    path = file_path
-    if path.startswith("/"):
-        if not _media_root:
+
+    try:
+        media_root = _media_root.resolve()
+        raw_path = Path(file_path)
+
+        if raw_path.is_absolute():
+            resolved = raw_path.resolve()
+            if not resolved.is_relative_to(media_root):
+                return None
+            path = resolved.relative_to(media_root).as_posix()
+        else:
+            path = file_path.replace("\\", "/")
+
+        if path.startswith("/") or ".." in path.split("/"):
             return None
-        media_root_str = str(_media_root) + "/"
-        if not path.startswith(media_root_str):
-            return None
-        path = path[len(media_root_str) :]
-    if path.startswith("/") or ".." in path.split("/"):
+
+        return path
+    except (OSError, ValueError):
         return None
-    return path
 
 
 def _resolve_media_file(relative_path: str):
