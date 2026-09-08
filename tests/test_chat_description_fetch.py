@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodPremiumWaitError, FloodWaitError
 from telethon.tl.types import Channel, Chat, User
 
 from src.telegram_backup import TelegramBackup
@@ -90,6 +90,17 @@ class TestFetchChatDescription(unittest.TestCase):
         backup.client.assert_not_called()
         self.assertTrue(backup._description_fetch_paused)
 
+    def test_the_premium_flood_wait_pauses_it_too(self):
+        """FloodPremiumWaitError is not a FloodWaitError subclass; it must pause the fetch the same way."""
+        backup = _backup(AsyncMock(side_effect=FloodPremiumWaitError(request=None, capture=60)))
+        with self.assertLogs("src.telegram_backup", level="WARNING"):
+            self.assertEqual(_run(backup._fetch_chat_description(MagicMock(spec=Channel))), {})
+        self.assertTrue(backup._description_fetch_paused)
+
+
+class _StopAfterTheRow(Exception):
+    """Raised by the fake upsert_chat: the row write is where these tests stop."""
+
 
 class TestBackupDialogWiring(unittest.TestCase):
     """The fetch is merged into the chat row exactly when the flag is on."""
@@ -104,10 +115,11 @@ class TestBackupDialogWiring(unittest.TestCase):
         backup.config.reaction_resweep_days = 0
         backup.config.batch_size = 1
         backup.config.checkpoint_interval = 1
+        backup.config.media_path = "/nonexistent/never-created"
         backup.account_id = 1
         backup.client = MagicMock()
         backup.db = MagicMock()
-        backup.db.upsert_chat = AsyncMock()
+        backup.db.upsert_chat = AsyncMock(side_effect=_StopAfterTheRow())
         backup._cleaned_media_chats = set()
         backup._get_marked_id = MagicMock(return_value=-100123)
         backup._extract_chat_data = MagicMock(return_value={"id": -100123, "title": "t"})
@@ -116,10 +128,8 @@ class TestBackupDialogWiring(unittest.TestCase):
 
     def test_on_the_fetched_fields_reach_upsert_chat(self):
         backup = self._backup(True)
-        try:
+        with self.assertRaises(_StopAfterTheRow):  # nothing past the row write runs, so nothing touches the disk
             _run(backup._backup_dialog(MagicMock()))
-        except Exception:
-            pass  # everything after the chat row is unmocked; the row write is what this test is about
         backup._fetch_chat_description.assert_awaited_once()
         chat_data = backup.db.upsert_chat.await_args.args[0]
         self.assertEqual(chat_data["description"], "fresh")
@@ -127,10 +137,8 @@ class TestBackupDialogWiring(unittest.TestCase):
 
     def test_off_no_request_is_made_and_no_key_is_written(self):
         backup = self._backup(False)
-        try:
+        with self.assertRaises(_StopAfterTheRow):
             _run(backup._backup_dialog(MagicMock()))
-        except Exception:
-            pass
         backup._fetch_chat_description.assert_not_awaited()
         chat_data = backup.db.upsert_chat.await_args.args[0]
         self.assertNotIn("description", chat_data)

@@ -15,7 +15,6 @@ import platform
 import re
 import secrets
 import shlex
-import subprocess
 import time
 import traceback
 from collections.abc import AsyncGenerator, Iterable
@@ -1756,22 +1755,25 @@ async def serve_media(
 # a file name that spells a placeholder is never expanded a second time.
 
 _MEDIA_COMMAND_PLACEHOLDER = re.compile(r"%(PATH|DIR|FILENAME)%", re.IGNORECASE)
-# The command inherits the operator's shell environment minus the viewer's own secrets.
-_MEDIA_COMMAND_SECRET_KEYS = re.compile(r"PASSWORD|SECRET|TOKEN|API_HASH|PRIVATE_KEY|DATABASE_URL", re.IGNORECASE)
-# What cmd.exe reads as syntax even in a bare token: list2cmdline quotes only on
-# whitespace, so a name with none of it reaches cmd.exe verbatim.
-_WINDOWS_CMD_UNSAFE = frozenset('%&|<>^"\r\n')
+# The command runs as the operator, on the operator's machine, so this is hygiene
+# rather than a boundary: the archive's own credentials (and the phone number the
+# project never logs) stay out of an environment a desktop opener has no use for.
+_MEDIA_COMMAND_SECRET_KEYS = re.compile(
+    r"PASSWORD|SECRET|TOKEN|API_HASH|PRIVATE_KEY|DATABASE_URL|WEBHOOK|TELEGRAM_PHONE", re.IGNORECASE
+)
 
 
 def _quote_media_command_value(value: str) -> str:
     """One shell word for a substituted path, on the shell shell=True actually runs."""
     if platform.system() == "Windows":
-        # cmd.exe expands %NAME% inside double quotes too and has no escape for
-        # it, and it splits a bare token on & | < > ^; such a name cannot be
-        # passed through faithfully, so it is refused.
-        if _WINDOWS_CMD_UNSAFE & set(value):
-            raise ValueError("shell metacharacter in path")
-        return subprocess.list2cmdline([value])
+        # Always one double-quoted word: cmd.exe reads & | < > ^ as syntax in a
+        # bare token and list2cmdline quotes only on whitespace. Inside quotes
+        # only %NAME% is still expanded, and there is no escape for it, so a
+        # name carrying '%' is refused; a quote cannot occur in a Windows name,
+        # and a line break would end the command.
+        if "%" in value or '"' in value or "\r" in value or "\n" in value:
+            raise ValueError("character the command line cannot carry")
+        return f'"{value}"'
     return shlex.quote(value)
 
 

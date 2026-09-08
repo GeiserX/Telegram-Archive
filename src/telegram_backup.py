@@ -4001,7 +4001,7 @@ class TelegramBackup:
         # the fetch for the rest of the run; the next run tries again.
         try:
             full = await self.client(request)
-        except FloodWaitError as e:
+        except (FloodWaitError, FloodPremiumWaitError) as e:
             self._description_fetch_paused = True
             logger.warning(f"Chat descriptions are skipped for the rest of this run after a FloodWait of {e.seconds}s")
             return {}

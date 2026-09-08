@@ -44,9 +44,11 @@ const formatFileSize = bytes => `${bytes} B`;
 const isDeletedChat = chat => !!chat.deleted;
 const getMediaUrl = msg => msg.media?.url || '';
 const formatDuration = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-const galleryCalls = [];
-const switchMediaTab = id => galleryCalls.push(id);
+const mediaGalleryTab = ref('photos');
 const showMediaGallery = ref(false);
+const tabSwitches = [];
+const switchMediaTab = id => { mediaGalleryTab.value = id; tabSwitches.push(id); };
+const lightboxOpen = ref(false);
 const watchers = [];
 const watch = (source, fn) => watchers.push({ source, fn });
 const windowListeners = [];
@@ -113,9 +115,18 @@ descriptionExpanded.value = true;
 watchers[0].fn();
 assert.equal(descriptionExpanded.value, false);
 
+showInfoPanel.value = true;
 openSharedMedia('files');
-assert.deepEqual(galleryCalls, ['files']);
+assert.equal(mediaGalleryTab.value, 'files');
 assert.equal(showMediaGallery.value, true);
+assert.deepEqual(tabSwitches, [], 'opening the gallery lets its watcher load the tab');
+assert.equal(showInfoPanel.value, true, 'on a desktop the panel stays beside the gallery');
+openSharedMedia('voice');
+assert.deepEqual(tabSwitches, ['voice'], 'an already-open gallery loads the tab itself');
+window.innerWidth = 375;
+openSharedMedia('photos');
+assert.equal(showInfoPanel.value, false, 'on a phone the panel makes way for the gallery');
+window.innerWidth = 1400;
 
 const pic = { id: 4, media: { url: '/media/c1/4_photo' } };
 assert.equal(previewSrc(pic), '/media/thumb/200/c1/4_photo', 'the thumbnail lane first');
@@ -195,6 +206,10 @@ dialogOpen = true;
 press('Escape');
 assert.equal(showInfoPanel.value, true, 'a dialog on top owns Escape');
 dialogOpen = false;
+lightboxOpen.value = true;
+press('Escape');
+assert.equal(showInfoPanel.value, true, 'so does the lightbox, which is not a dialog');
+lightboxOpen.value = false;
 assert.equal(press('Escape').prevented, true);
 assert.equal(showInfoPanel.value, false);
 
@@ -323,8 +338,8 @@ def test_open_buttons_post_to_the_command_routes_and_report_failure() -> None:
     assert.equal(navigator.written, '/data/x.jpg');
     assert.equal(toasts[toasts.length - 1], 'Path copied');
     clipboardOk = false;
-    await copyText('again', 'Path copied');
-    assert.equal(toasts[toasts.length - 1], 'Clipboard unavailable');
+    await copyText('/data/y.jpg', 'Path copied');
+    assert.equal(toasts[toasts.length - 1], '/data/y.jpg', 'no clipboard: the value itself is shown');
     await copyText('', 'never');
     assert.notEqual(toasts[toasts.length - 1], 'never');
 })().catch(error => { process.stderr.write(`${error.stack}\\n`); process.exitCode = 1; });
@@ -340,9 +355,13 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     aside = html[aside_start : html.index("</aside>", aside_start)]
     assert 'role="complementary"' in aside
     assert 'class="info-panel fixed inset-0 z-40 md:relative' in aside, "a page on phones, a column on desktop"
-    assert re.search(r"text-(blue|gray|slate)-\d00|bg-(blue|gray|slate)-\d00", aside) is None, (
-        "the panel uses theme tokens only"
+    palette = re.compile(
+        r"\b(?:text|bg|border|ring|from|via|to)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green"
+        r"|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b"
     )
+    avatar_gradient = "bg-gradient-to-br from-blue-500 to-purple-600"  # the chat list's own initials fill
+    assert aside.count(avatar_gradient) == 1
+    assert palette.findall(aside.replace(avatar_gradient, "")) == [], "the panel uses theme tokens only"
     assert aside.count('class="pane-resize-handle hidden md:block"') == 1, "the grab strip is a desktop affordance"
     assert 'ref="infoPanelCloseBtn"' in aside
     assert "formatDateFull(infoPanelMessage.date)" in aside and "formatTime(infoPanelMessage.date)" in aside
@@ -364,6 +383,8 @@ def test_the_template_wires_the_panel_the_way_the_functions_expect() -> None:
     assert 'class="chat-list-pane relative bg-tg-sidebar' in html, "the chat list width is a CSS variable"
     assert "'--chat-list-width': chatListWidth + 'px'" in html
     assert '@click="selectMessage(msg, $event)"' in html
+    assert 'class="message-row flex items-end gap-2"' in html, "the keyboard walk selects on this class"
+    assert "querySelectorAll('.message-row[data-msg-id]')" in html
     assert "isSelectedMessage(msg) ? 'message-info-selected' : ''" in html
     assert 'aria-controls="info-panel"' in html
 

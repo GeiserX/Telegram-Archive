@@ -68,13 +68,18 @@ class TestRenderMediaCommand(unittest.TestCase):
             command = web_main._render_media_command("run %FOO% 100%% %PATH%", Path("/root/a.jpg"))
         self.assertEqual(command, "run %FOO% 100%% /root/a.jpg")
 
-    def test_windows_values_are_quoted_for_createprocess(self):
+    def test_windows_values_are_always_one_double_quoted_word(self):
+        """cmd.exe reads & | < > ^ as syntax in a bare token: every value is quoted, spaces or not."""
         with patch.object(web_main.platform, "system", return_value="Windows"):
-            command = web_main._render_media_command(
+            spaced = web_main._render_media_command(
                 '"C:\\Program Files\\IrfanView\\i_view64.exe" %PATH%', Path("C:/media/dir with space/a b.jpg")
             )
+            hostile = web_main._render_media_command(
+                "explorer.exe /select,%PATH%", Path("C:/media/-100123/a&calc.exe&.jpg")
+            )
         # Path renders with the host's separator; the quoting is what is under test.
-        self.assertEqual(command, '"C:\\Program Files\\IrfanView\\i_view64.exe" "C:/media/dir with space/a b.jpg"')
+        self.assertEqual(spaced, '"C:\\Program Files\\IrfanView\\i_view64.exe" "C:/media/dir with space/a b.jpg"')
+        self.assertEqual(hostile, 'explorer.exe /select,"C:/media/-100123/a&calc.exe&.jpg"')
 
     def test_placeholders_are_case_insensitive_so_a_lowercase_one_is_never_left_for_cmd_exe(self):
         with patch.object(web_main.platform, "system", return_value="Linux"):
@@ -101,6 +106,9 @@ class TestRenderMediaCommand(unittest.TestCase):
                 "INTERNAL_PUSH_SECRET": "y",
                 "DATABASE_URL": "z",
                 "VAPID_PRIVATE_KEY": "k",
+                "EVENT_WEBHOOK_HEADERS": "{}",
+                "EVENT_WEBHOOK_URL": "https://hooks.example/x",
+                "TELEGRAM_PHONE": "+10000000000",
                 "HOME": "/h",
                 "PATH": "/bin",
             },
@@ -109,11 +117,11 @@ class TestRenderMediaCommand(unittest.TestCase):
             env = web_main._media_command_env()
         self.assertEqual(env, {"HOME": "/h", "PATH": "/bin"})
 
-    def test_windows_refuses_what_cmd_exe_would_read_as_syntax(self):
-        """cmd.exe expands %NAME% inside quotes and splits a bare token on & | < > ^: refuse rather than guess."""
-        for name in ("%COMSPEC%.jpg", "a&calc.exe&.jpg", "a|b.jpg", "a<b.jpg", "a>b.jpg", "a^b.jpg"):
+    def test_windows_refuses_what_quotes_cannot_protect(self):
+        """cmd.exe expands %NAME% even inside quotes and has no escape for it: refuse rather than guess."""
+        for name in ("%COMSPEC%.jpg", "a\rb.jpg", "a\nb.jpg"):
             with (
-                self.subTest(name=name),
+                self.subTest(name=repr(name)),
                 patch.object(web_main.platform, "system", return_value="Windows"),
                 self.assertRaises(ValueError),
             ):

@@ -1766,7 +1766,7 @@
                                  :data-msg-id anchor. Emptiness is a SERVICE-ONLY concern and is
                                  decided by the service branch above; see isRenderedMessageRow. -->
                             <div v-else-if="!isHiddenAlbumMessage(msg, index)" :data-msg-id="msg.id"
-                                class="flex items-end gap-2"
+                                class="message-row flex items-end gap-2"
                                 @click="selectMessage(msg, $event)"
                                 :class="[
                                     isOwnMessage(msg) ? 'justify-end' : 'justify-start',
@@ -3116,7 +3116,7 @@
 
         <!-- Toast notification for background failures -->
         <div v-if="toastMessage" role="status" aria-live="polite" aria-atomic="true"
-            class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-tg-n900 text-tg-ink text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
+            class="fixed bottom-6 left-1/2 -translate-x-1/2 max-w-[90vw] break-all bg-tg-n900 text-tg-ink text-sm px-4 py-2 rounded-lg shadow-lg z-[9999]">
             {{ toastMessage }}
         </div>
     </div>
@@ -3273,7 +3273,8 @@
                 // first row is the newest and sits lowest on screen, so "down" is one DOM row back.
                 const moveMessageSelection = (direction) => {
                     const container = messagesContainer.value
-                    const rows = container ? Array.from(container.querySelectorAll('[data-msg-id]')) : []
+                    // .message-row: service rows carry data-msg-id too, but have no selection.
+                    const rows = container ? Array.from(container.querySelectorAll('.message-row[data-msg-id]')) : []
                     if (!rows.length) return false
                     const currentId = selectedMessage.value?.id
                     const at = rows.findIndex(row => String(row.dataset.msgId) === String(currentId))
@@ -3289,7 +3290,7 @@
                 const handleInfoPanelKeydown = (event) => {
                     if (event.defaultPrevented) return
                     if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
-                    if (document.querySelector('[role="dialog"], [aria-modal="true"]')) return  // a dialog on top owns the keys
+                    if (lightboxOpen.value || document.querySelector('[role="dialog"], [aria-modal="true"]')) return  // an overlay on top owns the keys
                     if (event.key === 'Escape') {
                         event.preventDefault()
                         closeInfoPanel()
@@ -3344,8 +3345,15 @@
                 // The path on the archive's disk means something only to whoever runs it.
                 const showArchivePath = computed(() => userRole.value === 'master')
                 const openSharedMedia = (tabId) => {
-                    switchMediaTab(tabId)
-                    showMediaGallery.value = true
+                    // Opening the gallery fires its watcher, which clears and loads the tab; an
+                    // already-open gallery is an unchanged ref, so that case loads itself.
+                    if (showMediaGallery.value) {
+                        switchMediaTab(tabId)
+                    } else {
+                        mediaGalleryTab.value = tabId
+                        showMediaGallery.value = true
+                    }
+                    if (window.innerWidth < 768) closeInfoPanel()  // the gallery renders under the phone-layout panel
                 }
                 // Long descriptions fold to four lines with a "Show more", as the apps do.
                 const descriptionExpanded = ref(false)
@@ -3360,7 +3368,7 @@
                         await navigator.clipboard.writeText(text)
                         showToast(doneMessage)
                     } catch (error) {
-                        showToast('Clipboard unavailable')
+                        showToast(text)  // no clipboard on a plain-http origin: show it instead
                     }
                 }
                 // Open / Show in folder run the operator's command on the machine serving the
@@ -3695,8 +3703,10 @@
                     unseenMessageCount.value = 0
                     // A new view: whatever the previous one emphasised no longer applies.
                     messageHighlight.value = null
-                    // ...and the info panel's selected row belonged to the old list (#433).
+                    // ...and the info panel's selected row belonged to the old list (#433),
+                    // as did its preview fallbacks (message ids repeat across chats).
                     selectedMessage.value = null
+                    previewFallback.value = {}
                 }
 
                 // Mirrors backend coalesce(reply_to_top_id, GENERAL_TOPIC_ID) — see src/db/adapter.py.
