@@ -1640,9 +1640,10 @@
                                         <!-- No loading="lazy" here: a deferred image never fires
                                              load, so it would hold its admission slot until the
                                              timeout. The queue is the throttle now. -->
-                                        <img v-if="item.thumb_url && isThumbAdmitted(item.id)" :src="item.thumb_url"
-                                            :alt="item.file_name" class="w-full h-full object-cover" decoding="async"
-                                            @load="settleThumb(item.id)" @error="settleThumb(item.id)">
+                                        <img v-if="item.thumb_url && isThumbAdmitted(item.id) && !thumbFailed(item.id)"
+                                            :src="item.thumb_url" :alt="item.file_name"
+                                            class="w-full h-full object-cover" decoding="async"
+                                            @load="settleThumb(item.id)" @error="failThumb(item.id)">
                                         <div v-else class="w-full h-full bg-tg-n700 flex items-center justify-center">
                                             <i class="fas fa-play-circle text-2xl text-tg-n400" v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'"></i>
                                             <i class="fas fa-image text-2xl text-tg-n400" v-else></i>
@@ -3470,12 +3471,25 @@
                 // slot for the rest of the session.
                 const THUMB_SETTLE_TIMEOUT_MS = 20000
                 const admittedThumbs = ref(new Set())
+                // A thumbnail the server cannot make (an undecodable video, an ffmpeg
+                // timeout) answers 404, and an <img> that 404s paints the browser's broken
+                // -image glyph plus its alt text. The tile has a placeholder for exactly this
+                // -- a play or picture icon -- so a failed tile drops its <img> and shows it.
+                const failedThumbs = ref(new Set())
                 const queuedThumbs = new Set()
                 let thumbQueue = []
                 let thumbsInFlight = 0
                 const thumbTimers = new Map()
 
                 const isThumbAdmitted = (id) => admittedThumbs.value.has(id)
+                const thumbFailed = (id) => failedThumbs.value.has(id)
+
+                // The tile's error handler: record the failure, then free the slot the same
+                // way a successful load does.
+                const failThumb = (id) => {
+                    failedThumbs.value = new Set([...failedThumbs.value, id])
+                    settleThumb(id)
+                }
 
                 const pumpThumbs = () => {
                     while (thumbsInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
@@ -3504,6 +3518,7 @@
                     thumbQueue = []
                     thumbsInFlight = 0
                     admittedThumbs.value = new Set()
+                    failedThumbs.value = new Set()
                 }
 
                 const queueThumbs = (items) => {
@@ -9508,7 +9523,9 @@
                     mediaGalleryHasMore,
                     mediaGalleryCounts,
                     isThumbAdmitted,
+                    thumbFailed,
                     settleThumb,
+                    failThumb,
                     mediaTabs,
                     loadMediaGallery,
                     loadMediaCounts,

@@ -35,6 +35,7 @@ const fire = id => { const t = timers.get(id); assert.ok(t, 'no such timer'); ti
 const oldestTimer = () => { assert.ok(timers.size, 'no pending timer'); return [...timers.keys()][0] };
 const items = n => Array.from({ length: n }, (_, i) => ({ id: `${i + 1}_photo`, thumb_url: `/media/thumb/200/ref/${i + 1}_photo` }));
 const admitted = () => [...admittedThumbs.value];
+const failed = () => [...failedThumbs.value];
 const setItems = list => { mediaGalleryItems.value = list; watchers[0].fn(list) };
 """
 
@@ -148,13 +149,45 @@ assert.deepEqual(admitted(), ['c_photo', 'd_photo'], 'only tiles that would fetc
     )
 
 
+def test_a_thumbnail_the_server_cannot_make_gives_way_to_the_tile_icon() -> None:
+    _run_node(
+        _script("""
+setItems(items(6));
+assert.deepEqual(admitted(), ['1_photo', '2_photo', '3_photo', '4_photo']);
+
+// An undecodable video answers 404, which fires error, not load.
+failThumb('2_photo');
+assert.deepEqual(failed(), ['2_photo'], 'the tile is remembered as unrenderable');
+assert.equal(isThumbAdmitted('2_photo'), true, 'it stays admitted, so the queue does not re-issue it');
+assert.deepEqual(admitted().slice(-1), ['5_photo'], 'and it frees its slot like any other outcome');
+
+// A load after the failure must not resurrect the broken <img>.
+settleThumb('2_photo');
+assert.deepEqual(failed(), ['2_photo']);
+assert.equal(admitted().length, 5, 'and must not open a second slot');
+
+// The next view starts clean: the same id can render again elsewhere.
+setItems([]);
+assert.deepEqual(failed(), [], 'failures do not outlive the view that produced them');
+setItems([{ id: '2_photo', thumb_url: '/x/2' }]);
+assert.equal(isThumbAdmitted('2_photo'), true);
+assert.equal(failed().length, 0);
+""")
+    )
+
+
 def test_the_grid_is_wired_to_the_queue() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     start = html.index("<template v-if=\"mediaGalleryTab === 'photos'\">")
     grid = html[start : html.index("</template>", start)]
-    assert 'v-if="item.thumb_url && isThumbAdmitted(item.id)"' in grid, "the tile waits to be admitted"
-    assert '@load="settleThumb(item.id)"' in grid and '@error="settleThumb(item.id)"' in grid
+    assert 'v-if="item.thumb_url && isThumbAdmitted(item.id) && !thumbFailed(item.id)"' in grid, (
+        "the tile waits to be admitted, and steps aside once it is known to be unrenderable"
+    )
+    assert '@load="settleThumb(item.id)"' in grid and '@error="failThumb(item.id)"' in grid
+    # The v-else branch is the fallback: a play icon for video, a picture icon otherwise.
+    assert "fa-play-circle" in grid and "fa-image" in grid
     # A deferred image never fires load, so it would hold its slot until the timeout.
     img = grid[grid.index("<img") : grid.index(">", grid.index("<img"))]
     assert 'loading="lazy"' not in img, "the queue is the throttle; native lazy loading would stall it"
-    assert re.search(r"isThumbAdmitted,\s*\n\s*settleThumb,", html), "both are returned from setup"
+    for name in ("isThumbAdmitted,", "thumbFailed,", "settleThumb,", "failThumb,"):
+        assert re.search(rf"^\s+{re.escape(name)}$", html, re.M), f"{name} is returned from setup"

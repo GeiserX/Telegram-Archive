@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.9.2] - 2026-09-08
+
+### Fixed
+
+- **A file the viewer cannot make a thumbnail for now shows its own icon instead of a broken picture.** Some videos cannot be decoded, or take longer than the viewer is willing to wait, and the shared media grid painted the browser's broken-image glyph and the file name across the tile. The tile already has a picture for that case, a play symbol for video and a picture symbol for anything else, and that is what it shows now. The grid forgets these when you switch tab or chat, so a file that failed once is tried again the next time you look.
+
 ## [8.9.1] - 2026-09-08
 
 The shared media grid stops flooding the viewer.
