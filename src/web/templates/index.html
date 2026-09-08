@@ -1637,8 +1637,12 @@
                                     <div v-for="item in mediaGalleryItems" :key="item.id"
                                         @click="openMediaItem(item)"
                                         class="aspect-square relative cursor-pointer group overflow-hidden rounded">
-                                        <img v-if="item.thumb_url" :src="item.thumb_url" :alt="item.file_name"
-                                            class="w-full h-full object-cover" loading="lazy" decoding="async">
+                                        <!-- No loading="lazy" here: a deferred image never fires
+                                             load, so it would hold its admission slot until the
+                                             timeout. The queue is the throttle now. -->
+                                        <img v-if="item.thumb_url && isThumbAdmitted(item.id)" :src="item.thumb_url"
+                                            :alt="item.file_name" class="w-full h-full object-cover" decoding="async"
+                                            @load="settleThumb(item.id)" @error="settleThumb(item.id)">
                                         <div v-else class="w-full h-full bg-tg-n700 flex items-center justify-center">
                                             <i class="fas fa-play-circle text-2xl text-tg-n400" v-if="item.type === 'video' || item.type === 'animation' || item.type === 'video_note'"></i>
                                             <i class="fas fa-image text-2xl text-tg-n400" v-else></i>
@@ -3452,6 +3456,74 @@
                 const mediaGalleryLoading = ref(false)
                 const mediaGalleryHasMore = ref(true)
                 const mediaGalleryCounts = ref({})
+
+                // ---- Thumbnail admission ----
+                // A tile does not fetch a picture, it asks the server to MAKE one, and for a
+                // video that is an ffmpeg run (two at a time server-side, 15s each). A grid
+                // that shows fifty tiles at once therefore queued dozens of generations and
+                // starved the requests behind them: on a cold cache the message list and the
+                // gallery's own item request timed out and the pane read "Failed to load
+                // media". So a tile gets its src only when the queue admits it, a few at a
+                // time, in the order the grid renders; each one that finishes admits the next.
+                const THUMB_CONCURRENCY = 4
+                // A tile that neither loads nor errors (a stalled connection) must not hold a
+                // slot for the rest of the session.
+                const THUMB_SETTLE_TIMEOUT_MS = 20000
+                const admittedThumbs = ref(new Set())
+                const queuedThumbs = new Set()
+                let thumbQueue = []
+                let thumbsInFlight = 0
+                const thumbTimers = new Map()
+
+                const isThumbAdmitted = (id) => admittedThumbs.value.has(id)
+
+                const pumpThumbs = () => {
+                    while (thumbsInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
+                        const id = thumbQueue.shift()
+                        thumbsInFlight++
+                        // Replaced, not mutated: a Set mutated in place is not a reactive read.
+                        admittedThumbs.value = new Set([...admittedThumbs.value, id])
+                        thumbTimers.set(id, setTimeout(() => settleThumb(id), THUMB_SETTLE_TIMEOUT_MS))
+                    }
+                }
+
+                // Called by the tile's own load AND error handlers: a 404 frees the slot too.
+                const settleThumb = (id) => {
+                    const timer = thumbTimers.get(id)
+                    if (timer === undefined) return
+                    clearTimeout(timer)
+                    thumbTimers.delete(id)
+                    thumbsInFlight = Math.max(0, thumbsInFlight - 1)
+                    pumpThumbs()
+                }
+
+                const resetThumbQueue = () => {
+                    thumbTimers.forEach(clearTimeout)
+                    thumbTimers.clear()
+                    queuedThumbs.clear()
+                    thumbQueue = []
+                    thumbsInFlight = 0
+                    admittedThumbs.value = new Set()
+                }
+
+                const queueThumbs = (items) => {
+                    for (const item of items) {
+                        if (!item || !item.thumb_url || queuedThumbs.has(item.id)) continue
+                        queuedThumbs.add(item.id)
+                        thumbQueue.push(item.id)
+                    }
+                    pumpThumbs()
+                }
+
+                // The list is replaced on every tab switch and cleared when the gallery opens,
+                // so an empty list is the signal to forget the previous view entirely.
+                watch(mediaGalleryItems, (items) => {
+                    if (!items || !items.length) {
+                        resetThumbQueue()
+                        return
+                    }
+                    queueThumbs(items)
+                })
 
                 const mediaTabs = [
                     { id: 'photos', label: 'Photos & Videos' },
@@ -9435,6 +9507,8 @@
                     mediaGalleryLoading,
                     mediaGalleryHasMore,
                     mediaGalleryCounts,
+                    isThumbAdmitted,
+                    settleThumb,
                     mediaTabs,
                     loadMediaGallery,
                     loadMediaCounts,

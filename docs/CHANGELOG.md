@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.9.1] - 2026-09-08
+
+The shared media grid stops flooding the viewer.
+
+### Fixed
+
+- **Opening shared media no longer knocks out the rest of the viewer.** A tile in that grid does not fetch a picture, it asks the viewer to make one, and for a video that means running ffmpeg. Fifty tiles asked at once, so on a chat with thousands of photos and videos the requests behind them, including the message list and the gallery's own file list, waited half a minute and were dropped: the pane then showed "Failed to load media" over an empty grid while the tab still counted the files. Tiles are now admitted a few at a time in the order they appear, and each one that finishes lets the next start, so the grid fills steadily instead of all at once.
+- **A tile that never answers no longer blocks the ones behind it.** If an image neither loads nor fails, its place is released after twenty seconds.
+
+### Note
+
+If your viewer mounts the archive read-only, set `THUMBNAIL_CACHE_DIR` to a writable volume. Without it the cache falls back to a directory inside the container, which is discarded whenever the container is recreated, so the first gallery after every update pays to generate everything again.
+
 ## [8.9.0] - 2026-09-08
 
 A chat info panel in the viewer, the way the apps have one.
