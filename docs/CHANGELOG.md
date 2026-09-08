@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.9.0] - 2026-09-08
+
+A chat info panel in the viewer, the way the apps have one.
+
+### Added
+
+- **A chat info panel, like the apps' right-hand column.** The info button in the chat header opens a panel with the chat's avatar, name, member count or kind, description and username, the shared-media rows, the open topic in a forum, and the details of whichever message you click: who sent it, when it was sent and edited (with a link to its versions), what it replies to (click to jump there), where it was forwarded from, its ids, and every file it carries with a preview, size, dimensions and the path it is archived under, with buttons to copy that path or download the file. The arrow keys walk from message to message while the panel is open and Escape closes it. On a phone the panel opens as a page, as the apps do. Contributed by [@WalterLederer](https://github.com/WalterLederer) in [#433](https://github.com/GeiserX/Telegram-Archive/pull/433).
+- **Both side panes can be resized.** Drag the edge of the chat list or of the info panel, or focus the edge and use the arrow keys. The widths are remembered per browser, so the chat list is now a remembered width rather than a fluid quarter of the window (it starts at that quarter until you drag it), and the messages keep a readable minimum width whatever you do to the panes or the window.
+- **`DOWNLOAD_CHAT_DESCRIPTION` fetches each chat's description** (a group or channel's about text, a user's bio) and, for channels and supergroups, the member count the dialog list never carries, so the info panel can show them. Off by default, since it costs one extra request per chat per run.
+- **`MEDIA_OPEN_CMD` and `MEDIA_OPEN_PATH_CMD` add Open and Show in folder buttons** to the info panel's files, for a viewer that runs on the machine you sit at. Each runs the command you wrote, with the file's path filled in, on that machine. A container has no desktop, so in Docker they stay off. Master account only, and a button exists only when its command is set.
+- Dependency updates: `alembic` 1.19.2, `pywebpush` 2.5.0 and `ruff` 0.16.6, with the pre-commit ruff pin brought in step. ([#434](https://github.com/GeiserX/Telegram-Archive/pull/434))
+
+### Note
+
+The contributed Open buttons fell back to the operating system's own opener when no command was configured. That fallback is gone. Inside the viewer container it could do nothing, and on a native run it would have handed whatever a sender uploaded to `os.startfile`, `open` or `xdg-open`. A button now exists only for a command the operator wrote.
+
 ## [8.8.0] - 2026-09-04
 
 An optional wallpaper behind the messages.

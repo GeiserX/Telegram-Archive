@@ -449,6 +449,12 @@ class Config:
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = _parse_bool_env("DOWNLOAD_MEDIA", True)
         self.max_media_size_mb = _parse_int_env("MAX_MEDIA_SIZE_MB", 100)
+        # One extra full-info request per chat per run (the dialog entity has no "about").
+        self.download_chat_description = _parse_bool_env("DOWNLOAD_CHAT_DESCRIPTION", False)
+        # Viewer: the info panel's Open buttons exist only when the operator wrote
+        # the command behind them (native runs; a container has no desktop).
+        self.media_open_cmd = os.getenv("MEDIA_OPEN_CMD", "").strip()
+        self.media_open_path_cmd = os.getenv("MEDIA_OPEN_PATH_CMD", "").strip()
         # Timeout for media downloads (seconds). 0 disables the timeout.
         self.download_timeout_seconds = _parse_int_env("DOWNLOAD_TIMEOUT_SECONDS", 3600)
         # Absorb short mid-download FloodWaits (up to this many seconds) so the

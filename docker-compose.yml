@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.8.0
+    image: drumsergio/telegram-archive:8.9.0
     container_name: telegram-backup
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -58,6 +58,7 @@ services:
       BACKUP_PATH: /data/backups
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
+      DOWNLOAD_CHAT_DESCRIPTION: ${DOWNLOAD_CHAT_DESCRIPTION:-false}
       # Absorb mid-download FloodWaits up to N seconds so large files resume
       # in place instead of restarting from byte 0 (issue #232). 0 disables.
       # MEDIA_FLOOD_SLEEP_THRESHOLD: ${MEDIA_FLOOD_SLEEP_THRESHOLD:-60}
@@ -187,7 +188,7 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.8.0
+    image: drumsergio/telegram-archive-viewer:8.9.0
     container_name: telegram-viewer
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -229,6 +230,8 @@ services:
       # Wallpaper behind the messages: a file name served from /static, so the
       # image must be mounted into the container (see the volumes block below).
       VIEWER_CHAT_BACKGROUND: ${VIEWER_CHAT_BACKGROUND:-}
+      # MEDIA_OPEN_CMD and MEDIA_OPEN_PATH_CMD are not passed on purpose: they run a
+      # command on the machine that serves the viewer, and a container has no desktop.
       SHOW_STATS: ${SHOW_STATS:-true}
       # Restrict viewer to specific chats (optional)
       DISPLAY_CHAT_IDS: ${DISPLAY_CHAT_IDS:-}
@@ -305,7 +308,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:8.8.0
+  #   image: drumsergio/telegram-archive-viewer:8.9.0
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:
