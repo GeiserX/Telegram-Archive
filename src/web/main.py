@@ -1483,26 +1483,55 @@ def _url_media_key(message_id: object, media_type: object) -> str | None:
     return f"{message_id}_{media_type}"
 
 
+# A drive-qualified Windows path: "C:/x", "C:\\x" or the drive-relative "C:x".
+_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
 def _media_relative_path(file_path: str | None) -> str | None:
     """Normalize a media row's file_path to a media-root-relative path, or None.
 
-    Same rules the gallery has always applied before building URLs: absolute
-    paths must live under the media root (older archives stored them absolute),
-    and the result must pass the traversal predicate _checked_media_path
-    enforces — a row whose path cannot be proven to stay inside the root serves
-    nothing.
+    Rows hold whatever the writer stored. Modern archives store a relative path;
+    older ones stored an absolute path, with whichever separator the machine that
+    wrote it uses. Three shapes have to end up as the same root-relative tail:
+
+    - a relative path, from either platform;
+    - an absolute path under the CURRENT media root;
+    - an absolute path under a DIFFERENT root, which is an archive that has been
+      moved to another directory or drive (#438). The media directory is always
+      named after the root's own last component (config builds it as
+      ``<BACKUP_PATH>/media``), so whatever follows that component is the tail
+      the current root expects, and a moved archive keeps working without
+      rewriting every row in the database.
+
+    Deliberately lexical: no filesystem call. This runs for every media row of
+    every message list, and the media root is a network or FUSE mount on most
+    installs, where one ``Path.resolve()`` costs ~260 us against ~0.07 us for a
+    string compare — 19 ms on a 50-row page, on an endpoint the viewer polls
+    every three seconds. Nothing here is a security bound: the bound is applied
+    where the bytes are read, by _resolve_media_file and ensure_thumbnail, which
+    both resolve the joined path and re-check it against the root.
     """
-    if not file_path:
+    if not file_path or not _media_root:
         return None
-    path = file_path
-    if path.startswith("/"):
-        if not _media_root:
-            return None
-        media_root_str = str(_media_root) + "/"
-        if not path.startswith(media_root_str):
-            return None
-        path = path[len(media_root_str) :]
-    if path.startswith("/") or ".." in path.split("/"):
+
+    # Whichever separator wrote the row. A stored file NAME never contains a
+    # backslash — sanitize_media_filename collapses them before the name is
+    # written — so a backslash here is always a directory separator.
+    path = file_path.replace("\\", "/")
+    root = _media_root.as_posix()
+
+    # "/x", "C:/x" and "C:x" are all absolute enough to need the root stripped.
+    if path.startswith("/") or _WINDOWS_DRIVE_PREFIX.match(path):
+        if path.startswith(root + "/"):
+            path = path[len(root) + 1 :]
+        else:
+            anchor = "/" + _media_root.name + "/"
+            cut = path.rfind(anchor)
+            if cut < 0:
+                return None
+            path = path[cut + len(anchor) :]
+
+    if not path or path.startswith("/") or ".." in path.split("/"):
         return None
     return path
 

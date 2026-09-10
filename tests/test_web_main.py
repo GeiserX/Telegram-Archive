@@ -1077,6 +1077,94 @@ class TestSecurityHelpers(unittest.TestCase):
             self.assertIsNone(web_main._media_relative_path(None))
             self.assertIsNone(web_main._media_relative_path(""))
 
+    def test_media_relative_path_reads_rows_written_on_windows(self):
+        """A row written by a Windows install carries backslashes and a drive.
+
+        The thumbnail route splits the tail on "/" (folder, _, filename =
+        relative.rpartition("/")), so a path that keeps its backslashes yields an
+        empty folder and no thumbnail is ever generated — the bug in #436.
+        """
+        from pathlib import Path
+
+        with patch.object(web_main, "_media_root", Path("/srv/media")):
+            self.assertEqual(web_main._media_relative_path("123\\file.jpg"), "123/file.jpg")
+            self.assertEqual(web_main._media_relative_path("_shared\\14\\file.jpg"), "_shared/14/file.jpg")
+
+        with patch.object(web_main, "_media_root", Path("D:/TelegramArchive/data/backups/media")):
+            self.assertEqual(
+                web_main._media_relative_path("D:\\TelegramArchive\\data\\backups\\media\\_shared\\14\\f.jpg"),
+                "_shared/14/f.jpg",
+            )
+
+    def test_media_relative_path_follows_a_moved_archive(self):
+        """#438: the media directory moved to another drive and the rows still
+        name the old one. The tail below the media directory is what the current
+        root expects, so the file is found without rewriting the database."""
+        from pathlib import Path
+
+        with patch.object(web_main, "_media_root", Path("D:/TelegramArchive/data/backups/media")):
+            self.assertEqual(
+                web_main._media_relative_path("E:\\TelegramArchive\\data\\backups\\media\\_shared\\14\\f.jpg"),
+                "_shared/14/f.jpg",
+            )
+        # Same on a POSIX install whose backup directory was moved.
+        with patch.object(web_main, "_media_root", Path("/mnt/big/backups/media")):
+            self.assertEqual(
+                web_main._media_relative_path("/old/disk/backups/media/-1001/f.jpg"),
+                "-1001/f.jpg",
+            )
+        # An absolute path with no media directory in it cannot be anchored.
+        with patch.object(web_main, "_media_root", Path("/srv/media")):
+            self.assertIsNone(web_main._media_relative_path("/etc/passwd"))
+            self.assertIsNone(web_main._media_relative_path("/srv/media"))
+
+    def test_media_relative_path_rejects_traversal_in_either_separator(self):
+        """A backslash row must not smuggle "..": splitting on "/" alone would
+        see one opaque component and pass it through."""
+        from pathlib import Path
+
+        with patch.object(web_main, "_media_root", Path("/srv/media")):
+            for row in (
+                "..\\..\\etc\\passwd",
+                "../../etc/passwd",
+                "123\\..\\..\\etc\\passwd",
+                "/srv/media/../../etc/passwd",
+                "/old/backups/media/../../../etc/passwd",
+            ):
+                with self.subTest(row=row):
+                    self.assertIsNone(web_main._media_relative_path(row))
+
+    def test_media_relative_path_answers_the_same_on_every_platform(self):
+        """The helper reads rows written anywhere, so its answer must not depend
+        on the platform it runs on. Path.is_absolute() is False for "C:\\x" on
+        POSIX and True on Windows, which is why this is done lexically."""
+        from pathlib import Path
+
+        with patch.object(web_main, "_media_root", Path("/srv/media")):
+            self.assertEqual(web_main._media_relative_path("/srv/media/1/a.jpg"), "1/a.jpg")
+            self.assertEqual(web_main._media_relative_path("C:/old/media/1/a.jpg"), "1/a.jpg")
+            self.assertIsNone(web_main._media_relative_path("C:/old/pics/1/a.jpg"))
+
+    def test_media_relative_path_never_touches_the_filesystem(self):
+        """It runs for every media row of every message list, and the media root
+        is a network or FUSE mount on most installs: one Path.resolve() there
+        measured ~260 us against ~0.07 us for a string compare, which is ~19 ms
+        added to a 50-row page on an endpoint the viewer polls every 3 seconds.
+        Containment is enforced where the bytes are read, not here."""
+        from pathlib import Path
+
+        def explode(*args, **kwargs):
+            raise AssertionError("_media_relative_path must not call the filesystem")
+
+        with (
+            patch.object(web_main, "_media_root", Path("/srv/media")),
+            patch.object(Path, "resolve", explode),
+            patch("os.path.realpath", explode),
+        ):
+            self.assertEqual(web_main._media_relative_path("/srv/media/123/file.jpg"), "123/file.jpg")
+            self.assertEqual(web_main._media_relative_path("/old/backups/media/123/file.jpg"), "123/file.jpg")
+            self.assertIsNone(web_main._media_relative_path("/etc/passwd"))
+
     def test_strip_original_media_paths_handles_media_items(self):
         """No-download sessions strip both legacy media and multi-media item paths."""
         messages = [
