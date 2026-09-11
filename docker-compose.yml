@@ -159,6 +159,7 @@ services:
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_CHAT_TITLES: ${LOG_CHAT_TITLES:-false}
 
     volumes:
       # Persistent data storage

@@ -116,8 +116,9 @@ docker compose up -d telegram-viewer
 In the backup container's logs, migration `022` — the data rewrite — runs and
 completes, followed by `023`, a small PostgreSQL-only search-index migration, then
 the archive starting its normal schedule. The migration reports counts — rows
-moved, viewer grants converted — and never chat ids, titles or message content,
-like everything else this project logs.
+moved, viewer grants converted — and never chat ids, titles or message content.
+The migration logs nothing identifying at all; elsewhere a chat title can appear
+on the backup progress lines, but only behind `LOG_CHAT_TITLES=true`.
 
 In the viewer, all your chats are there, unchanged, now belonging to account 1.
 Existing viewer accounts, sessions and share tokens keep working with the same
