@@ -282,6 +282,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
 | `SKIP_MEDIA_DELETE_EXISTING` | `true` | B | Delete existing media files and DB records for chats in skip list to reclaim storage |
+| `DOWNLOAD_YOUTUBE_VIDEOS` | `false` | B | Archive the video file Telegram attaches to a YouTube link preview. Off by default; the message, link and thumbnail are archived either way |
+| `YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | B | Also delete YouTube link-preview videos already downloaded (needs `DOWNLOAD_YOUTUBE_VIDEOS=false`). Cannot be undone |
 | `SKIP_TOPIC_IDS` | - | B | Skip specific topics in forum supergroups (format: `chat_id:topic_id,...`) |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | **Flood & Retry Tuning** | | | |
