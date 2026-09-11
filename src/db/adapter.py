@@ -2635,6 +2635,7 @@ class DatabaseAdapter:
         max_media_size_bytes: int | None = None,
         max_attempts: int | None = None,
         limit: int | None = 1000,
+        exclude_chat_ids: set[int] | None = None,
         *,
         account_id: int,
     ) -> list[dict[str, Any]]:
@@ -2665,6 +2666,8 @@ class DatabaseAdapter:
                 conditions.append(or_(Media.file_size.is_(None), Media.file_size <= max_media_size_bytes))
             if max_attempts is not None:
                 conditions.append(Media.download_attempts < max_attempts)
+            if exclude_chat_ids:
+                conditions.append(~Media.chat_id.in_(exclude_chat_ids))
             where_clause = and_(*conditions)
             stmt = select(Media).where(where_clause).order_by(Media.download_attempts.asc(), Media.id.asc())
             if limit is not None:
