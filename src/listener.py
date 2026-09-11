@@ -51,6 +51,7 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    is_youtube_preview_video,
     message_plain_text,
     sanitize_media_filename,
     sender_display_name,
@@ -1334,6 +1335,14 @@ class TelegramListener:
                 media_type = None
                 if message.media:
                     media_type = self._get_media_type(message.media)
+                    # The video Telegram attaches to a YouTube link preview (#440),
+                    # declined exactly as the scheduled sweep declines it in
+                    # _process_media. Dropping the type here (rather than inside
+                    # _download_media) also stops the media ROW being written, so
+                    # the pending drain never sees it. The message, its text and its
+                    # raw_data.webpage card above are stored either way.
+                    if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
+                        media_type = None
 
                 # Insert the message FIRST (required for FK constraint on media table)
                 await self.db.insert_message(message_data, account_id=self.account_id)

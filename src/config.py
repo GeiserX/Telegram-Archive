@@ -585,6 +585,17 @@ class Config:
         # Delete existing media files and records for chats in skip list (reclaim storage)
         self.skip_media_delete_existing = _parse_bool_env("SKIP_MEDIA_DELETE_EXISTING", True)
 
+        # Archive the video file Telegram attaches to a YouTube link preview (#440).
+        # Off by default: those files are tens of MB each and duplicate bytes that
+        # still live at the URL, which the message keeps either way. The link, its
+        # text and the card thumbnail are archived regardless of this flag.
+        self.download_youtube_videos = _parse_bool_env("DOWNLOAD_YOUTUBE_VIDEOS", False)
+        # ...and delete the ones a previous run already downloaded. Separate flag,
+        # default off, because DOWNLOAD_YOUTUBE_VIDEOS defaults to off: tying the
+        # delete to it would erase already-archived video on every existing
+        # deployment the first time it upgraded, without anyone choosing that.
+        self.youtube_videos_delete_existing = _parse_bool_env("YOUTUBE_VIDEOS_DELETE_EXISTING", False)
+
         # Skip specific topics inside forum supergroups
         # Format: SKIP_TOPIC_IDS=-1001234567890:42,-1001234567890:1337
         # Each entry is chat_id:topic_id — skips that topic but keeps the rest of the chat
@@ -934,6 +945,18 @@ class Config:
         if self.skip_media_chat_ids:
             cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
             logger.info(f"Media downloads skipped for {len(self.skip_media_chat_ids)} chat(s) ({cleanup_status})")
+        if not self.download_youtube_videos:
+            cleanup_status = (
+                "existing ones will be deleted"
+                if self.youtube_videos_delete_existing
+                else "existing ones are kept (YOUTUBE_VIDEOS_DELETE_EXISTING=true deletes them)"
+            )
+            logger.info(f"YouTube link-preview videos are not downloaded ({cleanup_status})")
+        elif self.youtube_videos_delete_existing:
+            logger.warning(
+                "YOUTUBE_VIDEOS_DELETE_EXISTING is ignored while DOWNLOAD_YOUTUBE_VIDEOS=true "
+                "(nothing is deleted when the download is enabled)"
+            )
         if self.skip_topic_ids:
             total_topics = sum(len(t) for t in self.skip_topic_ids.values())
             logger.info(f"Topic filtering: skipping {total_topics} topic(s) across {len(self.skip_topic_ids)} chat(s)")

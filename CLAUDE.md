@@ -119,6 +119,29 @@ Follow these conventions:
 
 Topic IDs are extracted from `message.reply_to.reply_to_top_id` (primary) with fallback to `reply_to_msg_id`. General-topic messages carry NO `reply_to` (Telegram omits `top_msg_id` for General), so `extract_topic_id` returns None for them — `should_skip_topic` maps None to topic 1 when the chat's skip set contains 1, mirroring the archive's `coalesce(reply_to_top_id, 1)` General bucket. The `SKIP_TOPIC_IDS` env var uses format `chat_id:topic_id,...` parsed into `dict[int, set[int]]`.
 
+### YouTube Link-Preview Videos (#440)
+
+Telegram attaches the playable file to its own link preview, so a posted YouTube
+link archives like any other document. There is no yt-dlp in this project;
+declining Telegram's attachment is the whole mechanism.
+
+- `DOWNLOAD_YOUTUBE_VIDEOS` (default **off**) gates it, and
+  `YOUTUBE_VIDEOS_DELETE_EXISTING` (default **off**) removes what earlier runs
+  downloaded. Two flags on purpose: the first defaults to off, so deleting on it
+  alone would erase already-archived video on every deployment that upgraded.
+- **The thumbnail is not the video.** A `WebPage` carries a `.photo` (the card
+  picture, tens of KB) or a `.document` (the file). Only the document side is
+  gated. Its database twin is `media.mime_type IS NOT NULL`, non-NULL exactly for
+  document-backed rows because `extract_media_attributes` reads mime_type off
+  `.document`. `is_youtube_preview_video` and
+  `DatabaseAdapter.get_webpage_preview_documents` must stay the same predicate.
+- **Deleting the chat-folder entry frees nothing** when `DEDUPLICATE_MEDIA` is on:
+  it is a symlink into `_shared/`, and one blob can sit behind many rows.
+  `_cleanup_youtube_videos` reaps the blob too, but only after
+  `count_media_by_content_hash` (all accounts) reports no surviving reference.
+  Nothing else in this codebase reclaims a `_shared` blob — `_cleanup_existing_media`
+  (SKIP_MEDIA_CHAT_IDS) still leaves them behind.
+
 ### Logging Rules
 
 - **Never log chat IDs, topic IDs, or topic titles** — these are considered PII per the project's guidelines. Log only aggregated counts (e.g., "skipping N topics across M chats").
@@ -164,7 +187,12 @@ msg.reply_to = None  # Prevents false-positive topic filtering
 **ALWAYS set this on mock configs that use `MagicMock()` (not real Config):**
 ```python
 config.should_skip_topic = MagicMock(return_value=False)
+config.download_youtube_videos = False  # real default; a MagicMock reads truthy
 ```
+
+`download_youtube_videos` matters because its real default is `False` and a bare
+`MagicMock()` attribute is truthy, so a mock config silently gets the OPPOSITE of
+what ships. A test that means "stock configuration" has to say so.
 
 ### Test Style
 

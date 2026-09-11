@@ -68,6 +68,8 @@ from .message_utils import (
     extract_webpage_preview,
     fallback_media_filename,
     finalize_atomic_download,
+    is_youtube_preview_video,
+    is_youtube_url,
     message_plain_text,
     resolve_shared_file_path,
     sender_display_name,
@@ -1076,6 +1078,12 @@ class TelegramBackup:
             # ever persisted and this stays empty (warning-only behaviour).
             await self._load_followed_migrations()
 
+            # Reclaim YouTube link-preview videos a previous run downloaded (#440).
+            # Once per run, not per dialog: the same video is referenced from every
+            # chat the link was posted in, so the shared blob can only be reaped
+            # after all of its rows are gone.
+            await self._cleanup_youtube_videos()
+
             # Auto-correct filter ids missing the -100 marked prefix, against
             # this account's archived chats — the capture-side twin of the
             # viewer's DISPLAY_CHAT_IDS normalization. Runs before any
@@ -1982,6 +1990,15 @@ class TelegramBackup:
                         # Still exists but no longer carries media: equally
                         # permanent for this pending row.
                         await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
+                        skipped += 1
+                        continue
+
+                    if not self.config.download_youtube_videos and is_youtube_preview_video(msg.media):
+                        # Declined by configuration, not failing: charging it an
+                        # attempt would walk this row to MEDIA_MAX_DOWNLOAD_ATTEMPTS
+                        # and have the run warn that it gave up on a file nobody
+                        # asked it to fetch. Left pending, so turning
+                        # DOWNLOAD_YOUTUBE_VIDEOS on downloads it on the next run.
                         skipped += 1
                         continue
 
@@ -3399,6 +3416,108 @@ class TelegramBackup:
         except Exception as e:
             logger.warning(f"Failed to download avatar: {describe_exception(e)}")
 
+    async def _cleanup_youtube_videos(self) -> None:
+        """Remove YouTube link-preview videos a previous run downloaded (#440).
+
+        Runs once per backup, and only when DOWNLOAD_YOUTUBE_VIDEOS is off AND
+        YOUTUBE_VIDEOS_DELETE_EXISTING is on. Both are required on purpose: the
+        download flag defaults to off, so deleting on that alone would erase
+        already-archived video the first time any existing deployment upgraded.
+
+        Only document-backed preview rows are touched. The card's thumbnail
+        (tens of KB, and the picture the viewer renders) is a photo-backed row
+        and is left alone, as is the message, its text and its raw_data.webpage.
+
+        Deleting the chat-folder entry is NOT enough to reclaim the bytes: with
+        DEDUPLICATE_MEDIA on that entry is a symlink and the file lives in
+        ``_shared/``, referenced by every chat that saw the same link. So the
+        blob is removed too, but only once the last media row referencing its
+        content hash is gone — counted across ALL accounts, because the shared
+        path carries no account.
+        """
+        if self.config.download_youtube_videos or not self.config.youtube_videos_delete_existing:
+            return
+
+        try:
+            records = await self.db.get_webpage_preview_documents(account_id=self.account_id)
+        except Exception as e:
+            logger.error(f"Could not scan for YouTube link-preview videos: {describe_exception(e)}")
+            return
+
+        targets = [record for record in records if is_youtube_url(record.get("url"))]
+        if not targets:
+            return
+
+        deleted_files = 0
+        deleted_symlinks = 0
+        freed_bytes = 0
+        # content_hash -> file_name, so a blob referenced by several of these rows
+        # is considered exactly once after the rows are gone.
+        candidate_blobs: dict[str, str] = {}
+
+        for record in targets:
+            content_hash = record.get("content_hash")
+            file_name = record.get("file_name")
+            if content_hash and file_name:
+                candidate_blobs.setdefault(content_hash, file_name)
+
+            file_path = resolve_stored_media_path(record.get("file_path"), self.config.media_path)
+            if not file_path or not os.path.lexists(file_path):
+                continue
+            try:
+                if os.path.islink(file_path):
+                    os.unlink(file_path)
+                    deleted_symlinks += 1
+                else:
+                    freed_bytes += os.path.getsize(file_path)
+                    os.remove(file_path)
+                    deleted_files += 1
+            except Exception as e:
+                # Type only: an OSError message carries the chat-id folder.
+                logger.warning(f"Failed to delete a YouTube preview video: {type(e).__name__}")
+
+        try:
+            deleted_records = await self.db.delete_media_records([r["id"] for r in targets], account_id=self.account_id)
+        except Exception as e:
+            # The files are already gone and the rows are not. Stop here rather
+            # than reaping blobs against a refcount the surviving rows make
+            # wrong, and let the exception die here rather than abort the whole
+            # backup run: the next run re-reads the same rows, finds the files
+            # already absent, and retries the delete.
+            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
+            return
+
+        # Now that the rows are gone, any hash still counted is referenced by
+        # something we must not touch.
+        deleted_blobs = 0
+        if candidate_blobs:
+            shared_dir = os.path.join(self.config.media_path, "_shared")
+            try:
+                still_referenced = await self.db.count_media_by_content_hash(list(candidate_blobs))
+            except Exception as e:
+                logger.warning(f"Skipping shared-store cleanup: {describe_exception(e)}")
+                still_referenced = dict.fromkeys(candidate_blobs, 1)  # assume referenced; never delete on doubt
+            for content_hash, file_name in candidate_blobs.items():
+                if still_referenced.get(content_hash):
+                    continue
+                blob_path = resolve_shared_file_path(shared_dir, file_name, content_hash)
+                if not blob_path or os.path.islink(blob_path) or not os.path.isfile(blob_path):
+                    continue
+                try:
+                    blob_size = os.path.getsize(blob_path)
+                    os.remove(blob_path)
+                    freed_bytes += blob_size
+                    deleted_blobs += 1
+                except Exception as e:
+                    logger.warning(f"Failed to delete a shared YouTube preview video: {type(e).__name__}")
+
+        if deleted_records or deleted_files or deleted_symlinks or deleted_blobs:
+            logger.info(
+                f"YouTube link-preview videos removed: {deleted_records} record(s), "
+                f"{deleted_files + deleted_blobs} file(s), {deleted_symlinks} symlink(s), "
+                f"{freed_bytes / (1024 * 1024):.1f} MB freed"
+            )
+
     async def _cleanup_existing_media(self, chat_id: int) -> None:
         """
         Delete existing media files and database records for a chat.
@@ -3673,6 +3792,16 @@ class TelegramBackup:
             on_disk = resolve_stored_media_path(existing.get("file_path"), self.config.media_path)
             if on_disk and os.path.lexists(on_disk):
                 return existing
+
+        # The video Telegram attaches to a YouTube link preview, when the archive
+        # was not asked for it (#440). Declined AFTER the reuse branch above, so a
+        # copy already on disk keeps its row until YOUTUBE_VIDEOS_DELETE_EXISTING
+        # removes it; nothing here ever deletes. No row is written either: the
+        # message keeps its text and its raw_data.webpage card, and a row with
+        # downloaded=0 would be re-attempted by the pending drain every run.
+        if not self.config.download_youtube_videos and is_youtube_preview_video(media):
+            logger.debug("Skipping YouTube link-preview video (DOWNLOAD_YOUTUBE_VIDEOS=false)")
+            return None
 
         # Get Telegram's file unique ID for deduplication. Webpage previews
         # keep their photo/document one level down — unwrap once so every
