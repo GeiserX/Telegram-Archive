@@ -48,6 +48,7 @@ FLAGS = [
     ("listen_reactions", "LISTEN_REACTIONS", False),
     ("follow_chat_migrations", "FOLLOW_CHAT_MIGRATIONS", False),
     ("event_webhook_enabled", "EVENT_WEBHOOK_ENABLED", False),
+    ("log_chat_titles", "LOG_CHAT_TITLES", False),
 ]
 
 
