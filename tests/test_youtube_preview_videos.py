@@ -460,6 +460,23 @@ class TestCleanupExistingVideos(_AsyncCase):
         self._run(backup._cleanup_youtube_videos())
         self.assertTrue(os.path.exists(blob))
 
+    def test_a_failed_row_delete_neither_reaps_nor_aborts_the_run(self):
+        """The files are already gone and the rows are not: reaping a blob now
+        would be against a refcount the surviving rows make wrong, and letting
+        the error out would abort the whole backup (the call sits inside
+        backup_all's try). The next run retries."""
+        backup = self._make_backup()
+        blob, links = self._plant_deduplicated(backup, content_hash="99" * 32, file_name="v.mp4", chats=[-1])
+        backup.db.get_webpage_preview_documents = AsyncMock(
+            return_value=[self._record("r0", -1, links[0], "v.mp4", "99" * 32)]
+        )
+        backup.db.delete_media_records = AsyncMock(side_effect=RuntimeError("db down"))
+
+        self._run(backup._cleanup_youtube_videos())  # must not raise
+
+        self.assertTrue(os.path.exists(blob))
+        backup.db.count_media_by_content_hash.assert_not_awaited()
+
     def test_an_undeduplicated_file_is_removed_directly(self):
         backup = self._make_backup()
         backup.config.deduplicate_media = False

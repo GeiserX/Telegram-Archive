@@ -3472,7 +3472,16 @@ class TelegramBackup:
                 # Type only: an OSError message carries the chat-id folder.
                 logger.warning(f"Failed to delete a YouTube preview video: {type(e).__name__}")
 
-        deleted_records = await self.db.delete_media_records([r["id"] for r in targets], account_id=self.account_id)
+        try:
+            deleted_records = await self.db.delete_media_records([r["id"] for r in targets], account_id=self.account_id)
+        except Exception as e:
+            # The files are already gone and the rows are not. Stop here rather
+            # than reaping blobs against a refcount the surviving rows make
+            # wrong, and let the exception die here rather than abort the whole
+            # backup run: the next run re-reads the same rows, finds the files
+            # already absent, and retries the delete.
+            logger.error(f"Could not delete YouTube link-preview media rows: {describe_exception(e)}")
+            return
 
         # Now that the rows are gone, any hash still counted is referenced by
         # something we must not touch.
