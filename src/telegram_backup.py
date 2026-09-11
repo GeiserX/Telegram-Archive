@@ -54,6 +54,7 @@ from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
     _photo_size_bytes,
     build_media_filename,
+    chat_title_for_log,
     classify_media_type,
     compute_file_hash_async,
     describe_exception,
@@ -1452,7 +1453,10 @@ class TelegramBackup:
                         logger.warning(
                             "  Chat appears in both regular and archived dialog lists - treating as NOT archived"
                         )
-                logger.info(f"[{i}/{len(filtered_dialogs)}] Backing up{' (archived)' if is_archived else ''}")
+                logger.info(
+                    f"[{i}/{len(filtered_dialogs)}] Backing up"
+                    f"{' (archived)' if is_archived else ''}{chat_title_for_log(entity, self.config)}"
+                )
 
                 try:
                     message_count = await self._backup_dialog(dialog, is_archived=is_archived)
@@ -1494,7 +1498,7 @@ class TelegramBackup:
                 for i, dialog in enumerate(archived_to_backup, 1):
                     entity = dialog.entity
                     chat_id = self._get_marked_id(entity)
-                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}]")
+                    logger.info(f"  [Archived {i}/{len(archived_to_backup)}]{chat_title_for_log(entity, self.config)}")
 
                     try:
                         message_count = await self._backup_dialog(dialog, is_archived=True)

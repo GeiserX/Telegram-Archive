@@ -600,6 +600,9 @@ class Config:
         if log_level == "WARN":
             log_level = "WARNING"
         self.log_level = getattr(logging, log_level, logging.INFO)
+        # Opt-in (#439): name the chat on the two per-chat progress lines. Off by
+        # default, and chat ids never appear either way.
+        self.log_chat_titles = _parse_bool_env("LOG_CHAT_TITLES", False)
 
         # Derived paths
         # Store session in a separate directory from backups
@@ -872,6 +875,8 @@ class Config:
             logger.warning(
                 "SYNC_DELETIONS_EDITS enabled - this will check ALL messages for deletions/edits (expensive!)"
             )
+        if self.log_chat_titles:
+            logger.warning("LOG_CHAT_TITLES enabled - chat titles will appear in the backup progress log")
         if self.verify_media:
             logger.info("VERIFY_MEDIA enabled - will check for missing/corrupted media files and re-download them")
         if self.parallel_download_enabled:

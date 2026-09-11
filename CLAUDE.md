@@ -122,6 +122,7 @@ Topic IDs are extracted from `message.reply_to.reply_to_top_id` (primary) with f
 ### Logging Rules
 
 - **Never log chat IDs, topic IDs, or topic titles** — these are considered PII per the project's guidelines. Log only aggregated counts (e.g., "skipping N topics across M chats").
+- **The one exception is `chat_title_for_log(entity, config)`** (`src/message_utils.py`), the opt-in `LOG_CHAT_TITLES` gate from #439. It is the only sanctioned route a chat title has, it is called inline at exactly two progress lines, and `tests/test_no_account_pii_in_logs.py` exempts that one callee name and nothing else. Do not add a second caller, do not rebind the name, and do not widen `CHAT_ID_LOG_ALLOWLIST` instead — the guard is meant to fire.
 - **Never log message content** — same PII rule applies.
 
 ## CI/CD Pipeline
