@@ -11,6 +11,7 @@ import stat
 import unicodedata
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -788,6 +789,65 @@ def extract_webpage_preview(media: object) -> dict | None:
         if isinstance(value, str) and value:
             preview[field] = value
     return preview or None
+
+
+# Every host YouTube serves watch pages from. Matched as whole labels (exact
+# host, or a subdomain of one) so ``youtube.com.example.net`` and
+# ``notyoutube.com`` are NOT YouTube — a plain substring test would call both.
+_YOUTUBE_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "youtubekids.com",
+)
+
+
+def is_youtube_url(url: object) -> bool:
+    """True when ``url`` points at YouTube.
+
+    Telegram resolves ``WebPage.url`` to an absolute URL, but the archive also
+    stores the scheme-less ``display_url``, so a value with no scheme is
+    re-parsed as a network path rather than silently read as a bare path
+    (``urlsplit("youtube.com/watch")`` yields no hostname at all).
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        host = urlsplit(url).hostname
+        if host is None:
+            host = urlsplit("//" + url).hostname
+    except ValueError:
+        return False  # malformed IPv6 literal etc.
+    if not host:
+        return False
+    host = host.rstrip(".").lower()
+    return any(host == candidate or host.endswith("." + candidate) for candidate in _YOUTUBE_HOSTS)
+
+
+def is_youtube_preview_video(media: object) -> bool:
+    """True when ``media`` is a YouTube link preview carrying a VIDEO FILE.
+
+    Telegram attaches the playable file to its own link preview, so a posted
+    YouTube link archives like any other document — tens of megabytes per link,
+    duplicating bytes that still live at the URL (#440). There is no downloader
+    in this project; declining the attachment is the whole mechanism.
+
+    ``.document`` is the discriminator, and it is exact: a ``WebPage`` carries
+    either a ``.photo`` (the card thumbnail, tens of KB) or a ``.document`` (the
+    file), never both. Only the document side is gated, so the card keeps its
+    picture. Its database twin is ``media.mime_type IS NOT NULL``, which is
+    non-NULL exactly for document-backed rows because ``extract_media_attributes``
+    reads mime_type off ``.document`` — ``_cleanup_youtube_videos`` selects on
+    that, and the two must stay the same predicate.
+    """
+    if type(media).__name__ != "MessageMediaWebPage":
+        return False
+    webpage = getattr(media, "webpage", None)
+    if type(webpage).__name__ != "WebPage":
+        return False
+    if not getattr(webpage, "document", None):
+        return False
+    return is_youtube_url(getattr(webpage, "url", None))
 
 
 def describe_exception(exc: BaseException) -> str:

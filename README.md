@@ -155,7 +155,7 @@ docker run -it --rm \
   -e TELEGRAM_PHONE=+YOUR_PHONE_NUMBER \
   -e SESSION_NAME=telegram_backup \
   -v /path/to/your/session:/data/session \
-  drumsergio/telegram-archive:8.9.2 \
+  drumsergio/telegram-archive:8.10.0 \
   python -m src auth
 ```
 
@@ -166,7 +166,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   -v ./data:/data \
-  drumsergio/telegram-archive:8.9.2 \
+  drumsergio/telegram-archive:8.10.0 \
   python -m src auth
 
 # Then restart the backup container
@@ -207,7 +207,7 @@ The standalone viewer image (`drumsergio/telegram-archive-viewer`) lets you brow
 # Example: Viewer-only deployment
 services:
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.9.2
+    image: drumsergio/telegram-archive-viewer:8.10.0
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -282,6 +282,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
 | `SKIP_MEDIA_DELETE_EXISTING` | `true` | B | Delete existing media files and DB records for chats in skip list to reclaim storage |
+| `DOWNLOAD_YOUTUBE_VIDEOS` | `false` | B | Archive the video file Telegram attaches to a YouTube link preview. Off by default; the message, link and thumbnail are archived either way |
+| `YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | B | Also delete YouTube link-preview videos already downloaded (needs `DOWNLOAD_YOUTUBE_VIDEOS=false`). Cannot be undone |
 | `SKIP_TOPIC_IDS` | - | B | Skip specific topics in forum supergroups (format: `chat_id:topic_id,...`) |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | `LOG_CHAT_TITLES` | `false` | B | Name the chat on the two per-chat progress lines: `[27/27] Backing up: "My Group"`. Opt-in. Chat ids are never logged either way, a one-to-one chat is named by kind only (`private chat`) and never by the person, and titles are sanitised so a chosen title cannot forge a log line |
@@ -628,9 +630,9 @@ want and run `docker compose up -d`:
 ```yaml
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.9.2
+    image: drumsergio/telegram-archive:8.10.0
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.9.2
+    image: drumsergio/telegram-archive-viewer:8.10.0
 ```
 
 Check [Releases](https://github.com/GeiserX/Telegram-Archive/releases) for available
@@ -645,8 +647,8 @@ start:
 
 ```bash
 git pull
-docker build -t drumsergio/telegram-archive:8.9.2 .
-docker build -t drumsergio/telegram-archive-viewer:8.9.2 -f Dockerfile.viewer .
+docker build -t drumsergio/telegram-archive:8.10.0 .
+docker build -t drumsergio/telegram-archive-viewer:8.10.0 -f Dockerfile.viewer .
 docker compose up -d
 ```
 
