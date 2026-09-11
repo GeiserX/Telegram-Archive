@@ -298,7 +298,14 @@ class TestNoAccountPiiInLogs(unittest.TestCase):
 # path keeps the exemption visible instead of an accident of the matcher.
 # ---------------------------------------------------------------------------
 
-_ID_SUBJECTS = ("chat", "topic")
+# telethon names the chat `entity` and the dialog `dialog`, and Dialog.__init__
+# sets `self.name = self.title = get_display_name(entity)` and `self.id =
+# get_peer_id(...)` — so `dialog.title` is a private contact's real NAME and
+# `dialog.id` is the chat id. Both scanned GREEN until these two subjects were
+# added, in the very function this guard exists to protect. _is_chat_object
+# matches on SUBSTRING, so an object named `identity` is flagged too; rename the
+# local or bind it differently, the same escape any other false positive has.
+_ID_SUBJECTS = ("chat", "topic", "entity", "dialog")
 _ID_FIELDS = frozenset({"id", "name", "title"})
 
 
@@ -439,20 +446,35 @@ CHAT_ID_LOG_ALLOWLIST = frozenset(
 )
 
 
-def _chat_identifier_hits(node: ast.AST) -> list[str]:
+# The single sanctioned title sink (#439). Its name pairs chat+title, so the
+# matcher below reports it like any other violation; this constant is the one
+# thing that clears it, and deleting it turns the two real call sites red.
+TITLE_LOG_SINK = "chat_title_for_log"
+
+
+def _chat_identifier_hits(node: ast.AST, *, exempt_sink: bool = True) -> list[str]:
     """Chat-id-ish names read in ``node``, excluding those inside ``len(...)``.
 
     ``len(chat_ids)`` is a count, which the rule explicitly permits; the raw
     collection or a single id is what must not be logged.
+
+    ``exempt_sink=False`` reports the sanctioned title sink too, which is how the
+    tests prove the exemption is load-bearing rather than decorative.
     """
-    inside_len: set[int] = set()
+    exempt: set[int] = set()
     for child in ast.walk(node):
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "len":
-            inside_len.update(id(d) for d in ast.walk(child))
+        if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Name):
+            continue
+        if child.func.id == "len":
+            exempt.update(id(d) for d in ast.walk(child))
+        elif exempt_sink and child.func.id == TITLE_LOG_SINK:
+            # The callee name ONLY. Its arguments stay scanned, so
+            # chat_title_for_log(chat_id, ...) still reports chat_id.
+            exempt.add(id(child.func))
 
     found: list[str] = []
     for child in ast.walk(node):
-        if id(child) in inside_len:
+        if id(child) in exempt:
             continue
         name = None
         if isinstance(child, ast.Name):
@@ -468,22 +490,36 @@ def _chat_identifier_hits(node: ast.AST) -> list[str]:
     return found
 
 
-def _scan_for_chat_identifiers() -> list[str]:
+def _violations_in_tree(rel: str, tree: ast.AST, *, exempt_sink: bool = True) -> list[str]:
+    """Every violation in one parsed file. Split out so a test can run the REAL
+    matcher over a mutated copy of a real source file rather than a fixture."""
     violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_logging_call(node):
+            continue
+        for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+            for name in _chat_identifier_hits(argument, exempt_sink=exempt_sink):
+                violations.append(f"{rel}:{node.lineno} logs {name}")
+            for read in _chat_object_field_reads(argument):
+                violations.append(f"{rel}:{node.lineno} logs a chat/topic {read}")
+    return violations
+
+
+def _scanned_source_files() -> list[tuple[str, ast.AST]]:
+    files: list[tuple[str, ast.AST]] = []
     for root in SCANNED_ROOTS:
         for path in sorted(root.rglob("*.py")):
             rel = str(path.relative_to(REPO))
             if rel in CHAT_ID_LOG_ALLOWLIST:
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call) or not _is_logging_call(node):
-                    continue
-                for argument in [*node.args, *(kw.value for kw in node.keywords)]:
-                    for name in _chat_identifier_hits(argument):
-                        violations.append(f"{rel}:{node.lineno} logs {name}")
-                    for read in _chat_object_field_reads(argument):
-                        violations.append(f"{rel}:{node.lineno} logs a chat/topic {read}")
+            files.append((rel, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))))
+    return files
+
+
+def _scan_for_chat_identifiers() -> list[str]:
+    violations: list[str] = []
+    for rel, tree in _scanned_source_files():
+        violations.extend(_violations_in_tree(rel, tree))
     return violations
 
 
@@ -496,7 +532,10 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
             "Logging must not read a chat id, topic id or title (CLAUDE.md). Log a count, "
             "or nothing. If the identifier is genuinely the operator-facing answer (a list "
             "command, an interactive destructive tool), add the file to CHAT_ID_LOG_ALLOWLIST "
-            "with a reason. Offending call sites:\n  " + "\n  ".join(violations),
+            f"with a reason. A chat TITLE has exactly one sanctioned route: {TITLE_LOG_SINK}(entity, "
+            "config), imported by bare name and called inline in the log call — the module-qualified "
+            "form is still a violation, and the helper decides whether the operator opted in. "
+            "Offending call sites:\n  " + "\n  ".join(violations),
         )
 
     def test_a_bare_variable_named_source_chat_id_is_caught(self) -> None:
@@ -559,6 +598,160 @@ class TestNoChatIdentifiersInLogs(unittest.TestCase):
         self.assertTrue(_is_identifier_name("chat_id_str"))
         self.assertTrue(_is_identifier_name("source_chat_id"))
         self.assertFalse(_is_identifier_name("chat_idx"))
+
+    # ---- the one sanctioned title sink (#439) ----
+
+    def test_the_sanctioned_sink_is_visible_without_its_exemption(self) -> None:
+        """The escape is load-bearing, not decorative.
+
+        A blandly named helper would pass this scan with no exemption at all —
+        the laundering hole this file's docstring warns about. Naming the sink so
+        the matcher HITS it means the carve-out must be written down, and
+        deleting it turns the real call sites red.
+        """
+        call = ast.parse(f'logger.info(f"x{{{TITLE_LOG_SINK}(entity, self.config)}}")')
+        argument = call.body[0].value.args[0]
+        self.assertEqual([TITLE_LOG_SINK], _chat_identifier_hits(argument, exempt_sink=False))
+        self.assertEqual([], _chat_identifier_hits(argument))
+
+        laundered = ast.parse('logger.info(f"x{progress_suffix(entity)}")').body[0].value.args[0]
+        self.assertEqual([], _chat_identifier_hits(laundered, exempt_sink=False), "a bland name needs no exemption")
+
+    def test_the_sanctioned_sink_clears_only_its_own_name(self) -> None:
+        """Its arguments stay scanned, and only the bare-name call form clears."""
+        cases = {
+            f'logger.info(f"x{{{TITLE_LOG_SINK}(entity, self.config)}}")': [],
+            f'logger.info(f"x{{{TITLE_LOG_SINK}(chat_id, self.config)}}")': ["chat_id"],
+            f'logger.info(f"x{{{TITLE_LOG_SINK}(entity, c)}} {{chat_id}}")': ["chat_id"],
+            f'logger.info(f"x{{{TITLE_LOG_SINK}(entity.title, c)}}")': [],
+            f'logger.info(f"x{{message_utils.{TITLE_LOG_SINK}(entity, c)}}")': [TITLE_LOG_SINK],
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                argument = ast.parse(source).body[0].value.args[0]
+                self.assertEqual(expected, _chat_identifier_hits(argument))
+        # The object read is reported separately, and is not exempt.
+        argument = ast.parse(f'logger.info(f"x{{{TITLE_LOG_SINK}(entity.title, c)}}")').body[0].value.args[0]
+        self.assertEqual([".title"], _chat_object_field_reads(argument))
+
+    def test_a_title_or_id_read_off_entity_or_dialog_is_caught(self) -> None:
+        """telethon calls the chat `entity` and the dialog `dialog`, and
+        Dialog.title is a private contact's real name. Every one of these scanned
+        GREEN before #439 widened the subjects — in the very function the feature
+        lands in."""
+        for source in (
+            'logger.info(f"x{entity.title}")',
+            'logger.info(f"x{entity.id}")',
+            'logger.info(f"x{dialog.title}")',
+            'logger.info(f"x{dialog.name}")',
+            'logger.info(f"x{dialog.id}")',
+            'logger.info(f"x{dialog.entity.title}")',
+            'logger.info(f"x{entity_title}")',
+            'logger.info("x", extra={"t": entity.title})',
+        ):
+            with self.subTest(source=source):
+                argument = ast.parse(source).body[0].value
+                hits = []
+                for a in [*argument.args, *(k.value for k in argument.keywords)]:
+                    hits += _chat_identifier_hits(a) + _chat_object_field_reads(a)
+                self.assertTrue(hits, f"{source} is invisible to the guard")
+
+    def test_a_raw_title_at_the_sanctioned_site_still_fails(self) -> None:
+        """The positive control ships in the repo: mutate the REAL source file and
+        watch the REAL matcher go red, so a scan that silently stopped scanning
+        cannot pass this suite."""
+        path = REPO / "src" / "telegram_backup.py"
+        source = path.read_text(encoding="utf-8")
+        anchor = f"{TITLE_LOG_SINK}(entity, self.config)"
+        self.assertEqual(2, source.count(anchor), "both sanctioned call sites must use the exact anchor")
+
+        self.assertEqual([], _violations_in_tree("src/telegram_backup.py", ast.parse(source)))
+        for replacement in ("entity.title", "chat_title", "self._get_marked_id(entity) or entity.title"):
+            with self.subTest(replacement=replacement):
+                mutated = ast.parse(source.replace(anchor, replacement, 1))
+                self.assertTrue(
+                    _violations_in_tree("src/telegram_backup.py", mutated),
+                    f"a raw {replacement} at the sanctioned site must fail the guard",
+                )
+
+    def test_the_sanctioned_sink_is_called_only_where_it_was_sanctioned(self) -> None:
+        """Counts EVERY call anywhere under src/ and scripts/, not only those
+        nested in a logging call — hoisting the suffix into a local first is the
+        same laundering hole, and this is what bounds it. A third caller is a
+        reviewed line in the diff, never a silent widening."""
+        calls: list[str] = []
+        for rel, tree in _scanned_source_files():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == TITLE_LOG_SINK:
+                    first = node.args[0] if node.args else None
+                    argument = first.id if isinstance(first, ast.Name) else ast.dump(first) if first else "<none>"
+                    calls.append(f"{rel}({argument})")
+        self.assertEqual(
+            ["src/telegram_backup.py(entity)", "src/telegram_backup.py(entity)"],
+            sorted(calls),
+            "the title sink may be called only from the two progress lines, and only on `entity` — "
+            "`dialog` would name the person behind a private chat, because Dialog.title is their display name",
+        )
+
+    def test_the_sanctioned_sink_is_bound_exactly_once(self) -> None:
+        """The exemption is keyed on a NAME, so pin what that name is bound to.
+        Without this, `chat_title_for_log = _rich_label` inside the backup module
+        passes every other guard here."""
+        bindings: list[str] = []
+        for rel, tree in _scanned_source_files():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == TITLE_LOG_SINK:
+                    bindings.append(f"{rel}:def")
+                elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if any(isinstance(t, ast.Name) and t.id == TITLE_LOG_SINK for t in targets):
+                        bindings.append(f"{rel}:assign")
+                elif isinstance(node, ast.Import | ast.ImportFrom):
+                    if any((a.asname or a.name) == TITLE_LOG_SINK for a in node.names):
+                        bindings.append(f"{rel}:import")
+        self.assertEqual(
+            ["src/message_utils.py:def", "src/telegram_backup.py:import"],
+            sorted(bindings),
+            "the sanctioned name must mean exactly one reviewed function",
+        )
+
+    def test_the_sanctioned_sink_never_reads_an_identifying_attribute(self) -> None:
+        """The gate is the guard, so pin what its body may touch: no identifying
+        attribute, and no call that could fetch one (get_peer_id) or stringify the
+        whole entity (repr)."""
+        import inspect
+
+        from src.message_utils import chat_title_for_log
+
+        tree = ast.parse(inspect.getsource(chat_title_for_log))
+        banned = {"first_name", "last_name", "phone", "username", "id"}
+        allowed_calls = {
+            "getattr",
+            "isinstance",
+            "len",
+            "join",
+            "split",
+            "rstrip",
+            "replace",
+            "normalize",
+            "category",
+        }
+        reads, calls = [], []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in banned:
+                reads.append(node.attr)
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    calls.append(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    calls.append(node.func.attr)
+                if isinstance(node.func, ast.Name) and node.func.id in ("getattr", "hasattr") and len(node.args) > 1:
+                    constant = node.args[1]
+                    if isinstance(constant, ast.Constant) and constant.value in banned:
+                        reads.append(str(constant.value))
+        self.assertEqual([], reads, "the gate must never read an identifying attribute")
+        self.assertEqual(set(), set(calls) - allowed_calls, "the gate may only call stdlib string/type helpers")
+        self.assertNotIn("!r", inspect.getsource(chat_title_for_log), "a telethon repr carries the title AND the id")
 
     def test_no_filesystem_handler_logs_a_raw_exception(self) -> None:
         """Exception text is the third leak route, and it shipped in v7.33.3.
