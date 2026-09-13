@@ -39,6 +39,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import aliased
 
 from ..message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
@@ -2466,6 +2467,48 @@ class DatabaseAdapter:
                 deleted += result.rowcount or 0
             await session.commit()
         return deleted
+
+    async def delete_voice_note_audio_twins(self, *, account_id: int) -> int:
+        """Delete ``audio`` rows that duplicate a ``voice`` row for the same file.
+
+        The classifier types a document ``voice`` only when Telegram's
+        ``DocumentAttributeAudio.voice`` flag is set, so ``voice`` is the more
+        specific judgement. An earlier capture that ignored the flag filed the
+        same note as ``audio``, and before #426 a second classification minted a
+        second row instead of correcting the first. Both rows name the same
+        file, so the Voice tab (which lists ``voice,audio``) showed each such
+        note twice and its badge added both, while the timeline, which reads the
+        lowest id first, played the older ``audio`` twin as music.
+
+        Only rows go, and only when the ``voice`` twin is downloaded and names
+        the very same ``file_path``, so the file stays referenced by the row that
+        remains. Returns the number of rows deleted.
+        """
+        twin = aliased(Media)
+        async with self.db_manager.async_session_factory() as session:
+            stmt = delete(Media).where(
+                and_(
+                    Media.account_id == account_id,
+                    Media.type == "audio",
+                    Media.downloaded == 1,
+                    select(twin.id)
+                    .where(
+                        and_(
+                            twin.account_id == Media.account_id,
+                            twin.chat_id == Media.chat_id,
+                            twin.message_id == Media.message_id,
+                            twin.type == "voice",
+                            twin.downloaded == 1,
+                            twin.file_path == Media.file_path,
+                        )
+                    )
+                    .correlate(Media)
+                    .exists(),
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount or 0
 
     async def count_media_by_content_hash(self, content_hashes: Collection[str]) -> dict[str, int]:
         """How many media rows still reference each content hash, ALL accounts.
