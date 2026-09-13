@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.10.1] - 2026-09-13
+
+The media retry stops wasting its turns, and voice notes stop appearing twice.
+
+### Fixed
+
+- **Chats in `SKIP_MEDIA_CHAT_IDS` no longer crowd out the downloads that can happen.** The retry of failed downloads takes up to 1,000 pending files per run, and it used to pick them before leaving out skipped chats. A skipped chat with more pending files than that filled the whole batch, so everything else waited, run after run. Skipped chats are now left out first. Their files stay pending, so taking a chat off the list makes them eligible again. Contributed by [@WalterLederer](https://github.com/WalterLederer) in [#442](https://github.com/GeiserX/Telegram-Archive/pull/442).
+- **The retry no longer reports a download that never happened.** Archives built by earlier versions can hold two records for one message's file, one downloaded and one still pending. The retry took the downloaded twin as its own success, so the pending one was requested from Telegram on every run, never reached `MEDIA_MAX_DOWNLOAD_ATTEMPTS`, and the log claimed a download each time. The leftover record is now removed instead. ([#446](https://github.com/GeiserX/Telegram-Archive/pull/446))
+- **A voice note recorded twice shows once.** Some older archives hold the same voice note both as a voice message and as an audio file. The Voice tab lists both kinds, so each such note appeared as two tiles and counted twice in the tab's number, and the chat played it with the music player. Each backup run now removes the audio record wherever a downloaded voice record names the same file. Only the database record goes; the file stays. ([#446](https://github.com/GeiserX/Telegram-Archive/pull/446))
+
+### Note
+
+A viewer tab left open across the upgrade may still point at the removed audio records for those voice notes. Reload the page.
+
 ## [8.10.0] - 2026-09-11
 
 A YouTube link stops costing you the video behind it, and the backup log can name the chat it is working on.
