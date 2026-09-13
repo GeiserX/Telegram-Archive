@@ -1921,7 +1921,10 @@ class TelegramBackup:
         are skipped silently.
         """
         pending = await self.db.get_pending_media_downloads(
-            self.config.get_max_media_size_bytes(), self.config.max_media_download_attempts, account_id=self.account_id
+            self.config.get_max_media_size_bytes(),
+            self.config.max_media_download_attempts,
+            exclude_chat_ids=self.config.skip_media_chat_ids,
+            account_id=self.account_id,
         )
         # Surface (don't silently swallow) files given up after hitting the retry cap —
         # the silent-loss failure mode #212 was about. Count only (no chat/file names, PII).
