@@ -3876,7 +3876,9 @@ class TestRetryPendingMediaCap(unittest.TestCase):
     def test_passes_attempt_cap_to_query(self):
         self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})
         _run(self.backup._retry_pending_media_downloads())
-        self.backup.db.get_pending_media_downloads.assert_awaited_once_with(100 * 1024 * 1024, 5, account_id=1)
+        self.backup.db.get_pending_media_downloads.assert_awaited_once_with(
+            100 * 1024 * 1024, 5, exclude_chat_ids=set(), account_id=1
+        )
 
     def test_increment_on_failed_download(self):
         """A download that raises bumps the attempt counter (the #212 name-too-long case)."""
