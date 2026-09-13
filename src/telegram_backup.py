@@ -1084,6 +1084,16 @@ class TelegramBackup:
             # after all of its rows are gone.
             await self._cleanup_youtube_videos()
 
+            # Voice notes an earlier classifier filed twice (#426 residue): the Voice
+            # tab showed each one twice. Rows only, and only where both twins name
+            # the same file, so nothing on disk is touched.
+            try:
+                removed = await self.db.delete_voice_note_audio_twins(account_id=self.account_id)
+                if removed:
+                    logger.info(f"Removed {removed} duplicate audio row(s) shadowing voice notes")
+            except Exception as e:
+                logger.warning(f"Could not remove duplicate voice-note rows: {describe_exception(e)}")
+
             # Auto-correct filter ids missing the -100 marked prefix, against
             # this account's archived chats — the capture-side twin of the
             # viewer's DISPLAY_CHAT_IDS normalization. Runs before any
@@ -1950,6 +1960,7 @@ class TelegramBackup:
         downloaded = 0
         skipped = 0
         failed = 0
+        twins_removed = 0
 
         for chat_id, records in by_chat.items():
             if chat_id in self.config.skip_media_chat_ids:
@@ -2010,7 +2021,19 @@ class TelegramBackup:
                         result = await self._process_media(msg, chat_id)
                         if result and result.get("downloaded"):
                             await self.db.insert_media(result, account_id=self.account_id)
-                            downloaded += 1
+                            if result.get("id") != record["id"]:
+                                # The message's file is held by ANOTHER row: _process_media
+                                # resolves a message to its canonical row (downloaded first,
+                                # then lowest id), so this pending row is a leftover twin
+                                # from before #426 made the row, not the type, the identity.
+                                # Counting it as downloaded left it pending with its attempt
+                                # counter untouched, so it was re-requested from Telegram on
+                                # every run and reported as a download that never happened.
+                                # Only the row goes; the file belongs to the canonical row.
+                                await self.db.delete_media_records([record["id"]], account_id=self.account_id)
+                                twins_removed += 1
+                            else:
+                                downloaded += 1
                         else:
                             await self.db.increment_media_download_attempts(record["id"], account_id=self.account_id)
                             skipped += 1
@@ -2023,8 +2046,11 @@ class TelegramBackup:
                 logger.error(f"Error retrying pending media for chat: {e}")
                 failed += len(records)
 
-        if downloaded > 0 or failed > 0:
-            logger.info(f"Pending media retry: {downloaded} downloaded, {skipped} skipped, {failed} failed")
+        if downloaded > 0 or failed > 0 or twins_removed > 0:
+            summary = f"Pending media retry: {downloaded} downloaded, {skipped} skipped, {failed} failed"
+            if twins_removed:
+                summary += f", {twins_removed} duplicate row(s) removed"
+            logger.info(summary)
         else:
             logger.info("Pending media retry: no actionable items")
         logger.info("=" * 60)
