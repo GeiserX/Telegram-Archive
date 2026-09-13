@@ -30,6 +30,8 @@ FLAGS = [
     ("download_media", "DOWNLOAD_MEDIA", True),
     ("download_chat_description", "DOWNLOAD_CHAT_DESCRIPTION", False),
     ("skip_media_delete_existing", "SKIP_MEDIA_DELETE_EXISTING", True),
+    ("download_youtube_videos", "DOWNLOAD_YOUTUBE_VIDEOS", False),
+    ("youtube_videos_delete_existing", "YOUTUBE_VIDEOS_DELETE_EXISTING", False),
     ("sync_deletions_edits", "SYNC_DELETIONS_EDITS", False),
     ("verify_media", "VERIFY_MEDIA", False),
     ("fill_gaps", "FILL_GAPS", False),
@@ -46,6 +48,7 @@ FLAGS = [
     ("listen_reactions", "LISTEN_REACTIONS", False),
     ("follow_chat_migrations", "FOLLOW_CHAT_MIGRATIONS", False),
     ("event_webhook_enabled", "EVENT_WEBHOOK_ENABLED", False),
+    ("log_chat_titles", "LOG_CHAT_TITLES", False),
 ]
 
 

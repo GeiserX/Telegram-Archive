@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.10.0] - 2026-09-11
+
+A YouTube link stops costing you the video behind it, and the backup log can name the chat it is working on.
+
+### Added
+
+- **`DOWNLOAD_YOUTUBE_VIDEOS` decides whether a YouTube link brings its video with it. Off by default, which is a change.** Telegram attaches the playable file to its own link preview, so one posted YouTube link used to archive tens of megabytes of video that still lives at the URL. There is no downloader in this project and nothing here fetches a URL; the file arrives as part of the message, and now it is declined. The message, its text, the link and the preview card are archived exactly as before — only the video file is left behind. Set it to `true` to keep the old behaviour. Reported by [@dasbntn785](https://github.com/dasbntn785) in [#440](https://github.com/GeiserX/Telegram-Archive/issues/440).
+- **`YOUTUBE_VIDEOS_DELETE_EXISTING` removes the ones an earlier run already downloaded.** Also off by default, because the flag above is off by default: upgrading must never delete anything on its own. Turn it on once and the next backup reclaims the space, including the deduplicated copy in the shared store — a single file can sit behind many chats, so deleting only the chat folder's entry would have freed nothing. It cannot be undone: re-enabling the download does not fetch them back, since the sweep only looks at new messages.
+- **`LOG_CHAT_TITLES` names the chat on the two per-chat progress lines**, so `[27/27] Backing up` becomes `[27/27] Backing up: "My Group"` and a stalled run tells you where it stalled. Off by default. Chat ids are still never logged, a one-to-one chat is named by kind only (`private chat`) and never by the person, and a title is sanitised before it reaches the log so a chosen chat name cannot forge a log line. Requested by [@WalterLederer](https://github.com/WalterLederer) in [#439](https://github.com/GeiserX/Telegram-Archive/issues/439).
+
+### Note
+
+The thumbnail is not the video. A link preview carries either a card picture, tens of kilobytes, or the file itself. Only the file is declined, so a gated archive still renders its cards. On the archive this was measured against, YouTube previews were 14 thumbnails totalling 1.5 MB and 3 videos totalling 162 MB.
+
+Other sites are unaffected: this release gates YouTube only. If you want the same for Vimeo, Twitch or anywhere else, open an issue saying which.
+
 ## [8.9.2] - 2026-09-08
 
 ### Fixed

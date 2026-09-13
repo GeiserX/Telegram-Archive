@@ -323,7 +323,7 @@ it is the symptom worth knowing.
 
 Then start the viewer. The imported account's chats appear alongside the
 target's own, with their media, edit histories and deleted messages intact. As
-always, the logs report counts only, never chat ids or titles.
+always, the merge logs report counts only, never chat ids or titles.
 
 ## Viewer access after the merge
 

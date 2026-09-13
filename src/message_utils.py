@@ -8,8 +8,10 @@ import mimetypes
 import os
 import re
 import stat
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -789,6 +791,65 @@ def extract_webpage_preview(media: object) -> dict | None:
     return preview or None
 
 
+# Every host YouTube serves watch pages from. Matched as whole labels (exact
+# host, or a subdomain of one) so ``youtube.com.example.net`` and
+# ``notyoutube.com`` are NOT YouTube — a plain substring test would call both.
+_YOUTUBE_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "youtubekids.com",
+)
+
+
+def is_youtube_url(url: object) -> bool:
+    """True when ``url`` points at YouTube.
+
+    Telegram resolves ``WebPage.url`` to an absolute URL, but the archive also
+    stores the scheme-less ``display_url``, so a value with no scheme is
+    re-parsed as a network path rather than silently read as a bare path
+    (``urlsplit("youtube.com/watch")`` yields no hostname at all).
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        host = urlsplit(url).hostname
+        if host is None:
+            host = urlsplit("//" + url).hostname
+    except ValueError:
+        return False  # malformed IPv6 literal etc.
+    if not host:
+        return False
+    host = host.rstrip(".").lower()
+    return any(host == candidate or host.endswith("." + candidate) for candidate in _YOUTUBE_HOSTS)
+
+
+def is_youtube_preview_video(media: object) -> bool:
+    """True when ``media`` is a YouTube link preview carrying a VIDEO FILE.
+
+    Telegram attaches the playable file to its own link preview, so a posted
+    YouTube link archives like any other document — tens of megabytes per link,
+    duplicating bytes that still live at the URL (#440). There is no downloader
+    in this project; declining the attachment is the whole mechanism.
+
+    ``.document`` is the discriminator, and it is exact: a ``WebPage`` carries
+    either a ``.photo`` (the card thumbnail, tens of KB) or a ``.document`` (the
+    file), never both. Only the document side is gated, so the card keeps its
+    picture. Its database twin is ``media.mime_type IS NOT NULL``, which is
+    non-NULL exactly for document-backed rows because ``extract_media_attributes``
+    reads mime_type off ``.document`` — ``_cleanup_youtube_videos`` selects on
+    that, and the two must stay the same predicate.
+    """
+    if type(media).__name__ != "MessageMediaWebPage":
+        return False
+    webpage = getattr(media, "webpage", None)
+    if type(webpage).__name__ != "WebPage":
+        return False
+    if not getattr(webpage, "document", None):
+        return False
+    return is_youtube_url(getattr(webpage, "url", None))
+
+
 def describe_exception(exc: BaseException) -> str:
     """Exception detail that cannot smuggle a filesystem path into the logs.
 
@@ -810,6 +871,59 @@ def describe_exception(exc: BaseException) -> str:
     if isinstance(exc, OSError) or any(getattr(exc, attr, None) for attr in ("filename", "filename2", "cmd")):
         return type(exc).__name__
     return f"{type(exc).__name__}: {exc}"
+
+
+# The one place a chat title may reach a log line (#439), and the only thing the
+# PII guard exempts. Its NAME is what makes that possible: the guard's matcher
+# pairs a subject with a field, so "chat_title_for_log" is itself a violation and
+# the exemption for it has to be written down where a reviewer sees it. A blandly
+# named helper would need no exemption at all, which is the laundering hole the
+# guard's own docstring warns about.
+#
+# Categories replaced rather than deleted, so tampering reads as tampering:
+#   Cc  control characters - the newline that forges a whole second log record
+#       under "%(asctime)s - %(name)s - %(levelname)s - %(message)s", the CR that
+#       overwrites the rendered prefix, the ESC that starts an ANSI/OSC sequence
+#   Cf  format characters - RLO/LRO and the isolates that reverse what is read,
+#       zero-width joiners that hide a word break, the BOM
+#   Cs  surrogates - a lone one raises UnicodeEncodeError inside the handler and
+#       the whole record is dropped, so the title deletes its own evidence
+#   Zl/Zp line and paragraph separators - another way to end a line
+# Co (private use) and Cn (unassigned) are deliberately kept: neither can end a
+# line or drive a terminal, and stripping them would mangle ordinary titles.
+_LOG_TITLE_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+_LOG_TITLE_MAX_CHARS = 64
+
+
+def chat_title_for_log(entity, config) -> str:
+    """The chat's title as a log suffix, or "" unless the operator opted in.
+
+    Returns "" — today's exact line — unless ``LOG_CHAT_TITLES`` is literally
+    True. A private chat is named by KIND, never by the person: a telethon
+    ``User`` has no title, and the only stand-ins (first/last name, username,
+    phone) are the very attributes #272 removed from the logs.
+
+    Quoting is the delimiter, so the marker forms are deliberately unquoted:
+    ``: private chat`` is a kind, ``: "private chat"`` is a channel that chose
+    that title, and the two cannot be confused.
+    """
+    if getattr(config, "log_chat_titles", False) is not True:
+        return ""
+    # __class__, not type(): that is the attribute isinstance consults, and it is
+    # what a spec'd test double answers for. Same reasoning as service_action_type.
+    if entity.__class__.__name__ == "User":
+        return ": private chat"
+    title = getattr(entity, "title", None)
+    if not isinstance(title, str):
+        return ": untitled chat"
+    cleaned = unicodedata.normalize("NFC", title).replace('"', "'")
+    cleaned = "".join(" " if unicodedata.category(c) in _LOG_TITLE_UNSAFE_CATEGORIES else c for c in cleaned)
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return ": untitled chat"
+    if len(cleaned) > _LOG_TITLE_MAX_CHARS:
+        cleaned = cleaned[: _LOG_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return f': "{cleaned}"'
 
 
 def extract_topic_id(message: object) -> int | None:

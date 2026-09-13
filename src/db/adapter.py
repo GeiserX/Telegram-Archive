@@ -2375,6 +2375,121 @@ class DatabaseAdapter:
             await session.commit()
             return result.rowcount
 
+    async def get_webpage_preview_documents(self, *, account_id: int) -> list[dict[str, Any]]:
+        """One account's link-preview rows whose payload is a FILE, with the
+        preview URL the message recorded.
+
+        ``mime_type IS NOT NULL`` is the document-backed discriminator: it is
+        read off ``.document`` by ``extract_media_attributes``, so a card whose
+        preview was only a thumbnail (``.photo``) has it NULL. That keeps the
+        cheap thumbnails — tens of KB, and the card's picture — out of the
+        YouTube cleanup, which is only ever after the video files.
+
+        The URL is returned raw rather than matched in SQL: ``raw_data`` is a
+        TEXT column holding JSON, so a SQL match would need one dialect-specific
+        spelling for PostgreSQL and another for SQLite, and a second URL
+        predicate that could drift from ``is_youtube_url``.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(
+                    Media.id,
+                    Media.chat_id,
+                    Media.message_id,
+                    Media.file_path,
+                    Media.file_name,
+                    Media.file_size,
+                    Media.content_hash,
+                    Media.downloaded,
+                    Message.raw_data,
+                )
+                .join(
+                    Message,
+                    and_(
+                        Message.account_id == Media.account_id,
+                        Message.chat_id == Media.chat_id,
+                        Message.id == Media.message_id,
+                    ),
+                )
+                .where(
+                    and_(
+                        Media.account_id == account_id,
+                        Media.type == "webpage",
+                        Media.mime_type.isnot(None),
+                    )
+                )
+            )
+            rows = (await session.execute(stmt)).all()
+
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            url = None
+            if row.raw_data:
+                try:
+                    webpage = json.loads(row.raw_data).get("webpage")
+                except ValueError, TypeError:
+                    webpage = None
+                if isinstance(webpage, dict):
+                    url = webpage.get("url") or webpage.get("display_url")
+            records.append(
+                {
+                    "id": row.id,
+                    "chat_id": row.chat_id,
+                    "message_id": row.message_id,
+                    "file_path": row.file_path,
+                    "file_name": row.file_name,
+                    "file_size": row.file_size,
+                    "content_hash": row.content_hash,
+                    "downloaded": row.downloaded,
+                    "url": url,
+                }
+            )
+        return records
+
+    async def delete_media_records(self, media_ids: Collection[str], *, account_id: int) -> int:
+        """Delete specific media rows by id. Returns how many were removed.
+
+        A media id repeats across accounts (``{chat}_{msg}_{type}``), so the
+        account leads the predicate here exactly as it does in
+        ``increment_media_download_attempts``.
+        """
+        ids = list(media_ids)
+        if not ids:
+            return 0
+        deleted = 0
+        async with self.db_manager.async_session_factory() as session:
+            # Chunked: SQLite caps a statement at 999 bound parameters by default,
+            # and a large archive can exceed that in one cleanup pass.
+            for start in range(0, len(ids), 500):
+                stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(ids[start : start + 500])))
+                result = await session.execute(stmt)
+                deleted += result.rowcount or 0
+            await session.commit()
+        return deleted
+
+    async def count_media_by_content_hash(self, content_hashes: Collection[str]) -> dict[str, int]:
+        """How many media rows still reference each content hash, ALL accounts.
+
+        Deliberately not scoped to one account: the shared store is keyed by
+        (file_name, content_hash) with no account in the path, so a blob another
+        account's row points at must survive this account's cleanup.
+        """
+        hashes = [h for h in dict.fromkeys(content_hashes) if h]
+        if not hashes:
+            return {}
+        counts: dict[str, int] = {}
+        async with self.db_manager.async_session_factory() as session:
+            for start in range(0, len(hashes), 500):
+                chunk = hashes[start : start + 500]
+                stmt = (
+                    select(Media.content_hash, func.count())
+                    .where(Media.content_hash.in_(chunk))
+                    .group_by(Media.content_hash)
+                )
+                for content_hash, count in (await session.execute(stmt)).all():
+                    counts[content_hash] = count
+        return counts
+
     async def iter_media_for_verification(self, *, account_id: int, batch_size: int = 500):
         """Yield batches of one account's media records that should have files
         on disk (``downloaded=1`` OR ``file_path`` set). Used by VERIFY_MEDIA —
