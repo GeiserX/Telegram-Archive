@@ -21,40 +21,63 @@ from src.web.thumbnails import (
     _generate_video_sync,
     _is_image,
     _is_video,
-    _suppress_decompression_bomb_warning,
     _thumb_path,
     ensure_thumbnail,
 )
 
 
-class TestSuppressDecompressionBombWarning(unittest.TestCase):
-    """Test _suppress_decompression_bomb_warning suppresses only that one warning."""
+class TestDecompressionBombWarningFilter(unittest.TestCase):
+    """Test the module-level DecompressionBombWarning filter (registered once at
+    import time, not via warnings.catch_warnings() around each Image.open() call
+    -- see the comment above the filterwarnings() call in thumbnails.py for why
+    a per-call context manager isn't safe here: _generate_sync/_generate_video_sync
+    run concurrently in run_in_executor() worker threads, and catch_warnings()
+    mutates process-global filter state non-atomically across threads.
 
-    def test_suppresses_decompression_bomb_warning(self):
-        """A DecompressionBombWarning raised inside the block is silenced."""
+    pytest wraps every test in its own catch_warnings(), resetting the filter
+    list per test -- so these re-import the module inside a local
+    catch_warnings() block to exercise the actual registration, rather than
+    relying on the real (process-lifetime) side effect surviving that reset.
+    """
+
+    def _reimport_with_fresh_filters(self):
+        """Reset the filter list, then re-run thumbnails.py's module body."""
+        import importlib
+
+        import src.web.thumbnails as thumbnails_mod
+
+        warnings.resetwarnings()
+        importlib.reload(thumbnails_mod)
+        return thumbnails_mod
+
+    def test_a_matching_ignore_filter_is_registered(self):
+        """Importing the module registers a permanent ignore filter for exactly
+        Image.DecompressionBombWarning."""
+        with warnings.catch_warnings():
+            self._reimport_with_fresh_filters()
+            matches = [f for f in warnings.filters if f[0] == "ignore" and f[2] is Image.DecompressionBombWarning]
+            self.assertTrue(matches, "expected a permanent ignore filter for Image.DecompressionBombWarning")
+
+    def test_decompression_bomb_warning_is_suppressed_after_import(self):
+        """Without touching the filter list ourselves beyond importing the
+        module, the warning is silenced -- this is what every real
+        Image.open() call site actually relies on."""
         with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            with _suppress_decompression_bomb_warning():
-                warnings.warn("fake bomb", Image.DecompressionBombWarning, stacklevel=2)
+            self._reimport_with_fresh_filters()
+            warnings.warn("fake bomb", Image.DecompressionBombWarning, stacklevel=2)
             self.assertEqual(caught, [])
 
-    def test_does_not_suppress_other_warnings(self):
-        """A different warning category inside the block still surfaces."""
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            with _suppress_decompression_bomb_warning():
-                warnings.warn("unrelated", UserWarning, stacklevel=2)
-            self.assertEqual(len(caught), 1)
-            self.assertIs(caught[0].category, UserWarning)
-
-    def test_warning_resumes_after_context_exits(self):
-        """The suppression does not leak past the `with` block."""
-        with _suppress_decompression_bomb_warning():
-            pass
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            warnings.warn("still visible", Image.DecompressionBombWarning, stacklevel=2)
-            self.assertEqual(len(caught), 1)
+    def test_filter_is_scoped_to_decompression_bomb_warning_only(self):
+        """The registered filter's category is the specific warning class, not a
+        broad Warning/UserWarning catch-all that would hide unrelated warnings."""
+        with warnings.catch_warnings():
+            self._reimport_with_fresh_filters()
+            matches = [f for f in warnings.filters if f[0] == "ignore" and f[2] is Image.DecompressionBombWarning]
+            self.assertTrue(matches)
+            for f in matches:
+                self.assertIs(f[2], Image.DecompressionBombWarning)
+                self.assertNotEqual(f[2], Warning)
+                self.assertNotEqual(f[2], UserWarning)
 
 
 class TestIsImage(unittest.TestCase):

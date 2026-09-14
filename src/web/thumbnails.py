@@ -16,7 +16,6 @@ import subprocess
 import tempfile
 import time
 import warnings
-from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image
@@ -29,19 +28,23 @@ logger = logging.getLogger(__name__)
 # Limit decompression to prevent pixel-bomb OOM attacks (~50 megapixels)
 Image.MAX_IMAGE_PIXELS = 50_000_000
 
-
-@contextmanager
-def _suppress_decompression_bomb_warning():
-    """Pillow only *raises* past double Image.MAX_IMAGE_PIXELS (see the
-    comment below) -- everything up to 100 MP decodes fine but still warns.
-    The pixel gates around every Image.open() call in this module (and in
-    src/telegram_backup.py's thumbnail path) already bound real decode cost
-    for what gets through, so this warning is expected noise here, not a
-    signal -- silence just it, not the whole logger.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-        yield
+# Pillow only *raises* past double Image.MAX_IMAGE_PIXELS above -- everything
+# up to 100 MP decodes fine but still warns. The pixel gates around every
+# Image.open() call in this module (and in src/telegram_backup.py's thumbnail
+# path) already bound real decode cost for what gets through, so this warning
+# is expected noise here, not a signal.
+#
+# Registered once, here, at import time -- NOT via warnings.catch_warnings()
+# around each Image.open() call. catch_warnings() saves/restores the
+# *process-global* filter list, which is not thread-safe: _generate_sync and
+# _generate_video_sync below are explicitly meant to run concurrently in
+# run_in_executor() worker threads (see ensure_thumbnail's semaphore-gated
+# executor calls), and Python only makes warnings filters thread-local when
+# context-aware warnings are enabled (opt-in via PYTHON_CONTEXT_AWARE_WARNINGS,
+# not this repo's default) -- otherwise one thread's enter/exit can race
+# another's and either leak the warning through or suppress an unrelated one.
+# A filter added once, before any thread starts, has no such window.
+warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
 
 ALLOWED_SIZES: set[int] = {200, 400}
@@ -227,7 +230,7 @@ def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
                     break
             else:
                 return False
-            with _suppress_decompression_bomb_warning(), Image.open(tmp_path) as img:
+            with Image.open(tmp_path) as img:
                 _save_webp_atomic(img, dest)
             return True
         finally:
@@ -249,7 +252,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
             logger.warning("Source too large for thumbnail (%d bytes)", source.stat().st_size)
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with _suppress_decompression_bomb_warning(), Image.open(source) as img:
+        with Image.open(source) as img:
             # Image.open() parses only the header, so nothing is decoded yet.
             # draft() next: formats that support it (JPEG) decode thumbnails at
             # a reduced scale -- size * 2 asks for the same reduction that
