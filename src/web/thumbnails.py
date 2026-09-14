@@ -39,9 +39,9 @@ _MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 50 MB
 # caps how many decodes run at once, so peak thumbnail memory stays a small
 # multiple of one capped decode instead of growing with request count -- and
 # the cap still covers every Telegram-compressed photo and ordinary camera
-# image. The image lane compares this against the size Pillow will actually
-# decode (after draft(), see _generate_sync); the video lane passes it to
-# ffmpeg as -max_pixels so the decoder itself refuses an oversized frame.
+# image. The image lane compares this against the size the image header
+# declares, before draft() runs (see _generate_sync); the video lane passes it
+# to ffmpeg as -max_pixels so the decoder itself refuses an oversized frame.
 _MAX_SOURCE_PIXELS = 25_000_000
 
 _IMAGE_EXTENSIONS: set[str] = {f".{ext}" for ext in IMAGE_EXTENSIONS}
@@ -233,18 +233,18 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
-            # Image.open() parses only the header, so nothing is decoded yet.
-            # draft() next: formats that support it (JPEG) decode thumbnails at
-            # a reduced scale -- size * 2 asks for the same reduction that
-            # thumbnail()'s reducing_gap would -- so a 96 MP JPEG really costs
-            # ~1.5 MP and must not be refused for pixels it never decodes.
-            # Formats without draft support (PNG, BMP) keep their full size
-            # here, and those are exactly the decode bombs the gate is for.
-            img.draft(None, (size * 2, size * 2))
+            # Image.open() parses only the header, so nothing is decoded yet and
+            # img.size is the size the file declares. Gate on that, for every
+            # format, BEFORE draft(): draft() rewrites img.size to a reduced scale
+            # that not every JPEG actually decodes at, so the drafted size can
+            # understate what the decode really costs.
             pixels = img.size[0] * img.size[1]
             if pixels > _MAX_SOURCE_PIXELS:
                 logger.warning("Source too large for thumbnail (%d pixels)", pixels)
                 return False
+            # Under the cap, draft() still spares a baseline JPEG its full-size
+            # decode; size * 2 asks for the reduction thumbnail()'s reducing_gap would.
+            img.draft(None, (size * 2, size * 2))
             img.thumbnail((size, size), Image.LANCZOS)
             _save_webp_atomic(img, dest)
         return True
