@@ -246,11 +246,12 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
         with Image.open(source) as img:
             # Image.open() parses only the header, so the dimensions are known
             # before a single pixel is decoded -- refuse pixel bombs here, not
-            # after. JPEG is exempt: img.thumbnail() drafts JPEGs to decode at
-            # up to 1/8 scale so their cost stays bounded, and Image.open()
-            # itself refuses anything past twice Image.MAX_IMAGE_PIXELS.
+            # after, and for every format: img.thumbnail() drafts JPEGs to a
+            # reduced scale, but not every JPEG actually decodes at that scale,
+            # so exempting JPEG would let its full-size cost through. Same gate,
+            # same reason, as _generate_sync in src/web/thumbnails.py.
             pixels = img.size[0] * img.size[1]
-            if img.format != "JPEG" and pixels > _MAX_SOURCE_PIXELS:
+            if pixels > _MAX_SOURCE_PIXELS:
                 logger.debug("Thumbnail pre-generation refused oversized source (%d pixels)", pixels)
                 return
             img.thumbnail((200, 200), Image.LANCZOS)

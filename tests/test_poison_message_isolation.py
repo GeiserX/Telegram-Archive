@@ -16,6 +16,7 @@ for one attempt only while never leaving a ``.part`` file behind.
 """
 
 import asyncio
+import io
 import os
 import shutil
 import struct
@@ -573,6 +574,29 @@ class TestListenerMediaDownloadDiscipline(unittest.TestCase):
         self.assertEqual(listener.client.flood_sleep_threshold, 0)
 
 
+def _jpeg_declaring(width: int, height: int, *, progressive: bool = False) -> bytes:
+    """A tiny valid JPEG whose SOF marker declares ``width`` x ``height``.
+
+    The pixel gate reads the header, so this is all it needs to see. Nothing in
+    it is ever decoded unless the gate lets it through, which the decode spies
+    catch.
+    """
+    buf = io.BytesIO()
+    PILImage.new("RGB", (16, 16), (90, 40, 20)).save(buf, "JPEG", progressive=progressive)
+    data = bytearray(buf.getvalue())
+    i = 2  # past SOI
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            raise AssertionError("not at a JPEG marker")
+        marker, length = data[i + 1], (data[i + 2] << 8) | data[i + 3]
+        if marker in (0xC0, 0xC2):  # SOF0 baseline, SOF2 progressive
+            data[i + 5 : i + 7] = height.to_bytes(2, "big")
+            data[i + 7 : i + 9] = width.to_bytes(2, "big")
+            return bytes(data)
+        i += 2 + length
+    raise AssertionError("no SOF0/SOF2 marker found")
+
+
 class TestThumbnailPreGenerationHardening(unittest.TestCase):
     """The archiver-side thumbnail pass must survive hostile media it just fetched.
 
@@ -584,8 +608,8 @@ class TestThumbnailPreGenerationHardening(unittest.TestCase):
     save also streamed straight into the cache path, so a concurrent viewer --
     for which ``dest.exists()`` means "complete" -- could read and cache a torn
     file. These tests are the attack: the pixel bomb must be refused from the
-    header alone, a large JPEG (draft-decoded at up to 1/8 scale) must keep its
-    thumbnail, and the destination must never exist half-written.
+    header alone, JPEG included, and the destination must never exist
+    half-written.
     """
 
     @staticmethod
@@ -673,25 +697,32 @@ class TestThumbnailPreGenerationHardening(unittest.TestCase):
                 self.assertLessEqual(thumb.height, 200)
             self.assertEqual(list(dest.parent.glob(".thumb-*.tmp")), [])
 
-    def test_oversized_jpeg_keeps_its_thumbnail(self):
-        """The gate is format-aware: a 26 MP camera JPEG is over the pixel
-        threshold but safe, because ``img.thumbnail()`` drafts JPEG decoding
-        down to 1/8 scale. Refusing it would silently strip thumbnails from
-        every full-resolution camera upload.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            media_root = Path(tmpdir)
-            source = media_root / "chat1" / "camera.jpg"
-            source.parent.mkdir(parents=True)
-            self.assertGreater(6000 * 4400, _MAX_SOURCE_PIXELS)
-            PILImage.new("RGB", (6000, 4400), "green").save(source, "JPEG", quality=50)
+    def _assert_pregeneration_refuses_without_decoding(self, source: Path, media_root: Path) -> None:
+        decoded = []
+        real_load = ImageFile.ImageFile.load
 
+        def spying_load(img_self):
+            decoded.append(img_self.size)
+            return real_load(img_self)
+
+        with patch.object(ImageFile.ImageFile, "load", spying_load):
             _pre_generate_thumbnail(str(source), str(media_root))
 
-            dest = media_root / ".thumbs" / "200" / "chat1" / "camera.webp"
-            self.assertTrue(dest.exists())
-            with PILImage.open(dest) as thumb:
-                self.assertEqual(thumb.format, "WEBP")
+        self.assertFalse((media_root / ".thumbs" / "200" / "chat1" / source.with_suffix(".webp").name).exists())
+        self.assertEqual(decoded, [])
+
+    def test_oversized_jpeg_is_refused_from_its_header(self):
+        """JPEG gets no exemption: img.thumbnail() drafts it to a reduced scale,
+        but not every JPEG decodes at that scale, so over the budget it is
+        refused from the header like any other format, without a decode."""
+        for progressive in (False, True):
+            with self.subTest(progressive=progressive), tempfile.TemporaryDirectory() as tmpdir:
+                media_root = Path(tmpdir)
+                source = media_root / "chat1" / "camera.jpg"
+                source.parent.mkdir(parents=True)
+                self.assertGreater(6000 * 4400, _MAX_SOURCE_PIXELS)
+                source.write_bytes(_jpeg_declaring(6000, 4400, progressive=progressive))
+                self._assert_pregeneration_refuses_without_decoding(source, media_root)
 
     def test_thumbnail_is_written_via_temp_file_and_atomic_replace(self):
         """Pillow must never stream into the final cache path directly."""

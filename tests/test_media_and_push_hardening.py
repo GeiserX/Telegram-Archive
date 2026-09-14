@@ -9,15 +9,15 @@ Covers four audit findings:
 And two residuals found against the S23 gate:
 - the video lane trusted the sender-chosen filename, so a 96 MP still image
   renamed .mp4 bypassed the pixel gate and cost ffmpeg a full-size frame buffer
-- the gate read header pixels, refusing large JPEGs that draft() decodes
-  cheaply -- valid 96 MP JPEG documents 404ed for no memory benefit
+- a gate on the size draft() reports let JPEGs through that do not decode at
+  that reduced scale, so the image gate reads the header size, for every format
 
 The push half depends on py_vapid/pywebpush, which may be missing locally; a
 module-level guard skips those tests gracefully (they run on CI).
 """
 
 import asyncio
-import os
+import io
 import resource
 import shutil
 import struct
@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image as PILImage
+from PIL import ImageFile
 
 import src.web.thumbnails as thumbs
 from src.web.thumbnails import _MAX_SOURCE_PIXELS, _generate_sync, _generate_video_sync, ensure_thumbnail
@@ -537,74 +538,72 @@ class TestVideoLaneAgainstRealTools(unittest.TestCase):
 
 
 # ============================================================================
-# Residual 2 - the pixel gate must measure what Pillow will decode (draft()),
-# not what the header declares, or large valid JPEGs 404 for no benefit
+# Residual 2 - the image pixel gate reads the header size, for every format,
+# before draft() can rewrite it
 # ============================================================================
 
-# Runs _generate_sync in a fresh interpreter and reports its peak RSS. A child
-# process is the only honest gauge here: ru_maxrss is a high-water mark, so in
-# the test process the source image we just created would mask the decode.
-# The decode size is reported instead of ru_maxrss. On Linux a forked child
-# inherits the parent's ru_maxrss high-water mark, so the number would describe
-# the pytest process (suite + coverage + the source image built above) rather
-# than the decode: measured 609 MB for a child that really used 10 MB. The
-# post-draft dimensions are the mechanism that bounds the memory, and they are
-# deterministic on every platform, so they are what this asserts.
-_CHILD_DECODE_SCRIPT = """
-import sys
-from pathlib import Path
 
-from PIL import Image
+def _jpeg_declaring(width: int, height: int, *, progressive: bool = False) -> bytes:
+    """A tiny valid JPEG whose SOF marker declares ``width`` x ``height``.
 
-from src.web.thumbnails import _generate_sync
-
-# Mirror the draft() call _generate_sync makes, to observe what it decodes.
-with Image.open(sys.argv[1]) as probe:
-    probe.draft(None, (400, 400))
-    drafted = probe.size[0] * probe.size[1]
-
-ok = _generate_sync(Path(sys.argv[1]), Path(sys.argv[2]), 200)
-print(int(ok), drafted)
-"""
-
-_REPO_ROOT = Path(thumbs.__file__).resolve().parents[2]
+    The pixel gate reads the header, so this is all it needs to see. Nothing in
+    it is ever decoded unless the gate lets it through, which the decode spies
+    catch.
+    """
+    buf = io.BytesIO()
+    PILImage.new("RGB", (16, 16), (90, 40, 20)).save(buf, "JPEG", progressive=progressive)
+    data = bytearray(buf.getvalue())
+    i = 2  # past SOI
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            raise AssertionError("not at a JPEG marker")
+        marker, length = data[i + 1], (data[i + 2] << 8) | data[i + 3]
+        if marker in (0xC0, 0xC2):  # SOF0 baseline, SOF2 progressive
+            data[i + 5 : i + 7] = height.to_bytes(2, "big")
+            data[i + 7 : i + 9] = width.to_bytes(2, "big")
+            return bytes(data)
+        i += 2 + length
+    raise AssertionError("no SOF0/SOF2 marker found")
 
 
-class TestDraftAwarePixelGate(unittest.TestCase):
-    """96 MP JPEG -> thumbnail (draft decodes ~1.5 MP); 96 MP PNG -> refused."""
+class TestHeaderPixelGate(unittest.TestCase):
+    """A JPEG over the budget is refused from its header, like any other format."""
 
-    def test_large_valid_jpeg_still_thumbnails_in_bounded_memory(self):
-        """A 96 MP JPEG drafts down to a ~1.5 MP decode and must not 404."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source = Path(tmpdir) / "document.jpg"
-            page = PILImage.new("RGB", (12000, 8000), (40, 90, 130))
-            page.save(source, "JPEG", quality=60)
-            del page
-            dest = Path(tmpdir) / "thumbs" / "document.webp"
+    def _assert_refused_without_decoding(self, source: Path) -> None:
+        dest = source.parent / "out.webp"
+        decodes = []
+        # Spy on the decoder's own load: JpegImageFile.load resolves to
+        # ImageFile.load, so a spy on Image.load alone would depend on Pillow
+        # calling it along the way.
+        real_load = ImageFile.ImageFile.load
 
-            child = subprocess.run(
-                [sys.executable, "-c", _CHILD_DECODE_SCRIPT, str(source), str(dest)],
-                capture_output=True,
-                timeout=120,
-                cwd=_REPO_ROOT,
-                env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
-            )
-            self.assertEqual(child.returncode, 0, "decode child crashed")
-            ok_flag, drafted = child.stdout.split()
+        def spy_load(img_self, *args, **kwargs):
+            decodes.append(1)
+            return real_load(img_self, *args, **kwargs)
 
-            self.assertEqual(int(ok_flag), 1, "a 96 MP JPEG was refused; the gate ignored draft()")
-            self.assertTrue(dest.exists())
-            with PILImage.open(dest) as img:
-                self.assertEqual(img.format, "WEBP")
-                self.assertLessEqual(max(img.size), 200)
-            # 96 MP on disk, but draft() hands the decoder a fraction of that.
-            # If draft() ever stops applying, this is what regresses first --
-            # and the gate would then refuse the file, failing the check above.
-            self.assertLess(
-                int(drafted),
-                thumbs._MAX_SOURCE_PIXELS,
-                f"draft() decoded {int(drafted)} pixels; it was not applied before decoding",
-            )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with patch.object(ImageFile.ImageFile, "load", spy_load):
+                ok = _generate_sync(source, dest, 200)
+
+        self.assertFalse(ok)
+        self.assertFalse(dest.exists())
+        self.assertEqual(decodes, [], "an oversized JPEG was decoded before being refused")
+
+    def test_oversized_jpeg_is_refused_from_its_header(self):
+        """draft() would report a fraction of these pixels, and not every JPEG
+        decodes at the drafted scale, so the gate must not wait for it. 96 MP
+        sits past Pillow's warning threshold, 26.4 MP under it, both over ours."""
+        for progressive in (False, True):
+            for width, height in ((12000, 8000), (6000, 4400)):
+                with (
+                    self.subTest(progressive=progressive, size=(width, height)),
+                    tempfile.TemporaryDirectory() as tmpdir,
+                ):
+                    self.assertGreater(width * height, _MAX_SOURCE_PIXELS)
+                    source = Path(tmpdir) / "document.jpg"
+                    source.write_bytes(_jpeg_declaring(width, height, progressive=progressive))
+                    self._assert_refused_without_decoding(source)
 
     def test_decodable_png_bomb_of_the_same_size_is_still_refused(self):
         """The same 96 MP as a real PNG has no draft path and stays refused,
