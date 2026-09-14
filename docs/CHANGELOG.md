@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.11.0] - 2026-09-14
+
+A Telegram folder can now decide which chats get backed up, and thumbnails hold their size limit for JPEGs too.
+
+### Added
+
+- **A Telegram folder can drive the backup.** `GLOBAL_INCLUDE_FOLDER_IDS`, `PRIVATE_INCLUDE_FOLDER_IDS`, `GROUPS_INCLUDE_FOLDER_IDS` and `CHANNELS_INCLUDE_FOLDER_IDS` take folder ids. Each scheduled backup reads those folders' current chats from Telegram before it starts, one request per account, so adding a chat to the folder in any Telegram app brings it into the next run and removing it leaves it out. A folder behaves like the matching `*_INCLUDE_CHAT_IDS` list and adds to it: once either is set, only the chats they name are backed up for that chat type, or for every type with `GLOBAL_`. A folder that has not been read yet admits nothing, so a failed first lookup never widens the backup to every chat, and a failed later refresh keeps the chats it last read. Whitelist mode (`CHAT_IDS`) ignores all four. Contributed by [@jordanfelle](https://github.com/jordanfelle) in [#448](https://github.com/GeiserX/Telegram-Archive/pull/448).
+
+### Fixed
+
+- **Thumbnails hold their 25 MP limit for JPEGs too.** Thumbnail generation refuses any image above 25 megapixels, but JPEGs got past that check. The viewer measured a JPEG only after asking Pillow for a reduced decode, which changes the size it reports, and the backup's thumbnail pre-generation skipped the check for JPEGs altogether. A progressive JPEG still decodes at full size, so one file declaring a very large image could cost hundreds of megabytes of memory for a single thumbnail. Both now check the size the file declares before anything is decoded. ([#450](https://github.com/GeiserX/Telegram-Archive/pull/450))
+
+### Note
+
+Folder ids belong to one Telegram account, because every account numbers its folders separately. With several accounts, set the variables per account, as `TG_ACCOUNT_<N>_GROUPS_INCLUDE_FOLDER_IDS` and so on. An unprefixed folder variable that two or more accounts would inherit is refused at startup, with an error naming the per-account form to use. To find a folder's id, run `SELECT account_id, id, title FROM chat_folders;` on the archive database.
+
+A JPEG sent as a file that declares more than 25 MP now gets no thumbnail. The message info panel shows the original file instead, and the media gallery shows an image icon. Photos are unaffected, since Telegram shrinks them to at most 2560 pixels on a side, and thumbnails already in the cache keep being served.
+
 ## [8.10.1] - 2026-09-13
 
 The media retry stops wasting its turns, and voice notes stop appearing twice.
