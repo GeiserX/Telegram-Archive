@@ -4544,7 +4544,7 @@ class TelegramBackup:
             me = await call_with_flood_retry(self.client.get_me)
             return me.id if me is not None else None
         except Exception as e:
-            logger.warning(f"Could not resolve own id for folder resolution: {e}")
+            logger.warning(f"Could not resolve own id for folder resolution: {describe_exception(e)}")
             return None
 
     async def _sync_folder_include_filters(self) -> None:
@@ -4554,8 +4554,9 @@ class TelegramBackup:
         filtering pass that decides what gets backed up - so a chat someone
         drops into a configured folder in the Telegram app shows up in the
         archive starting the very next scheduled run, no config edit needed.
-        No-ops entirely (skips the API call) when no *_INCLUDE_FOLDER_IDS var is
-        set, so accounts not using this feature see no extra traffic.
+        No-ops entirely (skips the API call) in whitelist mode, which ignores folder
+        ids, and when no *_INCLUDE_FOLDER_IDS var is set, so accounts not using
+        this feature see no extra traffic.
 
         Deliberately independent of _backup_folders(): that method runs near
         the END of backup_all (after the dialog loop, for display/metadata
@@ -4564,7 +4565,7 @@ class TelegramBackup:
         decisions. The extra GetDialogFiltersRequest call this duplicates is
         the accepted cost of keeping the two features decoupled.
         """
-        if not self.config.has_folder_include_filters:
+        if self.config.whitelist_mode or not self.config.has_folder_include_filters:
             return
         try:
             from telethon.tl.functions.messages import GetDialogFiltersRequest
@@ -4596,12 +4597,30 @@ class TelegramBackup:
                 group_ids=resolve_include_folder_chat_ids(folders, self.config.groups_include_folder_ids),
                 channel_ids=resolve_include_folder_chat_ids(folders, self.config.channels_include_folder_ids),
             )
+            configured = (
+                set(self.config.global_include_folder_ids)
+                | set(self.config.private_include_folder_ids)
+                | set(self.config.groups_include_folder_ids)
+                | set(self.config.channels_include_folder_ids)
+            )
+            missing = configured - {folder.folder_id for folder in folders}
+            if missing:
+                # Count only. The filters stay allow-lists, so a mistyped or deleted
+                # folder admits nothing extra; say so instead of letting a chat
+                # type go quiet with no explanation.
+                logger.warning(
+                    f"{len(missing)} configured include folder id(s) are not among this account's Telegram "
+                    "folders; no chats are admitted through them"
+                )
             logger.debug(f"Resolved {len(folders)} Telegram folder(s) for *_INCLUDE_FOLDER_IDS filtering")
         except Exception as e:
-            # Best-effort: keep last cycle's resolved ids rather than blank the
-            # filter (which would silently stop backing up those chats) or
-            # abort the whole run over a folder-list hiccup.
-            logger.warning(f"Failed to refresh folder-based include filters this cycle, keeping previous values: {e}")
+            # Best-effort: the account's shared membership keeps its last successful
+            # refresh (none yet means the folder filters admit nothing extra), and a
+            # folder-list hiccup never aborts the run.
+            logger.warning(
+                "Could not refresh folder-based include filters this cycle, keeping the last resolved "
+                f"membership: {describe_exception(e)}"
+            )
 
     async def _backup_folders(self) -> int:
         """

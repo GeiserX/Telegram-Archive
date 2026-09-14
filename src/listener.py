@@ -783,12 +783,10 @@ class TelegramListener:
             return self.config.should_backup_chat(chat_id, bool(is_user), bool(is_group), bool(is_channel))
 
         # Without type info (edits/deletions/pins/reactions), stay
-        # conservative: only explicit include-list membership matches. Folder-
-        # resolved ids are included too, though in practice the listener's own
-        # config never has any: only TelegramBackup._sync_folder_include_filters
-        # refreshes them, so a brand-new chat dropped into a configured folder
-        # is only live-captured once the next scheduled backup_all() cycle has
-        # run (this check stays correct if that ever changes).
+        # conservative: only explicit include-list membership matches, folder
+        # membership included. This view reads the same per-account
+        # FolderIncludeSnapshot the scheduled backup refreshes, so a chat dropped
+        # into a configured folder is live-captured once a cycle has resolved it.
         if chat_id in self.config.global_include_ids or chat_id in self.config.global_include_folder_chat_ids:
             return True
         if chat_id in self.config.private_include_ids or chat_id in self.config.private_include_folder_chat_ids:

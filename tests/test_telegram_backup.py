@@ -2187,6 +2187,7 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         self.backup = TelegramBackup.__new__(TelegramBackup)
         self.backup.client = AsyncMock()
         self.backup.config = MagicMock()
+        self.backup.config.whitelist_mode = False  # a bare MagicMock attribute reads truthy
 
     def _run(self, coro):
         loop = asyncio.new_event_loop()
@@ -2302,6 +2303,90 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         self._run(self.backup._sync_folder_include_filters())
 
         self.backup.config.update_folder_resolved_chat_ids.assert_not_called()
+
+    def test_whitelist_mode_skips_the_folder_fetch(self):
+        """CHAT_IDS decides by chat id alone and ignores folder ids, so resolving
+        them would only spend Telegram requests."""
+        self.backup.config.whitelist_mode = True
+        self.backup.config.has_folder_include_filters = True
+
+        self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.client.assert_not_called()
+        self.backup.config.update_folder_resolved_chat_ids.assert_not_called()
+
+    def _folder(self, folder_id, channel_ids=()):
+        from telethon.tl.types import DialogFilter, InputPeerChannel
+
+        folder = MagicMock(spec=DialogFilter)
+        folder.id = folder_id
+        folder.pinned_peers = []
+        folder.include_peers = [InputPeerChannel(channel_id=channel_id, access_hash=0) for channel_id in channel_ids]
+        return folder
+
+    def _configure_groups_folders(self, folder_ids):
+        self.backup.config.has_folder_include_filters = True
+        self.backup.config.global_include_folder_ids = set()
+        self.backup.config.private_include_folder_ids = set()
+        self.backup.config.groups_include_folder_ids = set(folder_ids)
+        self.backup.config.channels_include_folder_ids = set()
+        self.backup._get_own_id = AsyncMock(return_value=None)
+
+    def test_warns_with_only_a_count_when_a_configured_folder_is_missing(self):
+        """A mistyped or deleted folder admits nothing extra, so say how many
+        configured ids were not found; never the ids themselves."""
+        self._configure_groups_folders({28, 99})
+        self.backup.client.return_value = MagicMock(filters=[self._folder(28, [555])])
+
+        with self.assertLogs("src.telegram_backup", level="WARNING") as logs:
+            self._run(self.backup._sync_folder_include_filters())
+
+        warning = " ".join(logs.output)
+        self.assertIn("1 configured include folder id(s)", warning)
+        self.assertNotIn("99", warning)
+        self.assertNotIn("28", warning)
+
+    def test_skips_the_default_all_chats_entry(self):
+        """The "All chats" entry is a DialogFilterDefault with no id or peers: it
+        is skipped, and the real folder beside it still resolves."""
+        from telethon.tl.types import DialogFilterDefault
+
+        self._configure_groups_folders({28})
+        self.backup.client.return_value = MagicMock(filters=[DialogFilterDefault(), self._folder(28, [555])])
+
+        self._run(self.backup._sync_folder_include_filters())
+
+        _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
+        self.assertEqual(kwargs["group_ids"], {-1000000000555})
+
+    def test_failed_refresh_keeps_the_last_membership_for_every_view(self):
+        """Through real per-account views: a successful refresh reaches a view
+        built later, as the listener's is, and a failed one does not wipe it."""
+        import os
+
+        from src.config import Config
+
+        env = {
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "hash/test-value",
+            "TELEGRAM_PHONE": "+10000000000",
+            "GROUPS_INCLUDE_FOLDER_IDS": "28",
+        }
+        with unittest.mock.patch("os.makedirs"), unittest.mock.patch.dict(os.environ, env, clear=True):
+            config = Config()
+        self.backup._get_own_id = AsyncMock(return_value=None)
+
+        self.backup.config = config.for_account(1)
+        self.backup.client.return_value = MagicMock(filters=[self._folder(28, [555])])
+        self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.config = config.for_account(1)  # the next cycle's view
+        self.backup.client.side_effect = Exception("flood wait or similar")
+        self._run(self.backup._sync_folder_include_filters())
+
+        listener_view = config.for_account(1)
+        self.assertTrue(listener_view.should_backup_chat(-1000000000555, False, True, False))
+        self.assertFalse(listener_view.should_backup_chat(-1000000000999, False, True, False))
 
 
 class TestBackupDialogCursorAdvancesOnSkippedMessages(unittest.TestCase):
