@@ -1126,7 +1126,7 @@ class TelegramBackup:
 
             # Refresh *_INCLUDE_FOLDER_IDS membership before any filtering
             # decision below reads it (no-ops when the feature is unused).
-            await self._sync_folder_include_filters()
+            await self._sync_folder_include_filters(me.id)
 
             # Whitelist mode: skip expensive get_dialogs() and fetch only the
             # specified chats directly.  For accounts with many dialogs the full
@@ -4547,7 +4547,7 @@ class TelegramBackup:
             logger.warning(f"Could not resolve own id for folder resolution: {describe_exception(e)}")
             return None
 
-    async def _sync_folder_include_filters(self) -> None:
+    async def _sync_folder_include_filters(self, own_id: int | None = None) -> None:
         """Refresh the live folder-membership snapshot behind *_INCLUDE_FOLDER_IDS.
 
         Runs once near the start of every backup_all() cycle, before the dialog
@@ -4571,7 +4571,10 @@ class TelegramBackup:
             from telethon.tl.functions.messages import GetDialogFiltersRequest
             from telethon.tl.types import DialogFilter, DialogFilterChatlist
 
-            own_id = await self._get_own_id()
+            # backup_all passes the id it already resolved, so a pinned Saved
+            # Messages entry does not depend on a second get_me succeeding.
+            if own_id is None:
+                own_id = await self._get_own_id()
             result = await call_with_flood_retry(self.client, GetDialogFiltersRequest())
             raw_filters = result.filters if hasattr(result, "filters") else result
 

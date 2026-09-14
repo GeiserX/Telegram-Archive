@@ -2359,6 +2359,31 @@ class TestSyncFolderIncludeFilters(unittest.TestCase):
         _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
         self.assertEqual(kwargs["group_ids"], {-1000000000555})
 
+    def test_uses_the_own_id_backup_all_already_resolved(self):
+        """A pinned Saved Messages entry resolves to the id backup_all passes in,
+        with no second own-id lookup that could fail."""
+        from telethon.tl.types import DialogFilter, InputPeerSelf
+
+        self._configure_groups_folders(set())
+        self.backup.config.private_include_folder_ids = {28}
+        self.backup._get_own_id = AsyncMock(side_effect=AssertionError("own id looked up again"))
+        folder = MagicMock(spec=DialogFilter)
+        folder.id = 28
+        folder.pinned_peers = [InputPeerSelf()]
+        folder.include_peers = []
+        self.backup.client.return_value = MagicMock(filters=[folder])
+
+        self._run(self.backup._sync_folder_include_filters(777))
+
+        self.backup._get_own_id.assert_not_awaited()
+        _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
+        self.assertEqual(kwargs["private_ids"], {777})
+
+    def test_backup_all_hands_its_own_id_to_the_folder_refresh(self):
+        import inspect
+
+        self.assertIn("await self._sync_folder_include_filters(me.id)", inspect.getsource(TelegramBackup.backup_all))
+
     def test_failed_refresh_keeps_the_last_membership_for_every_view(self):
         """Through real per-account views: a successful refresh reaches a view
         built later, as the listener's is, and a failed one does not wipe it."""
