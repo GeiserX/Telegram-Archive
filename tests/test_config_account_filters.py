@@ -41,6 +41,10 @@ _ID_LIST_SUFFIXES = {
     "CHANNELS_EXCLUDE_CHAT_IDS": ("CHANNELS_EXCLUDE_CHAT_IDS", "channels_exclude_ids"),
     "PRIORITY_CHAT_IDS": ("PRIORITY_CHAT_IDS", "priority_chat_ids"),
     "SKIP_MEDIA_CHAT_IDS": ("SKIP_MEDIA_CHAT_IDS", "skip_media_chat_ids"),
+    "INCLUDE_FOLDER_IDS": ("GLOBAL_INCLUDE_FOLDER_IDS", "global_include_folder_ids"),
+    "PRIVATE_INCLUDE_FOLDER_IDS": ("PRIVATE_INCLUDE_FOLDER_IDS", "private_include_folder_ids"),
+    "GROUPS_INCLUDE_FOLDER_IDS": ("GROUPS_INCLUDE_FOLDER_IDS", "groups_include_folder_ids"),
+    "CHANNELS_INCLUDE_FOLDER_IDS": ("CHANNELS_INCLUDE_FOLDER_IDS", "channels_include_folder_ids"),
 }
 
 

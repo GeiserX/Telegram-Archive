@@ -1309,6 +1309,103 @@ class TestShouldBackupChatFiltering(unittest.TestCase):
             self.assertFalse(config.should_backup_chat(3, is_user=False, is_group=False, is_channel=True))
 
 
+class TestFolderIncludeFiltering(unittest.TestCase):
+    """*_INCLUDE_FOLDER_IDS: env parsing, has_folder_include_filters gating,
+    and the live-resolved snapshot merging additively into should_backup_chat
+    (v8.11.0)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_folder_ids_default_empty_and_no_filters_flag(self):
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.groups_include_folder_ids, set())
+            self.assertFalse(config.has_folder_include_filters)
+
+    def test_groups_include_folder_ids_parsed(self):
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "GROUPS_INCLUDE_FOLDER_IDS": "28,5"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.groups_include_folder_ids, {28, 5})
+            self.assertTrue(config.has_folder_include_filters)
+
+    def test_global_include_folder_ids_accepts_legacy_alias(self):
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "INCLUDE_FOLDER_IDS": "28"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertEqual(config.global_include_folder_ids, {28})
+
+    def test_unresolved_folder_filters_admit_nothing(self):
+        """Before any cycle resolves the folder, the snapshot is empty - the
+        configured chat stays out until _sync_folder_include_filters runs."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "GROUPS_INCLUDE_FOLDER_IDS": "28"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.should_backup_chat(-100500, is_user=False, is_group=True, is_channel=False))
+
+    def test_resolved_folder_chat_ids_admit_group_chat(self):
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "GROUPS_INCLUDE_FOLDER_IDS": "28"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            config.update_folder_resolved_chat_ids(group_ids={-100500})
+            self.assertTrue(config.should_backup_chat(-100500, is_user=False, is_group=True, is_channel=False))
+            self.assertFalse(config.should_backup_chat(-100999, is_user=False, is_group=True, is_channel=False))
+
+    def test_resolved_folder_ids_are_additive_with_static_include_list(self):
+        """A folder-resolved id and a statically-configured GROUPS_INCLUDE_CHAT_IDS
+        id both pass - neither list narrows the other."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "GROUPS_INCLUDE_CHAT_IDS": "-100111",
+            "GROUPS_INCLUDE_FOLDER_IDS": "28",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            config.update_folder_resolved_chat_ids(group_ids={-100500})
+            self.assertTrue(config.should_backup_chat(-100111, is_user=False, is_group=True, is_channel=False))
+            self.assertTrue(config.should_backup_chat(-100500, is_user=False, is_group=True, is_channel=False))
+            self.assertFalse(config.should_backup_chat(-100999, is_user=False, is_group=True, is_channel=False))
+
+    def test_folder_resolution_is_type_scoped(self):
+        """A folder-resolved id filed under groups doesn't leak into channels."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "GROUPS_INCLUDE_FOLDER_IDS": "28"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            config.update_folder_resolved_chat_ids(group_ids={-100500})
+            self.assertFalse(config.should_backup_chat(-100500, is_user=False, is_group=False, is_channel=True))
+
+    def test_whitelist_mode_ignores_folder_filters(self):
+        """CHAT_IDS whitelist mode still takes absolute priority over folder ids."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "CHAT_IDS": "1",
+            "GROUPS_INCLUDE_FOLDER_IDS": "28",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            config.update_folder_resolved_chat_ids(group_ids={-100500})
+            self.assertFalse(config.should_backup_chat(-100500, is_user=False, is_group=True, is_channel=False))
+
+    def test_global_exclude_still_overrides_folder_include(self):
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "GLOBAL_EXCLUDE_CHAT_IDS": "-100500",
+            "GROUPS_INCLUDE_FOLDER_IDS": "28",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            config.update_folder_resolved_chat_ids(group_ids={-100500})
+            self.assertFalse(config.should_backup_chat(-100500, is_user=False, is_group=True, is_channel=False))
+
+
 class TestGetMaxMediaSizeBytes(unittest.TestCase):
     """Test get_max_media_size_bytes conversion (line 574)."""
 

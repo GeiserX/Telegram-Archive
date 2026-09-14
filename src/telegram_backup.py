@@ -48,7 +48,13 @@ from .avatar_utils import get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
-from .folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
+from .folder_utils import (
+    FolderChat,
+    FolderPeers,
+    FolderRules,
+    resolve_folder_member_ids,
+    resolve_include_folder_chat_ids,
+)
 from .media_errors import is_media_location_error
 from .message_utils import (
     METADATA_ONLY_MEDIA_TYPES,
@@ -1117,6 +1123,10 @@ class TelegramBackup:
                 # MagicMock configs in tests land here too; normalization is
                 # strictly best-effort and must never block a backup.
                 logger.debug("Filter id normalization skipped: %s", type(e).__name__)
+
+            # Refresh *_INCLUDE_FOLDER_IDS membership before any filtering
+            # decision below reads it (no-ops when the feature is unused).
+            await self._sync_folder_include_filters()
 
             # Whitelist mode: skip expensive get_dialogs() and fetch only the
             # specified chats directly.  For accounts with many dialogs the full
@@ -4536,6 +4546,54 @@ class TelegramBackup:
         except Exception as e:
             logger.warning(f"Could not resolve own id for folder resolution: {e}")
             return None
+
+    async def _sync_folder_include_filters(self) -> None:
+        """Refresh the live folder-membership snapshot behind *_INCLUDE_FOLDER_IDS.
+
+        Runs once near the start of every backup_all() cycle, before the dialog
+        filtering pass that decides what gets backed up - so a chat someone
+        drops into a configured folder in the Telegram app shows up in the
+        archive starting the very next scheduled run, no config edit needed.
+        No-ops entirely (skips the API call) when no *_INCLUDE_FOLDER_IDS var is
+        set, so accounts not using this feature see no extra traffic.
+
+        Deliberately independent of _backup_folders(): that method runs near
+        the END of backup_all (after the dialog loop, for display/metadata
+        persistence only) and only persists membership for chats already
+        archived - too late, and too narrow, to drive this run's own filtering
+        decisions. The extra GetDialogFiltersRequest call this duplicates is
+        the accepted cost of keeping the two features decoupled.
+        """
+        if not self.config.has_folder_include_filters:
+            return
+        try:
+            from telethon.tl.functions.messages import GetDialogFiltersRequest
+            from telethon.tl.types import DialogFilter
+
+            result = await call_with_flood_retry(self.client, GetDialogFiltersRequest())
+            raw_filters = result.filters if hasattr(result, "filters") else result
+
+            folders = [
+                FolderPeers(
+                    folder_id=f.id,
+                    peer_ids=frozenset(get_peer_id(p) for p in (*f.pinned_peers, *f.include_peers)),
+                )
+                for f in raw_filters
+                if isinstance(f, DialogFilter)
+            ]
+
+            self.config.update_folder_resolved_chat_ids(
+                global_ids=resolve_include_folder_chat_ids(folders, self.config.global_include_folder_ids),
+                private_ids=resolve_include_folder_chat_ids(folders, self.config.private_include_folder_ids),
+                group_ids=resolve_include_folder_chat_ids(folders, self.config.groups_include_folder_ids),
+                channel_ids=resolve_include_folder_chat_ids(folders, self.config.channels_include_folder_ids),
+            )
+            logger.debug(f"Resolved {len(folders)} Telegram folder(s) for *_INCLUDE_FOLDER_IDS filtering")
+        except Exception as e:
+            # Best-effort: keep last cycle's resolved ids rather than blank the
+            # filter (which would silently stop backing up those chats) or
+            # abort the whole run over a folder-list hiccup.
+            logger.warning(f"Failed to refresh folder-based include filters this cycle, keeping previous values: {e}")
 
     async def _backup_folders(self) -> int:
         """

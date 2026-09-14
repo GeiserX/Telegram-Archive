@@ -307,6 +307,10 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `GROUPS_INCLUDE_CHAT_IDS` | - | B | Force-include specific groups |
 | `CHANNELS_EXCLUDE_CHAT_IDS` | - | B | Exclude specific channels |
 | `CHANNELS_INCLUDE_CHAT_IDS` | - | B | Force-include specific channels |
+| `GLOBAL_INCLUDE_FOLDER_IDS` | - | B | Force-include every chat in this Telegram folder, across all types |
+| `PRIVATE_INCLUDE_FOLDER_IDS` | - | B | Force-include this folder's private chats |
+| `GROUPS_INCLUDE_FOLDER_IDS` | - | B | Force-include this folder's groups |
+| `CHANNELS_INCLUDE_FOLDER_IDS` | - | B | Force-include this folder's channels. See [Folder-based include](#folder-based-include) |
 | `FOLLOW_CHAT_MIGRATIONS` | `false` | B | Automatically adopt the new supergroup id when a tracked basic group is upgraded to a supergroup, so capture continues without editing include lists. When off, the sweep only warns. See [Group → supergroup migrations](#group--supergroup-migrations) |
 | **Real-time Listener** | | | See [Real-time Listener](#real-time-listener) below |
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
@@ -543,6 +547,18 @@ When a basic Telegram group is upgraded to a supergroup (adding admins, joining 
 **Always on — the warning.** Every scheduled backup checks whether any tracked group has migrated to a supergroup that is not in scope and logs a count-only warning, for example: `1 tracked group(s) migrated to a supergroup not in scope; capture stops for them until you add the new id to GROUPS_INCLUDE_CHAT_IDS or enable FOLLOW_CHAT_MIGRATIONS`. The warning repeats every run until you act, and never includes chat ids, titles, or message content. Chat ids and message content are never logged anywhere in this project; a chat title appears only on the two per-chat progress lines, and only if you set `LOG_CHAT_TITLES=true`. Detection works both live (the migrated group is still visible in the dialog list) and after the fact (a stored migration marker), so migrations that happened while the archiver was offline are still caught.
 
 **Opt-in — follow the migration.** Set `FOLLOW_CHAT_MIGRATIONS=true` and the archiver adopts the new supergroup id automatically: it is remembered across runs and merged into the effective backup scope (so the sweep captures the supergroup even if it is not in your include lists) and into the listener's real-time tracking. The newly adopted supergroup is backed up in the same run it is discovered. Following is additive and idempotent — a supergroup you had already added to `GROUPS_INCLUDE_CHAT_IDS` is unaffected, and one you have explicitly excluded is left alone. When the flag is off nothing is persisted; only the warning fires.
+
+### Folder-based include
+
+`GLOBAL_INCLUDE_FOLDER_IDS` / `PRIVATE_INCLUDE_FOLDER_IDS` / `GROUPS_INCLUDE_FOLDER_IDS` / `CHANNELS_INCLUDE_FOLDER_IDS` let a Telegram folder (dialog filter) drive which chats get backed up, instead of maintaining a static id list by hand. Set one to a folder id (comma-separated for more than one) and every chat currently in that folder — of the matching type — is backed up, additive alongside the `*_INCLUDE_CHAT_IDS` lists.
+
+The folder's membership is re-checked live at the start of every scheduled backup cycle (one extra `GetDialogFiltersRequest` call, only made when at least one of these variables is set), so dropping a new chat into the folder in the Telegram app gets it backed up starting the *next* scheduled run — no config edit or restart. A chat removed from the folder (with no other include rule keeping it in scope) stops being backed up on the following cycle the same way.
+
+Two things worth knowing before relying on this:
+
+* **Explicit membership only.** Telegram folders can also be built from category toggles ("all groups", "non-contacts", "unmuted", etc.) instead of, or in addition to, a picked chat list. Only the folder's explicitly pinned/included chats are honored here — the category flags can't be evaluated at this point in the pipeline, because whether a not-yet-archived chat matches "groups" or "non-contacts" is exactly the thing this filtering pass is trying to decide, and there is no archived-chat record yet to check it against. (The existing per-chat folder metadata sync, which powers the *viewer's* folder view for chats you've already archived, does resolve category flags — that's a different, downstream question with different information available. See `src/folder_utils.py` for both.) Add chats to the folder explicitly if you want them picked up here.
+* **A folder id, not a name.** Telegram's own UI never surfaces a folder's numeric id. Find it via the archive database's `chat_folders` table (or the viewer, if it exposes folder ids) after at least one backup has run with the folder visible to the account.
+* **Real-time listener limitation.** New-dialog detection in the real-time listener (`ENABLE_LISTENER=true`) does not itself re-check folder membership — only the scheduled `backup_all()` cycle refreshes it. A chat added to a configured folder while the listener is running starts flowing live once the next scheduled backup has resolved it into scope; it is not picked up mid-cycle by the listener alone.
 
 ### Mass Operation Protection
 
