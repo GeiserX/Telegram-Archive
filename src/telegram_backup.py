@@ -196,6 +196,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
             _VIDEO_EXTENSIONS,
             WEBP_QUALITY,
             _generate_video_sync,
+            _suppress_decompression_bomb_warning,
             _thumb_path,
         )
 
@@ -237,7 +238,7 @@ def _pre_generate_thumbnail(source_path: str, media_root: str) -> None:
             return
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(source) as img:
+        with _suppress_decompression_bomb_warning(), Image.open(source) as img:
             # Image.open() parses only the header, so the dimensions are known
             # before a single pixel is decoded -- refuse pixel bombs here, not
             # after. JPEG is exempt: img.thumbnail() drafts JPEGs to decode at

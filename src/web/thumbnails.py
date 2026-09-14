@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image
@@ -26,6 +28,21 @@ logger = logging.getLogger(__name__)
 
 # Limit decompression to prevent pixel-bomb OOM attacks (~50 megapixels)
 Image.MAX_IMAGE_PIXELS = 50_000_000
+
+
+@contextmanager
+def _suppress_decompression_bomb_warning():
+    """Pillow only *raises* past double Image.MAX_IMAGE_PIXELS (see the
+    comment below) -- everything up to 100 MP decodes fine but still warns.
+    The pixel gates around every Image.open() call in this module (and in
+    src/telegram_backup.py's thumbnail path) already bound real decode cost
+    for what gets through, so this warning is expected noise here, not a
+    signal -- silence just it, not the whole logger.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        yield
+
 
 ALLOWED_SIZES: set[int] = {200, 400}
 WEBP_QUALITY = 80
@@ -210,7 +227,7 @@ def _generate_video_sync(source: Path, dest: Path, size: int) -> bool:
                     break
             else:
                 return False
-            with Image.open(tmp_path) as img:
+            with _suppress_decompression_bomb_warning(), Image.open(tmp_path) as img:
                 _save_webp_atomic(img, dest)
             return True
         finally:
@@ -232,7 +249,7 @@ def _generate_sync(source: Path, dest: Path, size: int) -> bool:
             logger.warning("Source too large for thumbnail (%d bytes)", source.stat().st_size)
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(source) as img:
+        with _suppress_decompression_bomb_warning(), Image.open(source) as img:
             # Image.open() parses only the header, so nothing is decoded yet.
             # draft() next: formats that support it (JPEG) decode thumbnails at
             # a reduced scale -- size * 2 asks for the same reduction that

@@ -5,8 +5,11 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from PIL import Image
 
 from src.web.thumbnails import (
     _IMAGE_EXTENSIONS,
@@ -18,9 +21,40 @@ from src.web.thumbnails import (
     _generate_video_sync,
     _is_image,
     _is_video,
+    _suppress_decompression_bomb_warning,
     _thumb_path,
     ensure_thumbnail,
 )
+
+
+class TestSuppressDecompressionBombWarning(unittest.TestCase):
+    """Test _suppress_decompression_bomb_warning suppresses only that one warning."""
+
+    def test_suppresses_decompression_bomb_warning(self):
+        """A DecompressionBombWarning raised inside the block is silenced."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with _suppress_decompression_bomb_warning():
+                warnings.warn("fake bomb", Image.DecompressionBombWarning, stacklevel=2)
+            self.assertEqual(caught, [])
+
+    def test_does_not_suppress_other_warnings(self):
+        """A different warning category inside the block still surfaces."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with _suppress_decompression_bomb_warning():
+                warnings.warn("unrelated", UserWarning, stacklevel=2)
+            self.assertEqual(len(caught), 1)
+            self.assertIs(caught[0].category, UserWarning)
+
+    def test_warning_resumes_after_context_exits(self):
+        """The suppression does not leak past the `with` block."""
+        with _suppress_decompression_bomb_warning():
+            pass
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            warnings.warn("still visible", Image.DecompressionBombWarning, stacklevel=2)
+            self.assertEqual(len(caught), 1)
 
 
 class TestIsImage(unittest.TestCase):
