@@ -189,6 +189,10 @@ _TG_ACCOUNT_FILTER_SUFFIXES = (
     "CHANNELS_EXCLUDE_CHAT_IDS",
     "PRIORITY_CHAT_IDS",
     "SKIP_MEDIA_CHAT_IDS",
+    "INCLUDE_FOLDER_IDS",
+    "PRIVATE_INCLUDE_FOLDER_IDS",
+    "GROUPS_INCLUDE_FOLDER_IDS",
+    "CHANNELS_INCLUDE_FOLDER_IDS",
 )
 
 _TG_ACCOUNT_ENV_RE = re.compile(
@@ -263,6 +267,38 @@ def _normalize_id_set_attrs(config_like, existing_ids: set) -> tuple[int, int]:
     return corrected_total, unresolved_total
 
 
+class FolderIncludeSnapshot:
+    """The live membership of one account's *_INCLUDE_FOLDER_IDS folders.
+
+    Mutable on purpose, and shared: every AccountFilters copy of an account keeps
+    the same reference (replace() copies it), so every config view built from it
+    -- the scheduled backup, gap-fill and the real-time listener -- reads the same
+    object. The backup refreshes it once per cycle; a failed refresh leaves the
+    last resolved membership in place for all of them.
+    """
+
+    __slots__ = ("global_ids", "private_ids", "group_ids", "channel_ids")
+
+    def __init__(self) -> None:
+        self.global_ids: frozenset = frozenset()
+        self.private_ids: frozenset = frozenset()
+        self.group_ids: frozenset = frozenset()
+        self.channel_ids: frozenset = frozenset()
+
+    def update(
+        self,
+        *,
+        global_ids: frozenset | set = frozenset(),
+        private_ids: frozenset | set = frozenset(),
+        group_ids: frozenset | set = frozenset(),
+        channel_ids: frozenset | set = frozenset(),
+    ) -> None:
+        self.global_ids = frozenset(global_ids)
+        self.private_ids = frozenset(private_ids)
+        self.group_ids = frozenset(group_ids)
+        self.channel_ids = frozenset(channel_ids)
+
+
 @dataclass(frozen=True)
 class AccountFilters:
     """The effective capture-filter set one account sweeps and listens with (8.1, #313).
@@ -291,11 +327,45 @@ class AccountFilters:
     channels_exclude_ids: frozenset
     priority_chat_ids: frozenset
     skip_media_chat_ids: frozenset
+    # Static, env-resolved folder ids (v8.11.0). Configuring one turns that scope
+    # into an allow-list, exactly like the matching *_include_ids.
+    global_include_folder_ids: frozenset = frozenset()
+    private_include_folder_ids: frozenset = frozenset()
+    groups_include_folder_ids: frozenset = frozenset()
+    channels_include_folder_ids: frozenset = frozenset()
+    # The live membership of those folders: one shared, mutable object per
+    # account (see FolderIncludeSnapshot), so a refresh reaches every view.
+    folder_snapshot: FolderIncludeSnapshot = field(default_factory=FolderIncludeSnapshot, compare=False, repr=False)
+
+    @property
+    def global_include_folder_chat_ids(self) -> frozenset:
+        return self.folder_snapshot.global_ids
+
+    @property
+    def private_include_folder_chat_ids(self) -> frozenset:
+        return self.folder_snapshot.private_ids
+
+    @property
+    def groups_include_folder_chat_ids(self) -> frozenset:
+        return self.folder_snapshot.group_ids
+
+    @property
+    def channels_include_folder_chat_ids(self) -> frozenset:
+        return self.folder_snapshot.channel_ids
 
     @property
     def whitelist_mode(self) -> bool:
         """CHAT_IDS takes absolute priority when non-empty, per-account."""
         return len(self.chat_ids) > 0
+
+    @property
+    def has_folder_include_filters(self) -> bool:
+        return bool(
+            self.global_include_folder_ids
+            or self.private_include_folder_ids
+            or self.groups_include_folder_ids
+            or self.channels_include_folder_ids
+        )
 
     def should_backup_chat_type(self, is_user: bool, is_group: bool, is_channel: bool, is_bot: bool = False) -> bool:
         """Type filter for this account; mirrors Config.should_backup_chat_type."""
@@ -326,15 +396,15 @@ class AccountFilters:
         if is_channel and chat_id in self.channels_exclude_ids:
             return False
 
-        if self.global_include_ids:
-            return chat_id in self.global_include_ids
+        if self.global_include_ids or self.global_include_folder_ids:
+            return chat_id in self.global_include_ids or chat_id in self.global_include_folder_chat_ids
 
-        if (is_user or is_bot) and self.private_include_ids:
-            return chat_id in self.private_include_ids
-        if is_group and self.groups_include_ids:
-            return chat_id in self.groups_include_ids
-        if is_channel and self.channels_include_ids:
-            return chat_id in self.channels_include_ids
+        if (is_user or is_bot) and (self.private_include_ids or self.private_include_folder_ids):
+            return chat_id in self.private_include_ids or chat_id in self.private_include_folder_chat_ids
+        if is_group and (self.groups_include_ids or self.groups_include_folder_ids):
+            return chat_id in self.groups_include_ids or chat_id in self.groups_include_folder_chat_ids
+        if is_channel and (self.channels_include_ids or self.channels_include_folder_ids):
+            return chat_id in self.channels_include_ids or chat_id in self.channels_include_folder_chat_ids
 
         return self.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
 
@@ -369,6 +439,10 @@ class AccountScopedConfig:
         self.channels_exclude_ids = set(filters.channels_exclude_ids)
         self.priority_chat_ids = set(filters.priority_chat_ids)
         self.skip_media_chat_ids = set(filters.skip_media_chat_ids)
+        self.global_include_folder_ids = set(filters.global_include_folder_ids)
+        self.private_include_folder_ids = set(filters.private_include_folder_ids)
+        self.groups_include_folder_ids = set(filters.groups_include_folder_ids)
+        self.channels_include_folder_ids = set(filters.channels_include_folder_ids)
 
     def __getattr__(self, name: str):
         # Only reached for names not set in __init__: everything that is not
@@ -392,6 +466,47 @@ class AccountScopedConfig:
         if not self._base.download_media:
             return False
         return chat_id not in self.filters.skip_media_chat_ids
+
+    @property
+    def has_folder_include_filters(self) -> bool:
+        return self.filters.has_folder_include_filters
+
+    # Live-resolved folder membership. Properties, not __init__-copied attributes
+    # like the static filter sets above: it lives in the account's shared
+    # FolderIncludeSnapshot and changes after this view is built.
+    @property
+    def global_include_folder_chat_ids(self) -> frozenset:
+        return self.filters.global_include_folder_chat_ids
+
+    @property
+    def private_include_folder_chat_ids(self) -> frozenset:
+        return self.filters.private_include_folder_chat_ids
+
+    @property
+    def groups_include_folder_chat_ids(self) -> frozenset:
+        return self.filters.groups_include_folder_chat_ids
+
+    @property
+    def channels_include_folder_chat_ids(self) -> frozenset:
+        return self.filters.channels_include_folder_chat_ids
+
+    def update_folder_resolved_chat_ids(
+        self,
+        *,
+        global_ids: frozenset | set = frozenset(),
+        private_ids: frozenset | set = frozenset(),
+        group_ids: frozenset | set = frozenset(),
+        channel_ids: frozenset | set = frozenset(),
+    ) -> None:
+        """Replace this account's live folder membership, for every view of the account.
+
+        Updates the shared FolderIncludeSnapshot, not this view's own filters, so
+        the listener and gap-fill views built from the same startup filters see
+        the refresh too, and a later failed refresh leaves it in place for all.
+        """
+        self.filters.folder_snapshot.update(
+            global_ids=global_ids, private_ids=private_ids, group_ids=group_ids, channel_ids=channel_ids
+        )
 
     def normalize_filter_ids(self, existing_ids: set) -> tuple[int, int]:
         """Auto-correct this account's filter ids against its archived chats.
@@ -575,6 +690,35 @@ class Config:
 
         self.channels_include_ids = self._parse_id_list(os.getenv("CHANNELS_INCLUDE_CHAT_IDS", ""))
         self.channels_exclude_ids = self._parse_id_list(os.getenv("CHANNELS_EXCLUDE_CHAT_IDS", ""))
+
+        # Folder-based include (v8.11.0): back up whatever a Telegram folder
+        # (dialog filter) currently contains, re-checked live every backup cycle
+        # so a chat added to the folder in Telegram is picked up on the next run
+        # with no config edit or restart. Additive, same tier as the
+        # *_INCLUDE_CHAT_IDS lists above - a folder id here does not widen
+        # CHAT_TYPES or whitelist mode, it only adds to that type's include set.
+        # Only a folder's EXPLICIT chat list (pinned + included peers) is
+        # honored; category-flag membership (e.g. a folder built from "all
+        # groups" toggles rather than picked chats) can't be evaluated here
+        # because that requires already knowing a chat's type/contact status,
+        # which for a not-yet-archived chat this filtering pass hasn't fetched
+        # yet - list the target chats explicitly in the Telegram folder, or use
+        # *_INCLUDE_CHAT_IDS instead. See folder_utils.resolve_include_folder_chat_ids.
+        self.global_include_folder_ids = self._parse_id_list(
+            os.getenv("GLOBAL_INCLUDE_FOLDER_IDS") or os.getenv("INCLUDE_FOLDER_IDS", "")
+        )
+        self.private_include_folder_ids = self._parse_id_list(os.getenv("PRIVATE_INCLUDE_FOLDER_IDS", ""))
+        self.groups_include_folder_ids = self._parse_id_list(os.getenv("GROUPS_INCLUDE_FOLDER_IDS", ""))
+        self.channels_include_folder_ids = self._parse_id_list(os.getenv("CHANNELS_INCLUDE_FOLDER_IDS", ""))
+
+        # Live-resolved membership of the folders above, refreshed once per
+        # backup cycle by TelegramBackup._sync_folder_include_filters (empty
+        # until then, and left untouched - not cleared - if a cycle's folder
+        # fetch fails, so a transient API hiccup doesn't un-back-up a chat mid-run).
+        self.global_include_folder_chat_ids: frozenset = frozenset()
+        self.private_include_folder_chat_ids: frozenset = frozenset()
+        self.groups_include_folder_chat_ids: frozenset = frozenset()
+        self.channels_include_folder_chat_ids: frozenset = frozenset()
 
         # Priority chats - these are processed FIRST in all backup/sync operations
         # Useful for ensuring important chats are always backed up first
@@ -1108,7 +1252,8 @@ class Config:
                     f"Unrecognized account variable '{key}'. Expected TG_ACCOUNT_<N>_API_ID / _API_HASH / "
                     "_PHONE_NUMBER / _LABEL / _SESSION_NAME, or a per-account filter override "
                     "(_CHAT_IDS, _CHAT_TYPES, _INCLUDE/_EXCLUDE_CHAT_IDS, the PRIVATE_/GROUPS_/CHANNELS_ "
-                    "variants, _PRIORITY_CHAT_IDS, _SKIP_MEDIA_CHAT_IDS), with N starting at 1 (no leading zeros)."
+                    "variants, _PRIORITY_CHAT_IDS, _SKIP_MEDIA_CHAT_IDS, _INCLUDE_FOLDER_IDS and its "
+                    "PRIVATE_/GROUPS_/CHANNELS_ variants), with N starting at 1 (no leading zeros)."
                 )
             # docker-compose's ${VAR:-} idiom injects empty strings for unset
             # host variables; treat them exactly like absent variables.
@@ -1217,6 +1362,28 @@ class Config:
                 f"exists ({len(known)} account(s) configured)"
             )
 
+        # Folder ids are numbered per Telegram account, unlike chat ids: folder 7 of
+        # one account is unrelated to folder 7 of another. With several accounts,
+        # an unprefixed *_INCLUDE_FOLDER_IDS may apply to one account at most;
+        # every other account has to set its own value, or none.
+        if len(self.accounts) > 1:
+            folder_globals = (
+                ("INCLUDE_FOLDER_IDS", "GLOBAL_INCLUDE_FOLDER_IDS", self.global_include_folder_ids),
+                ("PRIVATE_INCLUDE_FOLDER_IDS", "PRIVATE_INCLUDE_FOLDER_IDS", self.private_include_folder_ids),
+                ("GROUPS_INCLUDE_FOLDER_IDS", "GROUPS_INCLUDE_FOLDER_IDS", self.groups_include_folder_ids),
+                ("CHANNELS_INCLUDE_FOLDER_IDS", "CHANNELS_INCLUDE_FOLDER_IDS", self.channels_include_folder_ids),
+            )
+            for suffix, env_name, global_value in folder_globals:
+                if not global_value:
+                    continue
+                inheriting = [a.index for a in self.accounts if overrides.get(a.index, {}).get(suffix) is None]
+                if len(inheriting) > 1:
+                    raise ValueError(
+                        f"{env_name} would apply to accounts {', '.join(map(str, inheriting))}, but folder ids are "
+                        f"numbered per Telegram account. Scope it with TG_ACCOUNT_<N>_{suffix} for all but one of "
+                        "them (a folder id list, or none)."
+                    )
+
         resolved: dict[int, AccountFilters] = {}
         for account in self.accounts:
             raw = overrides.get(account.index, {})
@@ -1256,6 +1423,10 @@ class Config:
                 channels_exclude_ids=ids("CHANNELS_EXCLUDE_CHAT_IDS", self.channels_exclude_ids),
                 priority_chat_ids=ids("PRIORITY_CHAT_IDS", self.priority_chat_ids),
                 skip_media_chat_ids=ids("SKIP_MEDIA_CHAT_IDS", self.skip_media_chat_ids),
+                global_include_folder_ids=ids("INCLUDE_FOLDER_IDS", self.global_include_folder_ids),
+                private_include_folder_ids=ids("PRIVATE_INCLUDE_FOLDER_IDS", self.private_include_folder_ids),
+                groups_include_folder_ids=ids("GROUPS_INCLUDE_FOLDER_IDS", self.groups_include_folder_ids),
+                channels_include_folder_ids=ids("CHANNELS_INCLUDE_FOLDER_IDS", self.channels_include_folder_ids),
             )
         return resolved
 
@@ -1450,19 +1621,49 @@ class Config:
             return False
 
         # 3. Global Include (acts as whitelist - if set, ONLY these are backed up)
-        if self.global_include_ids:
-            return chat_id in self.global_include_ids
+        if self.global_include_ids or self.global_include_folder_ids:
+            return chat_id in self.global_include_ids or chat_id in self.global_include_folder_chat_ids
 
-        # 4. Type-Specific Include (bots use private include lists)
-        if (is_user or is_bot) and self.private_include_ids:
-            return chat_id in self.private_include_ids
-        if is_group and self.groups_include_ids:
-            return chat_id in self.groups_include_ids
-        if is_channel and self.channels_include_ids:
-            return chat_id in self.channels_include_ids
+        # 4. Type-Specific Include (bots use private include lists; folder-resolved
+        # ids are additive alongside the static *_INCLUDE_CHAT_IDS lists)
+        if (is_user or is_bot) and (self.private_include_ids or self.private_include_folder_ids):
+            return chat_id in self.private_include_ids or chat_id in self.private_include_folder_chat_ids
+        if is_group and (self.groups_include_ids or self.groups_include_folder_ids):
+            return chat_id in self.groups_include_ids or chat_id in self.groups_include_folder_chat_ids
+        if is_channel and (self.channels_include_ids or self.channels_include_folder_ids):
+            return chat_id in self.channels_include_ids or chat_id in self.channels_include_folder_chat_ids
 
         # 5. Chat Type Filter (only if no include lists are set)
         return self.should_backup_chat_type(is_user, is_group, is_channel, is_bot)
+
+    @property
+    def has_folder_include_filters(self) -> bool:
+        """Whether any *_INCLUDE_FOLDER_IDS var is configured for this scope.
+
+        Gates the extra live GetDialogFiltersRequest call each backup cycle
+        (see TelegramBackup._sync_folder_include_filters) so accounts not
+        using this feature pay nothing extra for it.
+        """
+        return bool(
+            self.global_include_folder_ids
+            or self.private_include_folder_ids
+            or self.groups_include_folder_ids
+            or self.channels_include_folder_ids
+        )
+
+    def update_folder_resolved_chat_ids(
+        self,
+        *,
+        global_ids: frozenset | set = frozenset(),
+        private_ids: frozenset | set = frozenset(),
+        group_ids: frozenset | set = frozenset(),
+        channel_ids: frozenset | set = frozenset(),
+    ) -> None:
+        """Replace this cycle's live folder-membership snapshot used by should_backup_chat."""
+        self.global_include_folder_chat_ids = frozenset(global_ids)
+        self.private_include_folder_chat_ids = frozenset(private_ids)
+        self.groups_include_folder_chat_ids = frozenset(group_ids)
+        self.channels_include_folder_chat_ids = frozenset(channel_ids)
 
     def get_max_media_size_bytes(self) -> int:
         """Maximum media file size in bytes; 0 (or negative) means no limit.
