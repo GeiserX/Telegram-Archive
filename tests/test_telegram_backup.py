@@ -2180,6 +2180,130 @@ class TestBackupForumTopics(unittest.TestCase):
         self.assertEqual(count, 0)
 
 
+class TestSyncFolderIncludeFilters(unittest.TestCase):
+    """Test _sync_folder_include_filters, the live folder-membership refresh."""
+
+    def setUp(self):
+        self.backup = TelegramBackup.__new__(TelegramBackup)
+        self.backup.client = AsyncMock()
+        self.backup.config = MagicMock()
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_noop_when_no_folder_include_filters_configured(self):
+        """No GetDialogFiltersRequest call, and no config update, when unused."""
+        self.backup.config.has_folder_include_filters = False
+
+        self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.client.assert_not_called()
+        self.backup.config.update_folder_resolved_chat_ids.assert_not_called()
+
+    def test_resolves_and_applies_live_folder_membership(self):
+        """A configured folder id resolves live peers into the matching filter."""
+        from telethon.tl.types import DialogFilter
+
+        self.backup.config.has_folder_include_filters = True
+        self.backup.config.global_include_folder_ids = set()
+        self.backup.config.private_include_folder_ids = set()
+        self.backup.config.groups_include_folder_ids = {28}
+        self.backup.config.channels_include_folder_ids = set()
+        self.backup._get_own_id = AsyncMock(return_value=None)
+
+        folder = MagicMock(spec=DialogFilter)
+        folder.id = 28
+        folder.pinned_peers = []
+        member = MagicMock()
+        member.channel_id = 555
+        folder.include_peers = [member]
+
+        result_obj = MagicMock()
+        result_obj.filters = [folder]
+        self.backup.client.return_value = result_obj
+
+        with unittest.mock.patch("src.telegram_backup.get_peer_id", return_value=-100555):
+            self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.config.update_folder_resolved_chat_ids.assert_called_once()
+        _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
+        self.assertEqual(kwargs["group_ids"], {-100555})
+        self.assertEqual(kwargs["global_ids"], set())
+        self.assertEqual(kwargs["private_ids"], set())
+        self.assertEqual(kwargs["channel_ids"], set())
+
+    def test_resolves_pinned_saved_messages_via_own_id(self):
+        """A pinned InputPeerSelf (Saved Messages) resolves to the account's own id
+        instead of raising and dropping the whole folder's ids (#448 review)."""
+        from telethon.tl.types import DialogFilter, InputPeerSelf
+
+        self.backup.config.has_folder_include_filters = True
+        self.backup.config.global_include_folder_ids = set()
+        self.backup.config.private_include_folder_ids = {28}
+        self.backup.config.groups_include_folder_ids = set()
+        self.backup.config.channels_include_folder_ids = set()
+        self.backup._get_own_id = AsyncMock(return_value=777)
+
+        folder = MagicMock(spec=DialogFilter)
+        folder.id = 28
+        folder.pinned_peers = [InputPeerSelf()]
+        folder.include_peers = []
+
+        result_obj = MagicMock()
+        result_obj.filters = [folder]
+        self.backup.client.return_value = result_obj
+
+        self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.config.update_folder_resolved_chat_ids.assert_called_once()
+        _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
+        self.assertEqual(kwargs["private_ids"], {777})
+
+    def test_accepts_shared_chatlist_folders(self):
+        """A DialogFilterChatlist (shared folder) is resolved, not silently skipped."""
+        from telethon.tl.types import DialogFilterChatlist
+
+        self.backup.config.has_folder_include_filters = True
+        self.backup.config.global_include_folder_ids = set()
+        self.backup.config.private_include_folder_ids = set()
+        self.backup.config.groups_include_folder_ids = {28}
+        self.backup.config.channels_include_folder_ids = set()
+        self.backup._get_own_id = AsyncMock(return_value=None)
+
+        folder = MagicMock(spec=DialogFilterChatlist)
+        folder.id = 28
+        folder.pinned_peers = []
+        member = MagicMock()
+        member.channel_id = 555
+        folder.include_peers = [member]
+
+        result_obj = MagicMock()
+        result_obj.filters = [folder]
+        self.backup.client.return_value = result_obj
+
+        with unittest.mock.patch("src.telegram_backup.get_peer_id", return_value=-100555):
+            self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.config.update_folder_resolved_chat_ids.assert_called_once()
+        _, kwargs = self.backup.config.update_folder_resolved_chat_ids.call_args
+        self.assertEqual(kwargs["group_ids"], {-100555})
+
+    def test_keeps_previous_values_when_the_api_call_fails(self):
+        """A GetDialogFiltersRequest failure is swallowed, not raised."""
+        self.backup.config.has_folder_include_filters = True
+        self.backup._get_own_id = AsyncMock(return_value=None)
+        self.backup.client.side_effect = Exception("flood wait or similar")
+
+        # Must not raise.
+        self._run(self.backup._sync_folder_include_filters())
+
+        self.backup.config.update_folder_resolved_chat_ids.assert_not_called()
+
+
 class TestBackupDialogCursorAdvancesOnSkippedMessages(unittest.TestCase):
     """Test that _backup_dialog advances cursor even when all messages are topic-filtered."""
 

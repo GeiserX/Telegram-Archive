@@ -4568,18 +4568,26 @@ class TelegramBackup:
             return
         try:
             from telethon.tl.functions.messages import GetDialogFiltersRequest
-            from telethon.tl.types import DialogFilter
+            from telethon.tl.types import DialogFilter, DialogFilterChatlist
 
+            own_id = await self._get_own_id()
             result = await call_with_flood_retry(self.client, GetDialogFiltersRequest())
             raw_filters = result.filters if hasattr(result, "filters") else result
 
+            # _resolve_peer_ids (not a bare get_peer_id loop) so a pinned Saved
+            # Messages entry (InputPeerSelf) resolves to own_id instead of
+            # raising and dropping the whole folder's ids on the exception
+            # path below. DialogFilterChatlist (shared/shareable folders) is
+            # accepted alongside DialogFilter for the same reason
+            # _folder_rules_from_filter/_backup_folders() do -- it carries the
+            # same pinned_peers/include_peers fields, just no flags.
             folders = [
                 FolderPeers(
                     folder_id=f.id,
-                    peer_ids=frozenset(get_peer_id(p) for p in (*f.pinned_peers, *f.include_peers)),
+                    peer_ids=frozenset(self._resolve_peer_ids((*f.pinned_peers, *f.include_peers), own_id)),
                 )
                 for f in raw_filters
-                if isinstance(f, DialogFilter)
+                if isinstance(f, (DialogFilter, DialogFilterChatlist))
             ]
 
             self.config.update_folder_resolved_chat_ids(

@@ -251,6 +251,64 @@ class TestAccountScopedConfig(unittest.TestCase):
         self.assertTrue(config.for_account(1).should_backup_chat(-100111, True, False, False))
         self.assertFalse(config.for_account(1).should_backup_chat(-100999, False, True, False))
 
+    def test_getattr_raises_attributeerror_for_unknown_name(self):
+        """A name that resolves on neither the view nor the base Config still raises."""
+        view = _config().for_account(1)
+        with self.assertRaises(AttributeError):
+            _ = view.this_attribute_does_not_exist_anywhere
+
+    def test_getattr_raises_on_a_view_with_no_base_at_all(self):
+        """__getattr__'s own defensive branch: a view missing ``_base`` entirely
+        (e.g. constructed via __new__, never through Config.for_account) still
+        raises AttributeError for the requested name, not some other error."""
+        from src.config import AccountScopedConfig
+
+        broken_view = AccountScopedConfig.__new__(AccountScopedConfig)
+        with self.assertRaises(AttributeError) as ctx:
+            _ = broken_view.anything
+        self.assertEqual(str(ctx.exception), "anything")
+
+    def test_should_backup_chat_type_delegates_to_filters(self):
+        config = _config(CHAT_TYPES="private")
+        view = config.for_account(1)
+        self.assertTrue(view.should_backup_chat_type(is_user=True, is_group=False, is_channel=False))
+        self.assertFalse(view.should_backup_chat_type(is_user=False, is_group=True, is_channel=False))
+
+    def test_has_folder_include_filters_reflects_the_accounts_filters(self):
+        config = _config(**_TWO_ACCOUNTS, GROUPS_INCLUDE_FOLDER_IDS="28", TG_ACCOUNT_2_GROUPS_INCLUDE_FOLDER_IDS="none")
+        self.assertTrue(config.for_account(1).has_folder_include_filters)
+        self.assertFalse(config.for_account(2).has_folder_include_filters)
+
+    def test_folder_chat_id_properties_start_empty_and_update_live(self):
+        config = _config(GROUPS_INCLUDE_FOLDER_IDS="28")
+        view = config.for_account(1)
+        # No live resolution has happened yet -- every property starts empty.
+        self.assertEqual(view.global_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.private_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.groups_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.channels_include_folder_chat_ids, frozenset())
+
+        # global_ids is left empty here: should_backup_chat checks the global
+        # folder-include set before the type-specific ones (same precedence
+        # as the static *_INCLUDE_CHAT_IDS lists), so a non-empty global set
+        # would mask the groups-specific assertion below.
+        view.update_folder_resolved_chat_ids(
+            private_ids={-2},
+            group_ids={-3, -4},
+            channel_ids={-5},
+        )
+        self.assertEqual(view.global_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.private_include_folder_chat_ids, frozenset({-2}))
+        self.assertEqual(view.groups_include_folder_chat_ids, frozenset({-3, -4}))
+        self.assertEqual(view.channels_include_folder_chat_ids, frozenset({-5}))
+        # A chat only resolved through the live folder snapshot is now captured,
+        # for every chat type the resolved snapshot covers (private/group/channel).
+        self.assertTrue(view.should_backup_chat(-2, True, False, False))
+        self.assertTrue(view.should_backup_chat(-3, False, True, False))
+        self.assertTrue(view.should_backup_chat(-5, False, False, True))
+        # A chat outside the resolved snapshot, of the same type, is not.
+        self.assertFalse(view.should_backup_chat(-999, False, True, False))
+
 
 if __name__ == "__main__":
     unittest.main()
