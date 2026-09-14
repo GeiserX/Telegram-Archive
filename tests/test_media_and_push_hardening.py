@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image as PILImage
+from PIL import ImageFile
 
 import src.web.thumbnails as thumbs
 from src.web.thumbnails import _MAX_SOURCE_PIXELS, _generate_sync, _generate_video_sync, ensure_thumbnail
@@ -571,7 +572,10 @@ class TestHeaderPixelGate(unittest.TestCase):
     def _assert_refused_without_decoding(self, source: Path) -> None:
         dest = source.parent / "out.webp"
         decodes = []
-        real_load = PILImage.Image.load
+        # Spy on the decoder's own load: JpegImageFile.load resolves to
+        # ImageFile.load, so a spy on Image.load alone would depend on Pillow
+        # calling it along the way.
+        real_load = ImageFile.ImageFile.load
 
         def spy_load(img_self, *args, **kwargs):
             decodes.append(1)
@@ -579,7 +583,7 @@ class TestHeaderPixelGate(unittest.TestCase):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            with patch.object(PILImage.Image, "load", spy_load):
+            with patch.object(ImageFile.ImageFile, "load", spy_load):
                 ok = _generate_sync(source, dest, 200)
 
         self.assertFalse(ok)
