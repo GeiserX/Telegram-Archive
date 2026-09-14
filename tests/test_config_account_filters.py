@@ -41,6 +41,10 @@ _ID_LIST_SUFFIXES = {
     "CHANNELS_EXCLUDE_CHAT_IDS": ("CHANNELS_EXCLUDE_CHAT_IDS", "channels_exclude_ids"),
     "PRIORITY_CHAT_IDS": ("PRIORITY_CHAT_IDS", "priority_chat_ids"),
     "SKIP_MEDIA_CHAT_IDS": ("SKIP_MEDIA_CHAT_IDS", "skip_media_chat_ids"),
+    "INCLUDE_FOLDER_IDS": ("GLOBAL_INCLUDE_FOLDER_IDS", "global_include_folder_ids"),
+    "PRIVATE_INCLUDE_FOLDER_IDS": ("PRIVATE_INCLUDE_FOLDER_IDS", "private_include_folder_ids"),
+    "GROUPS_INCLUDE_FOLDER_IDS": ("GROUPS_INCLUDE_FOLDER_IDS", "groups_include_folder_ids"),
+    "CHANNELS_INCLUDE_FOLDER_IDS": ("CHANNELS_INCLUDE_FOLDER_IDS", "channels_include_folder_ids"),
 }
 
 
@@ -179,6 +183,9 @@ class TestEquivalenceWithGlobalMethods(unittest.TestCase):
     def test_whitelist_mode(self):
         self._assert_equivalent(_config(CHAT_IDS="-100111,-100333"))
 
+    def test_type_mode_with_unresolved_folder_filters(self):
+        self._assert_equivalent(_config(GROUPS_INCLUDE_FOLDER_IDS="28", PRIVATE_INCLUDE_CHAT_IDS="-100333"))
+
 
 class TestImmutability(unittest.TestCase):
     def test_filters_are_frozen(self):
@@ -246,6 +253,98 @@ class TestAccountScopedConfig(unittest.TestCase):
         # Account 1 still whitelists.
         self.assertTrue(config.for_account(1).should_backup_chat(-100111, True, False, False))
         self.assertFalse(config.for_account(1).should_backup_chat(-100999, False, True, False))
+
+    def test_getattr_raises_attributeerror_for_unknown_name(self):
+        """A name that resolves on neither the view nor the base Config still raises."""
+        view = _config().for_account(1)
+        with self.assertRaises(AttributeError):
+            _ = view.this_attribute_does_not_exist_anywhere
+
+    def test_getattr_raises_on_a_view_with_no_base_at_all(self):
+        """__getattr__'s own defensive branch: a view missing ``_base`` entirely
+        (e.g. constructed via __new__, never through Config.for_account) still
+        raises AttributeError for the requested name, not some other error."""
+        from src.config import AccountScopedConfig
+
+        broken_view = AccountScopedConfig.__new__(AccountScopedConfig)
+        with self.assertRaises(AttributeError) as ctx:
+            _ = broken_view.anything
+        self.assertEqual(str(ctx.exception), "anything")
+
+    def test_should_backup_chat_type_delegates_to_filters(self):
+        config = _config(CHAT_TYPES="private")
+        view = config.for_account(1)
+        self.assertTrue(view.should_backup_chat_type(is_user=True, is_group=False, is_channel=False))
+        self.assertFalse(view.should_backup_chat_type(is_user=False, is_group=True, is_channel=False))
+
+    def test_has_folder_include_filters_reflects_the_accounts_filters(self):
+        config = _config(**_TWO_ACCOUNTS, GROUPS_INCLUDE_FOLDER_IDS="28", TG_ACCOUNT_2_GROUPS_INCLUDE_FOLDER_IDS="none")
+        self.assertTrue(config.for_account(1).has_folder_include_filters)
+        self.assertFalse(config.for_account(2).has_folder_include_filters)
+
+    def test_folder_chat_id_properties_start_empty_and_update_live(self):
+        config = _config(
+            PRIVATE_INCLUDE_FOLDER_IDS="29", GROUPS_INCLUDE_FOLDER_IDS="28", CHANNELS_INCLUDE_FOLDER_IDS="30"
+        )
+        view = config.for_account(1)
+        # No live resolution has happened yet -- every property starts empty.
+        self.assertEqual(view.global_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.private_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.groups_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.channels_include_folder_chat_ids, frozenset())
+
+        view.update_folder_resolved_chat_ids(private_ids={-2}, group_ids={-3, -4}, channel_ids={-5})
+        self.assertEqual(view.global_include_folder_chat_ids, frozenset())
+        self.assertEqual(view.private_include_folder_chat_ids, frozenset({-2}))
+        self.assertEqual(view.groups_include_folder_chat_ids, frozenset({-3, -4}))
+        self.assertEqual(view.channels_include_folder_chat_ids, frozenset({-5}))
+        # Each type's folder filter is configured, so each resolved set is that type's allow-list.
+        self.assertTrue(view.should_backup_chat(-2, True, False, False))
+        self.assertTrue(view.should_backup_chat(-3, False, True, False))
+        self.assertTrue(view.should_backup_chat(-5, False, False, True))
+        self.assertFalse(view.should_backup_chat(-999, False, True, False))
+        self.assertFalse(view.should_backup_chat(-999, True, False, False))
+
+    def test_every_view_of_an_account_shares_the_resolved_membership(self):
+        """Backup, gap-fill and listener each get their own view; a refresh made
+        through one must reach the others, and any view built later."""
+        config = _config(
+            **_TWO_ACCOUNTS,
+            TG_ACCOUNT_1_GROUPS_INCLUDE_FOLDER_IDS="28",
+            TG_ACCOUNT_2_GROUPS_INCLUDE_FOLDER_IDS="28",
+        )
+        backup_view, listener_view = config.for_account(1), config.for_account(1)
+        backup_view.update_folder_resolved_chat_ids(group_ids={-100500})
+        self.assertTrue(listener_view.should_backup_chat(-100500, False, True, False))
+        self.assertTrue(config.for_account(1).should_backup_chat(-100500, False, True, False))
+        # Account 2 numbers its own folders and has resolved nothing yet.
+        self.assertFalse(config.for_account(2).should_backup_chat(-100500, False, True, False))
+
+    def test_an_unresolved_folder_filter_fails_closed_through_a_view(self):
+        """The production path: default CHAT_TYPES, nothing resolved yet."""
+        view = _config(GROUPS_INCLUDE_FOLDER_IDS="28").for_account(1)
+        self.assertFalse(view.should_backup_chat(-100500, False, True, False))
+        self.assertTrue(view.should_backup_chat(1, True, False, False))
+
+
+class TestFolderIdsArePerAccount(unittest.TestCase):
+    """Folder ids are numbered per Telegram account, so an unprefixed folder
+    variable may apply to one account at most."""
+
+    def test_a_folder_id_two_accounts_would_inherit_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            _config(**_TWO_ACCOUNTS, GROUPS_INCLUDE_FOLDER_IDS="28")
+        self.assertIn("GROUPS_INCLUDE_FOLDER_IDS", str(ctx.exception))
+        self.assertNotIn("28", str(ctx.exception))
+
+    def test_one_inheriting_account_is_allowed(self):
+        config = _config(**_TWO_ACCOUNTS, GROUPS_INCLUDE_FOLDER_IDS="28", TG_ACCOUNT_2_GROUPS_INCLUDE_FOLDER_IDS="none")
+        self.assertEqual(config.filters_for(1).groups_include_folder_ids, frozenset({28}))
+        self.assertEqual(config.filters_for(2).groups_include_folder_ids, frozenset())
+
+    def test_a_single_account_install_inherits_as_before(self):
+        config = _config(GROUPS_INCLUDE_FOLDER_IDS="28")
+        self.assertEqual(config.filters_for(1).groups_include_folder_ids, frozenset({28}))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,12 @@
 """Unit tests for pure folder-membership resolution (src/folder_utils.py)."""
 
-from src.folder_utils import FolderChat, FolderRules, resolve_folder_member_ids
+from src.folder_utils import (
+    FolderChat,
+    FolderPeers,
+    FolderRules,
+    resolve_folder_member_ids,
+    resolve_include_folder_chat_ids,
+)
 
 
 def _chats():
@@ -141,3 +147,37 @@ def test_chatlist_style_include_only():
     # DialogFilterChatlist has no flags/excludes; only pinned+include resolve.
     rules = FolderRules(pinned_ids=frozenset({1001}), include_ids=frozenset({-1002003}))
     assert resolve_folder_member_ids(rules, _chats(), CONTACTS) == {1001, -1002003}
+
+
+# --- resolve_include_folder_chat_ids (backup-filtering path, v8.11.0) -------
+
+
+def test_include_folder_chat_ids_unions_pinned_and_included_peers():
+    folders = [FolderPeers(folder_id=28, peer_ids=frozenset({-100111, -100222, 333}))]
+    assert resolve_include_folder_chat_ids(folders, {28}) == {-100111, -100222, 333}
+
+
+def test_include_folder_chat_ids_ignores_unconfigured_folders():
+    folders = [
+        FolderPeers(folder_id=28, peer_ids=frozenset({-100111})),
+        FolderPeers(folder_id=5, peer_ids=frozenset({-100999})),
+    ]
+    assert resolve_include_folder_chat_ids(folders, {28}) == {-100111}
+
+
+def test_include_folder_chat_ids_unions_multiple_configured_folders():
+    folders = [
+        FolderPeers(folder_id=28, peer_ids=frozenset({-100111})),
+        FolderPeers(folder_id=5, peer_ids=frozenset({-100999})),
+    ]
+    assert resolve_include_folder_chat_ids(folders, {28, 5}) == {-100111, -100999}
+
+
+def test_include_folder_chat_ids_empty_folder_id_list_yields_nothing():
+    folders = [FolderPeers(folder_id=28, peer_ids=frozenset({-100111}))]
+    assert resolve_include_folder_chat_ids(folders, frozenset()) == frozenset()
+
+
+def test_include_folder_chat_ids_no_matching_folder_yields_nothing():
+    folders = [FolderPeers(folder_id=28, peer_ids=frozenset({-100111}))]
+    assert resolve_include_folder_chat_ids(folders, {999}) == frozenset()
