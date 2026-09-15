@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.11.1] - 2026-09-15
+
+Dependency updates, the Telegram library among them.
+
+### Changed
+
+- **Telethon 1.44 to 1.45.** It speaks Telegram's layer 229, adds basic support for the new Community chat type, fixes two reconnect paths that could leave a disconnected client still retrying, and corrects the order in which a session file's last two columns are read. That read fix changes nothing for sessions written by earlier versions, where both of those columns are empty. Checked against live Telegram before release: an existing session connects with no re-authentication, a full backup cycle completes, and the real-time listener tracks its chats.
+- **psycopg2-binary 2.9.12 to 2.9.13**, and the linter **ruff 0.16.6 to 0.16.7** (development only).
+
 ## [8.11.0] - 2026-09-14
 
 A Telegram folder can now decide which chats get backed up, and thumbnails hold their size limit for JPEGs too.
