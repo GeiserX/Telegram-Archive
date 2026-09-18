@@ -9,7 +9,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 One dependency update, closing two security advisories.
 
 ### Changed
-- **anyio 4.13.0 to 4.14.2.** Two advisories were raised against the version this project shipped. The critical one (CVE-2026-63374) lets a hijacked TLS connection to an internationalized domain name be accepted with a certificate issued for the older encoding of that name. The other (CVE-2026-64847) deadlocks an anyio process-pool worker that writes too much to stderr. Neither is reachable here: the only outgoing request this project makes over that library is plain HTTP to the viewer inside the deployment, and nothing in either image uses anyio's process pool. Updated so the published images carry no open advisory.
+- **anyio 4.13.0 to 4.14.2.** Two advisories were raised against the version this project shipped. The critical one (CVE-2026-63374) lets a TLS connection to an internationalized domain name accept a certificate issued for an older encoding of that name, so a connection an attacker has already redirected can be made to validate. It reaches this project only through the event webhook, which is off by default and is the one feature that sends over this library. An archive that turns the webhook on and points it at an `https://` address whose hostname contains non-ASCII characters is in scope; a plain `http://` target or an ASCII hostname is not. The second advisory (CVE-2026-64847) deadlocks a worker in anyio's process pool, which nothing in either image uses. Updated so the published images carry no open advisory.
 
 ## [8.11.2] - 2026-09-18
 
