@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.11.3] - 2026-09-18
+
+One dependency update, closing two security advisories.
+
+### Changed
+- **anyio 4.13.0 to 4.14.2.** Two advisories were raised against the version this project shipped. The critical one (CVE-2026-63374) lets a hijacked TLS connection to an internationalized domain name be accepted with a certificate issued for the older encoding of that name. The other (CVE-2026-64847) deadlocks an anyio process-pool worker that writes too much to stderr. Neither is reachable here: the only outgoing request this project makes over that library is plain HTTP to the viewer inside the deployment, and nothing in either image uses anyio's process pool. Updated so the published images carry no open advisory.
+
 ## [8.11.2] - 2026-09-18
 
 One dependency update, closing two security advisories.
