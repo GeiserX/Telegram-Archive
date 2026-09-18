@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.11.2] - 2026-09-18
+
+One dependency update, closing two security advisories.
+
+### Changed
+- **soupsieve 2.8.4 to 2.9.** The CSS selector engine behind the Telegram Desktop HTML import had two polynomial-time regex slowdowns (CVE-2026-85999, CVE-2026-86000) in its selector parser. They trigger on the selector text, and every selector this project uses is a fixed string, so no export file could reach them. The viewer image never ships this library. Updated anyway to keep the backup image free of open advisories.
+
 ## [8.11.1] - 2026-09-15
 
 Dependency updates, the Telegram library among them.
