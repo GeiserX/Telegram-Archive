@@ -1928,6 +1928,9 @@ async def search_messages(
                 "date": row["date"],
                 "text": row["text"],
                 "sender_name": row["sender_name"],
+                # Which archived account sent it, or null. The adapter derives
+                # this and drops the sender id it came from.
+                "sender_account_id": row["sender_account_id"],
                 "is_deleted": row["is_deleted"],
                 "topic_title": row["topic_title"],
                 "chat": {

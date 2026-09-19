@@ -198,6 +198,140 @@ class TestFolding:
         assert all("accounts" not in row for row in rows)
 
 
+class TestSenderAccountLabelling:
+    """Which of the archive's own identities spoke, in a chat shown once.
+
+    A group both accounts hold is displayed through one copy, so without this
+    the other account's messages read as an ordinary participant's and the
+    displayed copy's own read as the only outgoing ones. Nothing on the wire
+    says which identity spoke.
+    """
+
+    OWNER_ONE = 700000901
+    OWNER_TWO = 700000902
+    OUTSIDER = 700000903
+
+    async def seed_two_owners(self, adapter) -> None:
+        """Two logged-in accounts, and one group each of them archived."""
+        await seed_accounts(adapter, [(1, "first", self.OWNER_ONE), (2, "second", self.OWNER_TWO)])
+        for index, (account_id, sender_id) in enumerate([(1, self.OWNER_ONE), (2, self.OWNER_TWO), (1, self.OUTSIDER)]):
+            await adapter.upsert_chat(
+                {"id": SHARED_GROUP, "type": "group", "title": "shared group"}, account_id=account_id
+            )
+            await adapter.insert_message(
+                {
+                    "id": 7100 + index,
+                    "chat_id": SHARED_GROUP,
+                    "sender_id": sender_id,
+                    "date": BASE + timedelta(minutes=index),
+                    "text": "who said this",
+                    "raw_data": {},
+                },
+                account_id=account_id,
+            )
+
+    async def test_each_account_s_own_messages_name_their_account(self, real_adapter):
+        await self.seed_two_owners(real_adapter)
+
+        from_one = await real_adapter.get_messages_paginated(SHARED_GROUP, account_id=1)
+        from_two = await real_adapter.get_messages_paginated(SHARED_GROUP, account_id=2)
+
+        by_id = {row["id"]: row["sender_account_id"] for row in from_one + from_two}
+        assert by_id[7100] == 1  # the first account speaking
+        assert by_id[7101] == 2  # the second account speaking
+        assert by_id[7102] is None  # anybody else
+
+    async def test_a_restricted_viewer_gets_the_field_on_its_own_copy(self, real_adapter):
+        """The field is derived from the sender, not from the reader's grant."""
+        await self.seed_two_owners(real_adapter)
+
+        rows = await real_adapter.get_messages_paginated(SHARED_GROUP, account_id=2)
+
+        assert [row["sender_account_id"] for row in rows] == [2]
+
+    async def test_an_account_that_never_logged_in_labels_nothing(self, real_adapter):
+        """telegram_user_id is NULL until first login, and NULL matches no sender."""
+        await seed_accounts(real_adapter, [(1, "first", None)])
+        await real_adapter.upsert_chat({"id": SHARED_GROUP, "type": "group", "title": "g"}, account_id=1)
+        await real_adapter.insert_message(
+            {
+                "id": 7200,
+                "chat_id": SHARED_GROUP,
+                "sender_id": self.OWNER_ONE,
+                "date": BASE,
+                "text": "hello",
+                "raw_data": {},
+            },
+            account_id=1,
+        )
+
+        rows = await real_adapter.get_messages_paginated(SHARED_GROUP, account_id=1)
+
+        assert rows[0]["sender_account_id"] is None
+
+    async def test_pinned_and_by_date_reads_carry_it_too(self, real_adapter):
+        """Every surface that renders a bubble has to answer the same question."""
+        await self.seed_two_owners(real_adapter)
+        await real_adapter.sync_pinned_messages(SHARED_GROUP, [7101], account_id=2)
+
+        pinned = await real_adapter.get_pinned_messages(SHARED_GROUP, account_id=2)
+        by_date = await real_adapter.find_message_by_date_with_joins(
+            SHARED_GROUP, BASE + timedelta(minutes=1), account_id=2
+        )
+
+        assert [row["sender_account_id"] for row in pinned] == [2]
+        assert by_date["sender_account_id"] == 2
+
+    async def test_search_hits_name_the_account_without_leaking_the_sender_id(self, real_adapter):
+        """The id the label is derived from must not ride along with it."""
+        await self.seed_two_owners(real_adapter)
+
+        payload = await real_adapter.search_messages_global("said", scope=UNRESTRICTED)
+
+        assert payload["results"], "the fixture message must be findable"
+        assert {row["sender_account_id"] for row in payload["results"]} == {1, 2, None}
+        assert all("sender_id" not in row for row in payload["results"])
+
+    async def test_tag_hits_name_the_account_without_leaking_the_sender_id(self, real_adapter):
+        await self.seed_two_owners(real_adapter)
+        await real_adapter.insert_message(
+            {
+                "id": 7300,
+                "chat_id": SHARED_GROUP,
+                "sender_id": self.OWNER_TWO,
+                "date": BASE + timedelta(minutes=9),
+                "text": "tagged #quokka here",
+                "raw_data": {},
+            },
+            account_id=2,
+        )
+
+        payload = await real_adapter.search_messages_by_tag("#quokka", scope=UNRESTRICTED)
+
+        assert [row["sender_account_id"] for row in payload["results"]] == [2]
+        assert all("sender_id" not in row for row in payload["results"])
+
+    async def test_the_owner_map_is_read_once_not_once_per_message(self, real_adapter):
+        """A query per row is the shape this exists to avoid."""
+        await self.seed_two_owners(real_adapter)
+        # Warm the cache, then count reads across a second page.
+        await real_adapter._account_owner_ids()
+        reads = 0
+        original = real_adapter._account_owner_ids
+
+        async def counted():
+            nonlocal reads
+            reads += 1
+            return await original()
+
+        real_adapter._account_owner_ids = counted
+        rows = await real_adapter.get_messages_paginated(SHARED_GROUP, account_id=1)
+        real_adapter._account_owner_ids = original
+
+        assert len(rows) == 2  # the fixture put two messages under account 1
+        assert reads == 1
+
+
 class TestPagingIsStableAcrossAccounts:
     async def test_two_accounts_copies_of_one_private_chat_have_a_defined_order(self, real_adapter):
         """Nothing in the chat list may be left for the planner to decide.

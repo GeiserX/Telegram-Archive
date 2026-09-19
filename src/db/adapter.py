@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -417,6 +418,12 @@ class DatabaseAdapter:
       viewer_* tables) keep their pre-8.0 signatures.
     """
 
+    # How long the account owner map is reused (see _account_owner_ids). An
+    # account gains its telegram_user_id once, at its first login, so a stale
+    # entry means at most this long without a sender label on a brand-new
+    # account's messages — never a wrong label.
+    ACCOUNT_OWNER_CACHE_TTL_SECONDS = 300
+
     def __init__(self, db_manager: DatabaseManager):
         """
         Initialize adapter with a DatabaseManager.
@@ -428,6 +435,8 @@ class DatabaseAdapter:
         self._is_sqlite = db_manager._is_sqlite
         # Full-text capability, probed once on first search: None = unknown.
         self._fts_ready_cache: bool | None = None
+        # (read_at, {telegram_user_id: account_id}) — see _account_owner_ids.
+        self._account_owner_cache: tuple[float, dict[int, int]] | None = None
 
     def _serialize_raw_data(self, raw_data: Any) -> str:
         """
@@ -838,6 +847,56 @@ class DatabaseAdapter:
         async with self.db_manager.async_session_factory() as session:
             result = await session.execute(select(Account.id, Account.label).order_by(Account.id))
             return [{"id": row[0], "label": row[1]} for row in result]
+
+    async def _account_owner_ids(self) -> dict[int, int]:
+        """``{telegram_user_id: account_id}`` for accounts that have logged in.
+
+        Server-side only, and the one place this project reads
+        ``telegram_user_id`` outside ``ensure_account``. The KEYS are the PII;
+        what callers put in a payload is the account id they map to.
+
+        Cached for a short TTL because the answer changes exactly once per
+        account, on its first login, while the callers ask on every page of
+        messages. A per-message lookup would be a query per row, and a
+        per-request one a query per page, for a table with one row per
+        configured account.
+        """
+        cached = self._account_owner_cache
+        if cached is not None and time.monotonic() - cached[0] <= self.ACCOUNT_OWNER_CACHE_TTL_SECONDS:
+            return cached[1]
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(Account.telegram_user_id, Account.id).where(Account.telegram_user_id.isnot(None))
+            )
+            owners = {row[0]: row[1] for row in result}
+        self._account_owner_cache = (time.monotonic(), owners)
+        return owners
+
+    async def attach_sender_accounts(self, rows: list[dict[str, Any]], *, sender_key: str = "sender_id") -> None:
+        """Stamp every row with ``sender_account_id``, in place.
+
+        With several accounts archiving into one database, a group or channel
+        is shown once — through one account's copy — so the other account's
+        messages arrive looking like an ordinary participant's, and the
+        displayed copy's own messages look like the only outgoing ones. The
+        reader cannot tell which of their identities spoke.
+
+        ``sender_account_id`` is the archived account that sent the message, or
+        None for everyone else. It is derived here rather than exposed as a raw
+        id so ``accounts.telegram_user_id`` never reaches a payload; the field
+        is a small integer the viewer turns into a label.
+
+        ``sender_key`` names the column holding the sender on this row shape —
+        the search results carry it under a private key they then drop.
+        """
+        if not rows:
+            return
+        owners = await self._account_owner_ids()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sender_id = row.get(sender_key)
+            row["sender_account_id"] = owners.get(sender_id) if isinstance(sender_id, int) else None
 
     async def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key."""
@@ -3756,6 +3815,8 @@ class DatabaseAdapter:
                         Message.text,
                         Message.is_outgoing,
                         Message.sender_name,
+                        # Derives sender_account_id below; never returned.
+                        Message.sender_id,
                         Message.account_id,
                         Message.chat_id,
                         Chat.ref.label("chat_ref"),
@@ -3805,6 +3866,7 @@ class DatabaseAdapter:
                             "text": row["text"],
                             "is_outgoing": row["is_outgoing"],
                             "sender_name": row["sender_name"],
+                            "sender_id": row["sender_id"],
                             "chat_ref": row["chat_ref"],
                             "chat_title": title,
                             "chat_type": row["chat_type"],
@@ -3818,8 +3880,13 @@ class DatabaseAdapter:
                 cursor = tuple(rows[-1][key] for key in ("date", "account_id", "chat_id", "id"))
 
         truncated = not exhausted and scanned >= scan_cap and len(matched) < needed
+        page = matched[offset : offset + limit]
+        # Same two steps as the global search: derive the account, drop the id.
+        await self.attach_sender_accounts(page)
+        for result in page:
+            result.pop("sender_id", None)
         return {
-            "results": matched[offset : offset + limit],
+            "results": page,
             "has_more": len(matched) > offset + limit,
             "truncated": truncated,
         }
@@ -3853,6 +3920,9 @@ class DatabaseAdapter:
         Message.date,
         Message.text,
         Message.sender_name,
+        # Read to derive sender_account_id below and then dropped: the id of
+        # whoever sent a hit is not part of this endpoint's contract.
+        Message.sender_id,
         Message.is_deleted,
         Message.account_id,
         Message.chat_id,
@@ -3946,6 +4016,7 @@ class DatabaseAdapter:
                 "date": row["date"],
                 "text": row["text"],
                 "sender_name": row["sender_name"],
+                "sender_id": row["sender_id"],
                 "is_deleted": bool(row["is_deleted"]),
                 "account_id": row["account_id"],
                 "chat_id": row["chat_id"],
@@ -3960,6 +4031,11 @@ class DatabaseAdapter:
             }
             for row in rows[:limit]
         ]
+        # Derive the archived-account label source, then drop the sender id it
+        # was derived from — it entered the SELECT for this and nothing else.
+        await self.attach_sender_accounts(results)
+        for result in results:
+            result.pop("sender_id", None)
         return {"results": results, "has_more": len(rows) > limit, "indexed": True}
 
     @staticmethod
@@ -4362,6 +4438,7 @@ class DatabaseAdapter:
                         reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
                 msg["reactions"] = list(reactions_by_emoji.values())
 
+            await self.attach_sender_accounts(messages)
             return messages
 
     async def get_message_dates(
@@ -4518,6 +4595,7 @@ class DatabaseAdapter:
                     reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
             msg["reactions"] = list(reactions_by_emoji.values())
 
+            await self.attach_sender_accounts([msg])
             return msg
 
     @staticmethod
@@ -4653,6 +4731,7 @@ class DatabaseAdapter:
             # One query for the whole pinned list, not one per pinned reply.
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
+            await self.attach_sender_accounts(messages)
             return messages
 
     async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: list[int], *, account_id: int) -> None:

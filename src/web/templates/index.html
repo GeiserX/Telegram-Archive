@@ -1831,10 +1831,25 @@
                                 <div class="message-bubble p-3 text-sm shadow-sm text-tg-n100"
                                     :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
                                     :style="getSenderStyle(msg)">
-                                    <!-- Sender Name (if group and first in sequence) -->
-                                    <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
-                                        class="text-xs font-bold mb-1" :style="{ color: getSenderNameColor(msg) }">
-                                        {{ getSenderName(msg) }}
+                                    <!-- Who spoke, at the start of each run. Two parts, either
+                                         of which can stand alone:
+                                         * The account chip, whenever the sender is one of the
+                                           archived accounts. A chat several accounts share is
+                                           shown once, through one account's copy, so without
+                                           this the other account's messages read as an ordinary
+                                           participant's and the displayed copy's own read as
+                                           the only outgoing ones. It renders on outgoing
+                                           messages too — the own-message styling says "one of
+                                           mine", not which one.
+                                         * The sender's display name, in a group, exactly as
+                                           before. -->
+                                    <div v-if="(senderAccountLabel(msg) && showSenderName(index)) || (!isOwnMessage(msg) && isGroup && showSenderName(index))"
+                                        class="flex items-baseline gap-1.5 mb-1">
+                                        <span v-if="senderAccountLabel(msg)" class="account-chip">{{ senderAccountLabel(msg) }}</span>
+                                        <span v-if="!isOwnMessage(msg) && isGroup"
+                                            class="text-xs font-bold" :style="{ color: getSenderNameColor(msg) }">
+                                            {{ getSenderName(msg) }}
+                                        </span>
                                     </div>
 
                                     <!-- Reply Context -->
@@ -3507,6 +3522,13 @@
                 // the server sorted them. Never a hardcoded pair.
                 const chatAccountLabels = (chat) =>
                     (chat?.accounts || []).map(id => ({ id, label: accountLabel(id) }))
+                // The label for a message sent BY one of the archived accounts, or ''
+                // for everyone else. Empty on a single-account install: the one chip
+                // it could ever print says nothing the reader does not already know.
+                const senderAccountLabel = (msg) =>
+                    (multiAccount.value && msg?.sender_account_id != null)
+                        ? accountLabel(msg.sender_account_id)
+                        : ''
                 const loadAccounts = async () => {
                     try {
                         const res = await fetch('/api/accounts', { credentials: 'include' })
@@ -9574,6 +9596,7 @@
                     multiAccount,
                     accountLabel,
                     chatAccountLabels,
+                    senderAccountLabel,
                     grantAccountLabels,
                     selectedChat,
                     selectedPaneTopic,
