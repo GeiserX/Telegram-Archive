@@ -1920,7 +1920,7 @@ async def search_messages(
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-    _mask_unentitled_sender_accounts(payload["results"], user)
+    await _mask_unentitled_sender_accounts(payload["results"], user)
     results = []
     for row in payload["results"]:
         results.append(
@@ -2524,24 +2524,44 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     return avatar_path
 
 
-def _mask_unentitled_sender_accounts(rows: list, user: UserContext) -> None:
+async def _sender_accounts_visible_to(user: UserContext) -> set[int] | None:
+    """The accounts this principal may be told about, or None for no restriction.
+
+    The account grant decides when there is one. A principal narrowed by chat
+    refs instead — a share token is always one — has no account grant at all,
+    so the accounts it may hear about are the ones that actually hold chats it
+    can see. That is the rule ``/api/accounts`` already applies, read the same
+    way, so the two can never disagree about which identities exist for this
+    reader.
+
+    ``DISPLAY_CHAT_IDS`` is deliberately not part of it, exactly as on that
+    endpoint: it is the operator's own filter, not a statement about who the
+    reader is.
+    """
+    if user.allowed_accounts is not None:
+        return user.allowed_accounts
+    if user.allowed_chat_refs is None:
+        return None
+    return await db.get_visible_account_ids(ChatScope.build(refs=user.allowed_chat_refs))
+
+
+async def _mask_unentitled_sender_accounts(rows: list, user: UserContext) -> None:
     """Drop ``sender_account_id`` for accounts this principal may not see.
 
     The adapter answers factually — which archived account sent this row — and
     whether THIS reader may be told lives here, with every other entitlement
-    decision. A viewer granted one account reads the other account's messages
-    exactly as it did before 8.12: an ordinary participant's, on the left, with
-    a name and no chip. It never learns that a second identity exists, and the
-    viewer cannot claim the message as its own.
-
-    ``allowed_accounts`` of None is a master or an unrestricted viewer, which
-    may see every account, so nothing is masked.
+    decision. A restricted reader sees the other account's messages exactly as
+    it did before 8.12: an ordinary participant's, on the left, with a name and
+    no chip. It never learns that a second identity exists, and it cannot claim
+    the message as its own.
     """
-    allowed = user.allowed_accounts
-    if allowed is None or not rows:
+    if not rows:
+        return
+    visible = await _sender_accounts_visible_to(user)
+    if visible is None:
         return
     for row in rows:
-        if isinstance(row, dict) and row.get("sender_account_id") not in allowed:
+        if isinstance(row, dict) and row.get("sender_account_id") not in visible:
             row["sender_account_id"] = None
 
 
@@ -2792,7 +2812,7 @@ async def get_messages(
         # unexpected shape can never turn a read into a 500.
         if isinstance(messages, list):
             _attach_message_payload_urls(messages, chat)
-            _mask_unentitled_sender_accounts(messages, user)
+            await _mask_unentitled_sender_accounts(messages, user)
         if user.no_download:
             _strip_original_media_paths(messages)
         return messages
@@ -2851,7 +2871,7 @@ async def search_tag(
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
     payload["tag"] = tag
-    _mask_unentitled_sender_accounts(payload.get("results") or [], user)
+    await _mask_unentitled_sender_accounts(payload.get("results") or [], user)
     return payload
 
 
@@ -2927,7 +2947,7 @@ async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: U
         # Same renderer as the message list, so the same ref-addressed URLs.
         if isinstance(pinned_messages, list):
             _attach_message_payload_urls(pinned_messages, chat)
-            _mask_unentitled_sender_accounts(pinned_messages, user)
+            await _mask_unentitled_sender_accounts(pinned_messages, user)
         if user.no_download:
             _strip_original_media_paths(pinned_messages)
         return pinned_messages  # Returns empty list if no pinned messages
@@ -3504,7 +3524,7 @@ async def get_message_by_date(
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
         _attach_message_payload_urls([message], chat)
-        _mask_unentitled_sender_accounts([message], user)
+        await _mask_unentitled_sender_accounts([message], user)
         if user.no_download:
             _strip_original_media_paths([message])
         return message

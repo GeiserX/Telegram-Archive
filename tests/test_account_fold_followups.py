@@ -424,7 +424,42 @@ class TestSenderAccountIsAnEntitlementDecision:
         # Nothing in the payload names the account it may not see.
         assert "Account B" not in resp.text
 
-    def test_the_empty_grant_names_nobody(self):
+    async def test_a_ref_only_grant_hears_about_its_own_chat_s_accounts_alone(self, app_on):
+        """A share token carries chat refs and no account grant at all.
+
+        Nothing about the account grant is restrictive there, so masking by it
+        alone let a token holder read which archived identity spoke. The rule
+        that applies is the one /api/accounts already uses: the accounts that
+        hold chats this grant reaches.
+        """
+        chat_ref = await seed_two_speakers(app_on)
+        # A second chat only account 2 holds, which this grant does NOT reach.
+        await app_on.upsert_chat({"id": -1004200999, "type": "channel", "title": "elsewhere"}, account_id=2)
+        as_principal(role="token", allowed_accounts=None, allowed_chat_refs={chat_ref})
+
+        async with client() as http:
+            rows = (await http.get(f"/api/chats/{chat_ref}/messages")).json()
+
+        # The granted ref is account 1's copy, so only account 1 may be named.
+        assert {row["id"]: row["sender_account_id"] for row in rows} == {31: 1, 32: None, 33: None}
+
+    async def test_a_ref_grant_covering_both_copies_may_name_both(self, app_on):
+        """Entitled to both copies, so both identities are already known."""
+        chat_ref = await seed_two_speakers(app_on)
+        async with app_on.db_manager.async_session_factory() as session:
+            await session.execute(
+                text("UPDATE chats SET ref = :r WHERE account_id = 2 AND id = :c"),
+                {"r": "followRefA2chan000001", "c": SHARED_CHANNEL},
+            )
+            await session.commit()
+        as_principal(role="token", allowed_accounts=None, allowed_chat_refs={chat_ref, "followRefA2chan000001"})
+
+        async with client() as http:
+            rows = (await http.get(f"/api/chats/{chat_ref}/messages")).json()
+
+        assert {row["id"]: row["sender_account_id"] for row in rows} == {31: 1, 32: 2, 33: None}
+
+    async def test_the_empty_grant_names_nobody(self):
         """Fail closed, like every other grant in this file.
 
         An empty account grant cannot reach a chat at all, so this is the rule
@@ -432,15 +467,15 @@ class TestSenderAccountIsAnEntitlementDecision:
         restriction" the way a falsy collection so often does.
         """
         rows = [{"sender_account_id": 1}, {"sender_account_id": 2}, {"sender_account_id": None}]
-        web_main._mask_unentitled_sender_accounts(
+        await web_main._mask_unentitled_sender_accounts(
             rows, web_main.UserContext(username="v", role="viewer", allowed_accounts=set())
         )
 
         assert [row["sender_account_id"] for row in rows] == [None, None, None]
 
-    def test_an_unrestricted_principal_is_not_masked_at_all(self):
+    async def test_an_unrestricted_principal_is_not_masked_at_all(self):
         rows = [{"sender_account_id": 2}]
-        web_main._mask_unentitled_sender_accounts(
+        await web_main._mask_unentitled_sender_accounts(
             rows, web_main.UserContext(username="m", role="master", allowed_accounts=None)
         )
 
