@@ -1340,8 +1340,8 @@
                                          single-account install, where every chip would say the same
                                          thing; a chat several accounts share carries one chip each. -->
                                     <p v-if="multiAccount" class="mt-1 flex flex-wrap gap-1">
-                                        <span v-for="label in chatAccountLabels(chat)" :key="label"
-                                            class="account-chip">{{ label }}</span>
+                                        <span v-for="chip in chatAccountLabels(chat)" :key="chip.id"
+                                            class="account-chip">{{ chip.label }}</span>
                                     </p>
                                 </div>
                             </div>
@@ -1494,8 +1494,8 @@
                                     <template v-else>{{ selectedChat.type }}</template>
                                 </p>
                                 <p v-if="multiAccount" class="mt-0.5 flex flex-wrap gap-1">
-                                    <span v-for="label in chatAccountLabels(selectedChat)" :key="label"
-                                        class="account-chip">{{ label }}</span>
+                                    <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
+                                        class="account-chip">{{ chip.label }}</span>
                                 </p>
                             </div>
                             <!-- Per-Chat Stats -->
@@ -2326,8 +2326,8 @@
                         <div v-if="multiAccount">
                             <dt class="text-xs uppercase tracking-wide text-tg-muted">{{ chatAccountLabels(selectedChat).length === 1 ? 'Account' : 'Accounts' }}</dt>
                             <dd class="mt-1 flex flex-wrap gap-1">
-                                <span v-for="label in chatAccountLabels(selectedChat)" :key="label"
-                                    class="account-chip">{{ label }}</span>
+                                <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
+                                    class="account-chip">{{ chip.label }}</span>
                             </dd>
                         </div>
                     </dl>
@@ -3015,9 +3015,10 @@
                             <div class="mt-3">
                                 <label class="text-xs text-tg-n400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
                                 <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
+                                    <label v-for="chat in adminChats" :key="chat.ref" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
                                         <input type="checkbox" :value="chat.ref" v-model="adminTokenForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
+                                        <span v-if="multiAccount" class="text-tg-n400">({{ accountLabel(chat.account_id) }})</span>
                                     </label>
                                 </div>
                             </div>
@@ -3504,7 +3505,8 @@
                 const accountLabel = (id) => accountLabels.value[id] || `account ${id}`
                 // Generic for N accounts: whatever ids the row carries, in the order
                 // the server sorted them. Never a hardcoded pair.
-                const chatAccountLabels = (chat) => (chat?.accounts || []).map(accountLabel)
+                const chatAccountLabels = (chat) =>
+                    (chat?.accounts || []).map(id => ({ id, label: accountLabel(id) }))
                 const loadAccounts = async () => {
                     try {
                         const res = await fetch('/api/accounts', { credentials: 'include' })
