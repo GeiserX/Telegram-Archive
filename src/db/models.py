@@ -50,6 +50,12 @@ from .fts import install_fts_ddl_listener
 # somewhere real instead of failing the NOT NULL.
 DEFAULT_ACCOUNT_ID = 1
 
+# ``chats.type`` for a one-to-one conversation (a bot DM is stored as one too).
+# Written down once because the viewer's chat folding turns on it: a private
+# chat's id is the OTHER party's user id, so two accounts' rows can share an id
+# while being two different conversations, and those must never be merged.
+PRIVATE_CHAT_TYPE = "private"
+
 
 def account_metadata_key(base: str, account_id: int) -> str:
     """Metadata KV key for one account's slice of a per-account value (8.1, #313).
