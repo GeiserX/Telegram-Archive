@@ -36,7 +36,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import ChatScope, parse_entitlement_column
-from ..db.models import DEFAULT_ACCOUNT_ID, account_metadata_key
+from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
@@ -1909,7 +1909,9 @@ async def search_messages(
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
     try:
-        payload = await db.search_messages_global(q, scope=_chat_scope(user), limit=limit, offset=offset)
+        payload = await db.search_messages_global(
+            q, scope=_chat_scope(user), limit=limit, offset=offset, fold_shared=True
+        )
     except Exception as e:
         # Type name only: SQLAlchemy exception text can echo statement
         # parameters — the search text and the viewer's scope grants.
@@ -2554,6 +2556,42 @@ def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
             media["url"] = None
 
 
+@app.get("/api/accounts")
+async def get_accounts(user: UserContext = Depends(require_auth)):
+    """The accounts this principal may see, as ``{"id", "label"}`` (8.12).
+
+    The viewer needs a name for every account id it renders — chat badges,
+    the chat header, the admin grant editor — and before this route there was
+    no way to turn an account id into anything but the digit itself.
+
+    Two rules and nothing else. The list is narrowed by the SAME
+    ``allowed_accounts`` grant that narrows the chat list, so a viewer cannot
+    learn an account it is not entitled to; ``None`` (master, or an
+    unrestricted viewer) sees every account. And the payload is id plus label
+    only: ``accounts.telegram_user_id`` is PII and never leaves the database,
+    while the label is operator-chosen text from ``TG_ACCOUNT_<N>_LABEL``. An
+    account whose label was never set answers ``account <id>`` rather than a
+    blank chip.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        rows = await db.get_accounts()
+    except Exception as e:
+        logger.error(f"Error fetching accounts: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    allowed = user.allowed_accounts
+    return {
+        "accounts": [
+            {"id": row["id"], "label": row["label"] or f"account {row['id']}"}
+            for row in rows
+            if allowed is None or row["id"] in allowed
+        ]
+    }
+
+
 @app.get("/api/chats")
 async def get_chats(
     user: UserContext = Depends(require_auth),
@@ -2581,11 +2619,24 @@ async def get_chats(
         # subquery — to render one page, so /api/chats went from slow to
         # unusable as the archive grew (4,784 chats / ~2.7M messages: >120s for
         # a viewer entitled to a single chat).
+        #
+        # fold_shared is what turns two accounts' copies of one channel into
+        # one row carrying both account ids (8.12). It rides into the SAME two
+        # calls as the scope, for the same reason: total and has_more have to
+        # count the rows the page actually shows.
         scope = _chat_scope(user)
         chats = await db.get_all_chats(
-            limit=limit, offset=offset, search=search, archived=archived, folder_id=folder_id, scope=scope
+            limit=limit,
+            offset=offset,
+            search=search,
+            archived=archived,
+            folder_id=folder_id,
+            scope=scope,
+            fold_shared=True,
         )
-        total = await db.get_chat_count(search=search, archived=archived, folder_id=folder_id, scope=scope)
+        total = await db.get_chat_count(
+            search=search, archived=archived, folder_id=folder_id, scope=scope, fold_shared=True
+        )
 
         # Ref-addressed avatar URLs; the avatar bytes route re-resolves at serve
         # time, this only decides whether the viewer renders an <img> at all.
@@ -2607,12 +2658,17 @@ async def get_chats(
 
 
 @app.get("/api/chats/{chat_ref}")
-async def get_chat(chat: ChatContext = Depends(require_chat)):
+async def get_chat(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
     """One chat by its opaque ref, shaped like a chat-list row.
 
     Deep links (push notifications, shared message links, global search hits)
     can point at any entitled chat, not just the page the sidebar has loaded;
     this is how the viewer resolves the rest without paging the whole list.
+
+    The row carries ``accounts`` like a chat-list row does, so a chat opened
+    from a deep link shows the same account badges as one opened from the
+    sidebar. Nothing is folded here: the ref names one copy and the caller
+    asked for that copy.
     """
     try:
         row = await db.get_chat_by_ref(chat.ref, account_id=chat.account_id)
@@ -2624,7 +2680,27 @@ async def get_chat(chat: ChatContext = Depends(require_chat)):
     if not row:
         raise HTTPException(status_code=404, detail="Chat not found")
     row["avatar_url"] = _chat_avatar_url(row["id"], row.get("type"), row["ref"])
+    row["accounts"] = await _chat_account_ids(row, user)
     return row
+
+
+async def _chat_account_ids(row: dict, user: UserContext) -> list[int]:
+    """The entitled accounts holding ``row``'s chat, for one already-resolved row.
+
+    Same answer the chat list attaches, asked one row at a time. A private
+    chat answers with its own account without a query — an id shared with
+    another account is a different conversation there, never the same one.
+    """
+    if row.get("type") == PRIVATE_CHAT_TYPE:
+        return [row["account_id"]]
+    try:
+        holders = await db.get_chat_account_ids([row["id"]], scope=_chat_scope(user))
+    except Exception as e:
+        # Advisory badge data: a failure here must not turn a readable chat
+        # into a 500. Fall back to the copy the caller already resolved.
+        logger.warning(f"Account badge lookup failed ({type(e).__name__}); showing one account")
+        return [row["account_id"]]
+    return holders.get(row["id"]) or [row["account_id"]]
 
 
 @app.get("/api/chats/{chat_ref}/messages")
@@ -2714,7 +2790,12 @@ async def search_tag(
     """
     if not _TAG_PATTERN.match(tag):
         raise HTTPException(status_code=400, detail="Not a recognizable #hashtag or $cashtag")
-    kwargs: dict[str, Any] = {"scope": _chat_scope(user), "limit": limit, "offset": offset}
+    kwargs: dict[str, Any] = {
+        "scope": _chat_scope(user),
+        "limit": limit,
+        "offset": offset,
+        "fold_shared": True,
+    }
     if scope == "chat":
         if not chat_ref:
             raise HTTPException(status_code=400, detail="scope=chat requires chat_ref")
