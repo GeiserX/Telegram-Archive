@@ -2016,6 +2016,19 @@ class TestGetMessagesByDateRange:
 # ============================================================
 
 
+def _owner_map_result(*rows):
+    """The one `accounts` read `attach_sender_accounts` makes per adapter.
+
+    Every viewer-facing message read stamps `sender_account_id`, which needs
+    the {telegram_user_id: account_id} map. It is cached per adapter, so a
+    test that builds a fresh one and enumerates its statements sees exactly
+    one extra read; pass rows to give a message an archived sender.
+    """
+    result = MagicMock()
+    result.__iter__ = MagicMock(return_value=iter(rows))
+    return result
+
+
 class TestGetMessagesPaginated:
     """Test get_messages_paginated with cursor-based and offset-based pagination."""
 
@@ -2107,7 +2120,13 @@ class TestGetMessagesPaginated:
         reactions_result = MagicMock()
         reactions_result.scalars.return_value = []
 
-        mock_session.execute.side_effect = [mock_result, media_result, versions_result, reactions_result]
+        mock_session.execute.side_effect = [
+            mock_result,
+            media_result,
+            versions_result,
+            reactions_result,
+            _owner_map_result(),
+        ]
 
         result = await adapter.get_messages_paginated(chat_id=100)
         assert result[0]["media"] is not None
@@ -2294,6 +2313,7 @@ class TestGetMessagesPaginated:
             version_count_result,
             reply_result,
             reactions_result,
+            _owner_map_result(),
         ]
 
         result = await adapter.get_messages_paginated(chat_id=100)
@@ -3333,7 +3353,7 @@ class TestFindMessageByDateWithJoins:
         result2 = MagicMock()
         result2.first.return_value = row
 
-        mock_session.execute.side_effect = [result1, result2]
+        mock_session.execute.side_effect = [result1, result2, _owner_map_result()]
         adapter.get_reactions = AsyncMock(return_value=[])
 
         result = await adapter.find_message_by_date_with_joins(100, datetime(2025, 12, 1))
@@ -3355,7 +3375,7 @@ class TestFindMessageByDateWithJoins:
         result3 = MagicMock()
         result3.first.return_value = row
 
-        mock_session.execute.side_effect = [result1, result2, result3]
+        mock_session.execute.side_effect = [result1, result2, result3, _owner_map_result()]
         adapter.get_reactions = AsyncMock(return_value=[])
 
         result = await adapter.find_message_by_date_with_joins(100, datetime(2020, 1, 1))

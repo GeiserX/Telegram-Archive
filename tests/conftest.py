@@ -258,6 +258,41 @@ def chat_row_in_scope(row: dict, scope) -> bool:
     return True
 
 
+PRIVATE_CHAT_TYPE = "private"
+
+
+def chat_row_is_displayed_copy(row: dict, rows: list[dict], scope) -> bool:
+    """Independent restatement of the 8.12 folding rule, for test fakes.
+
+    A non-private chat several entitled accounts hold is shown once, through
+    its lowest entitled account. Written out by hand for the same reason
+    ``chat_row_in_scope`` is: a route that forgets to ask for folding, or asks
+    for it with the wrong scope, has to fail here rather than be carried by
+    the production predicate.
+    """
+    if row.get("type") == PRIVATE_CHAT_TYPE:
+        return True
+    return not any(
+        other["id"] == row["id"]
+        and other.get("type") != PRIVATE_CHAT_TYPE
+        and other["account_id"] < row["account_id"]
+        and chat_row_in_scope(other, scope)
+        for other in rows
+    )
+
+
+def chat_row_accounts(row: dict, rows: list[dict], scope) -> list[int]:
+    """The entitled account ids a folded row names, ascending — test-fake twin."""
+    if row.get("type") == PRIVATE_CHAT_TYPE:
+        return [row["account_id"]]
+    holders = {
+        other["account_id"]
+        for other in rows
+        if other["id"] == row["id"] and other.get("type") != PRIVATE_CHAT_TYPE and chat_row_in_scope(other, scope)
+    }
+    return sorted(holders) or [row["account_id"]]
+
+
 def scoped_chat_source(rows: list[dict]):
     """``(get_all_chats, get_chat_count, get_visible_chat_ids)`` fakes over ``rows``.
 
@@ -265,18 +300,42 @@ def scoped_chat_source(rows: list[dict]):
     compiles to SQL, so a route that switches between them keeps reading the
     same visibility rules here as it does in production.
 
+    ``fold_shared`` is honoured the same way, including the ``accounts`` field
+    the real adapter attaches, so a route test sees the row set and the badge
+    data production would produce.
+
     ``archived``/``folder_id``/``search`` are ignored: callers that need those
     pass rows already narrowed to the case under test.
     """
 
+    def _visible(scope, fold_shared):
+        selected = [row for row in rows if chat_row_in_scope(row, scope)]
+        if fold_shared:
+            selected = [row for row in selected if chat_row_is_displayed_copy(row, rows, scope)]
+        materialised = [dict(row) for row in selected]
+        if fold_shared:
+            for built, source in zip(materialised, selected, strict=True):
+                built["accounts"] = chat_row_accounts(source, rows, scope)
+        return materialised
+
     async def get_all_chats(
-        limit=None, offset=0, search=None, archived=None, folder_id=None, *, account_id=None, scope=None
+        limit=None,
+        offset=0,
+        search=None,
+        archived=None,
+        folder_id=None,
+        *,
+        account_id=None,
+        scope=None,
+        fold_shared=False,
     ):
-        visible = [dict(row) for row in rows if chat_row_in_scope(row, scope)]
+        visible = _visible(scope, fold_shared)
         return visible[offset:] if limit is None else visible[offset : offset + limit]
 
-    async def get_chat_count(search=None, archived=None, folder_id=None, *, account_id=None, scope=None):
-        return sum(1 for row in rows if chat_row_in_scope(row, scope))
+    async def get_chat_count(
+        search=None, archived=None, folder_id=None, *, account_id=None, scope=None, fold_shared=False
+    ):
+        return len(_visible(scope, fold_shared))
 
     async def get_visible_chat_ids(scope):
         return {row["id"] for row in rows if chat_row_in_scope(row, scope)}

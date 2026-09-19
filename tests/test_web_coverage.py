@@ -1747,14 +1747,14 @@ class TestEndpointDbErrors(_MasterTestBase):
 
     async def test_archived_count_db_connection_error(self):
         """get_archived_count returns 503 on DB connection error."""
-        self.mock_db.get_archived_chat_count = AsyncMock(side_effect=ConnectionRefusedError("conn"))
+        self.mock_db.get_chat_count = AsyncMock(side_effect=ConnectionRefusedError("conn"))
         async with self._client() as client:
             resp = await client.get("/api/archived/count")
         self.assertEqual(resp.status_code, 503)
 
     async def test_archived_count_generic_error(self):
         """get_archived_count returns 500 on generic error."""
-        self.mock_db.get_archived_chat_count = AsyncMock(side_effect=RuntimeError("bug"))
+        self.mock_db.get_chat_count = AsyncMock(side_effect=RuntimeError("bug"))
         async with self._client() as client:
             resp = await client.get("/api/archived/count")
         self.assertEqual(resp.status_code, 500)
