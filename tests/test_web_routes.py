@@ -393,9 +393,17 @@ class TestChatsEndpoint(_WebTestBase):
         calls = []
 
         async def recording_get_all_chats(
-            limit=None, offset=0, search=None, archived=None, folder_id=None, *, account_id=None, scope=None
+            limit=None,
+            offset=0,
+            search=None,
+            archived=None,
+            folder_id=None,
+            *,
+            account_id=None,
+            scope=None,
+            fold_shared=False,
         ):
-            calls.append({"limit": limit, "offset": offset, "scope": scope})
+            calls.append({"limit": limit, "offset": offset, "scope": scope, "fold_shared": fold_shared})
             return []
 
         self.mock_db.get_all_chats = recording_get_all_chats
@@ -415,6 +423,9 @@ class TestChatsEndpoint(_WebTestBase):
         self.assertIsNone(scope.accounts)
         # The count is taken under the SAME scope, or total and the page disagree.
         self.assertEqual(self.mock_db.get_chat_count.call_args.kwargs["scope"], scope)
+        # ...and under the same folding rule, for exactly the same reason.
+        self.assertTrue(calls[0]["fold_shared"])
+        self.assertTrue(self.mock_db.get_chat_count.call_args.kwargs["fold_shared"])
 
     async def test_chats_search_parameter(self):
         """get_chats passes search parameter to db."""
@@ -2317,13 +2328,27 @@ class TestChatByRefEndpoint(_WebTestBase):
         "is_archived": 1,
     }
 
-    async def test_returns_the_row_with_an_avatar_url(self):
+    async def test_returns_the_row_with_an_avatar_url_and_its_accounts(self):
         self.mock_db.get_chat_by_ref = AsyncMock(return_value=dict(self.CHAT))
+        self.mock_db.get_chat_account_ids = AsyncMock(return_value={self.CHAT["id"]: [1, 2]})
         with patch.object(web_main, "_get_cached_avatar_path", return_value=None):
             async with self._client() as client:
                 resp = await client.get("/api/chats/ref00000000000000009999")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {**self.CHAT, "avatar_url": None})
+        # A deep-linked chat is shaped like a chat-list row, badges included.
+        self.assertEqual(resp.json(), {**self.CHAT, "avatar_url": None, "accounts": [1, 2]})
+
+    async def test_private_chat_names_only_its_own_account(self):
+        """No badge query for a private chat: a shared id is a different conversation."""
+        private = {**self.CHAT, "type": "private", "id": 900123, "account_id": 2}
+        self.mock_db.get_chat_by_ref = AsyncMock(return_value=dict(private))
+        self.mock_db.get_chat_account_ids = AsyncMock(return_value={900123: [1, 2]})
+        with patch.object(web_main, "_get_cached_avatar_path", return_value=None):
+            async with self._client() as client:
+                resp = await client.get("/api/chats/ref00000000000000009999")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["accounts"], [2])
+        self.mock_db.get_chat_account_ids.assert_not_awaited()
 
     async def test_unknown_and_out_of_scope_refs_are_the_same_404(self):
         self.mock_db.get_chat_by_ref = AsyncMock(return_value=None)
