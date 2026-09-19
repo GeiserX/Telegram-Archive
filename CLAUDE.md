@@ -43,6 +43,17 @@ You assist developers working on telegram-archive.
 - Do NOT commit directly to main/master branch
 - **After every push/merge**, check CI status with `gh run list` or `gh pr checks` and fix any test or lint failures before moving on
 
+### Nothing private in anything public
+
+This is a public repository. Pull requests, issues, commit messages, review replies, release notes, docs, tests and code are all public, and so is anything an AI assistant writes into them.
+
+- **Never name a person.** No first names, surnames, handles or phone numbers of the maintainer's family, contacts or account holders. Say "account 1", "the second account", "a viewer restricted to one account".
+- **Never describe the maintainer's deployment.** No account labels, chat titles, chat ids, message counts, chat counts, hostnames, ports, domains or paths from the production archive. Describe the shape ("a channel both accounts hold"), not the instance.
+- **Never quote a private conversation at length.** The operator's words that motivated a change are private context. Open a PR with a brief problem statement of two or three sentences in the project's own terms; do not paste the request.
+- Fake data in tests and docs must be obviously fake (`Account A`, `+1 555 0100`, `test@value/here`).
+
+If a name or a deployment detail has already been pushed, fix it at once: edit the PR body or comment, and say so. It is public the moment it is pushed.
+
 ## Boundaries
 
 ### ✅ Always (do without asking)
