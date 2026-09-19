@@ -143,6 +143,25 @@ class TestFolding:
         # Each names ONLY its own account: the other copy is a different chat.
         assert {row["account_id"]: row["accounts"] for row in privates} == {1: [1], 2: [2]}
 
+    async def test_a_private_chat_never_folds_behind_a_non_private_one(self, real_adapter):
+        """The rule is "this row is private", not "the other row is private".
+
+        The inner half of the predicate already refuses to fold behind a
+        private copy. The outer half is what protects a private chat from
+        being folded away by a NON-private chat that happens to carry the same
+        id in a lower account — the one arrangement where the two halves
+        disagree, and the reason the outer clause exists.
+        """
+        collision = 810009999
+        await real_adapter.upsert_chat({"id": collision, "type": "group", "title": "group copy"}, account_id=1)
+        await real_adapter.upsert_chat({"id": collision, "type": "private", "title": "dm copy"}, account_id=2)
+
+        rows = await real_adapter.get_all_chats(scope=ACCOUNTS_1_AND_2, fold_shared=True)
+
+        assert sorted((row["account_id"], row["type"]) for row in rows) == [(1, "group"), (2, "private")]
+        # The private row names its own account, never the group's.
+        assert next(row for row in rows if row["type"] == "private")["accounts"] == [2]
+
     async def test_an_account_2_viewer_sees_its_own_copies_and_one_badge(self, seeded_adapter):
         """Nothing a restricted viewer sees may depend on a row it may not see."""
         rows = await seeded_adapter.get_all_chats(scope=ONLY_ACCOUNT_2, fold_shared=True)
