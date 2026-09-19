@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.12.0] - 2026-09-20
+
+An archive holding more than one account now says which account each chat and each of your own messages belongs to, and lists a channel or group that several accounts hold once.
+
+### Added
+- **Account chips in the viewer.** With more than one account configured, every chat in the list, the open chat's header and the info panel name the account the chat was archived under: the `TG_ACCOUNT_<N>_LABEL` text, or `account <N>` when no label is set. A single-account install renders nothing new.
+- **Shared channels and groups are listed once.** A channel, group or supergroup that several accounts hold appears as one row tagged with every account holding it, addressed through the lowest-numbered one. Cross-chat search and tag search follow the same rule. Private chats are never merged: a one-to-one chat is keyed by the other person's user id, so two accounts' rows can share an id while holding different conversations.
+- **Your own accounts' messages say which account sent them.** In a chat shown through one account's copy, each run of messages from an archived account carries that account's label, outgoing ones included. The label is derived on the server and the Telegram user id behind it never reaches the browser.
+- **An editor for a viewer's accounts.** Admin Settings → Viewer Accounts grants accounts to a viewer: "All accounts" is the unrestricted grant, any selection is the explicit list. Folding follows each viewer's entitlement, so a viewer restricted to one account sees exactly what it saw before.
+
+### Fixed
+- **The archived badge and the archived list now agree.** The badge counted rows with a shortcut the list did not use.
+- **The chat list has a total order again.** Since 8.0 two accounts' copies of a chat could tie on date and id, so pages could repeat or skip a row; the account is now the last tiebreaker.
+- **A share token no longer learns the labels of accounts it cannot see.** `/api/accounts` is narrowed by the token's chat grant as well as by account.
+- **Admin chat pickers and account chips use unique keys.** Rows keyed on a chat id, which repeats across accounts, could be reused for the wrong chat.
+
 ## [8.11.3] - 2026-09-18
 
 One dependency update, closing two security advisories.
