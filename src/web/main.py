@@ -1920,6 +1920,7 @@ async def search_messages(
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    _mask_unentitled_sender_accounts(payload["results"], user)
     results = []
     for row in payload["results"]:
         results.append(
@@ -2523,6 +2524,27 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
     return avatar_path
 
 
+def _mask_unentitled_sender_accounts(rows: list, user: UserContext) -> None:
+    """Drop ``sender_account_id`` for accounts this principal may not see.
+
+    The adapter answers factually — which archived account sent this row — and
+    whether THIS reader may be told lives here, with every other entitlement
+    decision. A viewer granted one account reads the other account's messages
+    exactly as it did before 8.12: an ordinary participant's, on the left, with
+    a name and no chip. It never learns that a second identity exists, and the
+    viewer cannot claim the message as its own.
+
+    ``allowed_accounts`` of None is a master or an unrestricted viewer, which
+    may see every account, so nothing is masked.
+    """
+    allowed = user.allowed_accounts
+    if allowed is None or not rows:
+        return
+    for row in rows:
+        if isinstance(row, dict) and row.get("sender_account_id") not in allowed:
+            row["sender_account_id"] = None
+
+
 def _attach_message_payload_urls(messages: list, chat: ChatContext) -> None:
     """Give message payloads their ref-addressed URLs; no chat id survives in any URL.
 
@@ -2770,6 +2792,7 @@ async def get_messages(
         # unexpected shape can never turn a read into a 500.
         if isinstance(messages, list):
             _attach_message_payload_urls(messages, chat)
+            _mask_unentitled_sender_accounts(messages, user)
         if user.no_download:
             _strip_original_media_paths(messages)
         return messages
@@ -2828,6 +2851,7 @@ async def search_tag(
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
     payload["tag"] = tag
+    _mask_unentitled_sender_accounts(payload.get("results") or [], user)
     return payload
 
 
@@ -2903,6 +2927,7 @@ async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: U
         # Same renderer as the message list, so the same ref-addressed URLs.
         if isinstance(pinned_messages, list):
             _attach_message_payload_urls(pinned_messages, chat)
+            _mask_unentitled_sender_accounts(pinned_messages, user)
         if user.no_download:
             _strip_original_media_paths(pinned_messages)
         return pinned_messages  # Returns empty list if no pinned messages
@@ -3479,6 +3504,7 @@ async def get_message_by_date(
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
         _attach_message_payload_urls([message], chat)
+        _mask_unentitled_sender_accounts([message], user)
         if user.no_download:
             _strip_original_media_paths([message])
         return message
