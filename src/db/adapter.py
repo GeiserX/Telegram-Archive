@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -51,6 +52,7 @@ from .base import DatabaseManager
 from .fts import PG_TSQUERY_FROM_SEARCH, PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, search_has_words
 from .models import (
     DEFAULT_ACCOUNT_ID,
+    PRIVATE_CHAT_TYPE,
     Account,
     AppSettings,
     Chat,
@@ -212,15 +214,62 @@ class ChatScope:
             return False
         return True
 
-    def sql_predicates(self) -> list[Any]:
-        """The same three rules as WHERE-clause fragments against ``chats``."""
+    def sql_predicates(self, entity=Chat) -> list[Any]:
+        """The same three rules as WHERE-clause fragments against ``chats``.
+
+        ``entity`` is the chats table the predicates address — ``Chat`` for the
+        query's own row, or an ``aliased(Chat)`` when the rules have to be
+        re-asked about a DIFFERENT copy of the same chat (see
+        :meth:`displayed_copy_predicate`). Same three rules either way.
+        """
         predicates: list[Any] = []
-        for column, grant in ((Chat.id, self.ids), (Chat.account_id, self.accounts), (Chat.ref, self.refs)):
+        for column, grant in ((entity.id, self.ids), (entity.account_id, self.accounts), (entity.ref, self.refs)):
             if grant is None:
                 continue
             # An empty grant is "nothing", never "no filter".
             predicates.append(column.in_(grant) if grant else false())
         return predicates
+
+    def displayed_copy_predicate(self, entity=Chat) -> Any:
+        """True for the ONE copy of a chat this scope shows (8.12 chat folding).
+
+        Since 8.0 several accounts archive into one database, so the same
+        Telegram chat can exist once per account — same ``chats.id``, one row
+        each, each with its own ``ref``. For a channel, a supergroup or a group
+        that is genuinely the SAME conversation seen twice, listing both copies
+        shows the operator a duplicate; the viewer folds them into one row and
+        names the accounts instead.
+
+        A private chat is NEVER folded. Its ``chats.id`` is the other person's
+        user id, so "account A's conversation with X" and "account B's
+        conversation with X" share an id while being two different
+        conversations with different messages. Merging them would invent a
+        thread that never existed.
+
+        The surviving copy is the one belonging to the LOWEST account id this
+        scope is entitled to. Lowest rather than newest/busiest because it must
+        not change as messages arrive: the copy that survives owns the ``ref``
+        the viewer deep-links, subscribes and addresses media with, and a ref
+        that flips under the user breaks every one of those.
+
+        The grant is re-applied to the lower copy on purpose. Folding may only
+        consider accounts the principal may actually see, so a viewer entitled
+        to account 2 alone keeps seeing account 2's copy — nothing is hidden
+        behind a row it has no right to.
+        """
+        lower_copy = aliased(Chat, name="lower_account_copy")
+        shared = (
+            select(literal(1))
+            .select_from(lower_copy)
+            .where(
+                lower_copy.id == entity.id,
+                lower_copy.account_id < entity.account_id,
+                lower_copy.type != PRIVATE_CHAT_TYPE,
+            )
+        )
+        for predicate in self.sql_predicates(lower_copy):
+            shared = shared.where(predicate)
+        return or_(entity.type == PRIVATE_CHAT_TYPE, ~shared.correlate(entity).exists())
 
 
 # Message columns an upsert may refresh ONLY when the writer actually supplied
@@ -369,6 +418,12 @@ class DatabaseAdapter:
       viewer_* tables) keep their pre-8.0 signatures.
     """
 
+    # How long the account owner map is reused (see _account_owner_ids). An
+    # account gains its telegram_user_id once, at its first login, so a stale
+    # entry means at most this long without a sender label on a brand-new
+    # account's messages — never a wrong label.
+    ACCOUNT_OWNER_CACHE_TTL_SECONDS = 300
+
     def __init__(self, db_manager: DatabaseManager):
         """
         Initialize adapter with a DatabaseManager.
@@ -380,6 +435,8 @@ class DatabaseAdapter:
         self._is_sqlite = db_manager._is_sqlite
         # Full-text capability, probed once on first search: None = unknown.
         self._fts_ready_cache: bool | None = None
+        # (read_at, {telegram_user_id: account_id}) — see _account_owner_ids.
+        self._account_owner_cache: tuple[float, dict[int, int]] | None = None
 
     def _serialize_raw_data(self, raw_data: Any) -> str:
         """
@@ -778,6 +835,69 @@ class DatabaseAdapter:
             result = await session.execute(select(Account.id).order_by(Account.id))
             return [row[0] for row in result]
 
+    async def get_accounts(self) -> list[dict[str, Any]]:
+        """Every account as ``{"id", "label"}``, ascending — the viewer's badge source.
+
+        ``telegram_user_id`` is deliberately NOT selected. It is the one column
+        on this table this project treats as PII, and nothing that renders an
+        account to a browser needs it; the label is operator-chosen text from
+        ``TG_ACCOUNT_<N>_LABEL``. A NULL label is left NULL here and given its
+        fallback at the edge that displays it.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(select(Account.id, Account.label).order_by(Account.id))
+            return [{"id": row[0], "label": row[1]} for row in result]
+
+    async def _account_owner_ids(self) -> dict[int, int]:
+        """``{telegram_user_id: account_id}`` for accounts that have logged in.
+
+        Server-side only, and the one place this project reads
+        ``telegram_user_id`` outside ``ensure_account``. The KEYS are the PII;
+        what callers put in a payload is the account id they map to.
+
+        Cached for a short TTL because the answer changes exactly once per
+        account, on its first login, while the callers ask on every page of
+        messages. A per-message lookup would be a query per row, and a
+        per-request one a query per page, for a table with one row per
+        configured account.
+        """
+        cached = self._account_owner_cache
+        if cached is not None and time.monotonic() - cached[0] <= self.ACCOUNT_OWNER_CACHE_TTL_SECONDS:
+            return cached[1]
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(
+                select(Account.telegram_user_id, Account.id).where(Account.telegram_user_id.isnot(None))
+            )
+            owners = {row[0]: row[1] for row in result}
+        self._account_owner_cache = (time.monotonic(), owners)
+        return owners
+
+    async def attach_sender_accounts(self, rows: list[dict[str, Any]], *, sender_key: str = "sender_id") -> None:
+        """Stamp every row with ``sender_account_id``, in place.
+
+        With several accounts archiving into one database, a group or channel
+        is shown once — through one account's copy — so the other account's
+        messages arrive looking like an ordinary participant's, and the
+        displayed copy's own messages look like the only outgoing ones. The
+        reader cannot tell which of their identities spoke.
+
+        ``sender_account_id`` is the archived account that sent the message, or
+        None for everyone else. It is derived here rather than exposed as a raw
+        id so ``accounts.telegram_user_id`` never reaches a payload; the field
+        is a small integer the viewer turns into a label.
+
+        ``sender_key`` names the column holding the sender on this row shape —
+        the search results carry it under a private key they then drop.
+        """
+        if not rows:
+            return
+        owners = await self._account_owner_ids()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sender_id = row.get(sender_key)
+            row["sender_account_id"] = owners.get(sender_id) if isinstance(sender_id, int) else None
+
     async def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key."""
         async with self.db_manager.async_session_factory() as session:
@@ -964,6 +1084,7 @@ class DatabaseAdapter:
         *,
         account_id: int | None = None,
         scope: ChatScope | None = None,
+        fold_shared: bool = False,
     ) -> list[dict[str, Any]]:
         """Get chats with their last message date, with optional pagination and search.
 
@@ -979,6 +1100,17 @@ class DatabaseAdapter:
                 post-filter: pushing the grant down here is what keeps limit /
                 offset / COUNT honest, and what stops a one-chat viewer from
                 paying for every chat in the archive.
+            fold_shared: Return ONE row per non-private chat shared by several
+                entitled accounts (``ChatScope.displayed_copy_predicate``) and
+                attach ``accounts`` — the entitled account ids holding that chat,
+                ascending — to every row. This is what the viewer's chat list
+                asks for; the admin chat picker does not, because it edits
+                per-copy grants and needs every copy. The fold happens BEFORE
+                the archived/folder/search filters, so a folded chat is
+                represented by its displayed copy everywhere, filters included:
+                the alternative (fold the filtered set) makes the same chat
+                appear and disappear depending on which account archived it,
+                and picks a different ref per view.
         """
         async with self.db_manager.async_session_factory() as session:
             # Last message date, as a CORRELATED scalar subquery — one
@@ -1023,6 +1155,11 @@ class DatabaseAdapter:
                 for predicate in scope.sql_predicates():
                     stmt = stmt.where(predicate)
 
+            # One row per shared non-private chat, in SQL for the same reason
+            # the grant is: limit/offset/COUNT must all describe the folded set.
+            if fold_shared:
+                stmt = stmt.where((scope or ChatScope()).displayed_copy_predicate())
+
             # Filter by archived status
             if archived is True:
                 stmt = stmt.where(Chat.is_archived == 1)
@@ -1045,11 +1182,14 @@ class DatabaseAdapter:
             # Order by last message date, referencing the SELECT label so the
             # correlated subquery is evaluated once per row rather than twice.
             # `DESC NULLS LAST` is the message-less-chats-last rule the previous
-            # `is_(None), desc()` pair spelled out. Chat.id is the tiebreaker
-            # that makes the ordering TOTAL: without it every message-less chat
-            # ties on NULL, and LIMIT/OFFSET may then split that tie group
-            # differently on each page, so a chat could appear twice or vanish.
-            stmt = stmt.order_by(nulls_last(desc("last_message_date")), Chat.id.desc())
+            # `is_(None), desc()` pair spelled out. The two id columns are the
+            # tiebreakers that make the ordering TOTAL: without them every
+            # message-less chat ties on NULL, and LIMIT/OFFSET may then split
+            # that tie group differently on each page, so a chat could appear
+            # twice or vanish. Chat.id alone stopped being total in 8.0 — the
+            # primary key is (account_id, id), so two accounts' message-less
+            # copies of one private chat tie on BOTH the NULL date and the id.
+            stmt = stmt.order_by(nulls_last(desc("last_message_date")), Chat.id.desc(), Chat.account_id.desc())
 
             # Apply pagination if limit is specified
             if limit is not None:
@@ -1078,7 +1218,67 @@ class DatabaseAdapter:
                     "last_message_date": row.last_message_date,
                 }
                 chats.append(chat_dict)
-            return chats
+        if fold_shared:
+            await self._attach_chat_accounts(chats, scope=scope)
+        return chats
+
+    async def _attach_chat_accounts(self, chats: list[dict[str, Any]], *, scope: ChatScope | None) -> None:
+        """Give every row in ``chats`` its ``accounts`` list, in place.
+
+        One extra indexed read per page rather than an aggregate in the list
+        query: PostgreSQL would spell it ``array_agg() OVER ()`` and SQLite
+        ``group_concat() OVER ()``, and this project ships both backends as
+        first-class, so the dialect-free shape is the one that cannot drift.
+
+        Private chats answer with their own account and nothing else — see
+        ``ChatScope.displayed_copy_predicate`` for why an id shared by two
+        accounts is not the same private conversation.
+        """
+        shared_ids = [row["id"] for row in chats if row.get("type") != PRIVATE_CHAT_TYPE]
+        holders = await self.get_chat_account_ids(shared_ids, scope=scope)
+        for row in chats:
+            if row.get("type") == PRIVATE_CHAT_TYPE:
+                row["accounts"] = [row["account_id"]]
+            else:
+                row["accounts"] = holders.get(row["id"]) or [row["account_id"]]
+
+    async def get_chat_account_ids(
+        self, chat_ids: Collection[int], *, scope: ChatScope | None = None
+    ) -> dict[int, list[int]]:
+        """Which entitled accounts hold each of these NON-PRIVATE chat ids, ascending.
+
+        The data behind the viewer's account badges. Scoped by the same grant
+        as the chat list, so a badge can never name an account the principal is
+        not entitled to. Private chats are excluded by the query itself, so an
+        id that is only ever a private chat simply has no entry.
+        """
+        wanted = {int(chat_id) for chat_id in chat_ids}
+        if not wanted:
+            return {}
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.id, Chat.account_id).where(Chat.id.in_(wanted), Chat.type != PRIVATE_CHAT_TYPE)
+            for predicate in (scope or ChatScope()).sql_predicates():
+                stmt = stmt.where(predicate)
+            result = await session.execute(stmt)
+            holders: dict[int, set[int]] = {}
+            for chat_id, account_id in result:
+                holders.setdefault(chat_id, set()).add(account_id)
+        return {chat_id: sorted(accounts) for chat_id, accounts in holders.items()}
+
+    async def get_visible_account_ids(self, scope: ChatScope) -> set[int]:
+        """The accounts that hold at least one chat ``scope`` selects.
+
+        What a ref-scoped principal — a share token, or a viewer granted a
+        handful of chats — may be told an account list contains. Reading it off
+        the chats the grant already selects means the answer can never name an
+        account the principal has no chat in.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.account_id).distinct()
+            for predicate in scope.sql_predicates():
+                stmt = stmt.where(predicate)
+            result = await session.execute(stmt)
+            return {row[0] for row in result}
 
     async def get_visible_chat_ids(self, scope: ChatScope) -> set[int]:
         """Just the chat ids a scope selects — no row build, no date subquery.
@@ -1103,6 +1303,7 @@ class DatabaseAdapter:
         *,
         account_id: int | None = None,
         scope: ChatScope | None = None,
+        fold_shared: bool = False,
     ) -> int:
         """Get total number of chats (fast count for pagination).
 
@@ -1113,6 +1314,10 @@ class DatabaseAdapter:
             account_id: If set, only this account's chats (None = unscoped until phase 4)
             scope: Viewer entitlement (see get_all_chats). Must be the SAME scope the
                 matching get_all_chats call used, or ``total`` and the page disagree.
+            fold_shared: Count folded rows (see get_all_chats). Must match the
+                matching get_all_chats call for the same reason the scope must:
+                a count of the unfolded rows makes ``has_more`` promise pages
+                that do not exist.
         """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(func.count(Chat.id))
@@ -1133,6 +1338,9 @@ class DatabaseAdapter:
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     stmt = stmt.where(predicate)
+
+            if fold_shared:
+                stmt = stmt.where((scope or ChatScope()).displayed_copy_predicate())
 
             if archived is True:
                 stmt = stmt.where(Chat.is_archived == 1)
@@ -3560,6 +3768,7 @@ class DatabaseAdapter:
         limit: int = 50,
         offset: int = 0,
         scan_cap: int = 3000,
+        fold_shared: bool = False,
     ) -> dict[str, Any]:
         """Messages carrying ``tag`` (#hashtag / $CASHTAG) as a whole token, newest first.
 
@@ -3570,7 +3779,9 @@ class DatabaseAdapter:
         like the chat list, so a restricted viewer's tag search can only ever
         touch entitled chats. ``chat_id``+``account_id`` narrow to one chat
         (the This Chat tab); ``outgoing_only`` is My Messages (the archive
-        owner's side of every conversation). Offset paging re-scans from the
+        owner's side of every conversation). ``fold_shared`` applies the chat
+        list's folding rule to the cross-chat tabs only — see the call site
+        below. Offset paging re-scans from the
         top by design — tag result sets are small, and each request bounds its
         own scan (``scan_cap`` prefilter rows) so no single call can walk the
         table. When the cap truncates the scan, ``has_more`` stays False —
@@ -3604,6 +3815,8 @@ class DatabaseAdapter:
                         Message.text,
                         Message.is_outgoing,
                         Message.sender_name,
+                        # Derives sender_account_id below; never returned.
+                        Message.sender_id,
                         Message.account_id,
                         Message.chat_id,
                         Chat.ref.label("chat_ref"),
@@ -3624,6 +3837,13 @@ class DatabaseAdapter:
                     stmt = stmt.where(Message.is_outgoing == 1)
                 for predicate in scope.sql_predicates():
                     stmt = stmt.where(predicate)
+                # Cross-chat tabs fold shared chats like the chat list does, so
+                # a channel two accounts archive is not listed twice. The This
+                # Chat tab must NOT: it is already narrowed to one copy, and
+                # folding there would empty the tab whenever the reader opened
+                # the copy the fold hides.
+                if fold_shared and chat_id is None:
+                    stmt = stmt.where(scope.displayed_copy_predicate())
                 order_cols = (Message.date, Message.account_id, Message.chat_id, Message.id)
                 if cursor is not None:
                     stmt = stmt.where(tuple_(*order_cols) < cursor)
@@ -3646,6 +3866,7 @@ class DatabaseAdapter:
                             "text": row["text"],
                             "is_outgoing": row["is_outgoing"],
                             "sender_name": row["sender_name"],
+                            "sender_id": row["sender_id"],
                             "chat_ref": row["chat_ref"],
                             "chat_title": title,
                             "chat_type": row["chat_type"],
@@ -3659,8 +3880,13 @@ class DatabaseAdapter:
                 cursor = tuple(rows[-1][key] for key in ("date", "account_id", "chat_id", "id"))
 
         truncated = not exhausted and scanned >= scan_cap and len(matched) < needed
+        page = matched[offset : offset + limit]
+        # Same two steps as the global search: derive the account, drop the id.
+        await self.attach_sender_accounts(page)
+        for result in page:
+            result.pop("sender_id", None)
         return {
-            "results": matched[offset : offset + limit],
+            "results": page,
             "has_more": len(matched) > offset + limit,
             "truncated": truncated,
         }
@@ -3694,6 +3920,9 @@ class DatabaseAdapter:
         Message.date,
         Message.text,
         Message.sender_name,
+        # Read to derive sender_account_id below and then dropped: the id of
+        # whoever sent a hit is not part of this endpoint's contract.
+        Message.sender_id,
         Message.is_deleted,
         Message.account_id,
         Message.chat_id,
@@ -3716,6 +3945,7 @@ class DatabaseAdapter:
         offset: int = 0,
         dense_hits: int | None = None,
         walk_timeout_ms: int | None = None,
+        fold_shared: bool = False,
     ) -> dict[str, Any]:
         """Messages whose text matches ``search`` in ANY entitled chat, newest first.
 
@@ -3734,6 +3964,12 @@ class DatabaseAdapter:
         so the viewer names the chat the way the chat list does (a private
         chat has no title), ``topic_title`` for forum hits, and ``is_deleted``
         so a soft-deleted hit can be dimmed like it is in the chat.
+
+        ``fold_shared`` applies the chat list's folding rule, so a channel two
+        accounts both archive answers once, through the copy the chat list
+        shows — which is also the only ``chat_ref`` whose row the sidebar has,
+        so a hit always opens a chat the reader can see. Private chats are
+        never folded, there or here.
 
         ``dense_hits`` and ``walk_timeout_ms`` exist for tests that want to
         drive each PostgreSQL path with a handful of rows.
@@ -3755,19 +3991,24 @@ class DatabaseAdapter:
 
             if (
                 self._is_sqlite
-                or await self._global_search_hit_count(session, predicate, scope, dense_hits) < dense_hits
+                or await self._global_search_hit_count(session, predicate, scope, dense_hits, fold_shared=fold_shared)
+                < dense_hits
             ):
-                rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset)
+                rows = await self._global_search_sorted_hits(
+                    session, predicate, scope, limit, offset, fold_shared=fold_shared
+                )
             else:
                 try:
                     rows = await self._global_search_walk(
-                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms
+                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms, fold_shared=fold_shared
                     )
                 except DBAPIError as exc:
                     if not _is_statement_timeout(exc):
                         raise
                     await session.rollback()
-                    rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset)
+                    rows = await self._global_search_sorted_hits(
+                        session, predicate, scope, limit, offset, fold_shared=fold_shared
+                    )
 
         results = [
             {
@@ -3775,6 +4016,7 @@ class DatabaseAdapter:
                 "date": row["date"],
                 "text": row["text"],
                 "sender_name": row["sender_name"],
+                "sender_id": row["sender_id"],
                 "is_deleted": bool(row["is_deleted"]),
                 "account_id": row["account_id"],
                 "chat_id": row["chat_id"],
@@ -3789,21 +4031,37 @@ class DatabaseAdapter:
             }
             for row in rows[:limit]
         ]
+        # Derive the archived-account label source, then drop the sender id it
+        # was derived from — it entered the SELECT for this and nothing else.
+        await self.attach_sender_accounts(results)
+        for result in results:
+            result.pop("sender_id", None)
         return {"results": results, "has_more": len(rows) > limit, "indexed": True}
 
     @staticmethod
-    def _global_search_scoped(stmt, scope: ChatScope):
+    def _global_search_scoped(stmt, scope: ChatScope, *, fold_shared: bool = False):
         """Restrict a hit-set SELECT over ``messages`` to the entitled chats.
 
         Applied INSIDE the hit set so a viewer entitled to one chat never pays
         for the whole archive's hits; skipped entirely for an unrestricted
-        scope, where the join would only add work.
+        scope with nothing to fold, where the join would only add work.
+
+        ``fold_shared`` adds the chat list's folding rule, so a channel two
+        accounts both archive answers a cross-chat search once instead of
+        twice. It has to be here rather than a post-filter on the page: the
+        duplicate is a real row in the hit set, so dropping it afterwards would
+        leave ``has_more`` and the offsets describing a set the caller never
+        sees. The master is exactly the principal with duplicates to fold, and
+        a master's scope is unrestricted — so folding forces the join the
+        shortcut above would otherwise skip.
         """
-        if scope.unrestricted:
+        if scope.unrestricted and not fold_shared:
             return stmt
         stmt = stmt.join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
         for predicate in scope.sql_predicates():
             stmt = stmt.where(predicate)
+        if fold_shared:
+            stmt = stmt.where(scope.displayed_copy_predicate())
         return stmt
 
     @classmethod
@@ -3818,19 +4076,33 @@ class DatabaseAdapter:
             ),
         )
 
-    async def _global_search_hit_count(self, session, predicate, scope: ChatScope, cap: int) -> int:
+    async def _global_search_hit_count(
+        self, session, predicate, scope: ChatScope, cap: int, *, fold_shared: bool = False
+    ) -> int:
         """How many rows match, counted through the index and stopped at ``cap``."""
-        hits = self._global_search_scoped(select(literal(1)).select_from(Message).where(predicate), scope)
+        hits = self._global_search_scoped(
+            select(literal(1)).select_from(Message).where(predicate), scope, fold_shared=fold_shared
+        )
         capped = hits.limit(cap).subquery("search_hits")
         return int((await session.execute(select(func.count()).select_from(capped))).scalar_one())
 
     async def _global_search_walk(
-        self, session, predicate, scope: ChatScope, limit: int, offset: int, *, timeout_ms: int | None = None
+        self,
+        session,
+        predicate,
+        scope: ChatScope,
+        limit: int,
+        offset: int,
+        *,
+        timeout_ms: int | None = None,
+        fold_shared: bool = False,
     ):
         """Newest-first walk that filters as it goes — the shape for dense terms."""
         stmt = self._global_search_joins(select(*self._GLOBAL_SEARCH_COLUMNS).select_from(Message)).where(predicate)
         for scope_predicate in scope.sql_predicates():
             stmt = stmt.where(scope_predicate)
+        if fold_shared:
+            stmt = stmt.where(scope.displayed_copy_predicate())
         stmt = stmt.order_by(*(column.desc() for column in self._GLOBAL_SEARCH_ORDER)).limit(limit + 1).offset(offset)
         if timeout_ms is not None:
             # SET LOCAL: scoped to this transaction, so the pooled connection
@@ -3838,7 +4110,9 @@ class DatabaseAdapter:
             await session.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
         return (await session.execute(stmt)).mappings().all()
 
-    async def _global_search_sorted_hits(self, session, predicate, scope: ChatScope, limit: int, offset: int):
+    async def _global_search_sorted_hits(
+        self, session, predicate, scope: ChatScope, limit: int, offset: int, *, fold_shared: bool = False
+    ):
         """Materialise the hit keys through the index, sort them, then fetch one page.
 
         The keys are MATERIALIZED so the planner cannot flatten the CTE back
@@ -3846,7 +4120,11 @@ class DatabaseAdapter:
         a dense term never joins every hit to fetch twenty rows.
         """
         keys = select(Message.account_id, Message.chat_id, Message.id, Message.date).select_from(Message)
-        hits = self._global_search_scoped(keys.where(predicate), scope).cte("search_hits").prefix_with("MATERIALIZED")
+        hits = (
+            self._global_search_scoped(keys.where(predicate), scope, fold_shared=fold_shared)
+            .cte("search_hits")
+            .prefix_with("MATERIALIZED")
+        )
         page = (
             select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
             .order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
@@ -4160,6 +4438,7 @@ class DatabaseAdapter:
                         reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
                 msg["reactions"] = list(reactions_by_emoji.values())
 
+            await self.attach_sender_accounts(messages)
             return messages
 
     async def get_message_dates(
@@ -4316,6 +4595,7 @@ class DatabaseAdapter:
                     reactions_by_emoji[emoji]["user_ids"].append(reaction["user_id"])
             msg["reactions"] = list(reactions_by_emoji.values())
 
+            await self.attach_sender_accounts([msg])
             return msg
 
     @staticmethod
@@ -4451,6 +4731,7 @@ class DatabaseAdapter:
             # One query for the whole pinned list, not one per pinned reply.
             await self._attach_reply_metadata(session, chat_id, messages, account_id)
 
+            await self.attach_sender_accounts(messages)
             return messages
 
     async def sync_pinned_messages(self, chat_id: int, pinned_message_ids: list[int], *, account_id: int) -> None:

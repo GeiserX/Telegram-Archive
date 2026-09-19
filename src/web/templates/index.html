@@ -330,6 +330,24 @@
             border-radius: 14px;
         }
 
+        /* Account badge (8.12): which archived account a chat came from, and for a
+           chat several accounts share, all of them. Hand-written rather than a
+           Tailwind utility stack because the stylesheet here is a vendored build —
+           a class it was not generated with renders as nothing. */
+        .account-chip {
+            display: inline-block;
+            padding: 0 0.4rem;
+            border-radius: 9999px;
+            font-size: 0.6875rem;
+            line-height: 1.25rem;
+            white-space: nowrap;
+            max-width: 12rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: rgb(var(--tg-accent));
+            background: rgb(var(--tg-accent) / 0.14);
+        }
+
         /* The row the info panel is describing (#433): the tint the apps give a
            selected message, on the whole row like theirs. */
         .message-info-selected {
@@ -1318,6 +1336,13 @@
                                             • ID: {{ chat.id }}
                                         </span>
                                     </p>
+                                    <!-- Which account(s) archived this chat. Hidden entirely on a
+                                         single-account install, where every chip would say the same
+                                         thing; a chat several accounts share carries one chip each. -->
+                                    <p v-if="multiAccount" class="mt-1 flex flex-wrap gap-1">
+                                        <span v-for="chip in chatAccountLabels(chat)" :key="chip.id"
+                                            class="account-chip">{{ chip.label }}</span>
+                                    </p>
                                 </div>
                             </div>
                             <!-- Search: message hits across every entitled chat -->
@@ -1467,6 +1492,10 @@
                                         # {{ selectedPaneTopic.title }}
                                     </template>
                                     <template v-else>{{ selectedChat.type }}</template>
+                                </p>
+                                <p v-if="multiAccount" class="mt-0.5 flex flex-wrap gap-1">
+                                    <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
+                                        class="account-chip">{{ chip.label }}</span>
                                 </p>
                             </div>
                             <!-- Per-Chat Stats -->
@@ -1802,10 +1831,25 @@
                                 <div class="message-bubble p-3 text-sm shadow-sm text-tg-n100"
                                     :class="isRunEnd(index) ? (isOwnMessage(msg) ? 'bubble-out' : 'bubble-in') : ''"
                                     :style="getSenderStyle(msg)">
-                                    <!-- Sender Name (if group and first in sequence) -->
-                                    <div v-if="!isOwnMessage(msg) && isGroup && showSenderName(index)"
-                                        class="text-xs font-bold mb-1" :style="{ color: getSenderNameColor(msg) }">
-                                        {{ getSenderName(msg) }}
+                                    <!-- Who spoke, at the start of each run. Two parts, either
+                                         of which can stand alone:
+                                         * The account chip, whenever the sender is one of the
+                                           archived accounts. A chat several accounts share is
+                                           shown once, through one account's copy, so without
+                                           this the other account's messages read as an ordinary
+                                           participant's and the displayed copy's own read as
+                                           the only outgoing ones. It renders on outgoing
+                                           messages too — the own-message styling says "one of
+                                           mine", not which one.
+                                         * The sender's display name, in a group, exactly as
+                                           before. -->
+                                    <div v-if="(senderAccountLabel(msg) && showSenderName(index)) || (!isOwnMessage(msg) && isGroup && showSenderName(index))"
+                                        class="flex items-baseline gap-1.5 mb-1">
+                                        <span v-if="senderAccountLabel(msg)" class="account-chip">{{ senderAccountLabel(msg) }}</span>
+                                        <span v-if="!isOwnMessage(msg) && isGroup"
+                                            class="text-xs font-bold" :style="{ color: getSenderNameColor(msg) }">
+                                            {{ getSenderName(msg) }}
+                                        </span>
                                     </div>
 
                                     <!-- Reply Context -->
@@ -2291,6 +2335,15 @@
                         <div>
                             <dt class="text-xs uppercase tracking-wide text-tg-muted">Telegram ID</dt>
                             <dd class="mt-1 font-mono text-tg-ink">{{ selectedChat.id }}</dd>
+                        </div>
+                        <!-- Which archived account(s) this chat belongs to. A chat
+                             shown once but held by several accounts says so here. -->
+                        <div v-if="multiAccount">
+                            <dt class="text-xs uppercase tracking-wide text-tg-muted">{{ chatAccountLabels(selectedChat).length === 1 ? 'Account' : 'Accounts' }}</dt>
+                            <dd class="mt-1 flex flex-wrap gap-1">
+                                <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
+                                    class="account-chip">{{ chip.label }}</span>
+                            </dd>
                         </div>
                     </dl>
 
@@ -2894,11 +2947,36 @@
                             <div class="mt-3">
                                 <label class="text-xs text-tg-n400 block mb-1">Allowed Chats (none selected = access to all chats)</label>
                                 <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
+                                    <label v-for="chat in adminChats" :key="chat.ref" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
                                         <input type="checkbox" :value="chat.ref" v-model="adminViewerForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
+                                        <span v-if="multiAccount" class="text-tg-n400">({{ accountLabel(chat.account_id) }})</span>
                                     </label>
                                 </div>
+                            </div>
+                            <!-- Account grant. "All accounts" is the null grant, which is
+                                 what an unrestricted viewer carries; any selection is the
+                                 explicit id list. Generated from /api/accounts, so it grows
+                                 with the install instead of naming accounts in markup. -->
+                            <div class="mt-3">
+                                <label class="text-xs text-tg-n400 block mb-1">Allowed Accounts</label>
+                                <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2">
+                                    <label class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
+                                        <input type="checkbox" v-model="adminViewerAllAccounts" class="rounded" /> All accounts
+                                    </label>
+                                    <label v-for="account in accountList" :key="account.id"
+                                        class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1"
+                                        :class="adminViewerAllAccounts ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-tg-n500'">
+                                        <input type="checkbox" :value="account.id" v-model="adminViewerForm.allowed_accounts"
+                                            :disabled="adminViewerAllAccounts" class="rounded" />
+                                        {{ account.label }}
+                                    </label>
+                                </div>
+                                <!-- An empty explicit grant denies every chat; say so rather
+                                     than letting it read as "nothing selected = everything". -->
+                                <p v-if="!adminViewerAllAccounts && !adminViewerForm.allowed_accounts.length" class="mt-1 text-xs text-amber-400">
+                                    No accounts selected — this viewer will see no chats.
+                                </p>
                             </div>
                             <div class="mt-3 flex items-center gap-4">
                                 <label class="flex items-center gap-2 text-sm text-tg-n300">
@@ -2927,7 +3005,7 @@
                                         <!-- [] is an ENFORCED empty grant (deny everything), not "all chats" -->
                                         <template v-else-if="viewer.allowed_chat_refs">No chats (empty grant)</template>
                                         <template v-else>All chats</template>
-                                        <template v-if="viewer.allowed_accounts"> · Accounts: {{ viewer.allowed_accounts.length ? viewer.allowed_accounts.join(', ') : 'none' }}</template>
+                                        <template v-if="viewer.allowed_accounts"> · Accounts: {{ grantAccountLabels(viewer.allowed_accounts) }}</template>
                                         · {{ viewer.is_active ? 'Active' : 'Inactive' }}
                                         <template v-if="viewer.no_download"> · <span class="text-amber-400">No DL</span></template>
                                     </div>
@@ -2952,9 +3030,10 @@
                             <div class="mt-3">
                                 <label class="text-xs text-tg-n400 block mb-1">Allowed Chats (required — tokens must be scoped)</label>
                                 <div class="flex flex-wrap gap-1 bg-tg-n700 rounded p-2 max-h-32 overflow-y-auto">
-                                    <label v-for="chat in adminChats" :key="chat.id" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
+                                    <label v-for="chat in adminChats" :key="chat.ref" class="flex items-center gap-1 text-xs text-tg-n300 bg-tg-n600 rounded px-2 py-1 cursor-pointer hover:bg-tg-n500">
                                         <input type="checkbox" :value="chat.ref" v-model="adminTokenForm.allowed_chat_refs" class="rounded" />
                                         {{ chat.title || chat.id }}
+                                        <span v-if="multiAccount" class="text-tg-n400">({{ accountLabel(chat.account_id) }})</span>
                                     </label>
                                 </div>
                             </div>
@@ -2997,7 +3076,7 @@
                                             </template>
                                             <!-- an unreadable stored grant renders as [] and denies everything -->
                                             <template v-else>No chats (empty grant)</template>
-                                            <template v-if="token.allowed_accounts"> · Accounts: {{ token.allowed_accounts.length ? token.allowed_accounts.join(', ') : 'none' }}</template>
+                                            <template v-if="token.allowed_accounts"> · Accounts: {{ grantAccountLabels(token.allowed_accounts) }}</template>
                                             · Used {{ token.use_count || 0 }}x
                                             <template v-if="token.last_used_at"> · Last: {{ new Date(token.last_used_at).toLocaleDateString() }}</template>
                                             <template v-if="token.expires_at"> · Exp: {{ new Date(token.expires_at).toLocaleDateString() }}</template>
@@ -3426,6 +3505,40 @@
                 const userRole = ref('')
                 const currentUsername = ref('')
                 const noDownload = ref(false)
+
+                // Accounts (8.12). Since 8.0 one archive can hold several Telegram
+                // accounts, and a chat row now names the accounts it belongs to as
+                // bare ids. These give those ids a human label, and decide whether
+                // the badges are worth rendering at all: with one account every chat
+                // carries the same chip, which is noise, so single-account installs
+                // look exactly as they did before.
+                const accountList = ref([])
+                const accountLabels = computed(() =>
+                    Object.fromEntries(accountList.value.map(a => [a.id, a.label]))
+                )
+                const multiAccount = computed(() => accountList.value.length > 1)
+                const accountLabel = (id) => accountLabels.value[id] || `account ${id}`
+                // Generic for N accounts: whatever ids the row carries, in the order
+                // the server sorted them. Never a hardcoded pair.
+                const chatAccountLabels = (chat) =>
+                    (chat?.accounts || []).map(id => ({ id, label: accountLabel(id) }))
+                // The label for a message sent BY one of the archived accounts, or ''
+                // for everyone else. Empty on a single-account install: the one chip
+                // it could ever print says nothing the reader does not already know.
+                const senderAccountLabel = (msg) =>
+                    (multiAccount.value && msg?.sender_account_id != null)
+                        ? accountLabel(msg.sender_account_id)
+                        : ''
+                const loadAccounts = async () => {
+                    try {
+                        const res = await fetch('/api/accounts', { credentials: 'include' })
+                        if (!res.ok) return
+                        const data = await res.json()
+                        accountList.value = Array.isArray(data.accounts) ? data.accounts : []
+                    } catch (e) {
+                        console.warn('Failed to load accounts')
+                    }
+                }
                 const showAdminPanel = ref(false)
                 const loginMode = ref('password') // 'password' or 'token'
                 const tokenInput = ref('')
@@ -5311,6 +5424,10 @@
                             }
 
                             if (isAuthenticated.value) {
+                                // Before loadChats: the chat rows it renders carry
+                                // account ids, and a label map that arrives later
+                                // paints the badges in a second frame.
+                                await loadAccounts()
                                 await loadChats()
                                 await loadStats()
                                 await loadFolders()
@@ -5843,6 +5960,7 @@
                             userRole.value = data.role || 'master'
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
+                            await loadAccounts()
                             await loadChats()
                             await loadStats()
                             await loadFolders()
@@ -9267,7 +9385,21 @@
                 const adminChats = ref([])
                 const adminAuditLogs = ref([])
                 const adminAuditAction = ref('')
-                const adminViewerForm = ref({ username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false })
+                const adminViewerForm = ref({ username: '', password: '', allowed_chat_refs: [], allowed_accounts: [], is_active: true, no_download: false })
+                // The account grant has three states and the checkbox list can only
+                // express two, so "all accounts" is its own flag: checked sends null
+                // (unrestricted), unchecked sends the id list — and an unchecked box
+                // with nothing selected sends [], which denies every chat.
+                const adminViewerAllAccounts = ref(true)
+                const emptyViewerForm = () => ({
+                    username: '', password: '', allowed_chat_refs: [], allowed_accounts: [],
+                    is_active: true, no_download: false
+                })
+                // Stored grants are id lists; the admin reads names. Falls back to the
+                // bare id for an account that no longer exists, so a stale grant still
+                // shows what it grants instead of vanishing.
+                const grantAccountLabels = (ids) =>
+                    (ids && ids.length) ? ids.map(accountLabel).join(', ') : 'none'
                 const adminEditingId = ref(null)
                 const adminError = ref('')
                 const adminActiveTab = ref('viewers')
@@ -9309,18 +9441,21 @@
 
                 const openAdminPanel = async () => {
                     showAdminPanel.value = true
-                    await Promise.all([loadAdminViewers(), loadAdminChats(), loadAdminAudit(), loadAdminTokens()])
+                    await Promise.all([loadAccounts(), loadAdminViewers(), loadAdminChats(), loadAdminAudit(), loadAdminTokens()])
                 }
 
                 const saveViewer = async () => {
                     adminError.value = ''
                     const chatRefs = adminViewerForm.value.allowed_chat_refs
+                    const accounts = adminViewerForm.value.allowed_accounts
                     const body = {
                         username: adminViewerForm.value.username,
                         password: adminViewerForm.value.password,
-                        // null = unrestricted. allowed_accounts has no editor yet (phase
-                        // 5); the PUT is partial, so omitting it leaves it untouched.
+                        // null = unrestricted, a list = exactly those. An empty list is
+                        // sent as an empty list on purpose: it is a real grant meaning
+                        // "nothing", not an unset field.
                         allowed_chat_refs: (chatRefs && chatRefs.length > 0) ? chatRefs : null,
+                        allowed_accounts: adminViewerAllAccounts.value ? null : [...accounts].sort((a, b) => a - b),
                         is_active: adminViewerForm.value.is_active ? 1 : 0,
                         no_download: adminViewerForm.value.no_download ? 1 : 0
                     }
@@ -9344,7 +9479,8 @@
                             adminError.value = err.detail || 'Failed to save'
                             return
                         }
-                        adminViewerForm.value = { username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false }
+                        adminViewerForm.value = emptyViewerForm()
+                        adminViewerAllAccounts.value = true
                         adminEditingId.value = null
                         await loadAdminViewers()
                     } catch (e) { adminError.value = 'Network error' }
@@ -9356,9 +9492,13 @@
                         username: viewer.username,
                         password: '',
                         allowed_chat_refs: viewer.allowed_chat_refs ? [...viewer.allowed_chat_refs] : [],
+                        // null is the unrestricted grant; [] is the enforced empty one,
+                        // and the two must not collapse into the same form state.
+                        allowed_accounts: viewer.allowed_accounts ? [...viewer.allowed_accounts] : [],
                         is_active: !!viewer.is_active,
                         no_download: !!viewer.no_download
                     }
+                    adminViewerAllAccounts.value = viewer.allowed_accounts == null
                 }
 
                 const deleteViewer = async (viewer) => {
@@ -9373,7 +9513,8 @@
 
                 const cancelEdit = () => {
                     adminEditingId.value = null
-                    adminViewerForm.value = { username: '', password: '', allowed_chat_refs: [], is_active: true, no_download: false }
+                    adminViewerForm.value = emptyViewerForm()
+                    adminViewerAllAccounts.value = true
                     adminError.value = ''
                 }
 
@@ -9451,6 +9592,12 @@
                     showToast,
                     chats,
                     filteredChats,
+                    accountList,
+                    multiAccount,
+                    accountLabel,
+                    chatAccountLabels,
+                    senderAccountLabel,
+                    grantAccountLabels,
                     selectedChat,
                     selectedPaneTopic,
                     selectedMessage,
@@ -9662,6 +9809,7 @@
                     adminAuditLogs,
                     adminAuditAction,
                     adminViewerForm,
+                    adminViewerAllAccounts,
                     adminEditingId,
                     adminError,
                     adminActiveTab,
