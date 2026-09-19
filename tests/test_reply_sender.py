@@ -287,7 +287,11 @@ class TestNoNPlusOne:
         reply_statements = counter.matching("messages.reply_to_msg_id IN")
         reply_statements += [s for s in counter.matching("messages.id IN") if "media" in s]
         assert len(reply_statements) == 1, counter.statements
-        assert counter.count <= 5, counter.statements
+        # Six, not five, since a page also stamps sender_account_id: the sixth
+        # is the one-row-per-account owner map, read once per adapter and then
+        # cached. The ceiling is what matters — it is a constant, which is the
+        # property test_query_count_is_flat_as_replies_grow proves directly.
+        assert counter.count <= 6, counter.statements
 
     async def test_page_without_replies_skips_the_reply_query(self, env):
         adapter, engine, db_manager = await _make_adapter()

@@ -425,6 +425,8 @@ With more than one account configured, every chat in the list carries a small ch
 
 Folding follows each viewer's entitlement. A viewer restricted with `allowed_accounts` only ever folds across the accounts it may see, and a viewer entitled to one account sees exactly what it saw before: its own copies, each tagged with its own account. Grant accounts to a viewer from **Admin Settings → Viewer Accounts**, where "All accounts" is the unrestricted grant and any selection is the explicit list.
 
+**A message sent by one of your own accounts says which one.** A chat several accounts hold is shown once, through one account's copy, so without a label the other account's messages read as an ordinary participant's and the displayed copy's own read as the only outgoing ones. Each run of messages from an archived account carries that account's label, outgoing ones included. The label is derived on the server; the Telegram user id it is derived from never reaches the browser.
+
 Labels are shown only to principals entitled to them. A share token, which is scoped to named chats, is told about the accounts those chats live in and no others, so handing someone a link never hands them the names of your other accounts.
 
 ### Chat Filtering

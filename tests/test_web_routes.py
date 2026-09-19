@@ -2224,6 +2224,8 @@ class TestGlobalSearchEndpoint(_WebTestBase):
         "date": datetime(2026, 3, 4, 5, 6, 7),
         "text": "hello there",
         "sender_name": "Ana",
+        # The adapter derives this and drops the sender id it came from.
+        "sender_account_id": 2,
         "is_deleted": False,
         "account_id": 1,
         "chat_id": -1001,
@@ -2287,6 +2289,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
                     "date": "2026-03-04T05:06:07",
                     "text": "hello there",
                     "sender_name": "Ana",
+                    "sender_account_id": 2,
                     "is_deleted": False,
                     "topic_title": None,
                     "chat": {
