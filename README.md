@@ -425,6 +425,8 @@ With more than one account configured, every chat in the list carries a small ch
 
 Folding follows each viewer's entitlement. A viewer restricted with `allowed_accounts` only ever folds across the accounts it may see, and a viewer entitled to one account sees exactly what it saw before: its own copies, each tagged with its own account. Grant accounts to a viewer from **Admin Settings → Viewer Accounts**, where "All accounts" is the unrestricted grant and any selection is the explicit list.
 
+Labels are shown only to principals entitled to them. A share token, which is scoped to named chats, is told about the accounts those chats live in and no others, so handing someone a link never hands them the names of your other accounts.
+
 ### Chat Filtering
 
 There are **two modes** for selecting which chats to backup:

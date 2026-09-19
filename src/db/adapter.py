@@ -1206,6 +1206,21 @@ class DatabaseAdapter:
                 holders.setdefault(chat_id, set()).add(account_id)
         return {chat_id: sorted(accounts) for chat_id, accounts in holders.items()}
 
+    async def get_visible_account_ids(self, scope: ChatScope) -> set[int]:
+        """The accounts that hold at least one chat ``scope`` selects.
+
+        What a ref-scoped principal — a share token, or a viewer granted a
+        handful of chats — may be told an account list contains. Reading it off
+        the chats the grant already selects means the answer can never name an
+        account the principal has no chat in.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.account_id).distinct()
+            for predicate in scope.sql_predicates():
+                stmt = stmt.where(predicate)
+            result = await session.execute(stmt)
+            return {row[0] for row in result}
+
     async def get_visible_chat_ids(self, scope: ChatScope) -> set[int]:
         """Just the chat ids a scope selects — no row build, no date subquery.
 

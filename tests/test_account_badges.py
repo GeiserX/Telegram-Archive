@@ -395,6 +395,35 @@ class TestAccountsEndpoint:
 
         assert resp.json() == {"accounts": [{"id": 2, "label": "second"}]}
 
+    async def test_a_ref_grant_hides_the_accounts_it_has_no_chat_in(self, app_on):
+        """A share token must not learn the name of every identity in the archive.
+
+        Tokens carry a ref grant and no account grant, so without this the
+        outsider holding one chat's link would be handed every account label —
+        and an operator names accounts after people.
+        """
+        await seed_universe(app_on)
+        await seed_accounts(app_on, [(1, "first", None), (2, "second", None)])
+        as_principal(role="token", allowed_chat_refs={"badgeRefA2chan0000004"})
+
+        async with client() as http:
+            resp = await http.get("/api/accounts")
+
+        assert resp.json() == {"accounts": [{"id": 2, "label": "second"}]}
+        assert "first" not in resp.text
+
+    async def test_display_chat_ids_does_not_narrow_the_list(self, app_on):
+        """The operator's own filter must not empty the admin grant editor."""
+        await seed_universe(app_on)
+        await seed_accounts(app_on, [(1, "first", None), (2, "second", None)])
+        web_main.config.display_chat_ids = {ACCOUNT_2_ONLY}
+        as_principal(role="master", allowed_accounts=None)
+
+        async with client() as http:
+            resp = await http.get("/api/accounts")
+
+        assert resp.json() == {"accounts": [{"id": 1, "label": "first"}, {"id": 2, "label": "second"}]}
+
     async def test_an_empty_grant_lists_nothing(self, app_on):
         """The empty grant denies here exactly as it denies in the chat list."""
         await seed_accounts(app_on, [(1, "first", None), (2, "second", None)])

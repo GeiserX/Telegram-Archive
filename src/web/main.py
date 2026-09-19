@@ -2564,19 +2564,32 @@ async def get_accounts(user: UserContext = Depends(require_auth)):
     the chat header, the admin grant editor — and before this route there was
     no way to turn an account id into anything but the digit itself.
 
-    Two rules and nothing else. The list is narrowed by the SAME
-    ``allowed_accounts`` grant that narrows the chat list, so a viewer cannot
-    learn an account it is not entitled to; ``None`` (master, or an
-    unrestricted viewer) sees every account. And the payload is id plus label
-    only: ``accounts.telegram_user_id`` is PII and never leaves the database,
-    while the label is operator-chosen text from ``TG_ACCOUNT_<N>_LABEL``. An
-    account whose label was never set answers ``account <id>`` rather than a
-    blank chip.
+    The payload is id plus label only: ``accounts.telegram_user_id`` is PII and
+    never leaves the database, while the label is operator-chosen text from
+    ``TG_ACCOUNT_<N>_LABEL``. An account whose label was never set answers
+    ``account <id>`` rather than a blank chip.
+
+    Two grants narrow the list, and a label is worth protecting because an
+    operator names accounts after people:
+
+    * ``allowed_accounts`` — the same grant that narrows the chat list. ``None``
+      restricts nothing.
+    * ``allowed_chat_refs`` — a share token, or a viewer granted a handful of
+      chats, is told only about the accounts those chats actually live in. A
+      ref grant with no account grant would otherwise hand an outsider the name
+      of every identity in the archive.
+
+    ``DISPLAY_CHAT_IDS`` deliberately does NOT narrow this. It is the operator's
+    own filter, and the admin grant editor reads this route: an account whose
+    chats are all filtered out must still be grantable.
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database not available")
     try:
         rows = await db.get_accounts()
+        visible = None
+        if user.allowed_chat_refs is not None:
+            visible = await db.get_visible_account_ids(ChatScope.build(refs=user.allowed_chat_refs))
     except Exception as e:
         logger.error(f"Error fetching accounts: {type(e).__name__}")
         if _is_db_connection_error(e):
@@ -2587,7 +2600,7 @@ async def get_accounts(user: UserContext = Depends(require_auth)):
         "accounts": [
             {"id": row["id"], "label": row["label"] or f"account {row['id']}"}
             for row in rows
-            if allowed is None or row["id"] in allowed
+            if (allowed is None or row["id"] in allowed) and (visible is None or row["id"] in visible)
         ]
     }
 
