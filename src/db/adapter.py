@@ -1123,11 +1123,14 @@ class DatabaseAdapter:
             # Order by last message date, referencing the SELECT label so the
             # correlated subquery is evaluated once per row rather than twice.
             # `DESC NULLS LAST` is the message-less-chats-last rule the previous
-            # `is_(None), desc()` pair spelled out. Chat.id is the tiebreaker
-            # that makes the ordering TOTAL: without it every message-less chat
-            # ties on NULL, and LIMIT/OFFSET may then split that tie group
-            # differently on each page, so a chat could appear twice or vanish.
-            stmt = stmt.order_by(nulls_last(desc("last_message_date")), Chat.id.desc())
+            # `is_(None), desc()` pair spelled out. The two id columns are the
+            # tiebreakers that make the ordering TOTAL: without them every
+            # message-less chat ties on NULL, and LIMIT/OFFSET may then split
+            # that tie group differently on each page, so a chat could appear
+            # twice or vanish. Chat.id alone stopped being total in 8.0 — the
+            # primary key is (account_id, id), so two accounts' message-less
+            # copies of one private chat tie on BOTH the NULL date and the id.
+            stmt = stmt.order_by(nulls_last(desc("last_message_date")), Chat.id.desc(), Chat.account_id.desc())
 
             # Apply pagination if limit is specified
             if limit is not None:

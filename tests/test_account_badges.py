@@ -198,6 +198,50 @@ class TestFolding:
         assert all("accounts" not in row for row in rows)
 
 
+class TestPagingIsStableAcrossAccounts:
+    async def test_two_accounts_copies_of_one_private_chat_have_a_defined_order(self, real_adapter):
+        """Nothing in the chat list may be left for the planner to decide.
+
+        The list orders by last message date and breaks ties on the chat id.
+        Both are equal for two message-less copies of the same private chat,
+        because the primary key is ``(account_id, id)`` — so before 8.12 that
+        pair had no specified order at all, and LIMIT/OFFSET was free to split
+        the tie group differently on each page, repeating one row and losing
+        the other. That is a latent nondeterminism, not a reproducible symptom,
+        so what this asserts is the rule that removes it: the account is the
+        last tiebreaker, descending, so the higher account comes first.
+
+        Asserted rather than paged for exactly that reason. Both engines happen
+        to return this tie group in insertion order today, so a paging test
+        would stay green with the tiebreaker deleted — and a check that cannot
+        fail is not a check. This one goes red: insertion order puts account 1
+        first, the rule puts account 2 first.
+        """
+        for account_id in (1, 2):
+            await real_adapter.upsert_chat(
+                {"id": COLLIDING_PRIVATE, "type": "private", "title": "same person"}, account_id=account_id
+            )
+
+        rows = await real_adapter.get_all_chats(fold_shared=True)
+
+        assert [row["account_id"] for row in rows] == [2, 1]
+
+    async def test_the_tie_group_still_pages_one_row_at_a_time(self, real_adapter):
+        """The end-to-end shape of the rule above: three chats, three pages, no repeats."""
+        for account_id in (1, 2):
+            await real_adapter.upsert_chat(
+                {"id": COLLIDING_PRIVATE, "type": "private", "title": "same person"}, account_id=account_id
+            )
+        await real_adapter.upsert_chat({"id": 810007777, "type": "group", "title": "other"}, account_id=1)
+
+        seen = []
+        for offset in range(3):
+            page = await real_adapter.get_all_chats(limit=1, offset=offset, fold_shared=True)
+            seen.extend(row["ref"] for row in page)
+
+        assert len(seen) == len(set(seen)) == 3
+
+
 class TestCountAgreesWithTheRows:
     @pytest.mark.parametrize(
         "scope",
