@@ -43,6 +43,17 @@ You assist developers working on telegram-archive.
 - Do NOT commit directly to main/master branch
 - **After every push/merge**, check CI status with `gh run list` or `gh pr checks` and fix any test or lint failures before moving on
 
+### Nothing private in anything public
+
+This is a public repository. Pull requests, issues, commit messages, review replies, release notes, docs, tests and code are all public, and so is anything an AI assistant writes into them.
+
+- **Never name a person.** No first names, surnames, handles or phone numbers of the maintainer's family, contacts or account holders. Say "account 1", "the second account", "a viewer restricted to one account".
+- **Never describe the maintainer's deployment.** No account labels, chat titles, chat ids, message counts, chat counts, hostnames, ports, domains or paths from the production archive. Describe the shape ("a channel both accounts hold"), not the instance.
+- **Never quote a private conversation.** Not even a short excerpt: the operator's words that motivated a change are private context. Paraphrase in the project's own terms without identifying details, and open a PR with a brief problem statement of two or three sentences.
+- Fake data in tests and docs must be obviously fake (`Account A`, `+1 555 0100`, `test@value/here`).
+
+If a name or a deployment detail has already been pushed, remove it from every artifact it reached, at once, and say so without repeating the detail. A PR body or comment is edited; a commit on an unmerged branch is rewritten before it is merged; a doc, test or code file is fixed in a follow-up commit. Once it is on `main`, tell the maintainer, who decides on history removal (`git filter-repo`). It is public the moment it is pushed.
+
 ## Boundaries
 
 ### ✅ Always (do without asking)
