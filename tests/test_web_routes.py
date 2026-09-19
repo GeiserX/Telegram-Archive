@@ -692,13 +692,21 @@ class TestTopicsEndpoint(_WebTestBase):
 class TestArchivedCountEndpoint(_WebTestBase):
     """Test /api/archived/count endpoint."""
 
-    async def test_returns_archived_count(self):
-        """get_archived_count returns count of archived chats."""
-        self.mock_db.get_archived_chat_count = AsyncMock(return_value=5)
+    async def test_returns_archived_count_through_the_chat_list_count(self):
+        """The badge is counted by the call the archived LIST pages with.
+
+        Any other count is free to disagree with the list: since 8.12 the list
+        folds chats several accounts share, so a plain COUNT(*) would promise a
+        master archived chats it can never be shown.
+        """
+        self.mock_db.get_chat_count = AsyncMock(return_value=5)
         async with self._client() as client:
             resp = await client.get("/api/archived/count")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["count"], 5)
+        kwargs = self.mock_db.get_chat_count.call_args.kwargs
+        self.assertTrue(kwargs["fold_shared"])
+        self.assertIs(self.mock_db.get_chat_count.call_args.kwargs["archived"], True)
 
     async def test_archived_count_filtered_by_user_chats(self):
         """get_archived_count filters by the user's ref grant."""

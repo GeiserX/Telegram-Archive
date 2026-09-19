@@ -3037,15 +3037,15 @@ async def get_archived_count(user: UserContext = Depends(require_auth)):
 
     v6.2.0: Used by the viewer to display the archived section badge.
     Respects DISPLAY_CHAT_IDS so restricted viewers only see relevant archived chats.
+
+    ONE path for every principal, counted through the same call the archived
+    chat list pages with. The unrestricted branch used to take a plain
+    COUNT(*) shortcut, which was equivalent until 8.12 gave the list a folding
+    rule: a master would then have been told it had more archived chats than
+    the list could ever show it.
     """
     try:
-        scope = _chat_scope(user)
-        if scope.unrestricted:
-            count = await db.get_archived_chat_count()
-        else:
-            # Counted in SQL under the same scope the chat list uses, rather
-            # than by loading every archived chat and filtering in Python.
-            count = await db.get_chat_count(archived=True, scope=scope)
+        count = await db.get_chat_count(archived=True, scope=_chat_scope(user), fold_shared=True)
         return {"count": count}
     except Exception as e:
         logger.error(f"Error fetching archived count: {type(e).__name__}")

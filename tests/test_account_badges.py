@@ -409,6 +409,24 @@ class TestChatsEndpointFolds:
         assert {row["account_id"] for row in payload["chats"]} == {2}
         assert all(row["accounts"] == [row["account_id"]] for row in payload["chats"])
 
+    async def test_the_archived_badge_matches_the_archived_list(self, app_on):
+        """A badge that counts unfolded rows promises chats the list cannot show."""
+        await seed_universe(app_on)
+        async with app_on.db_manager.async_session_factory() as session:
+            # Archive BOTH copies of the shared channel and the account-2 channel.
+            await session.execute(
+                text("UPDATE chats SET is_archived = 1 WHERE id IN (:shared, :only2)"),
+                {"shared": SHARED_CHANNEL, "only2": ACCOUNT_2_ONLY},
+            )
+            await session.commit()
+        as_principal(role="master", allowed_accounts=None)
+
+        async with client() as http:
+            badge = (await http.get("/api/archived/count")).json()["count"]
+            listed = (await http.get("/api/chats?archived=true&limit=50")).json()
+
+        assert badge == listed["total"] == len(listed["chats"]) == 2
+
     async def test_the_admin_chat_picker_still_lists_every_copy(self, app_on):
         """It edits per-copy grants, so folding there would hide grantable rows."""
         await seed_universe(app_on)
