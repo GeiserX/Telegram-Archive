@@ -435,6 +435,27 @@ class TestAccountsEndpoint:
         assert resp.json() == {"accounts": []}
 
 
+class TestChatByRefErrors:
+    async def test_a_badge_lookup_failure_answers_like_the_chat_read(self, app_on):
+        """Both reads answer one response, so both fail the same way.
+
+        A degraded badge alongside a 200 would mean the same database fault
+        produced two different outcomes in one handler depending on which of
+        its two reads hit it.
+        """
+        await seed_universe(app_on)
+        as_principal(role="master", allowed_accounts=None)
+
+        async def refuse(*args, **kwargs):
+            raise ConnectionRefusedError("no database")
+
+        app_on.get_chat_account_ids = refuse
+        async with client() as http:
+            resp = await http.get("/api/chats/badgeRefA1chan0000001")
+
+        assert resp.status_code == 503
+
+
 class TestChatsEndpointFolds:
     async def test_total_and_has_more_describe_the_folded_rows(self, app_on):
         await seed_universe(app_on)

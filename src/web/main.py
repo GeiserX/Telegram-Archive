@@ -2685,6 +2685,11 @@ async def get_chat(chat: ChatContext = Depends(require_chat), user: UserContext 
     """
     try:
         row = await db.get_chat_by_ref(chat.ref, account_id=chat.account_id)
+        # Inside the same try as the read it belongs to: both reads answer one
+        # response, so both must fail the same way. The 404 below is raised
+        # after it for the obvious reason — an HTTPException thrown in here
+        # would be caught by this handler and reported as a 500.
+        accounts = await _chat_account_ids(row, user) if row else None
     except Exception as e:
         logger.error(f"Error fetching chat: {type(e).__name__}")
         if _is_db_connection_error(e):
@@ -2693,7 +2698,7 @@ async def get_chat(chat: ChatContext = Depends(require_chat), user: UserContext 
     if not row:
         raise HTTPException(status_code=404, detail="Chat not found")
     row["avatar_url"] = _chat_avatar_url(row["id"], row.get("type"), row["ref"])
-    row["accounts"] = await _chat_account_ids(row, user)
+    row["accounts"] = accounts
     return row
 
 
@@ -2706,13 +2711,7 @@ async def _chat_account_ids(row: dict, user: UserContext) -> list[int]:
     """
     if row.get("type") == PRIVATE_CHAT_TYPE:
         return [row["account_id"]]
-    try:
-        holders = await db.get_chat_account_ids([row["id"]], scope=_chat_scope(user))
-    except Exception as e:
-        # Advisory badge data: a failure here must not turn a readable chat
-        # into a 500. Fall back to the copy the caller already resolved.
-        logger.warning(f"Account badge lookup failed ({type(e).__name__}); showing one account")
-        return [row["account_id"]]
+    holders = await db.get_chat_account_ids([row["id"]], scope=_chat_scope(user))
     return holders.get(row["id"]) or [row["account_id"]]
 
 
