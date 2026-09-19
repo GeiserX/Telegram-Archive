@@ -183,6 +183,42 @@ class TestChangesFeedDeduplication:
 
         assert kinds(changes) == [("deleted", 22, "private"), ("deleted", 22, "private")]
 
+    async def test_a_private_event_never_hides_behind_a_non_private_one(self, real_adapter):
+        """The rule is "this row is private", not "the other row is private".
+
+        The inner half of the check already refuses to hide a row behind a
+        private copy. The outer half is what protects a private chat from
+        being suppressed by a NON-private chat that happens to carry the same
+        id in a lower account — the one arrangement where the two disagree,
+        and the reason the outer clause exists.
+        """
+        collision = 420007777
+        await real_adapter.upsert_chat({"id": collision, "type": "group", "title": "a group"}, account_id=1)
+        await real_adapter.upsert_chat({"id": collision, "type": "private", "title": "a dm"}, account_id=2)
+        for account_id in (1, 2):
+            await real_adapter.insert_message(
+                {
+                    "id": 44,
+                    "chat_id": collision,
+                    "sender_id": OUTSIDER,
+                    "date": BASE,
+                    "text": "original text",
+                    "raw_data": {},
+                },
+                account_id=account_id,
+            )
+            await mark_deleted(
+                real_adapter,
+                account_id=account_id,
+                chat_id=collision,
+                message_id=44,
+                at=BASE + timedelta(seconds=account_id),
+            )
+
+        changes = await real_adapter.get_recent_changes(scope=UNRESTRICTED, limit=50)
+
+        assert sorted(c["chat"]["type"] for c in changes) == ["group", "private"]
+
     async def test_an_event_only_the_higher_account_captured_survives(self, real_adapter):
         """The reason this deduplicates events instead of folding chat copies.
 
