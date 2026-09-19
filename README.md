@@ -415,6 +415,16 @@ How it behaves:
 
 When configuring through `docker-compose.yml`'s `environment:` block, remember Compose only forwards variables declared there — uncomment the `TG_ACCOUNT_*` lines in the backup service (or switch to `env_file:`) so your `.env` entries reach the container.
 
+#### How several accounts look in the viewer
+
+With more than one account configured, every chat in the list carries a small chip naming the account it was archived under — the `TG_ACCOUNT_<N>_LABEL` text, or `account <N>` when no label is set. The open chat shows the same labels in its header and in the info panel. A single-account install renders no chips at all, so nothing changes for it.
+
+**Chats several accounts share are listed once.** Subscribe to the same channel from two accounts and you get one row, tagged with both labels, addressed through the lowest-numbered account holding it. The same applies to groups and supergroups. Cross-chat message search follows the same rule, so a shared channel answers a search once rather than once per account.
+
+**Private chats are never merged.** A one-to-one chat is keyed by the other person's Telegram user id, so two accounts that both talk to the same person produce two rows that happen to share an id while holding completely different messages. Those stay separate, one row per account, however many accounts are configured.
+
+Folding follows each viewer's entitlement. A viewer restricted with `allowed_accounts` only ever folds across the accounts it may see, and a viewer entitled to one account sees exactly what it saw before: its own copies, each tagged with its own account. Grant accounts to a viewer from **Admin Settings → Viewer Accounts**, where "All accounts" is the unrestricted grant and any selection is the explicit list.
+
 ### Chat Filtering
 
 There are **two modes** for selecting which chats to backup:
