@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.12.1] - 2026-09-20
+
+Two corrections to the several-accounts viewer that 8.12.0 introduced.
+
+### Fixed
+- **The What changed feed lists an event in a shared chat once.** An edit or deletion in a channel or group that several entitled accounts hold was listed once per account. The feed now removes duplicate events rather than hiding a copy of the chat, because an event exists only in the copy that was listening when it happened: one captured by a single account is still listed. A message edited twice stays two entries.
+- **A message from any of your archived accounts reads as yours.** In a chat shown through one account's copy, another entitled account's message sat on the left with an avatar and the sender's full name. It now sits on the right in the outgoing style with only the account chip. A viewer not entitled to that account still sees an ordinary participant, and a single-account install renders exactly as before.
+- **The message info panel names the sending account** where it said "You", which with several accounts did not say which.
+- **A share token no longer learns from a message that another account exists.** The sending account is reported only for accounts holding chats the token's grant reaches.
+- **Account chips in the chat header are hidden on narrow screens**, where they were cut to one letter each. The chat list and the info panel still show them.
+
 ## [8.12.0] - 2026-09-20
 
 An archive holding more than one account now says which account each chat and each of your own messages belongs to, and lists a channel or group that several accounts hold once.
