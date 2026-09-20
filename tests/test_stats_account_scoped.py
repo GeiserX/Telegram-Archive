@@ -269,6 +269,12 @@ class TestFailClosed:
         Reading them anyway is exactly the leak this fixes, so the viewer sees
         zeros until the next calculation. The daily job refreshes it, and
         POST /api/stats/refresh does it on demand.
+
+        Two independent guards stop it, and either alone is enough: the map
+        moved to a new field, so the old one is never read as input, and a
+        bare-id key fails to parse even if it were. That is why no single
+        mutation reds this test — removing both together does, and the viewer
+        then reads the other account's twelve messages instead of zero.
         """
         await seed_two_accounts(app_on)
         await app_on.set_metadata(
