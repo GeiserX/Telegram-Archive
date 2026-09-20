@@ -5253,7 +5253,16 @@ class DatabaseAdapter:
             account_id: If set, only this account's folders (None = unscoped until phase 4).
         """
         async with self.db_manager.async_session_factory() as session:
-            count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
+            # Counted per (account, folder), because a Telegram dialog-filter id
+            # is per account and starts at 2 for everyone: grouped by folder_id
+            # alone, one account's folder row joined to a count built from the
+            # OTHER account's members. A restricted viewer then saw that other
+            # folder's title, with its own count beside it.
+            count_q = select(
+                ChatFolderMember.account_id,
+                ChatFolderMember.folder_id,
+                func.count(ChatFolderMember.chat_id).label("chat_count"),
+            )
             if allowed_chat_pairs is not None:
                 # Same rule as ChatScope.sql_predicates: an empty grant is
                 # "nothing", never "no filter". SQLAlchemy 2.0 does render an
@@ -5266,11 +5275,17 @@ class DatabaseAdapter:
                 )
             if account_id is not None:
                 count_q = count_q.where(ChatFolderMember.account_id == account_id)
-            count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()
+            count_subq = count_q.group_by(ChatFolderMember.account_id, ChatFolderMember.folder_id).subquery()
 
             stmt = (
                 select(ChatFolder, count_subq.c.chat_count)
-                .outerjoin(count_subq, ChatFolder.id == count_subq.c.folder_id)
+                .outerjoin(
+                    count_subq,
+                    and_(
+                        ChatFolder.account_id == count_subq.c.account_id,
+                        ChatFolder.id == count_subq.c.folder_id,
+                    ),
+                )
                 .order_by(ChatFolder.sort_order, ChatFolder.title)
             )
             if account_id is not None:
@@ -5281,7 +5296,10 @@ class DatabaseAdapter:
             for row in result:
                 folder = row.ChatFolder
                 count = row.chat_count or 0
-                # Hide folders with no backed-up chats (empty tabs help no one)
+                # Hide folders with no backed-up chats (empty tabs help no one).
+                # With the count now per account, this is also what keeps a
+                # restricted viewer from seeing the other account's folders:
+                # none of their members are visible, so the count is zero.
                 if count == 0:
                     continue
                 folders.append(

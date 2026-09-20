@@ -347,23 +347,44 @@ class TestFolderCountsTakeTheSameKey:
         plus the other account's rows for the same two ids. The viewer is
         entitled to one account, so two is the honest number.
 
-        Known limit, deliberately not addressed here: a folder id is per
-        account, so two accounts that both define folder 3 still produce two
-        tabs whose counts are computed from one ``folder_id`` group. Giving
-        folders an account-qualified identity reaches the ``folder_id`` query
-        parameter and the sidebar, which is a redesign rather than a fix.
+        A dialog-filter id is per account and starts at 2 for everyone, so
+        both accounts define a folder 3. Only this viewer's may be returned,
+        with only this viewer's members counted: the other account's folder
+        has no visible member, so the empty-folder rule drops it along with
+        its title.
         """
         await seed_two_accounts(app_on)
+        titles = {1: "Folder of account one", 2: "Folder of account two"}
         for account_id in (1, 2):
-            await app_on.upsert_chat_folder({"id": 3, "title": "a folder"}, account_id=account_id)
+            await app_on.upsert_chat_folder({"id": 3, "title": titles[account_id]}, account_id=account_id)
             await app_on.sync_folder_members(3, [SHARED_CHANNEL, COLLIDING_PRIVATE], account_id=account_id)
         as_principal(allowed_accounts={1})
 
         async with client() as http:
+            resp = await http.get("/api/folders")
+
+        folders = resp.json()["folders"]
+        assert [(folder["title"], folder["chat_count"]) for folder in folders] == [(titles[1], 2)]
+        # Four would be both accounts' membership rows; the other account's
+        # folder title must not travel at all.
+        assert titles[2] not in resp.text
+
+    async def test_an_unrestricted_principal_sees_each_folder_s_own_count(self, app_on):
+        """Both accounts' folders, each counting only its own members."""
+        await seed_two_accounts(app_on)
+        titles = {1: "Folder of account one", 2: "Folder of account two"}
+        for account_id, members in ((1, [SHARED_CHANNEL, COLLIDING_PRIVATE]), (2, [SHARED_CHANNEL])):
+            await app_on.upsert_chat_folder({"id": 3, "title": titles[account_id]}, account_id=account_id)
+            await app_on.sync_folder_members(3, members, account_id=account_id)
+        as_principal(role="master", allowed_accounts=None)
+
+        async with client() as http:
             folders = (await http.get("/api/folders")).json()["folders"]
 
-        assert [folder["chat_count"] for folder in folders] == [2, 2]
-        assert all(folder["chat_count"] == 2 for folder in folders), "four would be both accounts' rows"
+        assert sorted((folder["title"], folder["chat_count"]) for folder in folders) == [
+            (titles[1], 2),
+            (titles[2], 1),
+        ]
 
     async def test_an_empty_grant_counts_no_folder_at_all(self, app_on):
         """The empty grant denies, here as everywhere else."""
