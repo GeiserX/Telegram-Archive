@@ -3087,6 +3087,31 @@ class DatabaseAdapter:
                 "download_date": row.download_date,
             }
 
+    @staticmethod
+    def _document_mime_condition(mime_types: set[str], mime_extensions: set[str]):
+        """SQL mirror of ``Config.document_mime_allowed``, for document rows only.
+
+        Never stricter than the Python predicate: a row this keeps but the
+        predicate declines is re-checked against the live message by the drain
+        and costs one re-fetch, while a row this drops is never downloaded at
+        all. The two forms Telegram produces are covered -- a bare
+        ``type/subtype`` and one carrying ``;parameters`` -- so the normalizer's
+        tolerance for whitespace around the semicolon is the one shape that
+        lives only in Python.
+        """
+
+        def like(value: str) -> str:
+            return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+        allowed = [func.lower(Media.mime_type).in_(sorted(mime_types))]
+        allowed += [Media.mime_type.ilike(f"{like(mime)};%", escape="\\") for mime in sorted(mime_types)]
+        allowed += [Media.file_name.ilike(f"%{like(ext)}", escape="\\") for ext in sorted(mime_extensions)]
+        # A row that stored neither a MIME nor a name cannot be judged here.
+        # Keep it: it is indistinguishable from a genuine failed download, and
+        # the drain re-checks it against the message before spending anything.
+        allowed.append(and_(Media.mime_type.is_(None), Media.file_name.is_(None)))
+        return or_(Media.type != "document", *allowed)
+
     async def get_pending_media_downloads(
         self,
         max_media_size_bytes: int | None = None,
@@ -3095,6 +3120,9 @@ class DatabaseAdapter:
         exclude_chat_ids: set[int] | None = None,
         *,
         account_id: int,
+        media_types: set[str] | None = None,
+        document_mime_types: set[str] | None = None,
+        document_mime_extensions: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Get media records that failed to download and need retry.
 
@@ -3110,6 +3138,15 @@ class DatabaseAdapter:
         ``iter_media_paths_for_repair``); pass ``None`` to restore the old
         unbounded behavior. Ordered by (download_attempts, id) so a bounded pass
         makes progress on the least-retried rows first.
+
+        ``media_types``/``document_mime_types``/``document_mime_extensions``
+        carry DOWNLOAD_MEDIA_TYPES and DOWNLOAD_DOCUMENT_MIME_TYPES, and are
+        applied HERE rather than in Python afterwards for the reason #442 moved
+        ``exclude_chat_ids`` here: a filtered row is never charged a download
+        attempt, so it sits at ``download_attempts = 0`` forever and sorts ahead
+        of every genuine failure. On an archive whose filter declines most
+        media, filtering after the ``limit`` means the same rows fill all of it
+        on every run and no real retry ever gets a slot.
         """
         async with self.db_manager.async_session_factory() as session:
             conditions = [
@@ -3125,6 +3162,10 @@ class DatabaseAdapter:
                 conditions.append(Media.download_attempts < max_attempts)
             if exclude_chat_ids:
                 conditions.append(~Media.chat_id.in_(exclude_chat_ids))
+            if media_types:
+                conditions.append(Media.type.in_(sorted(media_types)))
+            if document_mime_types:
+                conditions.append(self._document_mime_condition(document_mime_types, document_mime_extensions or set()))
             where_clause = and_(*conditions)
             stmt = select(Media).where(where_clause).order_by(Media.download_attempts.asc(), Media.id.asc())
             if limit is not None:

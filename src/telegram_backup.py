@@ -1947,6 +1947,9 @@ class TelegramBackup:
             self.config.max_media_download_attempts,
             exclude_chat_ids=self.config.skip_media_chat_ids,
             account_id=self.account_id,
+            media_types=self.config.download_media_types,
+            document_mime_types=self.config.download_document_mime_types,
+            document_mime_extensions=self.config.download_document_mime_extensions,
         )
         # Surface (don't silently swallow) files given up after hitting the retry cap —
         # the silent-loss failure mode #212 was about. Count only (no chat/file names, PII).
@@ -1961,34 +1964,6 @@ class TelegramBackup:
             )
         if not pending:
             return
-
-        # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: rows the
-        # configuration filtered out are not failures. Drop them BEFORE the
-        # per-chat re-fetch so a deployment with a filter never re-requests
-        # its filtered-out messages from Telegram on every run (the YouTube
-        # re-check below can afford a per-row fetch; a MIME filter over a
-        # large archive cannot). Rows recorded by the filter always carry
-        # their metadata, so the row columns answer the predicate; a
-        # metadata-less row is kept (conservative: it is a genuine failed
-        # download that deserves its retry). Left pending on purpose —
-        # relaxing the filter must make these rows downloadable again.
-        def _row_filtered(record: dict) -> bool:
-            media_type = record.get("type")
-            if not self.config.should_download_media_type(media_type):
-                return True
-            if media_type == "document" and self.config.download_document_mime_types:
-                mime_type = record.get("mime_type")
-                file_name = record.get("file_name")
-                if mime_type or file_name:
-                    return not self.config.document_mime_allowed(mime_type, file_name)
-            return False
-
-        filtered_out = sum(1 for record in pending if _row_filtered(record))
-        if filtered_out:
-            pending = [record for record in pending if not _row_filtered(record)]
-            logger.debug(f"{filtered_out} pending media row(s) excluded by the media type filter")
-            if not pending:
-                return
 
         logger.info("=" * 60)
         logger.info(f"Retrying {len(pending)} pending media downloads...")
@@ -2061,10 +2036,11 @@ class TelegramBackup:
                         # DOWNLOAD_DOCUMENT_MIME_TYPES, same policy as the YouTube
                         # branch above: configuration, not failure — no attempt
                         # charge, row left pending so relaxing the filter picks it
-                        # up. The Python pre-filter before the re-fetch already
-                        # removes rows that stored their metadata; this re-check
-                        # catches the rare metadata-less row whose message still
-                        # classifies as filtered.
+                        # up. get_pending_media_downloads already excluded every
+                        # row whose own columns prove it is filtered; this is the
+                        # authoritative re-check for the rest — a row that stored
+                        # no MIME and no name, and the shapes the SQL mirror
+                        # deliberately keeps rather than risk dropping.
                         skipped += 1
                         continue
 
