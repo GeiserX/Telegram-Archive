@@ -1493,7 +1493,11 @@
                                     </template>
                                     <template v-else>{{ selectedChat.type }}</template>
                                 </p>
-                                <p v-if="multiAccount" class="mt-0.5 flex flex-wrap gap-1">
+                                <!-- Hidden on a phone: the header's text column is the most
+                                     starved element there, and two chips truncated to one
+                                     letter each say nothing. The chat list row and the info
+                                     panel carry the same labels with room to read them. -->
+                                <p v-if="multiAccount" class="mt-0.5 hidden sm:flex flex-wrap gap-1">
                                     <span v-for="chip in chatAccountLabels(selectedChat)" :key="chip.id"
                                         class="account-chip">{{ chip.label }}</span>
                                 </p>
@@ -2391,7 +2395,7 @@
                                 <div>
                                     <dt class="text-xs uppercase tracking-wide text-tg-muted">From</dt>
                                     <dd class="mt-1 text-tg-ink">
-                                        <template v-if="isOwnMessage(infoPanelMessage)">You</template>
+                                        <template v-if="isOwnMessage(infoPanelMessage)">{{ senderAccountLabel(infoPanelMessage) || 'You' }}</template>
                                         <button v-else type="button" @click="openSenderInfo(infoPanelMessage, $event)"
                                             class="text-left break-words text-tg-accent hover:underline">{{ getSenderName(infoPanelMessage) }}</button>
                                         <span v-if="infoPanelMessage.sender_id != null" class="ml-1 font-mono text-xs text-tg-muted">{{ infoPanelMessage.sender_id }}</span>
@@ -7015,6 +7019,20 @@
                 }
 
                 const isOwnMessage = (msg) => {
+                    // A chat several accounts hold is shown once, through one
+                    // account's copy (8.12), so the OTHER account's messages carry
+                    // is_outgoing=0 — that flag is written per copy, from the point
+                    // of view of the account that captured it. They are still the
+                    // reader's own messages, and rendering them on the left with a
+                    // stranger's name is the bug this fixes. sender_account_id is
+                    // only ever set for an account the reader is entitled to (the
+                    // server masks the rest), so its presence IS the answer.
+                    //
+                    // Gated on multiAccount so a single-account install renders
+                    // exactly as before: there the one account's own messages
+                    // already carry is_outgoing=1, so the two agree anyway.
+                    if (multiAccount.value && msg.sender_account_id != null) return true
+
                     // Check explicit flag first (available in v2.0+)
                     if (msg.is_outgoing !== undefined && msg.is_outgoing !== null) {
                         return msg.is_outgoing === 1

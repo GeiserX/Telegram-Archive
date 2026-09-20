@@ -1926,6 +1926,42 @@ class DatabaseAdapter:
             MessageVersion.id.asc(),
         )
 
+    def _event_not_already_listed(
+        self,
+        scope: ChatScope | None,
+        *,
+        lower_rows,
+        lower_chat,
+        event_match: list,
+    ):
+        """True unless a LOWER entitled account already carries this same event.
+
+        The changes feed's twin of ``ChatScope.displayed_copy_predicate``, keyed
+        on the event rather than on the chat: same rule (non-private only,
+        lowest entitled account wins, private never merges), different identity.
+
+        A private chat is exempt because its ``chats.id`` is the other party's
+        user id, so two accounts' rows with the same (chat id, message id) are
+        two different messages in two different conversations — deduplicating
+        them would delete one account's history from the feed.
+
+        The grant is re-applied to the lower copy for the same reason the chat
+        list re-applies it: a row may only be suppressed behind one the
+        principal is actually entitled to see.
+        """
+        duplicate = (
+            select(literal(1))
+            .select_from(lower_rows)
+            .join(
+                lower_chat,
+                and_(lower_chat.account_id == lower_rows.account_id, lower_chat.id == lower_rows.chat_id),
+            )
+            .where(lower_chat.type != PRIVATE_CHAT_TYPE, *event_match)
+        )
+        for predicate in (scope or ChatScope()).sql_predicates(lower_chat):
+            duplicate = duplicate.where(predicate)
+        return or_(Chat.type == PRIVATE_CHAT_TYPE, ~duplicate.exists())
+
     async def get_recent_changes(
         self,
         *,
@@ -2011,6 +2047,61 @@ class DatabaseAdapter:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
+
+            # One row per EVENT, not per chat copy. Both accounts' listeners
+            # see the same deletion in a channel they both hold, so both
+            # archive it, a second apart, and the feed listed it twice.
+            #
+            # The chat list folds by choosing one COPY of the chat. Doing that
+            # here would be wrong: an event only exists in the copy whose
+            # listener was up when it happened, so dropping the other copy's
+            # rows drops the event outright whenever the displayed account
+            # missed it. The identity that matters here is the event — for a
+            # non-private chat, (chat id, message id) names the same real
+            # message in every account, and for an edit the superseded text
+            # names the same revision.
+            lower_deleted = aliased(Message, name="lower_deleted_message")
+            lower_deleted_chat = aliased(Chat, name="lower_deleted_chat")
+            deleted_duplicate = [
+                lower_deleted.chat_id == Message.chat_id,
+                lower_deleted.id == Message.id,
+                lower_deleted.account_id < Message.account_id,
+                lower_deleted.is_deleted == 1,
+                lower_deleted.deleted_at.isnot(None),
+            ]
+            lower_edited = aliased(MessageVersion, name="lower_edited_version")
+            lower_edited_chat = aliased(Chat, name="lower_edited_chat")
+            edited_duplicate = [
+                lower_edited.chat_id == MessageVersion.chat_id,
+                lower_edited.message_id == MessageVersion.message_id,
+                lower_edited.account_id < MessageVersion.account_id,
+                # The superseded text IS the revision's identity: a message
+                # edited twice is two events, and both accounts captured both.
+                lower_edited.text.is_not_distinct_from(MessageVersion.text),
+            ]
+            # The window bounds ride into the duplicate check too, so a row is
+            # suppressed only when a lower account carries one THIS query would
+            # otherwise list. Without them an event whose other copy fell just
+            # outside the window would vanish from the page instead of being
+            # deduplicated.
+            if since is not None:
+                deleted_duplicate.append(lower_deleted.deleted_at >= since)
+                edited_duplicate.append(lower_edited.captured_at >= since)
+            if before is not None:
+                deleted_duplicate.append(lower_deleted.deleted_at < before)
+                edited_duplicate.append(lower_edited.captured_at < before)
+
+            deleted_stmt = deleted_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_deleted, lower_chat=lower_deleted_chat, event_match=deleted_duplicate
+                )
+            )
+            edited_stmt = edited_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_edited, lower_chat=lower_edited_chat, event_match=edited_duplicate
+                )
+            )
+
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
 
