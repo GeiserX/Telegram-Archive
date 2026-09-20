@@ -6,7 +6,7 @@ For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
 ## [8.12.1] - 2026-09-20
 
-Two corrections to the several-accounts viewer that 8.12.0 introduced.
+Corrections to the several-accounts viewer that 8.12.0 introduced.
 
 ### Fixed
 - **The What changed feed lists an event in a shared chat once.** An edit or deletion in a channel or group that several entitled accounts hold was listed once per account. The feed now removes duplicate events rather than hiding a copy of the chat, because an event exists only in the copy that was listening when it happened: one captured by a single account is still listed. A message edited twice stays two entries.
