@@ -206,8 +206,10 @@ _TG_ACCOUNT_REQUIRED_SUFFIXES = ("API_ID", "API_HASH", "PHONE_NUMBER")
 # Valid CHAT_TYPES tokens, shared by the global and per-account validators.
 _VALID_CHAT_TYPES = {"private", "groups", "channels", "bots"}
 
-# Valid DOWNLOAD_MEDIA_TYPES tokens. Must mirror the downloadable type strings
-# classify_media_type() returns in message_utils.py.
+# Valid DOWNLOAD_MEDIA_TYPES tokens: every type classify_media_type() returns
+# that has a file behind it, i.e. its whole vocabulary minus the metadata-only
+# kinds. tests/test_media_type_filter.py drives the real classifier over every
+# media class it dispatches on and fails if this set drifts from it.
 _VALID_MEDIA_TYPES = frozenset(
     {"photo", "video", "video_note", "animation", "voice", "audio", "sticker", "document", "webpage"}
 )

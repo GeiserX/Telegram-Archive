@@ -1391,7 +1391,16 @@ def media_download_allowed(config, media: object, media_type: str | None) -> boo
     extension derived from the configured MIME types, so a file telethon
     reports as ``application/octet-stream`` but named ``report.pdf`` still
     passes an ``application/pdf`` whitelist.
+
+    Metadata-only kinds are exempt: a poll or a contact has no file behind it,
+    so a download whitelist has no opinion on one. ``_process_media`` returns
+    them before it ever reaches here, but the listener asks this question of
+    every classified type, and answering "no" there dropped the type and with
+    it the kind the message was logged under.
     """
+    if media_type in METADATA_ONLY_MEDIA_TYPES:
+        return True
+
     if not config.should_download_media_type(media_type):
         return False
 

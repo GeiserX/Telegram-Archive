@@ -364,3 +364,95 @@ class TestConfigMediaFilters(unittest.TestCase):
         self.assertTrue(config.document_mime_allowed("application/octet-stream", "scan.PDF"))
         self.assertFalse(config.document_mime_allowed("application/octet-stream", "archive.zip"))
         self.assertFalse(config.document_mime_allowed(None, None))
+
+
+# ---------------------------------------------------------------------------
+# The vocabulary: _VALID_MEDIA_TYPES against the classifier it must mirror
+# ---------------------------------------------------------------------------
+
+
+def _media_class(class_name, **attributes):
+    """An object classify_media_type sees as ``class_name``.
+
+    It dispatches on ``__class__.__name__`` rather than isinstance (so the
+    viewer image can import the module without telethon), which is exactly what
+    lets this build one stand-in per kind.
+    """
+    return type(class_name, (), attributes)()
+
+
+def _document_with(*attributes):
+    return _media_class(
+        "MessageMediaDocument",
+        document=SimpleNamespace(id=1, size=1, mime_type="application/octet-stream", attributes=list(attributes)),
+    )
+
+
+def _every_classified_media_type():
+    """Every non-None string classify_media_type can return.
+
+    Enumerated from telethon rather than hand-listed: a new ``MessageMedia*``
+    kind joins this set the moment the classifier learns to name it.
+    """
+    from telethon.tl import types as tl
+    from telethon.tl.types import (
+        DocumentAttributeAnimated,
+        DocumentAttributeAudio,
+        DocumentAttributeSticker,
+        DocumentAttributeVideo,
+    )
+
+    candidates = [
+        _media_class(name) for name in dir(tl) if name.startswith("MessageMedia") and name != "MessageMediaDocument"
+    ]
+    candidates += [
+        _media_class("MessageMediaPhoto", photo=SimpleNamespace(id=1, sizes=[])),
+        _media_class(
+            "MessageMediaWebPage",
+            webpage=_media_class("WebPage", photo=SimpleNamespace(id=1, sizes=[]), document=None),
+        ),
+        _document_with(),
+        _document_with(DocumentAttributeVideo(duration=1, w=1, h=1)),
+        _document_with(DocumentAttributeVideo(duration=1, w=1, h=1, round_message=True)),
+        _document_with(DocumentAttributeAnimated()),
+        _document_with(DocumentAttributeAudio(duration=1)),
+        _document_with(DocumentAttributeAudio(duration=1, voice=True)),
+        _document_with(DocumentAttributeSticker(alt="x", stickerset=None)),
+    ]
+    from src.message_utils import classify_media_type
+
+    return {classified for media in candidates if (classified := classify_media_type(media)) is not None}
+
+
+def test_valid_media_types_mirrors_the_classifier():
+    """The comment said "must mirror"; this is what makes it true.
+
+    Reds when classify_media_type learns a downloadable kind DOWNLOAD_MEDIA_TYPES
+    cannot name, and when _VALID_MEDIA_TYPES names one the classifier never
+    returns.
+    """
+    from src.config import _VALID_MEDIA_TYPES
+    from src.message_utils import METADATA_ONLY_MEDIA_TYPES
+
+    classified = _every_classified_media_type()
+
+    assert classified & METADATA_ONLY_MEDIA_TYPES, "fixture no longer reaches the metadata-only kinds"
+    assert classified - METADATA_ONLY_MEDIA_TYPES == set(_VALID_MEDIA_TYPES)
+
+
+def test_metadata_only_kinds_are_exempt_from_the_whitelist():
+    """A poll has no file, so a download whitelist has no opinion on it.
+
+    The listener asks this of every classified type, and a "no" there dropped
+    the type and with it the kind the message was logged under.
+    """
+    from src.message_utils import METADATA_ONLY_MEDIA_TYPES, media_download_allowed
+
+    config = MagicMock()
+    config.should_download_media_type = MagicMock(return_value=False)
+    config.download_document_mime_types = {"application/pdf"}
+
+    for media_type in sorted(METADATA_ONLY_MEDIA_TYPES):
+        assert media_download_allowed(config, _media_class("MessageMediaPoll"), media_type) is True
+
+    assert media_download_allowed(config, _photo_media(), "photo") is False
