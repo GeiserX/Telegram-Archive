@@ -76,6 +76,7 @@ from .message_utils import (
     finalize_atomic_download,
     is_youtube_preview_video,
     is_youtube_url,
+    media_download_allowed,
     message_plain_text,
     resolve_shared_file_path,
     sender_display_name,
@@ -1961,6 +1962,34 @@ class TelegramBackup:
         if not pending:
             return
 
+        # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: rows the
+        # configuration filtered out are not failures. Drop them BEFORE the
+        # per-chat re-fetch so a deployment with a filter never re-requests
+        # its filtered-out messages from Telegram on every run (the YouTube
+        # re-check below can afford a per-row fetch; a MIME filter over a
+        # large archive cannot). Rows recorded by the filter always carry
+        # their metadata, so the row columns answer the predicate; a
+        # metadata-less row is kept (conservative: it is a genuine failed
+        # download that deserves its retry). Left pending on purpose —
+        # relaxing the filter must make these rows downloadable again.
+        def _row_filtered(record: dict) -> bool:
+            media_type = record.get("type")
+            if not self.config.should_download_media_type(media_type):
+                return True
+            if media_type == "document" and self.config.download_document_mime_types:
+                mime_type = record.get("mime_type")
+                file_name = record.get("file_name")
+                if mime_type or file_name:
+                    return not self.config.document_mime_allowed(mime_type, file_name)
+            return False
+
+        filtered_out = sum(1 for record in pending if _row_filtered(record))
+        if filtered_out:
+            pending = [record for record in pending if not _row_filtered(record)]
+            logger.debug(f"{filtered_out} pending media row(s) excluded by the media type filter")
+            if not pending:
+                return
+
         logger.info("=" * 60)
         logger.info(f"Retrying {len(pending)} pending media downloads...")
 
@@ -2024,6 +2053,18 @@ class TelegramBackup:
                         # and have the run warn that it gave up on a file nobody
                         # asked it to fetch. Left pending, so turning
                         # DOWNLOAD_YOUTUBE_VIDEOS on downloads it on the next run.
+                        skipped += 1
+                        continue
+
+                    if not media_download_allowed(self.config, msg.media, self._get_media_type(msg.media)):
+                        # Declined by DOWNLOAD_MEDIA_TYPES /
+                        # DOWNLOAD_DOCUMENT_MIME_TYPES, same policy as the YouTube
+                        # branch above: configuration, not failure — no attempt
+                        # charge, row left pending so relaxing the filter picks it
+                        # up. The Python pre-filter before the re-fetch already
+                        # removes rows that stored their metadata; this re-check
+                        # catches the rare metadata-less row whose message still
+                        # classifies as filtered.
                         skipped += 1
                         continue
 
@@ -3859,6 +3900,27 @@ class TelegramBackup:
         # Guard against inaccessible media producing "None" string IDs
         if telegram_file_id == "None":
             telegram_file_id = None
+
+        # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: media the
+        # operator did not ask for is recorded with its metadata (name, MIME,
+        # dimensions, size) while the bytes stay on Telegram. Modeled on the
+        # oversize skip below: no ``downloaded`` key on purpose — insert_media
+        # COALESCEs the stored flag, so tightening the filter never
+        # un-downloads an already-stored file, and callers that test the
+        # outcome use ``.get("downloaded")``, so an absent key still reads as
+        # "not downloaded". The pending drain re-runs the same predicate
+        # (_retry_pending_media_downloads), so the row is never re-fetched
+        # and never charges a download attempt.
+        if not media_download_allowed(self.config, media, media_type):
+            logger.debug(f"Skipping filtered media (type: {media_type})")
+            return {
+                "id": media_id,
+                "type": media_type,
+                "message_id": message.id,
+                "chat_id": chat_id,
+                "file_name": self._get_media_filename(message, media_type, telegram_file_id),
+                **extract_media_attributes(payload),
+            }
 
         # Check file size (estimated)
         file_size = self._get_media_size(payload)

@@ -255,6 +255,8 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `SCHEDULE` | `0 */6 * * *` | B | Cron expression for backup frequency |
 | `BACKUP_PATH` | `/data/backups` | B/V | Base path for backup data and media |
 | `DOWNLOAD_MEDIA` | `true` | B | Download media files (photos, videos, documents) |
+| `DOWNLOAD_MEDIA_TYPES` | _(empty)_ | B | Comma-separated whitelist of media types worth downloading: `photo`, `video`, `video_note`, `animation`, `voice`, `audio`, `sticker`, `document`, `webpage`. Empty downloads every type. Filtered media is still recorded with its metadata (name, MIME, size), only the file stays on Telegram |
+| `DOWNLOAD_DOCUMENT_MIME_TYPES` | _(empty)_ | B | Narrow the `document` type to specific MIME types, e.g. `application/pdf`. Exact match, or the filename extension derived from the configured MIMEs (catches files Telegram labels `application/octet-stream` but names `report.pdf`). Empty keeps every document |
 | `DOWNLOAD_CHAT_DESCRIPTION` | `false` | B | Fetch each chat's description on every run for the viewer's chat info panel: a group or channel's about text, a user's bio, plus the member count of channels and supergroups. One extra API request per chat per run |
 | `MAX_MEDIA_SIZE_MB` | `100` | B | Skip media files larger than this (MB) |
 | `MEDIA_MAX_FILENAME_BYTES` | `143` | B | Usable filename byte budget for downloaded media. Raise to `255` on plain ext4/xfs; keep `143` for Synology/eCryptfs encrypted shares |

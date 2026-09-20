@@ -52,6 +52,7 @@ from .message_utils import (
     fallback_media_filename,
     finalize_atomic_download,
     is_youtube_preview_video,
+    media_download_allowed,
     message_plain_text,
     sanitize_media_filename,
     sender_display_name,
@@ -1345,6 +1346,15 @@ class TelegramListener:
                     # the pending drain never sees it. The message, its text and its
                     # raw_data.webpage card above are stored either way.
                     if not self.config.download_youtube_videos and is_youtube_preview_video(message.media):
+                        media_type = None
+                    # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: same
+                    # policy, same reason — dropping the type here keeps the
+                    # live lane from downloading filtered media and from
+                    # writing a row the pending drain would have to re-examine.
+                    # The message, its text and its raw_data card above are
+                    # stored either way; the scheduled sweep records the
+                    # metadata-only row on its next run.
+                    if media_type and not media_download_allowed(self.config, message.media, media_type):
                         media_type = None
 
                 # Insert the message FIRST (required for FK constraint on media table)

@@ -1377,3 +1377,34 @@ def downloadable_media_payload(media: object) -> object:
         if type(webpage).__name__ == "WebPage":
             return webpage
     return media
+
+
+def media_download_allowed(config, media: object, media_type: str | None) -> bool:
+    """The DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES predicate.
+
+    Shared by the scheduled sweep (``_process_media``), the realtime listener
+    and the pending-media drain so all three lanes decline the same files the
+    same way. Config-agnostic on purpose: ``config`` only needs the two
+    predicates Config exposes (doubles in tests with mocks).
+
+    Documents get a second, narrower gate: exact MIME match or a filename
+    extension derived from the configured MIME types, so a file telethon
+    reports as ``application/octet-stream`` but named ``report.pdf`` still
+    passes an ``application/pdf`` whitelist.
+    """
+    if not config.should_download_media_type(media_type):
+        return False
+
+    if media_type == "document" and config.download_document_mime_types:
+        payload = downloadable_media_payload(media)
+        document = getattr(payload, "document", None)
+        mime_type = getattr(document, "mime_type", None) if document is not None else None
+        file_name = None
+        if document is not None:
+            for attr in getattr(document, "attributes", None) or ():
+                file_name = getattr(attr, "file_name", None)
+                if file_name:
+                    break
+        return config.document_mime_allowed(mime_type, file_name)
+
+    return True
