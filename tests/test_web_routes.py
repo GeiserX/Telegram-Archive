@@ -362,8 +362,8 @@ class TestChatsEndpoint(_WebTestBase):
         ]
         # Scope-honouring stand-in: the route no longer filters in Python, so a
         # fixed-list mock would pass even if it stopped passing the grant.
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
-            all_chats
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_pairs = (
+            scoped_chat_source(all_chats)
         )
         async with self._client() as client:
             resp = await client.get("/api/chats", cookies={"viewer_auth": token})
@@ -719,12 +719,14 @@ class TestArchivedCountEndpoint(_WebTestBase):
         )
         # Every row here stands for an archived chat, so the count fake needs no
         # is_archived of its own; what it must honour is the scope.
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
-            [
-                {"id": 1, "account_id": 1, "ref": "archRefA000000000001A"},
-                {"id": 2, "account_id": 1, "ref": "archRefB000000000002A"},
-                {"id": 99, "account_id": 1, "ref": "archRefZ000000000099A"},
-            ]
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_pairs = (
+            scoped_chat_source(
+                [
+                    {"id": 1, "account_id": 1, "ref": "archRefA000000000001A"},
+                    {"id": 2, "account_id": 1, "ref": "archRefB000000000002A"},
+                    {"id": 99, "account_id": 1, "ref": "archRefZ000000000099A"},
+                ]
+            )
         )
         async with self._client() as client:
             resp = await client.get("/api/archived/count", cookies={"viewer_auth": token})
@@ -754,21 +756,23 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertIn("push_enabled", data)
 
     async def test_stats_filters_per_chat_for_restricted_user(self):
-        """get_stats filters per_chat_message_counts by the user's ref grant."""
+        """get_stats recomputes a restricted viewer's totals from its own chats."""
         web_main.AUTH_ENABLED = True
         token = "sv"
         web_main._sessions[token] = web_main.SessionData(
             username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
         )
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
-            [
-                {"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"},
-                {"id": 2, "account_id": 1, "ref": "statsRefTwo000000002A"},
-            ]
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_pairs = (
+            scoped_chat_source(
+                [
+                    {"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"},
+                    {"id": 2, "account_id": 1, "ref": "statsRefTwo000000002A"},
+                ]
+            )
         )
         self.mock_db.get_cached_statistics = AsyncMock(
             return_value={
-                "per_chat_message_counts": {"1": 100, "2": 200},
+                "per_account_chat_message_counts": {"1:1": 100, "1:2": 200},
                 "chats": 2,
                 "messages": 300,
                 "media_files": 50,
@@ -782,6 +786,9 @@ class TestStatsEndpoint(_WebTestBase):
         self.assertEqual(data["chats"], 1)
         self.assertEqual(data["messages"], 100)
         self.assertNotIn("media_files", data)
+        # The map is scoping input; its keys are chat ids and never travel.
+        self.assertNotIn("per_account_chat_message_counts", data)
+        self.assertNotIn("per_chat_message_counts", data)
 
     async def test_stats_scope_fails_closed_when_per_chat_map_is_missing(self):
         """A restricted viewer with a cached blob that lacks (or has an empty)
@@ -792,8 +799,8 @@ class TestStatsEndpoint(_WebTestBase):
         web_main._sessions[token] = web_main.SessionData(
             username="v1", role="viewer", allowed_chat_refs={"statsRefOne000000001A"}
         )
-        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_ids = scoped_chat_source(
-            [{"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"}]
+        self.mock_db.get_all_chats, self.mock_db.get_chat_count, self.mock_db.get_visible_chat_pairs = (
+            scoped_chat_source([{"id": 1, "account_id": 1, "ref": "statsRefOne000000001A"}])
         )
         self.mock_db.get_metadata = AsyncMock(return_value=None)
         for blob in (

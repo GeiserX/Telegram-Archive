@@ -529,12 +529,13 @@ class TestChatScope(unittest.TestCase):
 
 
 @_skip_unless_web_main
-class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
-    """Test _visible_chat_id_set: ref-based grants merged with DISPLAY_CHAT_IDS.
+class TestVisibleChatPairSet(unittest.IsolatedAsyncioTestCase):
+    """Test _visible_chat_pair_set: ref-based grants merged with DISPLAY_CHAT_IDS.
 
-    Entitlements are ref-keyed since v8.0, so the id set is computed by
+    Entitlements are ref-keyed since v8.0, so the key set is computed by
     filtering the chat list through _chat_visible rather than intersecting
-    id sets directly.
+    id sets directly. Each key carries its account: a bare chat id names two
+    different chats once two accounts archive into one database.
     """
 
     def setUp(self):
@@ -545,7 +546,7 @@ class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
         # The scope now rides into SQL, so the stand-in must honour it — a mock
         # returning all four rows regardless would pass even if the grant were
         # dropped on the floor.
-        web_main.db.get_all_chats, web_main.db.get_chat_count, web_main.db.get_visible_chat_ids = scoped_chat_source(
+        web_main.db.get_all_chats, web_main.db.get_chat_count, web_main.db.get_visible_chat_pairs = scoped_chat_source(
             [
                 _chat_row(5, "refChat0000000000005A"),
                 _chat_row(10, "refChat0000000000010A"),
@@ -561,27 +562,27 @@ class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
     async def test_master_no_filter_returns_none(self):
         """Master with no display_chat_ids returns None (all chats)."""
         user = web_main.UserContext(username="admin", role="master")
-        self.assertIsNone(await web_main._visible_chat_id_set(user))
+        self.assertIsNone(await web_main._visible_chat_pair_set(user))
 
     async def test_master_with_filter_returns_filter(self):
         """Master with display_chat_ids sees only the filtered chats."""
         web_main.config.display_chat_ids = {5, 10}
         user = web_main.UserContext(username="admin", role="master")
-        self.assertEqual(await web_main._visible_chat_id_set(user), {5, 10})
+        self.assertEqual(await web_main._visible_chat_pair_set(user), {(1, 5), (1, 10)})
 
     async def test_viewer_no_restrictions_no_filter_returns_none(self):
         """Viewer with allowed_chat_refs=None and no display filter returns None."""
         user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_refs=None)
-        self.assertIsNone(await web_main._visible_chat_id_set(user))
+        self.assertIsNone(await web_main._visible_chat_pair_set(user))
 
     async def test_viewer_with_allowed_no_filter_returns_allowed(self):
-        """Viewer with a ref grant sees exactly those chats' ids."""
+        """Viewer with a ref grant sees exactly those chats' keys."""
         user = web_main.UserContext(
             username="viewer1",
             role="viewer",
             allowed_chat_refs={"refChat0000000000010A", "refChat0000000000020A"},
         )
-        self.assertEqual(await web_main._visible_chat_id_set(user), {10, 20})
+        self.assertEqual(await web_main._visible_chat_pair_set(user), {(1, 10), (1, 20)})
 
     async def test_viewer_with_allowed_and_filter_returns_intersection(self):
         """A ref grant and the master display filter both bind (intersection)."""
@@ -591,13 +592,13 @@ class TestVisibleChatIdSet(unittest.IsolatedAsyncioTestCase):
             role="viewer",
             allowed_chat_refs={"refChat0000000000020A", "refChat0000000000040A"},
         )
-        self.assertEqual(await web_main._visible_chat_id_set(user), {20})
+        self.assertEqual(await web_main._visible_chat_pair_set(user), {(1, 20)})
 
     async def test_viewer_allowed_none_with_filter_returns_filter(self):
         """Viewer with no restriction but master filter sees the filtered chats."""
         web_main.config.display_chat_ids = {5, 10}
         user = web_main.UserContext(username="viewer1", role="viewer", allowed_chat_refs=None)
-        self.assertEqual(await web_main._visible_chat_id_set(user), {5, 10})
+        self.assertEqual(await web_main._visible_chat_pair_set(user), {(1, 5), (1, 10)})
 
 
 # ============================================================================

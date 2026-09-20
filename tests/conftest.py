@@ -294,7 +294,7 @@ def chat_row_accounts(row: dict, rows: list[dict], scope) -> list[int]:
 
 
 def scoped_chat_source(rows: list[dict]):
-    """``(get_all_chats, get_chat_count, get_visible_chat_ids)`` fakes over ``rows``.
+    """``(get_all_chats, get_chat_count, get_visible_chat_pairs)`` fakes over ``rows``.
 
     All three honour ``scope`` through the same predicate the real adapter
     compiles to SQL, so a route that switches between them keeps reading the
@@ -337,7 +337,9 @@ def scoped_chat_source(rows: list[dict]):
     ):
         return len(_visible(scope, fold_shared))
 
-    async def get_visible_chat_ids(scope):
-        return {row["id"] for row in rows if chat_row_in_scope(row, scope)}
+    async def get_visible_chat_pairs(scope):
+        # The account is half the key: a bare id names two chats once two
+        # accounts archive into one database.
+        return {(row["account_id"], row["id"]) for row in rows if chat_row_in_scope(row, scope)}
 
-    return get_all_chats, get_chat_count, get_visible_chat_ids
+    return get_all_chats, get_chat_count, get_visible_chat_pairs
