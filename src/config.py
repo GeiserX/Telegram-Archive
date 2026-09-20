@@ -214,6 +214,23 @@ _VALID_MEDIA_TYPES = frozenset(
     {"photo", "video", "video_note", "animation", "voice", "audio", "sticker", "document", "webpage"}
 )
 
+# A full ``type/subtype``, the only form DOWNLOAD_DOCUMENT_MIME_TYPES accepts.
+# Deliberately rejects a wildcard (``image/*``) and a bare extension (``pdf``):
+# the whitelist compares by exact string, so neither is a narrower filter --
+# both are filters that match nothing.
+_MIME_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
+
+
+def _normalize_mime_type(value: str) -> str:
+    """``type/subtype``, lowercased, with any ``; charset=...`` parameters removed.
+
+    ``Document.mime_type`` is the verbatim string the uploading client sent, so
+    it can carry parameters. The whitelist compares by exact string and
+    ``mimetypes`` only knows bare types, so one parameter would otherwise
+    defeat both arms of the document match at once.
+    """
+    return value.split(";", 1)[0].strip().lower()
+
 
 @dataclass(frozen=True)
 class AccountConfig:
@@ -583,14 +600,28 @@ class Config:
         # filename extension derived from the configured MIMEs for mislabeled
         # files (e.g. application/octet-stream carrying a .pdf name).
         # Empty/unset keeps every document allowed by DOWNLOAD_MEDIA_TYPES.
-        self.download_document_mime_types = {
-            part.strip().lower()
-            for part in os.environ.get("DOWNLOAD_DOCUMENT_MIME_TYPES", "").split(",")
-            if part.strip()
-        }
+        _raw_document_mime_types = [
+            part.strip() for part in os.environ.get("DOWNLOAD_DOCUMENT_MIME_TYPES", "").split(",") if part.strip()
+        ]
+        self._validate_document_mime_types(_raw_document_mime_types)
+        self.download_document_mime_types = {_normalize_mime_type(raw) for raw in _raw_document_mime_types}
+        # mimetypes reads the HOST's MIME database, and the slim runtime image
+        # carries only part of one, so a configured type it does not know
+        # silently loses its extension fallback. Compute once and say which
+        # types lost it, rather than leaving the operator to guess why a
+        # mislabeled application/octet-stream named report.rtf stopped passing.
+        _extensions_by_mime = {mime: mimetypes.guess_all_extensions(mime) for mime in self.download_document_mime_types}
         self.download_document_mime_extensions = {
-            ext.lower() for mime in self.download_document_mime_types for ext in mimetypes.guess_all_extensions(mime)
+            ext.lower() for extensions in _extensions_by_mime.values() for ext in extensions
         }
+        _mimes_without_extension = sorted(mime for mime, exts in _extensions_by_mime.items() if not exts)
+        if _mimes_without_extension:
+            # WARNING, not debug: Config is built before setup_logging, so only
+            # WARNING and above reach stderr from here (#445).
+            logger.warning(
+                f"No filename extension is known for {_mimes_without_extension}; documents carrying one of "
+                "these types are matched by their declared MIME type only"
+            )
         # One extra full-info request per chat per run (the dialog entity has no "about").
         self.download_chat_description = _parse_bool_env("DOWNLOAD_CHAT_DESCRIPTION", False)
         # Viewer: the info panel's Open buttons exist only when the operator wrote
@@ -1574,6 +1605,24 @@ class Config:
         if invalid_types:
             raise ValueError(f"Invalid media types: {invalid_types}. Valid options are: {sorted(_VALID_MEDIA_TYPES)}")
 
+    def _validate_document_mime_types(self, raw_values: list[str]):
+        """Validate that DOWNLOAD_DOCUMENT_MIME_TYPES values are full MIME types.
+
+        Empty list is allowed - it means "download every document".
+
+        Same contract as _validate_media_types: name the token that is wrong.
+        A value that cannot match anything must fail here rather than quietly
+        archiving zero document bodies, which is what ``image/*`` or ``pdf``
+        did - the only trace was a debug line the default LOG_LEVEL hides.
+        """
+        invalid_types = sorted(raw for raw in raw_values if not _MIME_TYPE_RE.fullmatch(_normalize_mime_type(raw)))
+
+        if invalid_types:
+            raise ValueError(
+                f"Invalid document MIME types: {invalid_types}. Each value must be a full type/subtype "
+                "such as 'application/pdf'; wildcards and bare extensions are not supported."
+            )
+
     def _ensure_directories(self):
         """Create necessary directories if they don't exist."""
         os.makedirs(self.backup_path, exist_ok=True)
@@ -1771,7 +1820,7 @@ class Config:
         if not self.download_document_mime_types:
             return True
 
-        if mime_type and mime_type.lower() in self.download_document_mime_types:
+        if mime_type and _normalize_mime_type(mime_type) in self.download_document_mime_types:
             return True
 
         if file_name:

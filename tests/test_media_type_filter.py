@@ -353,6 +353,41 @@ class TestConfigMediaFilters(unittest.TestCase):
         self.assertIn("Invalid media types", str(ctx.exception))
         self.assertIn("document", str(ctx.exception))
 
+    def test_wildcards_and_bare_extensions_are_rejected(self):
+        """A value that can never match must fail here, not archive nothing."""
+        for bad in ("image/*", "pdf", ".pdf", "application", "*/*"):
+            with (
+                self.subTest(value=bad),
+                patch.dict(os.environ, {"DOWNLOAD_DOCUMENT_MIME_TYPES": bad}),
+                self.assertRaises(ValueError) as ctx,
+            ):
+                Config()
+
+            self.assertIn("Invalid document MIME types", str(ctx.exception))
+            self.assertIn(bad, str(ctx.exception))
+
+    def test_mime_parameters_are_stripped_on_both_sides(self):
+        """Document.mime_type is the uploader's verbatim string; it may carry them."""
+        with patch.dict(os.environ, {"DOWNLOAD_DOCUMENT_MIME_TYPES": "application/pdf; charset=binary"}):
+            config = Config()
+
+        self.assertEqual(config.download_document_mime_types, {"application/pdf"})
+        self.assertEqual(config.download_document_mime_extensions, {".pdf"})
+        self.assertTrue(config.document_mime_allowed("application/pdf; charset=binary", None))
+        self.assertTrue(config.document_mime_allowed("APPLICATION/PDF ; charset=binary", None))
+        self.assertFalse(config.document_mime_allowed("application/zip; charset=binary", None))
+
+    def test_a_mime_with_no_known_extension_says_so(self):
+        """The extension fallback depends on the host MIME database; it can be empty."""
+        with (
+            patch.dict(os.environ, {"DOWNLOAD_DOCUMENT_MIME_TYPES": "application/x-not-in-any-mime-database"}),
+            self.assertLogs("src.config", level="WARNING") as logs,
+        ):
+            config = Config()
+
+        self.assertEqual(config.download_document_mime_extensions, set())
+        self.assertIn("No filename extension is known", "\n".join(logs.output))
+
     def test_predicates_answer_the_combined_configuration(self):
         with patch.dict(os.environ, {**PDF_FILTER_ENV, "DOWNLOAD_DOCUMENT_MIME_TYPES": "application/pdf"}):
             config = Config()
