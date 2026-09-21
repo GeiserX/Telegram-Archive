@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.13.0] - 2026-09-21
+
+A whitelist for which media is downloaded, and a viewer restricted to one account now reads statistics that count only that account.
+
+### Added
+- **`DOWNLOAD_MEDIA_TYPES` and `DOWNLOAD_DOCUMENT_MIME_TYPES` choose which media is fetched.** Both are empty by default, which downloads everything as before. The first is a whitelist of media types (`photo`, `video`, `video_note`, `animation`, `voice`, `audio`, `sticker`, `document`, `webpage`). The second narrows `document` to the MIME types it names, matched exactly or by the filename extension the system MIME database derives from them, so a PDF that Telegram labels `application/octet-stream` but names `report.pdf` still counts. Filtered media is recorded with its name, MIME and size; only the file stays on Telegram, and relaxing the filter later fetches it on the next retry pass. A value that can never match, such as `image/*` or a bare `pdf`, is rejected at startup rather than matching nothing. Polls and contacts carry no file and are always recorded. The filter is applied inside the pending-media query, so filtered rows cannot fill the retry batch ahead of genuine failures. An archive captured before 8.5.0 typed round videos as `video`; run `reclassify-round-videos` once before relying on `video_note` here. Contributed by [@i2z1](https://github.com/i2z1) in [#463](https://github.com/GeiserX/Telegram-Archive/pull/463).
+
+### Fixed
+- **A viewer restricted to one account reads only that account's statistics.** The per-chat message counts behind `/api/stats` were keyed by chat id alone, so a restricted login's chat and message totals included the other account's messages in every shared chat, and for a one-to-one chat, whose id is the other party's user id, the sum of two unrelated conversations. Counts are now keyed by account and chat. A statistics blob written by an earlier version cannot say which account a count belongs to, so until the next daily calculation, or a `POST /api/stats/refresh`, a restricted viewer reads zeros rather than the other account's numbers. The archive-wide totals an unrestricted login sees are unchanged. The per-chat map itself, which nothing in the viewer read, is no longer returned.
+- **A folder's chat count and its rows belong to one account.** The count credited a folder with the other account's membership rows, and a restricted viewer could be handed another account's folder with its title. Each row now counts its own account's members, and a folder with no visible chats is dropped as before.
+
 ## [8.12.1] - 2026-09-20
 
 Corrections to the several-accounts viewer that 8.12.0 introduced.
