@@ -288,9 +288,9 @@ def test_an_unrestricted_scope_adds_no_predicate_at_all():
 
 
 async def test_folder_counts_honour_an_empty_grant(seeded_adapter):
-    """get_all_folders(allowed_chat_ids=set()) must count nothing, not everything.
+    """get_all_folders(allowed_chat_pairs=set()) must count nothing, not everything.
 
-    /api/folders feeds this the ids from _visible_chat_id_set, so an empty
+    /api/folders feeds this the keys from _visible_chat_pair_set, so an empty
     grant reaches it as an empty set. If that degraded to "no filter" the
     folder tabs would name chats the viewer may not open.
     """
@@ -300,7 +300,12 @@ async def test_folder_counts_honour_an_empty_grant(seeded_adapter):
     unrestricted = await seeded_adapter.get_all_folders()
     assert [folder["chat_count"] for folder in unrestricted] == [2]
 
-    one_chat = await seeded_adapter.get_all_folders(allowed_chat_ids={700000001})
+    one_chat = await seeded_adapter.get_all_folders(allowed_chat_pairs={(1, 700000001)})
     assert [folder["chat_count"] for folder in one_chat] == [1]
 
-    assert await seeded_adapter.get_all_folders(allowed_chat_ids=set()) == []
+    assert await seeded_adapter.get_all_folders(allowed_chat_pairs=set()) == []
+
+    # The account is half the key: the same chat id under an account this
+    # grant does not reach must not be counted into the folder.
+    other_account = await seeded_adapter.get_all_folders(allowed_chat_pairs={(2, 700000001), (2, 700000002)})
+    assert other_account == []

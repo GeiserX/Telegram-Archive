@@ -35,7 +35,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import Config
 from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
-from ..db.adapter import ChatScope, parse_entitlement_column
+from ..db.adapter import (
+    LEGACY_CHAT_COUNTS_KEY,
+    PER_ACCOUNT_CHAT_COUNTS_KEY,
+    ChatScope,
+    parse_account_chat_stats_key,
+    parse_entitlement_column,
+)
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
@@ -881,19 +887,47 @@ def _user_is_restricted(user: UserContext) -> bool:
     return not _chat_scope(user).unrestricted
 
 
-async def _visible_chat_id_set(user: UserContext) -> set[int] | None:
-    """Chat ids the user may see, or None when unrestricted.
+async def _visible_chat_pair_set(user: UserContext) -> set[tuple[int, int]] | None:
+    """``(account_id, chat_id)`` pairs the user may see, or None when unrestricted.
 
-    The bridge that lets id-keyed internals (folder counts, cached stats) keep
-    working: entitlements are ref-based, so the ids come from the chat rows the
-    grant selects — selected BY the grant in SQL and read as bare ids, so a
-    viewer entitled to one chat reads one id and no message dates. Single-account caveat: the ids are bare (phase 5 will
-    need account-qualified sets once a second account can collide on an id).
+    The bridge that lets key-addressed internals (folder counts, cached stats)
+    keep working: entitlements are ref-based, so the keys come from the chat
+    rows the grant selects — selected BY the grant in SQL, so a viewer entitled
+    to one chat reads one key and no message dates.
+
+    The account is half the key. A bare chat id stopped naming a chat in 8.0,
+    when the primary key became ``(account_id, id)``: two accounts' copies of a
+    channel share an id, and two accounts' conversations with the same person
+    share one while holding entirely different messages. Filtering by id alone
+    credited a restricted principal with the other account's rows.
     """
     scope = _chat_scope(user)
     if scope.unrestricted:
         return None
-    return await db.get_visible_chat_ids(scope)
+    return await db.get_visible_chat_pairs(scope)
+
+
+def _scoped_message_counts(raw: Any, visible: set[tuple[int, int]]) -> dict[tuple[int, int], int]:
+    """Entitled ``(account, chat) -> message count``, read out of the cached blob.
+
+    Fail closed, and for two reasons rather than one. The original: an absent
+    or empty map (a failed startup calculation) must scope a restricted viewer
+    to zeros, never to the archive-wide numbers this scoping exists to hide.
+    The new one: a blob written before 8.12.2 is keyed by bare chat id, which
+    cannot say which account a count belongs to, so every key of it fails to
+    parse and the viewer reads zeros until the next calculation. The daily job
+    refreshes it, and ``POST /api/stats/refresh`` does it on demand.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    counts: dict[tuple[int, int], int] = {}
+    for key, value in raw.items():
+        pair = parse_account_chat_stats_key(key)
+        # bool is an int subclass, and a JSON `true` is not a message count.
+        if pair is None or pair not in visible or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        counts[pair] = value
+    return counts
 
 
 async def _resolve_chat_ref(chat_ref: str, user: UserContext) -> ChatContext:
@@ -3065,8 +3099,8 @@ async def get_folders(user: UserContext = Depends(require_auth)):
     v6.2.0: Returns user-created Telegram folders (dialog filters).
     """
     try:
-        visible_chat_ids = await _visible_chat_id_set(user)
-        folders = await db.get_all_folders(allowed_chat_ids=visible_chat_ids)
+        visible_chat_pairs = await _visible_chat_pair_set(user)
+        folders = await db.get_all_folders(allowed_chat_pairs=visible_chat_pairs)
         return {"folders": folders}
     except Exception as e:
         logger.error(f"Error fetching folders: {type(e).__name__}")
@@ -3120,22 +3154,20 @@ async def get_stats(user: UserContext = Depends(require_auth)):
     try:
         stats = await db.get_cached_statistics()
 
-        # Filter per-chat stats to only chats the user can access
-        user_chat_ids = await _visible_chat_id_set(user)
-        per_chat = stats.get("per_chat_message_counts", {})
-        if not isinstance(per_chat, dict):
-            # A malformed cached blob (null, a list) must scope to zeros like
-            # an absent map — not crash the restricted request with a 500.
-            per_chat = {}
-        if user_chat_ids is not None:
-            # ACL-driven, never data-driven: an absent or empty per-chat map
-            # (startup calculation failed, or a pre-8.0 cached blob) must scope
-            # a restricted viewer to zeros, not fail open to the archive-wide
-            # numbers this block exists to hide.
-            # JSON keys are strings after json.loads(), user_chat_ids are ints
-            stats["per_chat_message_counts"] = {k: v for k, v in per_chat.items() if int(k) in user_chat_ids}
-            # Recompute aggregates from visible chats only
-            visible = stats["per_chat_message_counts"]
+        # The per-chat map is scoping input, never output: it is keyed by chat
+        # id, and a chat id is the one identifier this viewer keeps out of the
+        # browser. Nothing in the UI reads it. Both the current key and the
+        # pre-8.12.2 one go, so an unrefreshed blob cannot leak it either.
+        per_chat = stats.pop(PER_ACCOUNT_CHAT_COUNTS_KEY, None)
+        stats.pop(LEGACY_CHAT_COUNTS_KEY, None)
+
+        user_chat_pairs = await _visible_chat_pair_set(user)
+        if user_chat_pairs is not None:
+            # ACL-driven, never data-driven. The totals a restricted principal
+            # reads are recomputed from its OWN chats: the archive-wide ones
+            # count rows across every account, which is exactly what this
+            # block exists to hide.
+            visible = _scoped_message_counts(per_chat, user_chat_pairs)
             stats["chats"] = len(visible)
             stats["messages"] = sum(visible.values())
             # Remove global media/size stats — no per-chat breakdown available
@@ -3225,6 +3257,9 @@ async def refresh_stats(user: UserContext = Depends(require_master)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics(storage_path=config.backup_path)
+        # Same rule as the read path: the per-chat map is scoping input, and
+        # its keys are chat ids.
+        stats.pop(PER_ACCOUNT_CHAT_COUNTS_KEY, None)
         stats["timezone"] = config.viewer_timezone
         return stats
     except Exception as e:
