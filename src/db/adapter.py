@@ -3094,17 +3094,17 @@ class DatabaseAdapter:
         Never stricter than the Python predicate: a row this keeps but the
         predicate declines is re-checked against the live message by the drain
         and costs one re-fetch, while a row this drops is never downloaded at
-        all. The two forms Telegram produces are covered -- a bare
-        ``type/subtype`` and one carrying ``;parameters`` -- so the normalizer's
-        tolerance for whitespace around the semicolon is the one shape that
-        lives only in Python.
+        all. A bare ``type/subtype`` matches exactly; one carrying
+        ``;parameters`` matches on the prefix with anything (whitespace
+        included) allowed before the semicolon, so every shape the normalizer
+        accepts is kept here and the predicate has the final word.
         """
 
         def like(value: str) -> str:
             return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
         allowed = [func.lower(Media.mime_type).in_(sorted(mime_types))]
-        allowed += [Media.mime_type.ilike(f"{like(mime)};%", escape="\\") for mime in sorted(mime_types)]
+        allowed += [Media.mime_type.ilike(f"{like(mime)}%;%", escape="\\") for mime in sorted(mime_types)]
         allowed += [Media.file_name.ilike(f"%{like(ext)}", escape="\\") for ext in sorted(mime_extensions)]
         # A row that stored neither a MIME nor a name cannot be judged here.
         # Keep it: it is indistinguishable from a genuine failed download, and

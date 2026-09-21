@@ -143,6 +143,7 @@ async def test_no_filter_is_the_query_it_always_was(real_adapter):
 ROWS = [
     ("document", PDF, "report.pdf"),
     ("document", "APPLICATION/PDF", "report.pdf"),
+    ("document", "application/pdf ; charset=binary", None),
     ("document", "application/octet-stream", "scan.PDF"),
     ("document", "application/octet-stream", "archive.zip"),
     ("document", "application/zip", None),
