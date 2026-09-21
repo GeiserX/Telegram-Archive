@@ -149,6 +149,45 @@ def parse_entitlement_column(raw: str | None, element_type: type) -> set | None:
     return values
 
 
+# The cached statistics blob's per-chat map, keyed by account AND chat since
+# 8.12.2. A NEW name rather than a new shape under the old one: a blob written
+# before this is keyed by bare chat id and cannot say which account a count
+# belongs to, so a reader must be able to tell the two apart and refuse the old
+# one rather than guess. Nothing in the viewer reads the map; it exists so a
+# restricted principal's totals can be computed from its own chats.
+PER_ACCOUNT_CHAT_COUNTS_KEY = "per_account_chat_message_counts"
+
+# The pre-8.12.2 name, still arriving from a cached blob on upgrade.
+LEGACY_CHAT_COUNTS_KEY = "per_chat_message_counts"
+
+
+def account_chat_stats_key(account_id: int, chat_id: int) -> str:
+    """``(account, chat)`` as one JSON object key.
+
+    JSON has no tuple keys, and a chat id is frequently negative, so the
+    separator has to be one that cannot appear inside either number.
+    """
+    return f"{int(account_id)}:{int(chat_id)}"
+
+
+def parse_account_chat_stats_key(key: Any) -> tuple[int, int] | None:
+    """Read one key back, or None when it is not one of ours.
+
+    None is what makes the upgrade safe: every key of a pre-8.12.2 blob parses
+    to None, so a restricted principal scopes to nothing instead of reading
+    counts it cannot attribute to an account.
+    """
+    if not isinstance(key, str):
+        return None
+    account, separator, chat = key.partition(":")
+    if not separator:
+        return None
+    try:
+        return int(account), int(chat)
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class ChatScope:
     """The set of chat rows one principal may see, as data both Python and SQL can read.
@@ -1280,20 +1319,27 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return {row[0] for row in result}
 
-    async def get_visible_chat_ids(self, scope: ChatScope) -> set[int]:
-        """Just the chat ids a scope selects — no row build, no date subquery.
+    async def get_visible_chat_pairs(self, scope: ChatScope) -> set[tuple[int, int]]:
+        """The ``(account_id, chat_id)`` pairs a scope selects.
 
         ``get_all_chats`` attaches a correlated ``MAX(messages.date)`` per row,
         which is exactly what the callers of this (folder counts, cached stats)
         throw away. A grant can be as wide as a whole account, so paying that
-        subquery per chat to collect ids is waste that grows with the archive.
+        subquery per chat to collect keys is waste that grows with the archive.
+
+        The pair, not the bare id: since 8.0 the primary key is
+        ``(account_id, id)``, so two accounts' copies of one channel share an
+        id, and two accounts' conversations with the same person share one
+        while being different chats holding different messages. Anything that
+        filters by id alone counts the other account's rows as if they were
+        this principal's.
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = select(Chat.id)
+            stmt = select(Chat.account_id, Chat.id)
             for predicate in scope.sql_predicates():
                 stmt = stmt.where(predicate)
             result = await session.execute(stmt)
-            return {row[0] for row in result}
+            return {(row[0], row[1]) for row in result}
 
     async def get_chat_count(
         self,
@@ -3683,12 +3729,18 @@ class DatabaseAdapter:
                 await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
             ).scalar() or 0
 
-            # Per-chat statistics
-            chat_stats_query = select(Message.chat_id, func.count(Message.id).label("message_count")).group_by(
-                Message.chat_id
-            )
+            # Per-chat statistics, keyed by the account too. Grouped by
+            # chat_id alone this summed both accounts' copies into one entry,
+            # so a viewer entitled to one account read the other's numbers
+            # through it — and for a one-to-one chat, whose id is the other
+            # party's user id, it summed two unrelated conversations.
+            chat_stats_query = select(
+                Message.account_id, Message.chat_id, func.count(Message.id).label("message_count")
+            ).group_by(Message.account_id, Message.chat_id)
             chat_stats_result = await session.execute(chat_stats_query)
-            per_chat_stats = {row.chat_id: row.message_count for row in chat_stats_result}
+            per_chat_stats = {
+                account_chat_stats_key(row.account_id, row.chat_id): row.message_count for row in chat_stats_result
+            }
 
         # Total media size: prefer actual on-disk usage. Run the blocking walk off
         # the event loop and after the session is closed so it never stalls other
@@ -3707,7 +3759,9 @@ class DatabaseAdapter:
             "messages": int(msg_count),
             "media_files": int(media_count),
             "total_size_mb": float(round(total_size / (1024 * 1024), 2)),
-            "per_chat_message_counts": {int(k): int(v) for k, v in per_chat_stats.items()},
+            # Keyed "<account>:<chat>" so the map survives a JSON round trip
+            # with its account intact; see account_chat_stats_key.
+            PER_ACCOUNT_CHAT_COUNTS_KEY: {str(k): int(v) for k, v in per_chat_stats.items()},
         }
 
         logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")
@@ -5220,7 +5274,7 @@ class DatabaseAdapter:
             await session.commit()
 
     async def get_all_folders(
-        self, allowed_chat_ids: set[int] | None = None, *, account_id: int | None = None
+        self, allowed_chat_pairs: set[tuple[int, int]] | None = None, *, account_id: int | None = None
     ) -> list[dict[str, Any]]:
         """Get all chat folders with their chat counts.
 
@@ -5233,24 +5287,46 @@ class DatabaseAdapter:
         sync_folder_members, so a zero count means "nothing archived here".
 
         Args:
-            allowed_chat_ids: If set, only count chats the user can access.
+            allowed_chat_pairs: If set, only count the ``(account_id, chat_id)``
+                chats the user can access. The account has to be part of the
+                key: two accounts' copies of one chat share an id, so counting
+                by id alone credited a folder with the other account's rows.
             account_id: If set, only this account's folders (None = unscoped until phase 4).
         """
         async with self.db_manager.async_session_factory() as session:
-            count_q = select(ChatFolderMember.folder_id, func.count(ChatFolderMember.chat_id).label("chat_count"))
-            if allowed_chat_ids is not None:
+            # Counted per (account, folder), because a Telegram dialog-filter id
+            # is per account and starts at 2 for everyone: grouped by folder_id
+            # alone, one account's folder row joined to a count built from the
+            # OTHER account's members. A restricted viewer then saw that other
+            # folder's title, with its own count beside it.
+            count_q = select(
+                ChatFolderMember.account_id,
+                ChatFolderMember.folder_id,
+                func.count(ChatFolderMember.chat_id).label("chat_count"),
+            )
+            if allowed_chat_pairs is not None:
                 # Same rule as ChatScope.sql_predicates: an empty grant is
                 # "nothing", never "no filter". SQLAlchemy 2.0 does render an
                 # empty IN as an always-false expression, but an access-control
                 # filter must not rest on how the ORM renders an edge case.
-                count_q = count_q.where(ChatFolderMember.chat_id.in_(allowed_chat_ids) if allowed_chat_ids else false())
+                count_q = count_q.where(
+                    tuple_(ChatFolderMember.account_id, ChatFolderMember.chat_id).in_(sorted(allowed_chat_pairs))
+                    if allowed_chat_pairs
+                    else false()
+                )
             if account_id is not None:
                 count_q = count_q.where(ChatFolderMember.account_id == account_id)
-            count_subq = count_q.group_by(ChatFolderMember.folder_id).subquery()
+            count_subq = count_q.group_by(ChatFolderMember.account_id, ChatFolderMember.folder_id).subquery()
 
             stmt = (
                 select(ChatFolder, count_subq.c.chat_count)
-                .outerjoin(count_subq, ChatFolder.id == count_subq.c.folder_id)
+                .outerjoin(
+                    count_subq,
+                    and_(
+                        ChatFolder.account_id == count_subq.c.account_id,
+                        ChatFolder.id == count_subq.c.folder_id,
+                    ),
+                )
                 .order_by(ChatFolder.sort_order, ChatFolder.title)
             )
             if account_id is not None:
@@ -5261,7 +5337,10 @@ class DatabaseAdapter:
             for row in result:
                 folder = row.ChatFolder
                 count = row.chat_count or 0
-                # Hide folders with no backed-up chats (empty tabs help no one)
+                # Hide folders with no backed-up chats (empty tabs help no one).
+                # With the count now per account, this is also what keeps a
+                # restricted viewer from seeing the other account's folders:
+                # none of their members are visible, so the count is zero.
                 if count == 0:
                     continue
                 folders.append(

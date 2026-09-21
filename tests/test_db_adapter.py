@@ -2667,7 +2667,7 @@ class TestGetAllFolders:
 
     @pytest.mark.asyncio
     async def test_filters_empty_folders_for_restricted_users(self):
-        """get_all_folders skips folders with 0 visible chats when allowed_chat_ids set."""
+        """get_all_folders skips folders with 0 visible chats when the grant is set."""
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
@@ -2685,7 +2685,7 @@ class TestGetAllFolders:
         mock_result.__iter__ = MagicMock(return_value=iter([row]))
         mock_session.execute.return_value = mock_result
 
-        result = await adapter.get_all_folders(allowed_chat_ids={100})
+        result = await adapter.get_all_folders(allowed_chat_pairs={(1, 100)})
         assert result == []
 
     @pytest.mark.asyncio
@@ -3252,6 +3252,7 @@ class TestCalculateAndStoreStatistics:
         size_result.scalar.return_value = 10485760  # 10 MB
 
         chat_stats_row = MagicMock()
+        chat_stats_row.account_id = 2
         chat_stats_row.chat_id = 100
         chat_stats_row.message_count = 500
         per_chat_result = MagicMock()
@@ -3273,7 +3274,9 @@ class TestCalculateAndStoreStatistics:
         assert result["messages"] == 500
         assert result["media_files"] == 50
         assert result["total_size_mb"] == 10.0
-        assert 100 in result["per_chat_message_counts"]
+        # Keyed by account AND chat: a bare id sums two accounts' copies.
+        assert result["per_account_chat_message_counts"] == {"2:100": 500}
+        assert "per_chat_message_counts" not in result
 
         # Verify it stored stats
         assert adapter.set_metadata.await_count == 2
