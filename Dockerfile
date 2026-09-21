@@ -25,8 +25,13 @@ FROM python:3.14-slim
 
 WORKDIR /app
 
+# media-types ships /etc/mime.types, which python's mimetypes module reads.
+# Without it the slim image falls back to python's small built-in table and
+# DOWNLOAD_DOCUMENT_MIME_TYPES silently loses its filename-extension fallback
+# for types that table does not carry (application/rtf among them).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    media-types \
     && rm -rf /var/lib/apt/lists/*
 
 # The venv moves between stages verbatim: both are the same base image, so

@@ -58,6 +58,10 @@ services:
       BACKUP_PATH: /data/backups
       DOWNLOAD_MEDIA: ${DOWNLOAD_MEDIA:-true}
       MAX_MEDIA_SIZE_MB: ${MAX_MEDIA_SIZE_MB:-100}
+      # Whitelist of media types worth downloading; empty downloads every type.
+      # DOWNLOAD_MEDIA_TYPES: ${DOWNLOAD_MEDIA_TYPES:-}
+      # Narrow the "document" type to specific MIME types, e.g. application/pdf.
+      # DOWNLOAD_DOCUMENT_MIME_TYPES: ${DOWNLOAD_DOCUMENT_MIME_TYPES:-}
       DOWNLOAD_CHAT_DESCRIPTION: ${DOWNLOAD_CHAT_DESCRIPTION:-false}
       # Absorb mid-download FloodWaits up to N seconds so large files resume
       # in place instead of restarting from byte 0 (issue #232). 0 disables.

@@ -3861,6 +3861,9 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         self.backup.config.get_max_media_size_bytes = MagicMock(return_value=100 * 1024 * 1024)
         self.backup.config.max_media_download_attempts = 5
         self.backup.config.skip_media_chat_ids = set()
+        self.backup.config.download_media_types = set()
+        self.backup.config.download_document_mime_types = set()
+        self.backup.config.download_document_mime_extensions = set()
         self.backup.db.get_pending_media_downloads = AsyncMock(
             return_value=[{"id": "f1", "message_id": 10, "chat_id": -100, "type": "video"}]
         )
@@ -3877,7 +3880,13 @@ class TestRetryPendingMediaCap(unittest.TestCase):
         self.backup._process_media = AsyncMock(return_value={"downloaded": True, "id": "f1"})
         _run(self.backup._retry_pending_media_downloads())
         self.backup.db.get_pending_media_downloads.assert_awaited_once_with(
-            100 * 1024 * 1024, 5, exclude_chat_ids=set(), account_id=1
+            100 * 1024 * 1024,
+            5,
+            exclude_chat_ids=set(),
+            account_id=1,
+            media_types=set(),
+            document_mime_types=set(),
+            document_mime_extensions=set(),
         )
 
     def test_increment_on_failed_download(self):

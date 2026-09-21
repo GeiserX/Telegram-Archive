@@ -76,6 +76,7 @@ from .message_utils import (
     finalize_atomic_download,
     is_youtube_preview_video,
     is_youtube_url,
+    media_download_allowed,
     message_plain_text,
     resolve_shared_file_path,
     sender_display_name,
@@ -1946,6 +1947,9 @@ class TelegramBackup:
             self.config.max_media_download_attempts,
             exclude_chat_ids=self.config.skip_media_chat_ids,
             account_id=self.account_id,
+            media_types=self.config.download_media_types,
+            document_mime_types=self.config.download_document_mime_types,
+            document_mime_extensions=self.config.download_document_mime_extensions,
         )
         # Surface (don't silently swallow) files given up after hitting the retry cap —
         # the silent-loss failure mode #212 was about. Count only (no chat/file names, PII).
@@ -2024,6 +2028,19 @@ class TelegramBackup:
                         # and have the run warn that it gave up on a file nobody
                         # asked it to fetch. Left pending, so turning
                         # DOWNLOAD_YOUTUBE_VIDEOS on downloads it on the next run.
+                        skipped += 1
+                        continue
+
+                    if not media_download_allowed(self.config, msg.media, self._get_media_type(msg.media)):
+                        # Declined by DOWNLOAD_MEDIA_TYPES /
+                        # DOWNLOAD_DOCUMENT_MIME_TYPES, same policy as the YouTube
+                        # branch above: configuration, not failure — no attempt
+                        # charge, row left pending so relaxing the filter picks it
+                        # up. get_pending_media_downloads already excluded every
+                        # row whose own columns prove it is filtered; this is the
+                        # authoritative re-check for the rest — a row that stored
+                        # no MIME and no name, and the shapes the SQL mirror
+                        # deliberately keeps rather than risk dropping.
                         skipped += 1
                         continue
 
@@ -3859,6 +3876,27 @@ class TelegramBackup:
         # Guard against inaccessible media producing "None" string IDs
         if telegram_file_id == "None":
             telegram_file_id = None
+
+        # DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES: media the
+        # operator did not ask for is recorded with its metadata (name, MIME,
+        # dimensions, size) while the bytes stay on Telegram. Modeled on the
+        # oversize skip below: no ``downloaded`` key on purpose — insert_media
+        # COALESCEs the stored flag, so tightening the filter never
+        # un-downloads an already-stored file, and callers that test the
+        # outcome use ``.get("downloaded")``, so an absent key still reads as
+        # "not downloaded". The pending drain re-runs the same predicate
+        # (_retry_pending_media_downloads), so the row is never re-fetched
+        # and never charges a download attempt.
+        if not media_download_allowed(self.config, media, media_type):
+            logger.debug(f"Skipping filtered media (type: {media_type})")
+            return {
+                "id": media_id,
+                "type": media_type,
+                "message_id": message.id,
+                "chat_id": chat_id,
+                "file_name": self._get_media_filename(message, media_type, telegram_file_id),
+                **extract_media_attributes(payload),
+            }
 
         # Check file size (estimated)
         file_size = self._get_media_size(payload)

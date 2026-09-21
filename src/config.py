@@ -6,6 +6,7 @@ Loads and validates settings from environment variables.
 import json
 import logging
 import math
+import mimetypes
 import os
 import re
 import sys
@@ -204,6 +205,31 @@ _TG_ACCOUNT_REQUIRED_SUFFIXES = ("API_ID", "API_HASH", "PHONE_NUMBER")
 
 # Valid CHAT_TYPES tokens, shared by the global and per-account validators.
 _VALID_CHAT_TYPES = {"private", "groups", "channels", "bots"}
+
+# Valid DOWNLOAD_MEDIA_TYPES tokens: every type classify_media_type() returns
+# that has a file behind it, i.e. its whole vocabulary minus the metadata-only
+# kinds. tests/test_media_type_filter.py drives the real classifier over every
+# media class it dispatches on and fails if this set drifts from it.
+_VALID_MEDIA_TYPES = frozenset(
+    {"photo", "video", "video_note", "animation", "voice", "audio", "sticker", "document", "webpage"}
+)
+
+# A full ``type/subtype``, the only form DOWNLOAD_DOCUMENT_MIME_TYPES accepts.
+# Deliberately rejects a wildcard (``image/*``) and a bare extension (``pdf``):
+# the whitelist compares by exact string, so neither is a narrower filter --
+# both are filters that match nothing.
+_MIME_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
+
+
+def _normalize_mime_type(value: str) -> str:
+    """``type/subtype``, lowercased, with any ``; charset=...`` parameters removed.
+
+    ``Document.mime_type`` is the verbatim string the uploading client sent, so
+    it can carry parameters. The whitelist compares by exact string and
+    ``mimetypes`` only knows bare types, so one parameter would otherwise
+    defeat both arms of the document match at once.
+    """
+    return value.split(";", 1)[0].strip().lower()
 
 
 @dataclass(frozen=True)
@@ -564,6 +590,38 @@ class Config:
         self.backup_path = os.path.abspath(os.getenv("BACKUP_PATH", "/data/backups"))
         self.download_media = _parse_bool_env("DOWNLOAD_MEDIA", True)
         self.max_media_size_mb = _parse_int_env("MAX_MEDIA_SIZE_MB", 100)
+        # Whitelist of media types worth downloading (classify_media_type
+        # vocabulary). Empty/unset keeps the download-everything behavior.
+        self.download_media_types = {
+            part.strip().lower() for part in os.environ.get("DOWNLOAD_MEDIA_TYPES", "").split(",") if part.strip()
+        }
+        self._validate_media_types()
+        # Narrow the "document" type to specific MIME types: exact match, or a
+        # filename extension derived from the configured MIMEs for mislabeled
+        # files (e.g. application/octet-stream carrying a .pdf name).
+        # Empty/unset keeps every document allowed by DOWNLOAD_MEDIA_TYPES.
+        _raw_document_mime_types = [
+            part.strip() for part in os.environ.get("DOWNLOAD_DOCUMENT_MIME_TYPES", "").split(",") if part.strip()
+        ]
+        self._validate_document_mime_types(_raw_document_mime_types)
+        self.download_document_mime_types = {_normalize_mime_type(raw) for raw in _raw_document_mime_types}
+        # mimetypes reads the HOST's MIME database, and the slim runtime image
+        # carries only part of one, so a configured type it does not know
+        # silently loses its extension fallback. Compute once and say which
+        # types lost it, rather than leaving the operator to guess why a
+        # mislabeled application/octet-stream named report.rtf stopped passing.
+        _extensions_by_mime = {mime: mimetypes.guess_all_extensions(mime) for mime in self.download_document_mime_types}
+        self.download_document_mime_extensions = {
+            ext.lower() for extensions in _extensions_by_mime.values() for ext in extensions
+        }
+        _mimes_without_extension = sorted(mime for mime, exts in _extensions_by_mime.items() if not exts)
+        if _mimes_without_extension:
+            # WARNING, not debug: Config is built before setup_logging, so only
+            # WARNING and above reach stderr from here (#445).
+            logger.warning(
+                f"No filename extension is known for {_mimes_without_extension}; documents carrying one of "
+                "these types are matched by their declared MIME type only"
+            )
         # One extra full-info request per chat per run (the dialog entity has no "about").
         self.download_chat_description = _parse_bool_env("DOWNLOAD_CHAT_DESCRIPTION", False)
         # Viewer: the info panel's Open buttons exist only when the operator wrote
@@ -1012,6 +1070,10 @@ class Config:
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")
+        if self.download_media_types:
+            logger.debug(f"Download media types: {sorted(self.download_media_types)}")
+        if self.download_document_mime_types:
+            logger.debug(f"Download document MIME types: {sorted(self.download_document_mime_types)}")
 
         # Indexed mode announces itself by count only; identifying values
         # (labels, phone numbers) stay out of the log. Zero-config deployments
@@ -1533,6 +1595,34 @@ class Config:
         if invalid_types:
             raise ValueError(f"Invalid chat types: {invalid_types}. Valid options are: {valid_types}")
 
+    def _validate_media_types(self):
+        """Validate that DOWNLOAD_MEDIA_TYPES tokens are known media types.
+
+        Empty set is allowed - it means "download every media type".
+        """
+        invalid_types = self.download_media_types - _VALID_MEDIA_TYPES
+
+        if invalid_types:
+            raise ValueError(f"Invalid media types: {invalid_types}. Valid options are: {sorted(_VALID_MEDIA_TYPES)}")
+
+    def _validate_document_mime_types(self, raw_values: list[str]):
+        """Validate that DOWNLOAD_DOCUMENT_MIME_TYPES values are full MIME types.
+
+        Empty list is allowed - it means "download every document".
+
+        Same contract as _validate_media_types: name the token that is wrong.
+        A value that cannot match anything must fail here rather than quietly
+        archiving zero document bodies, which is what ``image/*`` or ``pdf``
+        did - the only trace was a debug line the default LOG_LEVEL hides.
+        """
+        invalid_types = sorted(raw for raw in raw_values if not _MIME_TYPE_RE.fullmatch(_normalize_mime_type(raw)))
+
+        if invalid_types:
+            raise ValueError(
+                f"Invalid document MIME types: {invalid_types}. Each value must be a full type/subtype "
+                "such as 'application/pdf'; wildcards and bare extensions are not supported."
+            )
+
     def _ensure_directories(self):
         """Create necessary directories if they don't exist."""
         os.makedirs(self.backup_path, exist_ok=True)
@@ -1696,6 +1786,49 @@ class Config:
             return False
 
         return True
+
+    def should_download_media_type(self, media_type: str | None) -> bool:
+        """
+        Determine if a classified media type passes DOWNLOAD_MEDIA_TYPES.
+
+        Args:
+            media_type: type string from classify_media_type()
+
+        Returns:
+            True when the type is downloadable (empty filter = every type)
+        """
+        if not self.download_media_types:
+            return True
+
+        return media_type in self.download_media_types
+
+    def document_mime_allowed(self, mime_type: str | None, file_name: str | None = None) -> bool:
+        """
+        Determine if a document passes DOWNLOAD_DOCUMENT_MIME_TYPES.
+
+        Matches the declared MIME type exactly (case-insensitive) or, when the
+        document carries a useless MIME (e.g. application/octet-stream), the
+        filename extension derived from the configured MIME types.
+
+        Args:
+            mime_type: document MIME type (may be None)
+            file_name: document filename (may be None)
+
+        Returns:
+            True when the document is downloadable (empty filter = every document)
+        """
+        if not self.download_document_mime_types:
+            return True
+
+        if mime_type and _normalize_mime_type(mime_type) in self.download_document_mime_types:
+            return True
+
+        if file_name:
+            extension = os.path.splitext(file_name)[1].lower()
+            if extension and extension in self.download_document_mime_extensions:
+                return True
+
+        return False
 
     def validate_credentials(self):
         """Ensure Telegram credentials are present for every configured account."""
