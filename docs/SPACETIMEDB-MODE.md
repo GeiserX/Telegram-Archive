@@ -1,6 +1,8 @@
 # SpacetimeDB mode
 
-Status: design for an experiment. Nothing here is implemented. SQLite stays the default and PostgreSQL stays supported; this is a third, opt-in deployment mode that replaces the SQL database with a [SpacetimeDB](https://spacetimedb.com) module written in Rust.
+Status: parked. Nothing here is implemented, and we will not start until SpacetimeDB ships tables that live on disk. The vendor has announced disk and object storage tables for a release after v2.10.1; today every table row is resident in RAM, and an archive does not need in-memory speed, it needs to hold years of messages on an SSD. When a release with disk tables exists for the self-hosted server, re-read the "Reopen when" section, re-check every claim below against that release, and then run the experiment plan.
+
+SQLite stays the default and PostgreSQL stays supported. This is a design for a third, opt-in deployment mode that replaces the SQL database with a [SpacetimeDB](https://spacetimedb.com) module written in Rust.
 
 The goal is real reactivity: the browser subscribes to the archive and receives every insert, edit, deletion and reaction as it commits, with no polling and no relay socket in between. The archiver stays Python and keeps its code paths; only its database adapter changes. We checked everything here against SpacetimeDB v2.10.1, source and docs at tag [`v2.10.1`](https://github.com/clockworklabs/SpacetimeDB/tree/v2.10.1). Where the docs and the code disagreed, the code won.
 
@@ -249,6 +251,15 @@ services:
 - **No backup tooling, no log pruning.** Operators copy directories.
 - **Licensing.** SpacetimeDB is [Business Source License 1.1](https://github.com/clockworklabs/SpacetimeDB/blob/v2.10.1/LICENSE.txt) with a grant of one production instance per licensee, changing to AGPL-3.0 with a linking exception in September 2031. The Rust bindings crates the module links are Apache-2.0, so the module itself is a clean GPL-3.0 crate. The TypeScript SDK bundle vendored into the page is BSL code inside a GPL-3.0 tree; BSL permits redistribution, and the repository must carry its license text next to the bundle.
 - **Restricted viewers** need `viewer_grant`, per-caller views and grant checks in every procedure. The first experiment runs with a single full-access viewer.
+
+## Reopen when
+
+All of these are true for one self-hosted release:
+
+- Tables can be declared as disk-backed, the working set is bounded by a configurable cache rather than by the table size, and this is available in the standalone server, not only on the vendor's cloud.
+- The memory section below is rewritten with the new residency rule, and the sizing estimate is replaced by a measurement from step 1 of the plan.
+- Procedures are no longer behind the `unstable` feature, or we accept the flag knowingly.
+- The v2.10.1 facts this doc rests on are re-verified: single-column primary keys, argument-less views, no descending index scans, the automatic migration rules, the `/call` body cap, the commit log layout.
 
 ## Plan for the first experiment
 
