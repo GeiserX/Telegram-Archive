@@ -785,7 +785,9 @@ class Config:
         # Skip media downloads for specific chats (but still backup message text)
         self.skip_media_chat_ids = self._parse_id_list(os.getenv("SKIP_MEDIA_CHAT_IDS", ""))
         # Delete existing media files and records for chats in skip list (reclaim storage)
-        self.skip_media_delete_existing = _parse_bool_env("SKIP_MEDIA_DELETE_EXISTING", True)
+        # Off by default: this is an archive, and what it downloaded stays unless
+        # the operator asks for the removal (#444).
+        self.skip_media_delete_existing = _parse_bool_env("SKIP_MEDIA_DELETE_EXISTING", False)
 
         # Archive the video file Telegram attaches to a YouTube link preview (#440).
         # Off by default: those files are tens of MB each and duplicate bytes that
@@ -1067,6 +1069,14 @@ class Config:
         # Useful for restricted viewers where you don't want to expose total counts
         self.show_stats = _parse_bool_env("SHOW_STATS", True)
 
+    def log_summary(self) -> None:
+        """Log the operator-facing startup summary.
+
+        Kept out of ``__init__`` on purpose (#445): the backup, listener,
+        scheduler and CLI entrypoints build the Config before they configure
+        logging, so lines emitted during construction had no handler and never
+        reached the container log. Call once, after ``setup_logging``.
+        """
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")
         logger.debug(f"Download media: {self.download_media}")

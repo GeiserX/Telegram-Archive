@@ -183,6 +183,7 @@ async def setup_authentication():
         config = Config()
         config.validate_credentials()
         setup_logging(config)
+        config.log_summary()
 
         logger.info("=" * 60)
         logger.info("Telegram Authentication Setup")

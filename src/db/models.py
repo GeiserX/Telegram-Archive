@@ -373,6 +373,12 @@ class Media(Base):
     # v7.x (#212): failed-download retry counter. The pending-media retry loop skips rows
     # at/above MEDIA_MAX_DOWNLOAD_ATTEMPTS so a permanently-unwritable file stops re-fetching.
     download_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Why a downloaded=0 row will never download on its own (030, #465):
+    # "oversize" (MAX_MEDIA_SIZE_MB) or "filtered" (DOWNLOAD_MEDIA_TYPES /
+    # DOWNLOAD_DOCUMENT_MIME_TYPES). NULL means a genuine pending download or
+    # a row written before 030. The viewer reads it instead of guessing; the
+    # backup re-derives it every run, so relaxing a setting clears it.
+    skip_reason: Mapped[str | None] = mapped_column(String(16))
     download_date: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
 

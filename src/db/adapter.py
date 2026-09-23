@@ -832,21 +832,32 @@ class DatabaseAdapter:
             # downloaded=0 by design — counting them as pending would show a
             # permanently-red pipeline for archives full of polls.
             not_metadata = Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES))
+            # Rows the backup declined by configuration (#465: over the size
+            # cap, or outside the media-type whitelist) are not pending: no
+            # run will ever change them unless the operator relaxes a setting.
+            retryable = Media.skip_reason.is_(None)
             pending = (
                 await session.execute(
                     select(func.count())
                     .select_from(Media)
-                    .where(Media.downloaded == 0, Media.download_attempts < max_attempts, not_metadata)
+                    .where(Media.downloaded == 0, Media.download_attempts < max_attempts, not_metadata, retryable)
                 )
             ).scalar() or 0
             exhausted = (
                 await session.execute(
                     select(func.count())
                     .select_from(Media)
-                    .where(Media.downloaded == 0, Media.download_attempts >= max_attempts, not_metadata)
+                    .where(Media.downloaded == 0, Media.download_attempts >= max_attempts, not_metadata, retryable)
                 )
             ).scalar() or 0
-        return {"downloaded": downloaded, "pending": pending, "exhausted": exhausted}
+            skipped = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Media)
+                    .where(Media.downloaded == 0, Media.skip_reason.is_not(None), not_metadata)
+                )
+            ).scalar() or 0
+        return {"downloaded": downloaded, "pending": pending, "exhausted": exhausted, "skipped": skipped}
 
     async def get_database_size_bytes(self) -> int | None:
         """Best-effort on-disk size of the archive database.
@@ -2319,6 +2330,7 @@ class DatabaseAdapter:
                 "duration": media_data.get("duration"),
                 "content_hash": media_data.get("content_hash"),
                 "downloaded": 1 if media_data.get("downloaded") else 0,
+                "skip_reason": media_data.get("skip_reason"),
                 "download_date": media_data.get("download_date"),
             }
 
@@ -2371,6 +2383,13 @@ class DatabaseAdapter:
             # A fresh INSERT still lands 0 for an absent key — nothing is downloaded.
             if "downloaded" not in media_data:
                 update_values["downloaded"] = Media.downloaded
+            # ``skip_reason`` (#465) follows the same presence rule. A writer that
+            # names it (the over-size and filter skips) sets it; a writer that
+            # observed a download outcome without naming it has settled the
+            # question, so the reason clears; a writer that knows nothing keeps
+            # what is stored.
+            if "skip_reason" not in media_data and "downloaded" not in media_data:
+                update_values["skip_reason"] = Media.skip_reason
             stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_values)
 
             await session.execute(stmt)
@@ -3188,6 +3207,64 @@ class DatabaseAdapter:
         allowed.append(and_(Media.mime_type.is_(None), Media.file_name.is_(None)))
         return or_(Media.type != "document", *allowed)
 
+    @retry_on_locked()
+    async def reconcile_media_skip_reasons(
+        self,
+        max_media_size_bytes: int | None,
+        *,
+        account_id: int,
+        media_types: set[str] | None = None,
+        document_mime_types: set[str] | None = None,
+        document_mime_extensions: set[str] | None = None,
+    ) -> dict[str, int]:
+        """Re-derive ``skip_reason`` for every not-downloaded row from the live settings (#465).
+
+        Four UPDATEs, all account-scoped and all idempotent: mark rows over
+        the size cap ``oversize`` and rows outside the whitelist ``filtered``,
+        and clear either reason from rows the current settings would now
+        fetch, so the viewer stops calling them skipped the run after the
+        operator relaxes a cap or a filter. Rows written before migration 030
+        get classified here on the first run. Returns the counts.
+        """
+        not_metadata = Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES))
+        scope = and_(Media.account_id == account_id, Media.downloaded == 0, not_metadata)
+        allowed = []
+        if media_types:
+            allowed.append(Media.type.in_(sorted(media_types)))
+        if document_mime_types:
+            allowed.append(self._document_mime_condition(document_mime_types, document_mime_extensions or set()))
+        counts = {"oversize": 0, "filtered": 0, "cleared": 0}
+        over = Media.file_size > max_media_size_bytes if max_media_size_bytes is not None else None
+        # Both clears run before both marks: a row whose reason no longer holds
+        # (filter removed, cap raised) is re-marked with the reason that now
+        # applies in the same pass instead of reading "pending" for one interval.
+        clears = [
+            update(Media).where(scope, Media.skip_reason == "oversize", ~over)
+            if over is not None
+            else update(Media).where(scope, Media.skip_reason == "oversize"),
+            update(Media).where(scope, Media.skip_reason == "filtered", and_(*allowed))
+            if allowed
+            else update(Media).where(scope, Media.skip_reason == "filtered"),
+        ]
+        async with self.db_manager.async_session_factory() as session:
+            for stmt in clears:
+                result = await session.execute(stmt.values(skip_reason=None))
+                counts["cleared"] += result.rowcount or 0
+            if over is not None:
+                result = await session.execute(
+                    update(Media).where(scope, Media.skip_reason.is_(None), over).values(skip_reason="oversize")
+                )
+                counts["oversize"] = result.rowcount or 0
+            if allowed:
+                result = await session.execute(
+                    update(Media)
+                    .where(scope, Media.skip_reason.is_(None), ~and_(*allowed))
+                    .values(skip_reason="filtered")
+                )
+                counts["filtered"] = result.rowcount or 0
+            await session.commit()
+        return counts
+
     async def get_pending_media_downloads(
         self,
         max_media_size_bytes: int | None = None,
@@ -3314,6 +3391,9 @@ class DatabaseAdapter:
                     Media.downloaded == 0,
                     Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES)),
                     Media.download_attempts >= max_attempts,
+                    # Declined by configuration, not exhausted: raising the retry
+                    # cap would not fetch these, so the warning must not count them.
+                    Media.skip_reason.is_(None),
                 )
             )
             return (await session.execute(stmt)).scalar() or 0
@@ -4594,6 +4674,7 @@ class DatabaseAdapter:
                         "width": media_row.width,
                         "height": media_row.height,
                         "duration": media_row.duration,
+                        "skip_reason": media_row.skip_reason,
                     }
                 for account, msg in zip(row_accounts, messages, strict=True):
                     msg["media"] = media_by_key.get((account, msg["id"]))
@@ -4728,6 +4809,7 @@ class DatabaseAdapter:
                     Media.width.label("media_width"),
                     Media.height.label("media_height"),
                     Media.duration.label("media_duration"),
+                    Media.skip_reason.label("media_skip_reason"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
                 .outerjoin(
@@ -4782,6 +4864,7 @@ class DatabaseAdapter:
                     "width": row.media_width,
                     "height": row.media_height,
                     "duration": row.media_duration,
+                    "skip_reason": row.media_skip_reason,
                 }
             else:
                 msg["media"] = None
@@ -4891,6 +4974,7 @@ class DatabaseAdapter:
                     Media.width.label("media_width"),
                     Media.height.label("media_height"),
                     Media.duration.label("media_duration"),
+                    Media.skip_reason.label("media_skip_reason"),
                 )
                 .outerjoin(User, Message.sender_id == User.id)
                 .outerjoin(
@@ -4930,6 +5014,7 @@ class DatabaseAdapter:
                         "width": row.media_width,
                         "height": row.media_height,
                         "duration": row.media_duration,
+                        "skip_reason": row.media_skip_reason,
                     }
                 else:
                     msg["media"] = None

@@ -172,6 +172,7 @@ async def async_main():
         # Load configuration
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         exporter = await BackupExporter.create(config)
 

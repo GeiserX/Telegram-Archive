@@ -1945,7 +1945,10 @@
                                             </svg>
                                             <div>
                                                 <div class="text-sm text-tg-n300">{{ msg.media?.type }}</div>
-                                                <div class="text-xs text-tg-n500">Will download on next backup</div>
+                                                <!-- #465: the backup records why a row will never download on its own -->
+                                                <div v-if="msg.media?.skip_reason === 'oversize'" class="text-xs text-tg-n500">Not downloaded: larger than the size limit</div>
+                                                <div v-else-if="msg.media?.skip_reason === 'filtered'" class="text-xs text-tg-n500">Not downloaded: excluded by the media filter</div>
+                                                <div v-else class="text-xs text-tg-n500">Will download on next backup</div>
                                             </div>
                                         </div>
                                     </div>
@@ -2577,6 +2580,7 @@
                             {{ statusData.media.downloaded.toLocaleString() }} downloaded
                             <span v-if="statusData.media.pending" class="text-tg-accent-bright">· {{ statusData.media.pending.toLocaleString() }} pending</span>
                             <span v-if="statusData.media.exhausted" class="text-amber-300">· {{ statusData.media.exhausted.toLocaleString() }} gave up</span>
+                            <span v-if="statusData.media.skipped" class="text-tg-muted">· {{ statusData.media.skipped.toLocaleString() }} skipped by settings</span>
                         </dd>
                     </div>
                     <div class="flex items-center justify-between gap-3">

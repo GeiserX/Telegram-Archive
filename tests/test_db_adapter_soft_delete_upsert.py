@@ -1062,7 +1062,7 @@ async def test_operator_status_counts_split_pending_from_exhausted(sqlite_adapte
 
     counts = await sqlite_adapter.get_operator_status_counts(max_attempts=5)
 
-    assert counts == {"downloaded": 1, "pending": 2, "exhausted": 1}
+    assert counts == {"downloaded": 1, "pending": 2, "exhausted": 1, "skipped": 0}
 
 
 @pytest.mark.asyncio
