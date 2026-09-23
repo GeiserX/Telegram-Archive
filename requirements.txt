@@ -3,7 +3,7 @@
 # This file is kept for backward compatibility with local development:
 #   pip install -r requirements.txt
 
-telethon>=1.37.0
+telethon>=1.44.0
 python-socks[asyncio]>=2.7.1
 APScheduler>=3.10.4
 python-dotenv>=1.0.1

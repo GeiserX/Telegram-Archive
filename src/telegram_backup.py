@@ -77,10 +77,11 @@ from .message_utils import (
     is_youtube_preview_video,
     is_youtube_url,
     media_download_allowed,
+    message_entities,
     message_plain_text,
+    message_rich_payload,
     resolve_shared_file_path,
     sender_display_name,
-    serialize_message_entities,
     service_action_type,
     service_message_text,
     utcnow_naive,
@@ -2705,11 +2706,12 @@ class TelegramBackup:
                         outcome, _ = await self.db.update_message_text(
                             chat_id,
                             msg_id,
-                            remote_msg.message,
+                            message_plain_text(remote_msg),
                             remote_msg.edit_date,
                             account_id=self.account_id,
-                            entities=serialize_message_entities(getattr(remote_msg, "entities", None)),
+                            entities=message_entities(remote_msg),
                             update_entities=True,
+                            rich_message=message_rich_payload(remote_msg),
                         )
                         if outcome == "applied":
                             total_updated += 1
@@ -3349,9 +3351,15 @@ class TelegramBackup:
         # Formatting entities (bold/italic/code/spoiler/blockquote/...): the
         # raw text above is what their UTF-16 offsets index into. Without them
         # spoilers arrive pre-revealed and code blocks flatten to body text.
-        message_entities = serialize_message_entities(getattr(message, "entities", None))
-        if message_entities:
-            message_data["raw_data"]["entities"] = message_entities
+        entities = message_entities(message)
+        if entities:
+            message_data["raw_data"]["entities"] = entities
+
+        # Rich Text Editor messages (#470): text and entities above are rendered
+        # from the block tree; keep the tree itself so nothing is discarded.
+        rich_payload = message_rich_payload(message)
+        if rich_payload is not None:
+            message_data["raw_data"]["rich_message"] = rich_payload
 
         # Capture channel post author (signature) if available
         if hasattr(message, "post_author") and message.post_author:

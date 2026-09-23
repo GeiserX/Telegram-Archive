@@ -1741,6 +1741,7 @@ class DatabaseAdapter:
         account_id: int,
         entities: list | None = None,
         update_entities: bool = False,
+        rich_message: dict | None = None,
     ) -> tuple[str, dict | None]:
         """Update a message's text and edit_date.
 
@@ -1751,6 +1752,11 @@ class DatabaseAdapter:
         superseded row ({text, sender_id, sender_name}) on "applied", captured
         in the same transaction so the event webhook gets race-free old text;
         None otherwise.
+
+        With ``update_entities`` the caller also owns ``raw_data["rich_message"]``
+        (#470): ``rich_message`` replaces the stored block tree, None drops it,
+        so an edit that rewrote a Rich Text Editor message never leaves the
+        old tree beside the new text.
         """
         edit_date = _strip_tz(edit_date)
         async with self.db_manager.async_session_factory() as session:
@@ -1764,7 +1770,7 @@ class DatabaseAdapter:
                 # entities. Merge them silently — no edit_date bump, no version,
                 # no webhook — so formatting stays current without the phantom
                 # "edited" marker #219 removed.
-                if update_entities and self._merge_raw_data_entities(message, entities):
+                if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
                     await session.execute(
                         update(Message)
                         .where(
@@ -1797,7 +1803,7 @@ class DatabaseAdapter:
                 .where(and_(Message.account_id == account_id, Message.chat_id == chat_id, Message.id == message_id))
                 .values(text=new_text, edit_date=edit_date)
             )
-            if update_entities and self._merge_raw_data_entities(message, entities):
+            if update_entities and self._merge_raw_data_entities(message, entities, rich_message):
                 await session.execute(
                     update(Message)
                     .where(
@@ -1813,12 +1819,16 @@ class DatabaseAdapter:
             logger.debug("Updated archived message text")
             return "applied", prior
 
-    def _merge_raw_data_entities(self, message: Message, entities: list | None) -> bool:
-        """Set or drop raw_data["entities"] on the loaded row; True if it changed.
+    def _merge_raw_data_entities(
+        self, message: Message, entities: list | None, rich_message: dict | None = None
+    ) -> bool:
+        """Set or drop raw_data["entities"] and ["rich_message"] on the loaded row; True if anything changed.
 
         raw_data is a JSON string column, so the merge round-trips through
         json; a row whose raw_data is unparseable is left untouched (never
-        destroy unrelated capture payloads for a formatting refresh).
+        destroy unrelated capture payloads for a formatting refresh). None
+        drops a key: an edit that no longer carries formatting, or no longer
+        is a Rich Text Editor message, must not keep the stale value.
         """
         try:
             raw = json.loads(message.raw_data) if message.raw_data else {}
@@ -1826,14 +1836,17 @@ class DatabaseAdapter:
             return False
         if not isinstance(raw, dict):
             return False
-        if raw.get("entities") == entities and (entities is not None or "entities" not in raw):
+        changed = False
+        for key, value in (("entities", entities), ("rich_message", rich_message)):
+            if value is None:
+                if key in raw:
+                    raw.pop(key)
+                    changed = True
+            elif raw.get(key) != value:
+                raw[key] = value
+                changed = True
+        if not changed:
             return False
-        if entities is None:
-            if "entities" not in raw:
-                return False
-            raw.pop("entities")
-        else:
-            raw["entities"] = entities
         message.raw_data = json.dumps(raw)
         return True
 
