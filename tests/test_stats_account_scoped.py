@@ -118,9 +118,12 @@ SEEDED_MEDIA = {
     (1, SHARED_CHANNEL): [1 * MIB, 1 * MIB],
     (1, COLLIDING_PRIVATE): [1 * MIB],
     (2, SHARED_CHANNEL): [2 * MIB, 2 * MIB, 2 * MIB],
+    # Account 2's copy of the colliding chat id holds its own media, so a grant
+    # on either copy must read only that copy's figure (the account half of the key).
+    (2, COLLIDING_PRIVATE): [7 * MIB],
 }
 ACCOUNT_ONE_MEDIA = (3, 3.0)  # files, MiB
-ACCOUNT_TWO_MEDIA = (3, 6.0)
+ACCOUNT_TWO_MEDIA = (4, 13.0)
 
 
 async def seed_media(adapter) -> None:
@@ -363,6 +366,44 @@ class TestRestrictedMediaIsItsOwn:
             body = (await http.get("/api/stats")).json()
 
         assert (body["media_files"], body["total_size_mb"]) == (1, 1.0)
+
+    async def test_the_other_account_s_copy_of_the_colliding_chat_reads_its_own_media(self, app_on):
+        """Same chat id, other account: the token must not be credited with account 1's file."""
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+        as_principal(role="token", allowed_chat_refs={REF_OF[(2, COLLIDING_PRIVATE)]})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == (1, 7.0)
+
+    async def test_a_downloaded_row_without_a_size_counts_as_zero_bytes(self, app_on):
+        """file_size is nullable (rows captured before sizes were recorded): the
+        grouped SUM must coalesce to 0, or the whole statistics job aborts."""
+        await seed_two_accounts(app_on)
+        await app_on.insert_media(
+            {
+                "id": f"{COLLIDING_PRIVATE}_1000_photo",
+                "message_id": 1000,
+                "chat_id": COLLIDING_PRIVATE,
+                "type": "photo",
+                "file_size": None,
+                "downloaded": True,
+            },
+            account_id=1,
+        )
+
+        stats = await app_on.calculate_and_store_statistics()
+
+        key = account_chat_stats_key(1, COLLIDING_PRIVATE)
+        assert stats[PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY][key] == 1
+        assert stats[PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY][key] == 0
+        as_principal(allowed_accounts={1})
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+        assert (body["media_files"], body["total_size_mb"]) == (1, 0.0)
 
     async def test_an_empty_grant_reads_zero_media(self, app_on):
         await seed_two_accounts(app_on)

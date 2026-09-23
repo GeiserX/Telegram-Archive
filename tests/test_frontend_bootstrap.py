@@ -4798,3 +4798,48 @@ def test_light_themes_define_the_full_token_set():
         block = match.group(1)
         for token in core + neutrals + ["name-l"]:
             assert f"--tg-{token}:" in block, f"{theme} is missing --tg-{token}"
+
+
+# ---------------------------------------------------------------------------
+# Stats popup: absent media figures hide their rows; a real zero still renders
+# ---------------------------------------------------------------------------
+
+
+def _load_stats(payload: dict) -> dict:
+    """Run the template's real loadStats against a stubbed fetch and return statsData."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    prelude = (
+        "const ref = (v) => ({ value: v });\n"
+        "const statsData = ref(null), showStatsUI = ref(true), viewerTimezone = ref(null);\n"
+        "const lastBackupTime = ref(null), lastBackupTimeSource = ref(null), listenerActive = ref(false);\n"
+        "const moment = null;\n"
+        f"const fetch = async () => ({{ ok: true, json: async () => ({json.dumps(payload)}) }});\n"
+    )
+    program = prelude + _setup_function(html, "const loadStats = async () =>")
+    program += "\nloadStats().then(() => console.log(JSON.stringify(statsData.value)))\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "load_stats.js"
+        script.write_text(program, encoding="utf-8")
+        result = subprocess.run([NODE, str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@unittest.skipIf(NODE is None, "node executable is not installed")
+class TestStatsPopupMediaRows(unittest.TestCase):
+    def test_absent_media_figures_load_as_null_not_zero(self):
+        """A restricted viewer on a pre-change blob gets no media keys: the rows hide, no false 0."""
+        got = _load_stats({"chats": 2, "messages": 3})
+        self.assertIsNone(got["media_files"])
+        self.assertIsNone(got["total_size_mb"])
+
+    def test_a_real_zero_survives_loading(self):
+        got = _load_stats({"chats": 0, "messages": 0, "media_files": 0, "total_size_mb": 0.0})
+        self.assertEqual(got["media_files"], 0)
+        self.assertEqual(got["total_size_mb"], 0)
+
+
+def test_the_two_media_rows_hide_only_when_the_figure_is_absent():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert html.count('v-if="statsData.media_files != null"') == 1
+    assert html.count('v-if="statsData.total_size_mb != null"') == 1
