@@ -1016,8 +1016,8 @@
                                         <div class="font-semibold text-tg-ink mb-3 pb-2 border-b border-tg-n700">Backup Statistics</div>
                                         <div class="flex justify-between"><span>💬 Chats:</span><span class="text-tg-ink">{{ formatNumber(statsData.chats) }}</span></div>
                                         <div class="flex justify-between"><span>📬 Messages:</span><span class="text-tg-ink">{{ formatNumber(statsData.messages) }}</span></div>
-                                        <div class="flex justify-between"><span>🖼️ Media files:</span><span class="text-tg-ink">{{ formatNumber(statsData.media_files) }}</span></div>
-                                        <div class="flex justify-between"><span>💾 Storage:</span><span class="text-tg-ink">{{ formatSize(statsData.total_size_mb) }}</span></div>
+                                        <div v-if="statsData.media_files != null" class="flex justify-between"><span>🖼️ Media files:</span><span class="text-tg-ink">{{ formatNumber(statsData.media_files) }}</span></div>
+                                        <div v-if="statsData.total_size_mb != null" class="flex justify-between"><span>💾 Storage:</span><span class="text-tg-ink">{{ formatSize(statsData.total_size_mb) }}</span></div>
                                         <div class="pt-2 mt-2 border-t border-tg-n700 text-[10px] opacity-70 flex items-center justify-between gap-2">
                                             <span>{{ formatStatsTime(statsData.stats_calculated_at) }}</span>
                                             <span v-if="statsData && statsData.backup_in_progress" class="text-tg-accent-soft opacity-100 shrink-0">● Backup in progress…</span>
@@ -5027,8 +5027,10 @@
                             statsData.value = {
                                 chats: stats.chats || 0,
                                 messages: stats.messages || 0,
-                                media_files: stats.media_files || 0,
-                                total_size_mb: stats.total_size_mb || 0,
+                                // Absent when the server has no figure this viewer may
+                                // see: hide the row rather than show a false zero.
+                                media_files: stats.media_files ?? null,
+                                total_size_mb: stats.total_size_mb ?? null,
                                 stats_calculated_at: stats.stats_calculated_at,
                                 backup_in_progress: stats.backup_in_progress || false
                             }

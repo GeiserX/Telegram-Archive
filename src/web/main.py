@@ -38,6 +38,8 @@ from ..db import DatabaseAdapter, close_database, get_db_manager, init_database
 from ..db.adapter import (
     LEGACY_CHAT_COUNTS_KEY,
     PER_ACCOUNT_CHAT_COUNTS_KEY,
+    PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY,
+    PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY,
     ChatScope,
     parse_account_chat_stats_key,
     parse_entitlement_column,
@@ -907,8 +909,10 @@ async def _visible_chat_pair_set(user: UserContext) -> set[tuple[int, int]] | No
     return await db.get_visible_chat_pairs(scope)
 
 
-def _scoped_message_counts(raw: Any, visible: set[tuple[int, int]]) -> dict[tuple[int, int], int]:
-    """Entitled ``(account, chat) -> message count``, read out of the cached blob.
+def _scoped_chat_counts(raw: Any, visible: set[tuple[int, int]]) -> dict[tuple[int, int], int]:
+    """Entitled ``(account, chat) -> count``, read out of one of the cached blob's per-chat maps.
+
+    Used for message counts and for downloaded media counts and bytes.
 
     Fail closed, and for two reasons rather than one. The original: an absent
     or empty map (a failed startup calculation) must scope a restricted viewer
@@ -923,7 +927,7 @@ def _scoped_message_counts(raw: Any, visible: set[tuple[int, int]]) -> dict[tupl
     counts: dict[tuple[int, int], int] = {}
     for key, value in raw.items():
         pair = parse_account_chat_stats_key(key)
-        # bool is an int subclass, and a JSON `true` is not a message count.
+        # bool is an int subclass, and a JSON `true` is not a count.
         if pair is None or pair not in visible or not isinstance(value, int) or isinstance(value, bool):
             continue
         counts[pair] = value
@@ -3177,6 +3181,8 @@ async def get_stats(user: UserContext = Depends(require_auth)):
         # browser. Nothing in the UI reads it. Both the current key and the
         # pre-8.12.2 one go, so an unrefreshed blob cannot leak it either.
         per_chat = stats.pop(PER_ACCOUNT_CHAT_COUNTS_KEY, None)
+        per_chat_media_counts = stats.pop(PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY, None)
+        per_chat_media_bytes = stats.pop(PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY, None)
         stats.pop(LEGACY_CHAT_COUNTS_KEY, None)
 
         user_chat_pairs = await _visible_chat_pair_set(user)
@@ -3185,12 +3191,20 @@ async def get_stats(user: UserContext = Depends(require_auth)):
             # reads are recomputed from its OWN chats: the archive-wide ones
             # count rows across every account, which is exactly what this
             # block exists to hide.
-            visible = _scoped_message_counts(per_chat, user_chat_pairs)
+            visible = _scoped_chat_counts(per_chat, user_chat_pairs)
             stats["chats"] = len(visible)
             stats["messages"] = sum(visible.values())
-            # Remove global media/size stats — no per-chat breakdown available
-            stats.pop("media_files", None)
-            stats.pop("total_size_mb", None)
+            # Media figures come from the same per-chat breakdown. A blob
+            # calculated before it existed has none, so the archive-wide
+            # figures are dropped instead and the UI hides those rows until
+            # the next calculation.
+            if isinstance(per_chat_media_counts, dict) and isinstance(per_chat_media_bytes, dict):
+                stats["media_files"] = sum(_scoped_chat_counts(per_chat_media_counts, user_chat_pairs).values())
+                visible_bytes = sum(_scoped_chat_counts(per_chat_media_bytes, user_chat_pairs).values())
+                stats["total_size_mb"] = float(round(visible_bytes / (1024 * 1024), 2))
+            else:
+                stats.pop("media_files", None)
+                stats.pop("total_size_mb", None)
 
         stats["timezone"] = config.viewer_timezone
         stats["stats_calculation_hour"] = config.stats_calculation_hour
@@ -3275,9 +3289,11 @@ async def refresh_stats(user: UserContext = Depends(require_master)):
     """Manually trigger stats recalculation (expensive, use sparingly)."""
     try:
         stats = await db.calculate_and_store_statistics(storage_path=config.backup_path)
-        # Same rule as the read path: the per-chat map is scoping input, and
-        # its keys are chat ids.
+        # Same rule as the read path: the per-chat maps are scoping input, and
+        # their keys are chat ids.
         stats.pop(PER_ACCOUNT_CHAT_COUNTS_KEY, None)
+        stats.pop(PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY, None)
+        stats.pop(PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY, None)
         stats["timezone"] = config.viewer_timezone
         return stats
     except Exception as e:

@@ -160,6 +160,13 @@ PER_ACCOUNT_CHAT_COUNTS_KEY = "per_account_chat_message_counts"
 # The pre-8.12.2 name, still arriving from a cached blob on upgrade.
 LEGACY_CHAT_COUNTS_KEY = "per_chat_message_counts"
 
+# Downloaded media per chat, count and bytes, under the same "<account>:<chat>"
+# keys, so a restricted principal's media totals come from its own chats too.
+# A blob written before these existed lacks them, and the viewer then omits the
+# media figures for that principal rather than guessing.
+PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY = "per_account_chat_media_counts"
+PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY = "per_account_chat_media_bytes"
+
 
 def account_chat_stats_key(account_id: int, chat_id: int) -> str:
     """``(account, chat)`` as one JSON object key.
@@ -3772,6 +3779,29 @@ class DatabaseAdapter:
                 account_chat_stats_key(row.account_id, row.chat_id): row.message_count for row in chat_stats_result
             }
 
+            # Downloaded media per chat, grouped the same way. Bytes are the DB
+            # file sizes (logical), not on-disk usage: a deduplicated blob counts
+            # once per row that references it, since per-chat du is not defined.
+            media_stats_query = (
+                select(
+                    Media.account_id,
+                    Media.chat_id,
+                    func.count(Media.id).label("media_count"),
+                    func.coalesce(func.sum(Media.file_size), 0).label("media_bytes"),
+                )
+                .where(Media.downloaded == 1)
+                .group_by(Media.account_id, Media.chat_id)
+            )
+            media_stats_result = await session.execute(media_stats_query)
+            per_chat_media_counts = {}
+            per_chat_media_bytes = {}
+            for row in media_stats_result:
+                if row.chat_id is None:
+                    continue
+                key = account_chat_stats_key(row.account_id, row.chat_id)
+                per_chat_media_counts[key] = int(row.media_count)
+                per_chat_media_bytes[key] = int(row.media_bytes)
+
         # Total media size: prefer actual on-disk usage. Run the blocking walk off
         # the event loop and after the session is closed so it never stalls other
         # requests or pins a DB connection.
@@ -3792,6 +3822,8 @@ class DatabaseAdapter:
             # Keyed "<account>:<chat>" so the map survives a JSON round trip
             # with its account intact; see account_chat_stats_key.
             PER_ACCOUNT_CHAT_COUNTS_KEY: {str(k): int(v) for k, v in per_chat_stats.items()},
+            PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY: per_chat_media_counts,
+            PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY: per_chat_media_bytes,
         }
 
         logger.info(f"Statistics calculated: {chat_count} chats, {msg_count} messages, {media_count} media files")

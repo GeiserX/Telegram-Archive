@@ -19,6 +19,9 @@ What this pins:
   account, because they are storage figures rather than a reading view.
 * Folder counts take the same key, so a folder is not credited with the other
   account's membership rows.
+* Media files and storage follow the same rule: a restricted principal reads
+  the downloaded media of its own chats, and a blob without the per-chat media
+  maps omits those figures rather than showing the archive-wide ones or a zero.
 
 The adapter half runs on ``real_adapter``, so the grouping and the tuple
 predicate are compiled and executed by SQLite and PostgreSQL.
@@ -41,6 +44,8 @@ from sqlalchemy import text
 from src.db.adapter import (
     LEGACY_CHAT_COUNTS_KEY,
     PER_ACCOUNT_CHAT_COUNTS_KEY,
+    PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY,
+    PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY,
     ChatScope,
     account_chat_stats_key,
     parse_account_chat_stats_key,
@@ -105,6 +110,51 @@ async def seed_two_accounts(adapter) -> None:
         await session.commit()
 
 
+MIB = 1024 * 1024
+
+# (account, chat) -> sizes of the downloaded media files that account holds
+# there, one per seeded message. Whole MiB so total_size_mb is exact.
+SEEDED_MEDIA = {
+    (1, SHARED_CHANNEL): [1 * MIB, 1 * MIB],
+    (1, COLLIDING_PRIVATE): [1 * MIB],
+    (2, SHARED_CHANNEL): [2 * MIB, 2 * MIB, 2 * MIB],
+}
+ACCOUNT_ONE_MEDIA = (3, 3.0)  # files, MiB
+ACCOUNT_TWO_MEDIA = (3, 6.0)
+
+
+async def seed_media(adapter) -> None:
+    """Downloaded media on the seeded messages, plus one row never downloaded."""
+    for (account_id, chat_id), sizes in SEEDED_MEDIA.items():
+        for index, size in enumerate(sizes):
+            message_id = 1000 * account_id + index
+            await adapter.insert_media(
+                {
+                    "id": f"{chat_id}_{message_id}_photo",
+                    "message_id": message_id,
+                    "chat_id": chat_id,
+                    "type": "photo",
+                    "file_path": f"{chat_id}/{message_id}.jpg",
+                    "file_name": f"{message_id}.jpg",
+                    "file_size": size,
+                    "downloaded": True,
+                },
+                account_id=account_id,
+            )
+    # Pending download: counted nowhere, for anyone.
+    await adapter.insert_media(
+        {
+            "id": f"{COLLIDING_PRIVATE}_2003_video",
+            "message_id": 2003,
+            "chat_id": COLLIDING_PRIVATE,
+            "type": "video",
+            "file_size": 50 * MIB,
+            "downloaded": False,
+        },
+        account_id=2,
+    )
+
+
 # ============================================================================
 # The cached blob and the key it is addressed by
 # ============================================================================
@@ -141,6 +191,21 @@ class TestTheKeyCarriesItsAccount:
 
         assert stats["chats"] == len(SEEDED)
         assert stats["messages"] == ALL_MESSAGES
+
+    async def test_the_media_maps_are_grouped_by_account_and_chat(self, real_adapter):
+        await seed_two_accounts(real_adapter)
+        await seed_media(real_adapter)
+
+        stats = await real_adapter.calculate_and_store_statistics()
+
+        assert stats[PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY] == {
+            account_chat_stats_key(account, chat): len(sizes) for (account, chat), sizes in SEEDED_MEDIA.items()
+        }
+        assert stats[PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY] == {
+            account_chat_stats_key(account, chat): sum(sizes) for (account, chat), sizes in SEEDED_MEDIA.items()
+        }
+        # The pending row is in neither the maps nor the archive-wide count.
+        assert stats["media_files"] == sum(len(sizes) for sizes in SEEDED_MEDIA.values())
 
 
 class TestVisibleChatPairs:
@@ -262,6 +327,75 @@ class TestRestrictedTotalsAreItsOwn:
         assert "total_size_mb" in body
 
 
+class TestRestrictedMediaIsItsOwn:
+    """Media files and storage used to be dropped for every restricted principal,
+    and the UI rendered the missing figures as zero."""
+
+    async def test_a_viewer_entitled_to_one_account_reads_that_account_s_media(self, app_on):
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+        as_principal(allowed_accounts={1})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == ACCOUNT_ONE_MEDIA
+
+    async def test_the_other_account_reads_its_own_media(self, app_on):
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+        as_principal(allowed_accounts={2})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == ACCOUNT_TWO_MEDIA
+
+    async def test_a_share_token_reads_only_its_granted_chat_s_media(self, app_on):
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+        as_principal(role="token", allowed_chat_refs={REF_OF[(1, COLLIDING_PRIVATE)]})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == (1, 1.0)
+
+    async def test_an_empty_grant_reads_zero_media(self, app_on):
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+        as_principal(allowed_accounts=set())
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == (0, 0.0)
+
+    async def test_a_blob_without_the_media_maps_omits_the_media_figures(self, app_on):
+        """Written before this change: no per-chat media, so nothing to scope from.
+
+        The archive-wide figures must not stand in for the principal's own, so
+        the keys are left out and the UI hides those rows.
+        """
+        await seed_two_accounts(app_on)
+        await app_on.set_metadata(
+            "cached_stats",
+            '{"chats": 4, "messages": 12, "media_files": 7, "total_size_mb": 1.0,'
+            ' "per_account_chat_message_counts": {"1:-1005100001": 2}}',
+        )
+        as_principal(allowed_accounts={1})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert "media_files" not in body
+        assert "total_size_mb" not in body
+
+
 class TestFailClosed:
     async def test_a_blob_written_before_the_change_scopes_to_zeros(self, app_on):
         """Its keys are bare chat ids, which cannot name an account.
@@ -316,8 +450,23 @@ class TestFailClosed:
         assert PER_ACCOUNT_CHAT_COUNTS_KEY not in resp.json()
         assert "1005100001" not in resp.text
 
+    async def test_the_media_maps_never_reach_the_response(self, app_on):
+        await seed_two_accounts(app_on)
+        await seed_media(app_on)
+        await app_on.calculate_and_store_statistics()
+
+        for principal in ({"role": "master", "allowed_accounts": None}, {"allowed_accounts": {1}}):
+            as_principal(**principal)
+            async with client() as http:
+                resp = await http.get("/api/stats")
+
+            assert PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY not in resp.json()
+            assert PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY not in resp.json()
+            assert "1005100001" not in resp.text
+
     async def test_refresh_does_not_hand_back_the_map_either(self, app_on):
         await seed_two_accounts(app_on)
+        await seed_media(app_on)
         as_principal(role="master", allowed_accounts=None)
 
         async with client() as http:
@@ -325,6 +474,9 @@ class TestFailClosed:
 
         assert resp.status_code == 200
         assert PER_ACCOUNT_CHAT_COUNTS_KEY not in resp.json()
+        assert PER_ACCOUNT_CHAT_MEDIA_COUNTS_KEY not in resp.json()
+        assert PER_ACCOUNT_CHAT_MEDIA_BYTES_KEY not in resp.json()
+        assert "1005100001" not in resp.text
 
     @pytest.mark.parametrize(
         "raw",
@@ -333,10 +485,10 @@ class TestFailClosed:
     )
     def test_an_unreadable_map_scopes_to_nothing(self, raw):
         """Never fail open to the archive-wide numbers this scoping exists to hide."""
-        assert web_main._scoped_message_counts(raw, {(1, 2)}) == {}
+        assert web_main._scoped_chat_counts(raw, {(1, 2)}) == {}
 
     def test_a_count_for_a_chat_outside_the_grant_is_dropped(self):
-        assert web_main._scoped_message_counts({"1:2": 5, "2:2": 9}, {(1, 2)}) == {(1, 2): 5}
+        assert web_main._scoped_chat_counts({"1:2": 5, "2:2": 9}, {(1, 2)}) == {(1, 2): 5}
 
 
 class TestFolderCountsTakeTheSameKey:
