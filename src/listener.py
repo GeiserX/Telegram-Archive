@@ -29,7 +29,7 @@ from telethon.tl.types import (
 )
 from telethon.utils import get_peer_id
 
-from .avatar_utils import get_avatar_paths
+from .avatar_utils import avatar_photo_id, get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -1620,6 +1620,9 @@ class TelegramListener:
                                 "type": self._get_chat_type(entity),
                                 "title": getattr(entity, "title", None),
                                 "username": getattr(entity, "username", None),
+                                # Fresh entity, so record the photo this account
+                                # now sees (None on removal) right away.
+                                "avatar_photo_id": avatar_photo_id(entity),
                             }
                             await self.db.upsert_chat(chat_data, account_id=self.account_id)
                             logger.info("✅ Chat metadata updated")

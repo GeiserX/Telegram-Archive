@@ -44,7 +44,7 @@ from telethon.tl.types import (
 )
 from telethon.utils import get_peer_id
 
-from .avatar_utils import get_avatar_paths
+from .avatar_utils import avatar_photo_id, get_avatar_paths
 from .config import AccountConfig, Config
 from .db import DatabaseAdapter, create_adapter
 from .db.models import account_metadata_key
@@ -4269,6 +4269,10 @@ class TelegramBackup:
         # whatever an earlier run recorded instead of overwriting it with 0.
         if is_archived is not None:
             chat_data["is_archived"] = 1 if is_archived else 0
+
+        # The photo THIS account sees: avatar files are shared across accounts,
+        # but a photo set for a contact is visible to its own account only.
+        chat_data["avatar_photo_id"] = avatar_photo_id(entity)
 
         return chat_data
 
