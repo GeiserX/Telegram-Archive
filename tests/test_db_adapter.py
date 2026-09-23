@@ -3238,7 +3238,8 @@ class TestCalculateAndStoreStatistics:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        # 5 execute calls: chat count, msg count, media count, total size, per-chat stats
+        # 6 execute calls: chat count, msg count, media count, total size,
+        # per-chat message counts, per-chat media counts/bytes
         chat_result = MagicMock()
         chat_result.scalar.return_value = 10
 
@@ -3258,12 +3259,21 @@ class TestCalculateAndStoreStatistics:
         per_chat_result = MagicMock()
         per_chat_result.__iter__ = MagicMock(return_value=iter([chat_stats_row]))
 
+        media_stats_row = MagicMock()
+        media_stats_row.account_id = 2
+        media_stats_row.chat_id = 100
+        media_stats_row.media_count = 50
+        media_stats_row.media_bytes = 10485760
+        per_chat_media_result = MagicMock()
+        per_chat_media_result.__iter__ = MagicMock(return_value=iter([media_stats_row]))
+
         mock_session.execute.side_effect = [
             chat_result,
             msg_result,
             media_result,
             size_result,
             per_chat_result,
+            per_chat_media_result,
         ]
 
         # Mock set_metadata
@@ -3277,6 +3287,8 @@ class TestCalculateAndStoreStatistics:
         # Keyed by account AND chat: a bare id sums two accounts' copies.
         assert result["per_account_chat_message_counts"] == {"2:100": 500}
         assert "per_chat_message_counts" not in result
+        assert result["per_account_chat_media_counts"] == {"2:100": 50}
+        assert result["per_account_chat_media_bytes"] == {"2:100": 10485760}
 
         # Verify it stored stats
         assert adapter.set_metadata.await_count == 2
