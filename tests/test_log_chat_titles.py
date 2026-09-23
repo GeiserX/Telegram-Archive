@@ -280,7 +280,7 @@ class TestTheRelaxationAnnouncesItself(unittest.TestCase):
             patch("os.makedirs"),
             self.assertLogs("src.config", level="DEBUG") as captured,
         ):
-            Config()
+            Config().log_summary()
         return [r.getMessage() for r in captured.records]
 
     def test_on_warns_once_and_names_the_variable(self):

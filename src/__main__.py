@@ -207,6 +207,7 @@ async def run_export(args) -> int:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         exporter = await BackupExporter.create(config)
         try:
@@ -227,6 +228,7 @@ async def run_stats(args) -> int:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         exporter = await BackupExporter.create(config)
         try:
@@ -247,6 +249,7 @@ async def run_list_chats(args) -> int:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         exporter = await BackupExporter.create(config)
         try:
@@ -269,6 +272,7 @@ async def run_fill_gaps_cmd(args) -> int:
         if args.threshold is not None:
             config.gap_threshold = args.threshold
         setup_logging(config)
+        config.log_summary()
 
         summary = await run_fill_gaps(config, chat_id=args.chat_id)
         print("\nGap-fill complete:")
@@ -305,6 +309,7 @@ async def run_import(args) -> int:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         importer = await TelegramImporter.create(config.media_path, config.max_filename_bytes)
         try:
@@ -362,6 +367,7 @@ def run_reclassify_round_videos(args) -> int:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
         summary = asyncio.run(reclassify(config, chat_id=args.chat_id, dry_run=args.dry_run))
     except Exception as e:
         print(f"Reclassification failed: {e}", file=sys.stderr)

@@ -274,12 +274,12 @@ class TestSkipMediaChatIds(unittest.TestCase):
             config = Config()
             self.assertEqual(config.skip_media_chat_ids, {-1001234567890, -1009876543210, 123456})
 
-    def test_skip_media_delete_existing_defaults_true(self):
-        """SKIP_MEDIA_DELETE_EXISTING defaults to true when not set."""
+    def test_skip_media_delete_existing_defaults_false(self):
+        """SKIP_MEDIA_DELETE_EXISTING defaults to false: the archive keeps what it downloaded (#444)."""
         env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
         with patch.dict(os.environ, env_vars, clear=True):
             config = Config()
-            self.assertTrue(config.skip_media_delete_existing)
+            self.assertFalse(config.skip_media_delete_existing)
 
     def test_skip_media_delete_existing_can_be_disabled(self):
         """Can disable SKIP_MEDIA_DELETE_EXISTING to keep existing media."""
@@ -1968,7 +1968,7 @@ class TestMultiAccountConfig(unittest.TestCase):
     def test_indexed_mode_logs_count_only(self):
         env = self.base_env | _account_triple(1) | _account_triple(2)
         with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="INFO") as captured:
-            Config()
+            Config().log_summary()
         multi = [m for m in captured.output if "Multi-account" in m]
         self.assertEqual(len(multi), 1)
         self.assertIn("Multi-account: using 2 configured account(s)", multi[0])
@@ -1982,7 +1982,7 @@ class TestMultiAccountConfig(unittest.TestCase):
             "TELEGRAM_PHONE": "+1234567890",
         }
         with patch.dict(os.environ, env, clear=True), self.assertLogs("src.config", level="DEBUG") as captured:
-            Config()
+            Config().log_summary()
         self.assertFalse([m for m in captured.output if "Multi-account" in m])
 
     def test_account_config_repr_hides_credentials_phone_and_label(self):
@@ -2202,22 +2202,22 @@ class TestEventWebhookConfig(unittest.TestCase):
     def test_combination_warnings(self):
         """Startup names the exact reason a selected event can never fire."""
         with self.assertLogs("src.config", level="WARNING") as logs:
-            self._config()  # ENABLE_LISTENER unset -> false
+            self._config().log_summary()  # ENABLE_LISTENER unset -> false
         self.assertTrue(any("ENABLE_LISTENER=false" in line for line in logs.output))
 
         with self.assertLogs("src.config", level="WARNING") as logs:
-            self._config(ENABLE_LISTENER="true")  # LISTEN_DELETIONS defaults false
+            self._config(ENABLE_LISTENER="true").log_summary()  # LISTEN_DELETIONS defaults false
         joined = "\n".join(logs.output)
         self.assertIn("message_deleted webhooks will never fire", joined)
 
         with self.assertLogs("src.config", level="WARNING") as logs:
-            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false")
+            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true", LISTEN_EDITS="false").log_summary()
         joined = "\n".join(logs.output)
         self.assertIn("message_edited webhooks will never fire", joined)
 
     def test_startup_log_never_contains_url(self):
         with self.assertLogs("src.config", level="INFO") as logs:
-            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true")
+            self._config(ENABLE_LISTENER="true", LISTEN_DELETIONS="true").log_summary()
         joined = "\n".join(logs.output)
         self.assertNotIn(self.URL, joined)
         self.assertNotIn("secret-token-path", joined)

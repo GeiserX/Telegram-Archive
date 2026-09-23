@@ -637,6 +637,7 @@ async def main():
 
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         logger.info("=" * 60)
         logger.info("Telegram Backup Automation")
