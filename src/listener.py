@@ -1961,6 +1961,7 @@ async def main() -> None:
     try:
         config = Config()
         setup_logging(config)
+        config.log_summary()
 
         logger.info("=" * 60)
         logger.info("Telegram Archive - Real-time Listener")

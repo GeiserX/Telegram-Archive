@@ -1943,6 +1943,25 @@ class TelegramBackup:
         Respects MAX_MEDIA_SIZE_BYTES — files that still exceed the limit
         are skipped silently.
         """
+        # Settle which not-downloaded rows are the operator's own choice
+        # (size cap, media-type whitelist) before the drain, so the viewer
+        # calls them skipped rather than pending, and un-marks rows a relaxed
+        # setting now covers (#465). Rows from before 030 get classified here.
+        reasons = await self.db.reconcile_media_skip_reasons(
+            self.config.get_max_media_size_bytes(),
+            account_id=self.account_id,
+            media_types=self.config.download_media_types,
+            document_mime_types=self.config.download_document_mime_types,
+            document_mime_extensions=self.config.download_document_mime_extensions,
+        )
+        # isinstance: the drain's tests wire ``db`` as a bare AsyncMock.
+        if isinstance(reasons, dict) and any(reasons.values()):
+            logger.info(
+                "Media skip reasons: %d over the size cap, %d outside the media filter, %d cleared",
+                reasons["oversize"],
+                reasons["filtered"],
+                reasons["cleared"],
+            )
         pending = await self.db.get_pending_media_downloads(
             self.config.get_max_media_size_bytes(),
             self.config.max_media_download_attempts,
@@ -3586,11 +3605,13 @@ class TelegramBackup:
     async def _cleanup_existing_media(self, chat_id: int) -> None:
         """
         Delete existing media files and database records for a chat.
-        Used when a chat is added to SKIP_MEDIA_CHAT_IDS to reclaim storage.
+        Runs only when the operator sets SKIP_MEDIA_DELETE_EXISTING=true for a
+        chat in SKIP_MEDIA_CHAT_IDS; the default keeps what was archived.
 
-        Handles deduplicated media safely: symlinks are removed without
-        affecting the shared original in _shared/. Only real files
-        (non-symlinks) count toward freed storage.
+        On a deduplicated archive the chat folder holds symlinks into
+        _shared/. Those links are removed; the shared file behind them stays
+        on disk, and nothing in this codebase reclaims it, so the freed figure
+        counts real files only and says so (#444).
 
         Args:
             chat_id: Chat identifier
@@ -3645,7 +3666,7 @@ class TelegramBackup:
                 if deleted_files > 0:
                     parts.append(f"{deleted_files} files ({freed_mb:.1f} MB freed)")
                 if deleted_symlinks > 0:
-                    parts.append(f"{deleted_symlinks} symlinks removed")
+                    parts.append(f"{deleted_symlinks} symlinks removed (their shared files stay in _shared/)")
                 logger.info(
                     f"Cleaned up existing media for chat: {', '.join(parts)}, {deleted_records} DB records deleted"
                 )
@@ -3903,6 +3924,7 @@ class TelegramBackup:
                 "message_id": message.id,
                 "chat_id": chat_id,
                 "file_name": self._get_media_filename(message, media_type, telegram_file_id),
+                "skip_reason": "filtered",  # #465: the viewer says why, not "pending"
                 **extract_media_attributes(payload),
             }
 
@@ -3926,6 +3948,7 @@ class TelegramBackup:
                 "message_id": message.id,
                 "chat_id": chat_id,
                 "file_size": file_size,
+                "skip_reason": "oversize",  # #465: the viewer says why, not "pending"
             }
 
         # Download media (with optional global deduplication)
@@ -4963,6 +4986,7 @@ def main():
 
     config = Config()
     setup_logging(config)
+    config.log_summary()
 
     migrate_shared_media(config.media_path)
 

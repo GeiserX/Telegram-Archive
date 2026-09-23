@@ -258,6 +258,7 @@ try:
 except ValueError as e:
     logger.error(f"Configuration error: {e}")
     raise
+config.log_summary()
 
 # Global database adapter (initialized on startup)
 db: DatabaseAdapter | None = None
