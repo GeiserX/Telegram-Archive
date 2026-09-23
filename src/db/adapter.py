@@ -1074,6 +1074,7 @@ class DatabaseAdapter:
                 "participants_count": chat_data.get("participants_count"),
                 "is_forum": chat_data.get("is_forum", 0),
                 "is_archived": chat_data.get("is_archived", 0),
+                "avatar_photo_id": chat_data.get("avatar_photo_id"),
                 "updated_at": utcnow_naive(),
             }
 
@@ -1101,6 +1102,10 @@ class DatabaseAdapter:
                 update_set["is_forum"] = values["is_forum"]
             if "is_archived" in chat_data:
                 update_set["is_archived"] = values["is_archived"]
+            # Only the backup reads the entity's photo; the listener's partial
+            # upserts leave what it recorded (None is a real value: no avatar).
+            if "avatar_photo_id" in chat_data:
+                update_set["avatar_photo_id"] = values["avatar_photo_id"]
 
             if self._is_sqlite:
                 stmt = sqlite_insert(Chat).values(**values)
@@ -1542,6 +1547,18 @@ class DatabaseAdapter:
             )
             result = await session.execute(stmt)
             return [row.id for row in result]
+
+    async def get_avatar_photo_id(self, chat_id: int, *, account_id: int) -> int | None:
+        """The profile photo id ``account_id`` last saw for ``chat_id``, or None.
+
+        None covers no row, no avatar, and a row no backup has refreshed since
+        migration 029 — the viewer falls back to the newest file for all three.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(Chat.avatar_photo_id).where(and_(Chat.account_id == account_id, Chat.id == chat_id))
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
 
     async def get_chat_id_for_message(self, message_id: int, *, account_id: int) -> int | None:
         """

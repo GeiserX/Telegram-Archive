@@ -1720,7 +1720,10 @@ async def serve_sender_avatar(message_id: int, chat: ChatContext = Depends(requi
     sender_id = await _message_sender_id(chat, message_id)
     if not sender_id or sender_id <= 0:
         raise HTTPException(status_code=404, detail="File not found")
-    avatar_path = _get_cached_avatar_path(sender_id, "private")
+    # The photo this chat's account sees for the sender, when it holds a DM
+    # with them; any other sender keeps the newest-file fallback.
+    photo_id = await db.get_avatar_photo_id(sender_id, account_id=chat.account_id)
+    avatar_path = _get_cached_avatar_path(sender_id, "private", photo_id)
     if not avatar_path:
         raise HTTPException(status_code=404, detail="File not found")
     return _avatar_file_response(avatar_path)
@@ -1732,7 +1735,8 @@ async def serve_chat_avatar(chat: ChatContext = Depends(require_chat)):
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
-    avatar_path = _get_cached_avatar_path(chat.chat_id, chat.type or "private")
+    photo_id = await db.get_avatar_photo_id(chat.chat_id, account_id=chat.account_id)
+    avatar_path = _get_cached_avatar_path(chat.chat_id, chat.type or "private", photo_id)
     if not avatar_path:
         raise HTTPException(status_code=404, detail="File not found")
     return _avatar_file_response(avatar_path)
@@ -2483,17 +2487,26 @@ def _newest_avatar_file(avatar_dir: str, names: list[str] | None) -> str | None:
     return newest_name
 
 
-def _find_avatar_path(chat_id: int, chat_type: str) -> str | None:
+def _find_avatar_path(chat_id: int, chat_type: str, photo_id: int | None = None) -> str | None:
     """Find avatar file path for a chat.
 
     Avatar files are stored as: {chat_id}_{photo_id}.jpg
     For groups/channels, chat_id is negative (marked ID format).
+
+    The folder is shared by every account, and two accounts can see different
+    photos for one user (a photo set for a contact is visible to the account
+    that set it only). ``photo_id`` is the one the reading account recorded
+    (migration 029); its file wins when present, else the newest file does.
     """
     # Determine folder: 'chats' for groups/channels, 'users' for private
     avatar_folder = "users" if chat_type == "private" else "chats"
     avatar_dir = os.path.join(config.media_path, "avatars", avatar_folder)
 
     candidates = _avatar_dir_listing(avatar_dir).get(chat_id)
+    if photo_id is not None and candidates:
+        wanted = f"{chat_id}_{photo_id}.jpg"
+        if wanted in candidates and os.path.exists(os.path.join(avatar_dir, wanted)):
+            return f"avatars/{avatar_folder}/{wanted}"
     avatar_file = _newest_avatar_file(avatar_dir, candidates)
     if avatar_file is None and candidates:
         # Every candidate has vanished — re-read the folder once and retry, so a
@@ -2507,7 +2520,7 @@ def _find_avatar_path(chat_id: int, chat_type: str) -> str | None:
 
 
 # Cache avatar paths to avoid repeated filesystem lookups
-_avatar_cache: dict[int, str | None] = {}
+_avatar_cache: dict[tuple[int, int | None], str | None] = {}
 _avatar_cache_time: datetime | None = None
 AVATAR_CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -2536,8 +2549,8 @@ def _chat_avatar_url(chat_id: int | None, chat_type: str | None, ref: str | None
         return None
 
 
-def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
-    """Get avatar path with caching."""
+def _get_cached_avatar_path(chat_id: int, chat_type: str, photo_id: int | None = None) -> str | None:
+    """Get avatar path with caching (keyed on the preferred photo id too)."""
     global _avatar_cache, _avatar_cache_time
 
     # Invalidate cache if too old
@@ -2546,12 +2559,17 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str) -> str | None:
         _avatar_cache_time = None
 
     # Check cache
-    if chat_id in _avatar_cache:
-        return _avatar_cache[chat_id]
+    key = (chat_id, photo_id)
+    if key in _avatar_cache:
+        return _avatar_cache[key]
 
-    # Lookup and cache
-    avatar_path = _find_avatar_path(chat_id, chat_type)
-    _avatar_cache[chat_id] = avatar_path
+    # Lookup and cache. A preferred photo whose file is not on disk yet (the
+    # backup records the id before it downloads the file) resolved to the
+    # fallback; do not pin that under the new id, or the real photo waits out
+    # the TTL after it lands.
+    avatar_path = _find_avatar_path(chat_id, chat_type, photo_id)
+    if photo_id is None or (avatar_path is not None and avatar_path.endswith(f"/{chat_id}_{photo_id}.jpg")):
+        _avatar_cache[key] = avatar_path
     if _avatar_cache_time is None:
         _avatar_cache_time = datetime.utcnow()
 

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from telethon import events
 from telethon.tl.types import (
+    ChatPhoto,
     MessageActionChatAddUser,
     MessageActionChatDeletePhoto,
     MessageActionChatDeleteUser,
@@ -61,9 +62,9 @@ def _config(**overrides):
     return config
 
 
-def _entity(first_name="Alice", last_name=None, title="Group Title", username="grp"):
+def _entity(first_name="Alice", last_name=None, title="Group Title", username="grp", photo=None):
     """A stand-in Telegram entity used for both actor and chat-metadata lookups."""
-    return SimpleNamespace(first_name=first_name, last_name=last_name, title=title, username=username)
+    return SimpleNamespace(first_name=first_name, last_name=last_name, title=title, username=username, photo=photo)
 
 
 def _build(**config_overrides):
@@ -203,6 +204,11 @@ class TestChatActionHandler:
         assert "removed" in data["text"].lower()
         assert "photo" in data["text"].lower()
         db.upsert_chat.assert_awaited_once()
+        # The refreshed entity has no photo: the row records that explicitly
+        # (None is a value), so a removal clears what an earlier run saw.
+        chat_data = db.upsert_chat.call_args[0][0]
+        assert "avatar_photo_id" in chat_data
+        assert chat_data["avatar_photo_id"] is None
 
     async def test_join_does_not_refresh_chat_metadata(self):
         # The metadata-refresh side effect fires only for photo/title changes; a
@@ -255,6 +261,7 @@ class TestChatActionHandler:
 
     async def test_edit_photo_downloads_avatar(self):
         listener, handler, db = _build()
+        listener.client.get_entity = AsyncMock(return_value=_entity(photo=ChatPhoto(photo_id=1111, dc_id=1)))
         event = _event(
             _service_msg(MessageActionChatEditPhoto(photo=MagicMock())),
             new_photo=True,
@@ -268,6 +275,9 @@ class TestChatActionHandler:
         assert data["raw_data"]["action_type"] == "chat_edit_photo"
         assert "changed the group photo" in data["text"].lower()
         db.upsert_chat.assert_awaited_once()
+        # The photo id this account now sees is recorded right away (029), so
+        # the viewer switches without waiting for the next scheduled run.
+        assert db.upsert_chat.call_args[0][0]["avatar_photo_id"] == 1111
         listener._download_avatar.assert_awaited_once()
 
     async def test_edit_title_sets_new_title_and_upserts_chat(self):

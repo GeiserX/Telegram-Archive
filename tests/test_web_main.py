@@ -689,11 +689,11 @@ class TestGetCachedAvatarPath(unittest.TestCase):
     def test_caches_result_on_first_lookup(self):
         """_get_cached_avatar_path caches the result."""
         web_main._get_cached_avatar_path(123, "private")
-        self.assertIn(123, web_main._avatar_cache)
+        self.assertIn((123, None), web_main._avatar_cache)
 
     def test_returns_cached_value_on_second_call(self):
         """_get_cached_avatar_path returns cached value without re-lookup."""
-        web_main._avatar_cache[42] = "avatars/users/42_1.jpg"
+        web_main._avatar_cache[(42, None)] = "avatars/users/42_1.jpg"
         from datetime import datetime
 
         web_main._avatar_cache_time = datetime.utcnow()
@@ -704,7 +704,7 @@ class TestGetCachedAvatarPath(unittest.TestCase):
         """_get_cached_avatar_path clears cache after TTL expires."""
         from datetime import datetime, timedelta
 
-        web_main._avatar_cache[42] = "old/path"
+        web_main._avatar_cache[(42, None)] = "old/path"
         web_main._avatar_cache_time = datetime.utcnow() - timedelta(seconds=web_main.AVATAR_CACHE_TTL_SECONDS + 10)
 
         # After invalidation, the cache entry for 42 should be re-looked up
