@@ -267,3 +267,43 @@ async def test_legacy_caller_without_flag_leaves_raw_data_alone(adapter):
     raw = json.loads((await _row(adapter)).raw_data)
     assert "entities" not in raw
     assert raw["webpage"] == {"url": "https://keep.example"}
+
+
+RICH_TREE = {"blocks": [{"_": "PageBlockParagraph", "text": {"_": "TextPlain", "text": "v1"}}]}
+RICH_TREE_V2 = {"blocks": [{"_": "PageBlockParagraph", "text": {"_": "TextPlain", "text": "v2"}}]}
+
+
+@pytest.mark.asyncio
+async def test_edit_replaces_the_rich_message_tree(adapter):
+    """A Rich Text Editor edit (#470) rewrites raw_data["rich_message"] with the new blocks."""
+    await adapter.update_message_text(
+        CHAT_ID, 1, "v1", None, account_id=1, entities=None, update_entities=True, rich_message=RICH_TREE
+    )
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID,
+        1,
+        "v2",
+        datetime(2026, 1, 2),
+        account_id=1,
+        entities=None,
+        update_entities=True,
+        rich_message=RICH_TREE_V2,
+    )
+    assert outcome == "applied"
+    raw = json.loads((await _row(adapter)).raw_data)
+    assert raw["rich_message"] == RICH_TREE_V2
+    assert raw["webpage"] == {"url": "https://keep.example"}
+
+
+@pytest.mark.asyncio
+async def test_edit_back_to_plain_text_drops_the_rich_message_tree(adapter):
+    await adapter.update_message_text(
+        CHAT_ID, 1, "original", None, account_id=1, entities=None, update_entities=True, rich_message=RICH_TREE
+    )
+    outcome, _ = await adapter.update_message_text(
+        CHAT_ID, 1, "original", None, account_id=1, entities=None, update_entities=True, rich_message=None
+    )
+    assert outcome == "noop"
+    raw = json.loads((await _row(adapter)).raw_data)
+    assert "rich_message" not in raw
+    assert raw["webpage"] == {"url": "https://keep.example"}

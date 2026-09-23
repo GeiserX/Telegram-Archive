@@ -221,3 +221,51 @@ def test_template_uses_entity_renderer_for_message_text() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert 'v-html="renderMessageHtml(getAlbumCaptionMessage(msg) || msg)"' in html
     assert 'v-html="linkifyText(getAlbumCaption(msg) || msg.text)"' not in html
+
+
+def test_rich_text_editor_output_renders_through_the_same_path() -> None:
+    """A Rich Text Editor message (#470) is rendered from the entities the archiver derives; no viewer change."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(INDEX_HTML.parents[3]))
+    from telethon.tl.types import (
+        PageBlockBlockquote,
+        PageBlockHeading3,
+        PageBlockParagraph,
+        PageBlockPreformatted,
+        RichMessage,
+        TextConcat,
+        TextEmpty,
+        TextPlain,
+        TextUrl,
+    )
+
+    from src.message_utils import render_rich_message
+
+    rich = RichMessage(
+        blocks=[
+            PageBlockHeading3(text=TextPlain("Plan")),
+            PageBlockParagraph(
+                text=TextConcat(
+                    texts=[
+                        TextPlain("see "),
+                        TextUrl(text=TextPlain("docs"), url="https://example.com/x", webpage_id=0),
+                    ]
+                )
+            ),
+            PageBlockBlockquote(text=TextPlain("quoted"), caption=TextEmpty()),
+            PageBlockPreformatted(text=TextPlain("x = 1"), language="py"),
+        ],
+        photos=[],
+        documents=[],
+    )
+    text, entities = render_rich_message(rich)
+    _run_renderer_asserts(
+        f"""
+assert.equal(
+    R({json.dumps(text)}, {json.dumps(entities)}),
+    '<strong>Plan</strong>\\nsee <a href="https://example.com/x" target="_blank" rel="noopener noreferrer">docs</a>\\n'
+    + '<blockquote class="tg-blockquote">quoted</blockquote>\\n<pre class="tg-pre"><code>x = 1</code></pre>')
+"""
+    )
