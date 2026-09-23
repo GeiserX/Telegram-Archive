@@ -133,6 +133,10 @@ class Chat(Base):
     is_forum: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v6.2.0: forum with topics
     is_archived: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # v6.2.0: archived chat
     last_synced_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The profile photo id THIS account sees for the chat (029). Avatar files
+    # are shared across accounts, but a photo set for a contact is visible to
+    # the account that set it only, so the viewer serves this one first.
+    avatar_photo_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, onupdate=utcnow_naive, server_default=func.now()

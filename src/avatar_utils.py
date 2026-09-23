@@ -14,6 +14,22 @@ def _get_avatar_dir(media_path: str, entity) -> str:
     return base_dir
 
 
+def avatar_photo_id(entity) -> int | None:
+    """The photo id this account sees for ``entity``, or None when it has no avatar.
+
+    The id is per viewing account, not per peer: a photo one account set for a
+    contact ("set a photo for this contact") is visible only to that account,
+    so two accounts can see different photos for the same user. It is the same
+    id ``get_avatar_paths`` puts in the file name, which is what lets the viewer
+    pick the file the owning account actually saw.
+    """
+    photo = getattr(entity, "photo", None)
+    if photo is None or isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
+        return None
+    photo_id = getattr(photo, "photo_id", None) or getattr(photo, "id", None)
+    return photo_id if isinstance(photo_id, int) else None
+
+
 def get_avatar_paths(media_path: str, entity, chat_id: int) -> tuple[str | None, str]:
     """
     Build target and legacy avatar file paths.
@@ -30,7 +46,7 @@ def get_avatar_paths(media_path: str, entity, chat_id: int) -> tuple[str | None,
     if photo is None or isinstance(photo, (ChatPhotoEmpty, UserProfilePhotoEmpty)):
         return None, legacy_path
 
-    photo_id = getattr(photo, "photo_id", None) or getattr(photo, "id", None)
+    photo_id = avatar_photo_id(entity)
     suffix = f"_{photo_id}" if photo_id is not None else "_current"
     file_name = f"{chat_id}{suffix}.jpg"
     return os.path.join(base_dir, file_name), legacy_path
