@@ -55,8 +55,7 @@ from .message_utils import (
     media_download_allowed,
     message_entities,
     message_plain_text,
-    rich_message_of,
-    rich_message_payload,
+    message_rich_payload,
     sanitize_media_filename,
     sender_display_name,
     service_action_type,
@@ -1084,6 +1083,7 @@ class TelegramListener:
                     account_id=self.account_id,
                     entities=message_entities(message),
                     update_entities=True,
+                    rich_message=message_rich_payload(message),
                 )
                 if outcome != "applied":
                     self.stats["edits_skipped"] += 1
@@ -1338,9 +1338,9 @@ class TelegramListener:
                     message_data["raw_data"]["entities"] = entities
 
                 # Rich Text Editor messages (#470): same raw_data key the sweep writes.
-                rich = rich_message_of(message)
-                if rich is not None:
-                    message_data["raw_data"]["rich_message"] = rich_message_payload(rich)
+                rich_payload = message_rich_payload(message)
+                if rich_payload is not None:
+                    message_data["raw_data"]["rich_message"] = rich_payload
 
                 # v6.0.0: Detect media type for logging (download happens after message insert)
                 media_type = None

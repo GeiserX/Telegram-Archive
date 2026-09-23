@@ -870,7 +870,42 @@ class TestEventHandlers:
             account_id=1,
             entities=None,
             update_entities=True,
+            rich_message=None,
         )
+
+    def test_on_message_edited_carries_rich_text_editor_content(self, listener_with_handlers):
+        """An edited Rich Text Editor message (#470) updates text, entities and the stored block tree."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageEdited]
+
+        from datetime import datetime
+
+        from telethon.tl.types import PageBlockHeading3, PageBlockParagraph, RichMessage, TextPlain
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 42
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockHeading3(text=TextPlain("Title")), PageBlockParagraph(text=TextPlain("edited"))],
+            photos=[],
+            documents=[],
+        )
+        msg.edit_date = datetime(2025, 1, 1, tzinfo=UTC)
+        event.message = msg
+
+        asyncio.run(handler(event))
+
+        assert listener.stats["edits_applied"] == 1
+        kwargs = listener.db.update_message_text.call_args.kwargs
+        assert kwargs["new_text"] == "Title\nedited"
+        assert kwargs["entities"] == [{"type": "bold", "offset": 0, "length": 5}]
+        assert [b["_"] for b in kwargs["rich_message"]["blocks"]] == ["PageBlockHeading3", "PageBlockParagraph"]
 
     def test_on_message_edited_handles_none_text(self, listener_with_handlers):
         """Test edit handler treats None text as empty string."""

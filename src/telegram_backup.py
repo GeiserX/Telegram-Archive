@@ -79,9 +79,8 @@ from .message_utils import (
     media_download_allowed,
     message_entities,
     message_plain_text,
+    message_rich_payload,
     resolve_shared_file_path,
-    rich_message_of,
-    rich_message_payload,
     sender_display_name,
     service_action_type,
     service_message_text,
@@ -2712,6 +2711,7 @@ class TelegramBackup:
                             account_id=self.account_id,
                             entities=message_entities(remote_msg),
                             update_entities=True,
+                            rich_message=message_rich_payload(remote_msg),
                         )
                         if outcome == "applied":
                             total_updated += 1
@@ -3357,9 +3357,9 @@ class TelegramBackup:
 
         # Rich Text Editor messages (#470): text and entities above are rendered
         # from the block tree; keep the tree itself so nothing is discarded.
-        rich = rich_message_of(message)
-        if rich is not None:
-            message_data["raw_data"]["rich_message"] = rich_message_payload(rich)
+        rich_payload = message_rich_payload(message)
+        if rich_payload is not None:
+            message_data["raw_data"]["rich_message"] = rich_payload
 
         # Capture channel post author (signature) if available
         if hasattr(message, "post_author") and message.post_author:
