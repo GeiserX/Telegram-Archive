@@ -552,6 +552,59 @@ class TestEventHandlers:
         assert saved["text"] == "hola mundo"
         assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 0, "length": 4}]
 
+    def test_on_new_message_renders_rich_text_editor_content(self, listener_with_handlers, full_config):
+        """A Rich Text Editor message (#470) stores rendered text, entities and the block tree."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.NewMessage]
+
+        from datetime import datetime
+
+        from telethon.tl.types import PageBlockHeading3, PageBlockParagraph, RichMessage, TextPlain
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+
+        msg = MagicMock()
+        msg.reply_to = None
+        msg.id = 45
+        msg.sender_id = 111
+        msg.date = datetime(2025, 1, 1, tzinfo=UTC)
+        msg.raw_text = ""
+        msg.text = ""
+        msg.message = ""
+        msg.entities = []
+        msg.rich_message = RichMessage(
+            blocks=[PageBlockHeading3(text=TextPlain("Title")), PageBlockParagraph(text=TextPlain("body"))],
+            photos=[],
+            documents=[],
+        )
+        msg.reply_to_msg_id = None
+        msg.edit_date = None
+        msg.out = False
+        msg.grouped_id = None
+        msg.media = None
+        msg.sender = None
+        msg.fwd_from = None
+        event.message = msg
+
+        chat_entity = MagicMock()
+        chat_entity.title = "Test Chat"
+        chat_entity.username = None
+        chat_entity.first_name = None
+        chat_entity.last_name = None
+        event.get_chat = AsyncMock(return_value=chat_entity)
+
+        asyncio.run(handler(event))
+
+        listener.db.insert_message.assert_called_once()
+        saved = listener.db.insert_message.call_args[0][0]
+        assert saved["text"] == "Title\nbody"
+        assert saved["raw_data"]["entities"] == [{"type": "bold", "offset": 0, "length": 5}]
+        assert [b["_"] for b in saved["raw_data"]["rich_message"]["blocks"]] == [
+            "PageBlockHeading3",
+            "PageBlockParagraph",
+        ]
+
     def test_on_new_message_adds_untracked_chat_to_tracking(self, listener_with_handlers, full_config):
         """Test new message from untracked-but-included chat gets added to tracking.
 
