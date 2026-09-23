@@ -54,6 +54,18 @@ This is a public repository. Pull requests, issues, commit messages, review repl
 
 If a name or a deployment detail has already been pushed, remove it from every artifact it reached, at once, and say so without repeating the detail. A PR body or comment is edited; a commit on an unmerged branch is rewritten before it is merged; a doc, test or code file is fixed in a follow-up commit. Once it is on `main`, tell the maintainer, who decides on history removal (`git filter-repo`). It is public the moment it is pushed.
 
+## Archive principle
+
+This project is an archive. Anything it has captured stays. Nothing observed is deleted or overwritten: new state is recorded beside old state, and the viewer decides what to show. The goal is software that tracks everything that happens and only gains ways to search and browse it.
+
+This already holds for message text (`message_versions` is written before a row is updated), for deleted messages in soft mode (`is_deleted` and `deleted_at` keep the row and its media), for reactions (`removed_at` tombstones), for avatar files (one file per photo id, never replaced or removed), and for `sender_name` and `raw_data` (a payload with less information never overwrites one with more).
+
+New code follows the same shape: add a row, a column or a file next to the old one. Do not update in place and do not remove. Chat and user metadata (title, username, names, phone, description, participant counts, pinned state, folders, forum topics, `avatar_photo_id`) still overwrites in place. That is known debt, not a pattern to copy.
+
+The only removals allowed are the ones the operator asks for by configuration: `DELETION_MODE=hard`, the `*_EXCLUDE_CHAT_IDS` lists, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`, and `VERIFY_MEDIA`, which replaces a corrupted file with a fresh copy of the same media. Temporary and partial download files are not archive state.
+
+A new or wider removal path needs a config flag that defaults to keeping data, a README row that says it deletes, and explicit maintainer approval in the PR. When reviewing a PR, state what it deletes, what it overwrites and what it forgets, in that order.
+
 ## Boundaries
 
 ### ✅ Always (do without asking)
@@ -237,7 +249,7 @@ git tag v7.6.0 && git push origin v7.6.0
 ## Alembic Migrations — Critical Reminders
 
 - **`Base.metadata.create_all(checkfirst=True)`** creates ALL tables from SQLAlchemy models at once, including tables that should be created by future Alembic migrations. This means pre-Alembic databases can have schema objects from migrations that haven't "run" yet.
-- **`scripts/entrypoint.sh`** stamps pre-Alembic databases by detecting which schema objects exist. **Every time you add a new migration, you MUST update the stamping logic in entrypoint.sh** — both the PostgreSQL block and the SQLite block — to detect the new migration's artifacts (tables, columns, indexes). If you forget, existing databases that were created via `create_all()` will be stamped at a lower version, and Alembic will try to re-create objects that already exist, causing crash-loops.
+- **`scripts/entrypoint.sh`** stamps pre-Alembic databases by detecting which schema objects exist. **The stamping ladder is frozen at 018 on purpose** (both the PostgreSQL block and the SQLite block; the comment above the ladder explains why 019 to 022 added no rung, and 027 to 029 say the same in their headers). Do not add a rung for a new migration. A `create_all()` database is stamped at 018 and every later migration runs against a schema that may already have its objects, so the next bullet is what keeps it from crash-looping.
 - **Every migration MUST be idempotent.** Use `sa.inspect(conn)` to check if tables/columns/indexes exist before creating them. The stamping logic only helps fresh databases (no `alembic_version` table); databases already stamped at an older version skip stamping entirely, so Alembic runs the migration against a schema that `create_all()` may have already populated. Pattern:
   ```python
   conn = op.get_bind()
