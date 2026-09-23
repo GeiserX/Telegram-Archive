@@ -2563,9 +2563,13 @@ def _get_cached_avatar_path(chat_id: int, chat_type: str, photo_id: int | None =
     if key in _avatar_cache:
         return _avatar_cache[key]
 
-    # Lookup and cache
+    # Lookup and cache. A preferred photo whose file is not on disk yet (the
+    # backup records the id before it downloads the file) resolved to the
+    # fallback; do not pin that under the new id, or the real photo waits out
+    # the TTL after it lands.
     avatar_path = _find_avatar_path(chat_id, chat_type, photo_id)
-    _avatar_cache[key] = avatar_path
+    if photo_id is None or (avatar_path is not None and avatar_path.endswith(f"/{chat_id}_{photo_id}.jpg")):
+        _avatar_cache[key] = avatar_path
     if _avatar_cache_time is None:
         _avatar_cache_time = datetime.utcnow()
 

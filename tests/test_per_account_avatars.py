@@ -302,3 +302,41 @@ class TestViewer:
         )
         resp = await _get(f"/media/avatar/{await _ref(viewer, GROUP, 1)}/7")
         assert resp.status_code == 200 and resp.content == BYTES_A
+
+    async def test_sender_avatar_follows_the_second_accounts_chat(self, viewer):
+        """The same peer in a group held by account 2 gets account 2's photo.
+
+        Pins that the sender route reads ``chat.account_id``: with a hardcoded
+        account 1 this returns BYTES_A and fails.
+        """
+        await _seed_peer(viewer, 1, PHOTO_SEEN_BY_A)
+        await _seed_peer(viewer, 2, PHOTO_SEEN_BY_B)
+        await viewer.upsert_chat({"id": GROUP, "type": "group", "title": "Test Group"}, account_id=2)
+        await viewer.insert_message(
+            {
+                "id": 8,
+                "chat_id": GROUP,
+                "sender_id": PEER,
+                "date": datetime(2026, 4, 1, 12, 0, 0),
+                "text": "hi",
+                "raw_data": {},
+            },
+            account_id=2,
+        )
+        resp = await _get(f"/media/avatar/{await _ref(viewer, GROUP, 2)}/8")
+        assert resp.status_code == 200 and resp.content == BYTES_B
+
+    async def test_photo_recorded_before_its_file_lands_is_served_once_downloaded(self, viewer, tmp_path):
+        """The backup upserts the row before it downloads the file. A request in
+        that window falls back to the newest file; the fallback must not be cached
+        under the new id, or the real photo waits out the whole cache TTL."""
+        photo_c = 3333
+        await _seed_peer(viewer, 1, photo_c)
+        ref = await _ref(viewer, PEER, 1)
+
+        first = await _get(f"/media/avatar/{ref}")
+        assert first.status_code == 200 and first.content == BYTES_B  # newest file, C not on disk yet
+
+        (tmp_path / "avatars" / "users" / f"{PEER}_{photo_c}.jpg").write_bytes(b"photo C")
+        second = await _get(f"/media/avatar/{ref}")
+        assert second.status_code == 200 and second.content == b"photo C"
