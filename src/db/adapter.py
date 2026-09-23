@@ -3234,22 +3234,27 @@ class DatabaseAdapter:
         if document_mime_types:
             allowed.append(self._document_mime_condition(document_mime_types, document_mime_extensions or set()))
         counts = {"oversize": 0, "filtered": 0, "cleared": 0}
+        over = Media.file_size > max_media_size_bytes if max_media_size_bytes is not None else None
+        # Both clears run before both marks: a row whose reason no longer holds
+        # (filter removed, cap raised) is re-marked with the reason that now
+        # applies in the same pass instead of reading "pending" for one interval.
+        clears = [
+            update(Media).where(scope, Media.skip_reason == "oversize", ~over)
+            if over is not None
+            else update(Media).where(scope, Media.skip_reason == "oversize"),
+            update(Media).where(scope, Media.skip_reason == "filtered", and_(*allowed))
+            if allowed
+            else update(Media).where(scope, Media.skip_reason == "filtered"),
+        ]
         async with self.db_manager.async_session_factory() as session:
-            if max_media_size_bytes is not None:
-                over = Media.file_size > max_media_size_bytes
+            for stmt in clears:
+                result = await session.execute(stmt.values(skip_reason=None))
+                counts["cleared"] += result.rowcount or 0
+            if over is not None:
                 result = await session.execute(
                     update(Media).where(scope, Media.skip_reason.is_(None), over).values(skip_reason="oversize")
                 )
                 counts["oversize"] = result.rowcount or 0
-                result = await session.execute(
-                    update(Media).where(scope, Media.skip_reason == "oversize", ~over).values(skip_reason=None)
-                )
-                counts["cleared"] += result.rowcount or 0
-            else:
-                result = await session.execute(
-                    update(Media).where(scope, Media.skip_reason == "oversize").values(skip_reason=None)
-                )
-                counts["cleared"] += result.rowcount or 0
             if allowed:
                 result = await session.execute(
                     update(Media)
@@ -3257,15 +3262,6 @@ class DatabaseAdapter:
                     .values(skip_reason="filtered")
                 )
                 counts["filtered"] = result.rowcount or 0
-                result = await session.execute(
-                    update(Media).where(scope, Media.skip_reason == "filtered", and_(*allowed)).values(skip_reason=None)
-                )
-                counts["cleared"] += result.rowcount or 0
-            else:
-                result = await session.execute(
-                    update(Media).where(scope, Media.skip_reason == "filtered").values(skip_reason=None)
-                )
-                counts["cleared"] += result.rowcount or 0
             await session.commit()
         return counts
 
@@ -3395,6 +3391,9 @@ class DatabaseAdapter:
                     Media.downloaded == 0,
                     Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES)),
                     Media.download_attempts >= max_attempts,
+                    # Declined by configuration, not exhausted: raising the retry
+                    # cap would not fetch these, so the warning must not count them.
+                    Media.skip_reason.is_(None),
                 )
             )
             return (await session.execute(stmt)).scalar() or 0

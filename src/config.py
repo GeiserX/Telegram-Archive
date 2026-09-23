@@ -1072,10 +1072,10 @@ class Config:
     def log_summary(self) -> None:
         """Log the operator-facing startup summary.
 
-        Kept out of ``__init__`` on purpose (#445): every entrypoint builds the
-        Config before it configures logging, so lines emitted during
-        construction had no handler and never reached the container log.
-        Call once, after ``setup_logging``.
+        Kept out of ``__init__`` on purpose (#445): the backup, listener,
+        scheduler and CLI entrypoints build the Config before they configure
+        logging, so lines emitted during construction had no handler and never
+        reached the container log. Call once, after ``setup_logging``.
         """
         logger.info("Configuration loaded successfully")
         logger.debug(f"Backup path: {self.backup_path}")

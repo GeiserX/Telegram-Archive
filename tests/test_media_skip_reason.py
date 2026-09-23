@@ -285,9 +285,17 @@ class TestViewerSurfaces:
         await _seed(adapter, "doc", 3, type="document", downloaded=False, skip_reason="filtered")
         await _seed(adapter, "have", 4, type="photo", downloaded=True)
 
+        await _seed(adapter, "tired", 5, type="video", downloaded=False, skip_reason="oversize")
+        for _ in range(7):
+            await adapter.increment_media_download_attempts("tired", account_id=1)
+        await _seed(adapter, "havebut", 6, type="photo", downloaded=True, skip_reason="filtered")
+        await _seed(adapter, "poll", 7, type="poll", downloaded=False, skip_reason="filtered")
+
         counts = await adapter.get_operator_status_counts(max_attempts=5)
 
-        assert counts == {"downloaded": 1, "pending": 1, "exhausted": 0, "skipped": 2}
+        assert counts == {"downloaded": 2, "pending": 1, "exhausted": 0, "skipped": 3}
+        # The "raise the retry cap" warning must not count a row the cap would not retry.
+        assert await adapter.count_capped_media_downloads(5, account_id=1) == 0
 
     async def test_message_payload_carries_the_reason(self, adapter):
         await adapter.upsert_chat({"id": CHAT_ID, "type": "channel", "title": "Chat A"}, account_id=1)
@@ -340,12 +348,25 @@ class TestConfigSummaryLogging:
         assert "LOG_CHAT_TITLES enabled" in caplog.text
 
     def test_every_entrypoint_logs_the_summary_after_logging_is_configured(self):
-        """Each ``setup_logging(config)`` is followed by ``config.log_summary()``."""
+        """Each ``setup_logging(config)`` is followed by ``config.log_summary()`` before the next one."""
         src = Path(__file__).resolve().parents[1] / "src"
-        for name in ("__main__.py", "scheduler.py", "listener.py", "telegram_backup.py"):
+        for name in (
+            "__main__.py",
+            "scheduler.py",
+            "listener.py",
+            "telegram_backup.py",
+            "setup_auth.py",
+            "export_backup.py",
+        ):
             text = (src / name).read_text(encoding="utf-8")
-            assert text.count("setup_logging(config)") == text.count("config.log_summary()"), name
-            assert text.count("setup_logging(config)") >= 1, name
+            starts = [i for i in range(len(text)) if text.startswith("setup_logging(config)", i)]
+            assert starts, name
+            assert text.count("config.log_summary()") == len(starts), name
+            for pos, nxt in zip(starts, starts[1:] + [len(text)], strict=True):
+                summary = text.find("config.log_summary()", pos)
+                assert summary != -1 and summary < nxt, (
+                    f"{name}: setup_logging at {pos} has no log_summary before {nxt}"
+                )
         viewer = (src / "web" / "main.py").read_text(encoding="utf-8")
         assert viewer.index("logging.basicConfig(") < viewer.index("config.log_summary()")
 
@@ -380,3 +401,160 @@ class TestSkipMediaCleanupHonesty:
         assert blob.exists()  # the bytes stay: nothing here reclaims _shared/
         assert "1 symlinks removed (their shared files stay in _shared/)" in caplog.text
         assert "MB freed" not in caplog.text
+
+
+# ============================================================================
+# Review follow-ups: the drain writes reasons the SQL cannot derive, and a
+# settings change converges in one reconcile pass
+# ============================================================================
+
+
+def _drain_backup(pending_record: dict) -> TelegramBackup:
+    backup = TelegramBackup.__new__(TelegramBackup)
+    backup.account_id = 1
+    backup.config = MagicMock()
+    backup.config.get_max_media_size_bytes = MagicMock(return_value=1000)
+    backup.config.max_media_download_attempts = 5
+    backup.config.skip_media_chat_ids = set()
+    backup.config.download_media_types = set()
+    backup.config.download_document_mime_types = {"application/pdf"}
+    backup.config.download_document_mime_extensions = {"pdf"}
+    backup.config.download_youtube_videos = False
+    backup.db = AsyncMock()
+    backup.db.reconcile_media_skip_reasons = AsyncMock(return_value={"oversize": 0, "filtered": 0, "cleared": 0})
+    backup.db.get_pending_media_downloads = AsyncMock(return_value=[pending_record])
+    backup.db.count_capped_media_downloads = AsyncMock(return_value=0)
+    msg = _make_message(pending_record["message_id"])
+    msg.media = MagicMock()
+    backup.client = AsyncMock()
+    backup.client.get_messages = AsyncMock(return_value=[msg])
+    backup._get_media_type = MagicMock(return_value=pending_record["type"])
+    return backup
+
+
+class TestDrainWritesUnderivableReasons:
+    """A failed first download leaves mime, name and size NULL, so the SQL mirror
+    cannot classify the row; the drain, which has the live message, must."""
+
+    async def test_filter_decline_stores_the_reason_without_charging(self):
+        record = {"id": f"{CHAT_ID}_7_document", "message_id": 7, "chat_id": CHAT_ID, "type": "document"}
+        backup = _drain_backup(record)
+        skip_row = {**record, "file_name": "report.zip", "mime_type": "application/zip", "skip_reason": "filtered"}
+        backup._process_media = AsyncMock(return_value=skip_row)
+
+        await backup._retry_pending_media_downloads()
+
+        backup.db.insert_media.assert_awaited_once_with(skip_row, account_id=1)
+        backup.db.increment_media_download_attempts.assert_not_awaited()
+
+    async def test_oversize_decline_stores_the_reason_without_charging(self):
+        record = {"id": f"{CHAT_ID}_8_video", "message_id": 8, "chat_id": CHAT_ID, "type": "video"}
+        backup = _drain_backup(record)
+        skip_row = {**record, "file_size": 5000, "skip_reason": "oversize"}
+        backup._process_media = AsyncMock(return_value=skip_row)
+
+        await backup._retry_pending_media_downloads()
+
+        backup.db.insert_media.assert_awaited_once_with(skip_row, account_id=1)
+        backup.db.increment_media_download_attempts.assert_not_awaited()
+
+    async def test_a_real_failure_still_charges_an_attempt(self):
+        record = {"id": f"{CHAT_ID}_9_video", "message_id": 9, "chat_id": CHAT_ID, "type": "video"}
+        backup = _drain_backup(record)
+        backup._process_media = AsyncMock(return_value={**record, "downloaded": False})
+
+        await backup._retry_pending_media_downloads()
+
+        backup.db.insert_media.assert_not_awaited()
+        backup.db.increment_media_download_attempts.assert_awaited_once_with(record["id"], account_id=1)
+
+    async def test_reconcile_summary_line_is_logged_only_when_something_changed(self, caplog):
+        record = {"id": f"{CHAT_ID}_10_video", "message_id": 10, "chat_id": CHAT_ID, "type": "video"}
+        backup = _drain_backup(record)
+        backup.db.get_pending_media_downloads = AsyncMock(return_value=[])
+        caplog.set_level("INFO", logger="src.telegram_backup")
+
+        await backup._retry_pending_media_downloads()
+        assert "Media skip reasons" not in caplog.text
+
+        backup.db.reconcile_media_skip_reasons = AsyncMock(return_value={"oversize": 2, "filtered": 1, "cleared": 3})
+        await backup._retry_pending_media_downloads()
+        assert "Media skip reasons: 2 over the size cap, 1 outside the media filter, 3 cleared" in caplog.text
+
+
+class TestReconcileConvergesInOnePass:
+    async def test_filter_removed_on_an_oversize_row_reads_oversize_at_once(self, adapter):
+        await _seed(adapter, "bigdoc", 1, type="document", file_size=5000, downloaded=False, skip_reason="filtered")
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1, media_types=None)
+
+        assert counts == {"oversize": 1, "filtered": 0, "cleared": 1}
+        assert (await _row(adapter, "bigdoc")).skip_reason == "oversize"
+
+    async def test_cap_raised_on_a_filtered_row_reads_filtered_at_once(self, adapter):
+        await _seed(adapter, "bigdoc", 1, type="document", file_size=5000, downloaded=False, skip_reason="oversize")
+
+        counts = await adapter.reconcile_media_skip_reasons(10_000, account_id=1, media_types={"photo"})
+
+        assert counts == {"oversize": 0, "filtered": 1, "cleared": 1}
+        assert (await _row(adapter, "bigdoc")).skip_reason == "filtered"
+
+    async def test_a_row_at_the_cap_is_not_oversize(self, adapter):
+        await _seed(adapter, "edge", 1, type="video", file_size=1000, downloaded=False)
+
+        await adapter.reconcile_media_skip_reasons(1000, account_id=1)
+
+        assert (await _row(adapter, "edge")).skip_reason is None
+        pending = await adapter.get_pending_media_downloads(1000, 5, account_id=1)
+        assert [m["id"] for m in pending] == ["edge"]
+
+    async def test_a_filtered_row_over_the_cap_keeps_its_reason(self, adapter):
+        await _seed(adapter, "bigdoc", 1, type="document", file_size=5000, downloaded=False, skip_reason="filtered")
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1, media_types={"photo"})
+
+        assert counts == {"oversize": 0, "filtered": 0, "cleared": 0}
+        assert (await _row(adapter, "bigdoc")).skip_reason == "filtered"
+
+
+class TestOtherMessageRoutesCarryTheReason:
+    async def test_pinned_and_date_jump_payloads(self, adapter):
+        await adapter.upsert_chat({"id": CHAT_ID, "type": "channel", "title": "Chat A"}, account_id=1)
+        await adapter.insert_message(
+            {"id": 1, "chat_id": CHAT_ID, "date": datetime(2026, 7, 3, 9, 1), "text": "m", "is_pinned": 1},
+            account_id=1,
+        )
+        await adapter.insert_media(
+            {
+                "id": "big",
+                "message_id": 1,
+                "chat_id": CHAT_ID,
+                "type": "video",
+                "file_size": 5000,
+                "skip_reason": "oversize",
+            },
+            account_id=1,
+        )
+
+        pinned = await adapter.get_pinned_messages(CHAT_ID, account_id=1)
+        assert pinned[0]["media"]["skip_reason"] == "oversize"
+
+        jumped = await adapter.find_message_by_date_with_joins(CHAT_ID, datetime(2026, 7, 3, 9, 1), None, account_id=1)
+        assert jumped["media"]["skip_reason"] == "oversize"
+
+
+class TestCleanupLogHasNoEmptyFragment:
+    async def test_rows_only_cleanup_reads_cleanly(self, tmp_path, caplog):
+        backup = TelegramBackup.__new__(TelegramBackup)
+        backup.account_id = 1
+        backup.config = MagicMock()
+        backup.config.media_path = str(tmp_path)
+        backup.db = AsyncMock()
+        backup.db.get_media_for_chat = AsyncMock(return_value=[{"file_path": None}])
+        backup.db.delete_media_for_chat = AsyncMock(return_value=3)
+        caplog.set_level("INFO", logger="src.telegram_backup")
+
+        await backup._cleanup_existing_media(CHAT_ID)
+
+        assert "Cleaned up existing media for chat: 3 DB records deleted" in caplog.text
+        assert ": ," not in caplog.text

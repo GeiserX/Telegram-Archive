@@ -2051,26 +2051,25 @@ class TelegramBackup:
                         skipped += 1
                         continue
 
-                    if not media_download_allowed(self.config, msg.media, self._get_media_type(msg.media)):
-                        # Declined by DOWNLOAD_MEDIA_TYPES /
-                        # DOWNLOAD_DOCUMENT_MIME_TYPES, same policy as the YouTube
-                        # branch above: configuration, not failure — no attempt
-                        # charge, row left pending so relaxing the filter picks it
-                        # up. get_pending_media_downloads already excluded every
-                        # row whose own columns prove it is filtered; this is the
-                        # authoritative re-check for the rest — a row that stored
-                        # no MIME and no name, and the shapes the SQL mirror
-                        # deliberately keeps rather than risk dropping.
-                        skipped += 1
-                        continue
-
+                    # A row declined by DOWNLOAD_MEDIA_TYPES / DOWNLOAD_DOCUMENT_MIME_TYPES
+                    # or by MAX_MEDIA_SIZE_MB is configuration, not failure: no attempt
+                    # charge, so relaxing the setting picks it up. _process_media makes
+                    # that call against the live message and returns the skip row with
+                    # its reason and the metadata (name, MIME, size) the SQL mirror
+                    # lacked, so reconcile_media_skip_reasons can classify it next run
+                    # and the viewer stops promising a download (#465). Before, the
+                    # decline wrote nothing and such a row stayed "pending" forever.
+                    #
                     # Re-attempt _process_media (which handles size checks internally).
                     # Count each unsuccessful re-attempt so a permanently-failing file
                     # (e.g. a filename too long for the target filesystem, #212) stops
                     # being re-fetched once it hits MEDIA_MAX_DOWNLOAD_ATTEMPTS.
                     try:
                         result = await self._process_media(msg, chat_id)
-                        if result and result.get("downloaded"):
+                        if result and result.get("skip_reason"):
+                            await self.db.insert_media(result, account_id=self.account_id)
+                            skipped += 1
+                        elif result and result.get("downloaded"):
                             await self.db.insert_media(result, account_id=self.account_id)
                             if result.get("id") != record["id"]:
                                 # The message's file is held by ANOTHER row: _process_media
@@ -3667,9 +3666,8 @@ class TelegramBackup:
                     parts.append(f"{deleted_files} files ({freed_mb:.1f} MB freed)")
                 if deleted_symlinks > 0:
                     parts.append(f"{deleted_symlinks} symlinks removed (their shared files stay in _shared/)")
-                logger.info(
-                    f"Cleaned up existing media for chat: {', '.join(parts)}, {deleted_records} DB records deleted"
-                )
+                parts.append(f"{deleted_records} DB records deleted")
+                logger.info(f"Cleaned up existing media for chat: {', '.join(parts)}")
 
         except Exception as e:
             logger.error(f"Error cleaning up existing media for chat: {describe_exception(e)}")
