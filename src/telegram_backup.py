@@ -1415,8 +1415,15 @@ class TelegramBackup:
                         except Exception as e:
                             logger.warning(f"  → Could not fetch included chat: {e.__class__.__name__}")
 
-                # Delete only explicitly excluded chats from database
-                if explicitly_excluded_chat_ids:
+                # Excluded chats are skipped either way; their archived rows and
+                # files are deleted only when EXCLUDE_DELETE_EXISTING asks for it.
+                # Count only, never chat ids (PII).
+                if explicitly_excluded_chat_ids and not self.config.exclude_delete_existing:
+                    logger.info(
+                        f"{len(explicitly_excluded_chat_ids)} excluded chat(s) keep their archived rows and files "
+                        "(EXCLUDE_DELETE_EXISTING=false)"
+                    )
+                elif explicitly_excluded_chat_ids:
                     logger.info(
                         f"Deleting {len(explicitly_excluded_chat_ids)} explicitly excluded chats from database..."
                     )
@@ -2699,7 +2706,7 @@ class TelegramBackup:
                             # Ambiguous: the id was omitted from a misaligned
                             # response, not confirmed deleted. Retry next run.
                             continue
-                        if getattr(self.config, "deletion_mode", "hard") == "soft":
+                        if getattr(self.config, "deletion_mode", "soft") == "soft":
                             # mark_message_deleted defaults deleted_at to now(UTC); this path
                             # doesn't broadcast, so no need to pass an explicit timestamp.
                             await self.db.mark_message_deleted(chat_id, msg_id, account_id=self.account_id)
