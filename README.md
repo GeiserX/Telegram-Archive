@@ -283,6 +283,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `STATS_CALCULATION_HOUR` | `3` | B | Hour (0-23) to recalculate backup statistics daily |
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
+| `EXCLUDE_DELETE_EXISTING` | `false` | B | Also delete what the archive already holds for chats in any `*_EXCLUDE_CHAT_IDS` list: their messages and other rows, their media folder and their avatars. Cannot be undone. Off by default: an excluded chat stops being backed up and keeps what was already archived |
 | `SKIP_MEDIA_DELETE_EXISTING` | `false` | B | Also delete the media files and DB records already archived for chats in the skip list. Off by default: the archive keeps what it downloaded. On a deduplicated archive only the chat folder's links are removed; the shared file behind them stays in `_shared/` and is not reclaimed |
 | `DOWNLOAD_YOUTUBE_VIDEOS` | `false` | B | Archive the video file Telegram attaches to a YouTube link preview. Off by default; the message, link and thumbnail are archived either way |
 | `YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | B | Also delete YouTube link-preview videos already downloaded (needs `DOWNLOAD_YOUTUBE_VIDEOS=false`). Cannot be undone |
@@ -318,7 +319,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
 | `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
 | `LISTEN_DELETIONS` | `false` | B | Process deletion events from Telegram. Opt-in only |
-| `DELETION_MODE` | `hard` | B | When deletions are processed: `hard` removes archived messages (legacy), `soft` keeps messages and marks them deleted |
+| `DELETION_MODE` | `soft` | B | When deletions are processed: `soft` keeps messages and marks them deleted, `hard` removes archived messages and cannot be undone. `hard` is opt-in |
 | `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
@@ -484,13 +485,13 @@ The scheduled backup only captures new messages. To also track edits and deletio
 ENABLE_LISTENER: "true"        # Master switch — required
 LISTEN_EDITS: "true"           # Track text edits (safe, default: true)
 LISTEN_DELETIONS: "false"      # Ignore Telegram deletions entirely
-DELETION_MODE: "hard"          # hard=legacy remove, soft=keep and show "deleted"
+DELETION_MODE: "soft"          # soft=keep and show "deleted" (default), hard=remove
 LISTEN_NEW_MESSAGES: "true"    # Save new messages instantly (default: true)
 ```
 
 **How it works:** stays connected to Telegram between scheduled backups, captures changes as they happen, and automatically reconnects if disconnected.
 
-**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=hard`, deletions mirror Telegram and remove archived messages. Set `DELETION_MODE=soft` to keep the original archived message and show `deleted` in the message metadata. Soft-deleted messages are retained in the archive — they remain counted in chat statistics and continue to appear in search and exports, flagged as `deleted`.
+**Backup protection:** `LISTEN_DELETIONS=false` is the safe default. Set `LISTEN_DELETIONS=true` only if you want to process deletion events. With the default `DELETION_MODE=soft`, the original archived message is kept and shows `deleted` in the message metadata. Set `DELETION_MODE=hard` to mirror Telegram and remove archived messages; that cannot be undone. Soft-deleted messages are retained in the archive — they remain counted in chat statistics and continue to appear in search and exports, flagged as `deleted`.
 
 **Alternative — batch sync:** set `SYNC_DELETIONS_EDITS=true` to check ALL backed-up messages on each scheduled run. This is expensive and slow, and uses the same `DELETION_MODE` behavior for deleted messages.
 

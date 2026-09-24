@@ -353,7 +353,7 @@ class TelegramListener:
         logger.info(f"  LISTEN_EDITS: {config.listen_edits}")
         if config.listen_deletions:
             logger.warning("  ⚠️ LISTEN_DELETIONS: true - Deletions will be processed (with protection)")
-            logger.info(f"  DELETION_MODE: {getattr(config, 'deletion_mode', 'hard')}")
+            logger.info(f"  DELETION_MODE: {getattr(config, 'deletion_mode', 'soft')}")
         else:
             logger.info("  LISTEN_DELETIONS: false (backup fully protected)")
         if config.listen_new_messages:
@@ -640,8 +640,8 @@ class TelegramListener:
             raise
 
     def _get_deletion_mode(self) -> str:
-        """Return configured deletion mode, defaulting to legacy hard delete."""
-        mode = getattr(self.config, "deletion_mode", "hard")
+        """Return configured deletion mode, defaulting to soft (keep and mark deleted)."""
+        mode = getattr(self.config, "deletion_mode", "soft")
         return "soft" if mode == "soft" else "hard"
 
     async def _webhook_chat_title(self, chat_id: int) -> str:

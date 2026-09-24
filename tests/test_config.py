@@ -292,6 +292,34 @@ class TestSkipMediaChatIds(unittest.TestCase):
             config = Config()
             self.assertFalse(config.skip_media_delete_existing)
 
+    def test_exclude_delete_existing_defaults_false(self):
+        """EXCLUDE_DELETE_EXISTING defaults to false: excluding a chat keeps what was archived."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir, "EXCLUDE_CHAT_IDS": "-1009999999999"}
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertFalse(config.exclude_delete_existing)
+            with self.assertLogs("src.config", level="INFO") as logs:
+                config.log_summary()
+        joined = "\n".join(logs.output)
+        self.assertIn("existing rows and files are kept", joined)
+        self.assertNotIn("EXCLUDE_DELETE_EXISTING enabled", joined)
+        self.assertNotIn("-1009999999999", joined)
+
+    def test_exclude_delete_existing_explicit_true_warns(self):
+        """EXCLUDE_DELETE_EXISTING=true is honoured and the startup summary warns that it deletes."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "EXCLUDE_CHAT_IDS": "-1009999999999",
+            "EXCLUDE_DELETE_EXISTING": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            self.assertTrue(config.exclude_delete_existing)
+            with self.assertLogs("src.config", level="WARNING") as logs:
+                config.log_summary()
+        self.assertTrue(any("EXCLUDE_DELETE_EXISTING enabled" in line for line in logs.output))
+
     def test_skip_media_delete_existing_explicit_true(self):
         """Can explicitly enable SKIP_MEDIA_DELETE_EXISTING."""
         env_vars = {
@@ -987,7 +1015,7 @@ class TestListenerLogging(unittest.TestCase):
             config = Config()
             self.assertTrue(config.enable_listener)
             self.assertFalse(config.listen_deletions)
-            self.assertEqual(config.deletion_mode, "hard")
+            self.assertEqual(config.deletion_mode, "soft")
 
     def test_listener_enabled_with_deletions(self):
         """ENABLE_LISTENER=true with LISTEN_DELETIONS=true covers deletion warning path."""
@@ -1001,7 +1029,45 @@ class TestListenerLogging(unittest.TestCase):
             config = Config()
             self.assertTrue(config.enable_listener)
             self.assertTrue(config.listen_deletions)
+            self.assertEqual(config.deletion_mode, "soft")
+
+    def test_deletion_mode_defaults_soft(self):
+        """Unset DELETION_MODE keeps deleted messages (soft): removal is opt-in."""
+        env_vars = {"CHAT_TYPES": "private", "BACKUP_PATH": self.temp_dir}
+        with patch.dict(os.environ, env_vars, clear=True):
+            self.assertEqual(Config().deletion_mode, "soft")
+
+    def test_deletion_mode_hard_is_explicit_opt_in(self):
+        """DELETION_MODE=hard is still honoured, and its startup line keeps the warning."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "ENABLE_LISTENER": "true",
+            "LISTEN_DELETIONS": "true",
+            "DELETION_MODE": "hard",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
             self.assertEqual(config.deletion_mode, "hard")
+            with self.assertLogs("src.config", level="WARNING") as logs:
+                config.log_summary()
+        self.assertTrue(any("DELETION_MODE=hard - Messages will be DELETED" in line for line in logs.output))
+
+    def test_deletion_mode_default_summary_reads_as_default(self):
+        """With LISTEN_DELETIONS on and DELETION_MODE unset, startup says soft is the default."""
+        env_vars = {
+            "CHAT_TYPES": "private",
+            "BACKUP_PATH": self.temp_dir,
+            "ENABLE_LISTENER": "true",
+            "LISTEN_DELETIONS": "true",
+        }
+        with patch.dict(os.environ, env_vars, clear=True):
+            config = Config()
+            with self.assertLogs("src.config", level="WARNING") as logs:
+                config.log_summary()
+        joined = "\n".join(logs.output)
+        self.assertIn("DELETION_MODE=soft (default)", joined)
+        self.assertNotIn("DELETED from backup", joined)
 
     def test_deletion_mode_soft(self):
         """DELETION_MODE=soft marks deleted messages instead of hard deleting them."""

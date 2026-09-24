@@ -749,6 +749,12 @@ class Config:
         self.channels_include_ids = self._parse_id_list(os.getenv("CHANNELS_INCLUDE_CHAT_IDS", ""))
         self.channels_exclude_ids = self._parse_id_list(os.getenv("CHANNELS_EXCLUDE_CHAT_IDS", ""))
 
+        # Delete what the archive already holds for a chat in any *_EXCLUDE_CHAT_IDS
+        # list (its rows, media folder and avatars). Off by default: excluding a
+        # chat stops capturing it, and what was captured stays unless the
+        # operator asks for the removal.
+        self.exclude_delete_existing = _parse_bool_env("EXCLUDE_DELETE_EXISTING", False)
+
         # Folder-based include (v8.11.0): back up whatever a Telegram folder
         # (dialog filter) currently contains, re-checked live every backup cycle
         # so a chat added to the folder in Telegram is picked up on the next run
@@ -885,9 +891,9 @@ class Config:
         # DEFAULT FALSE preserves archive data by ignoring deletion events.
         self.listen_deletions = _parse_bool_env("LISTEN_DELETIONS", False)
         # DELETION_MODE controls what happens when deletion handling is enabled:
-        # - hard: legacy mirror behavior; remove archived message records
-        # - soft: keep archived messages and mark them deleted
-        self.deletion_mode = os.getenv("DELETION_MODE", "hard").strip().lower()
+        # - soft (default): keep archived messages and mark them deleted
+        # - hard: opt-in mirror behavior; remove archived message records
+        self.deletion_mode = os.getenv("DELETION_MODE", "soft").strip().lower()
         if self.deletion_mode not in {"hard", "soft"}:
             raise ValueError("DELETION_MODE must be either 'hard' or 'soft'")
 
@@ -1119,7 +1125,9 @@ class Config:
             logger.info(f"  LISTEN_EDITS: {self.listen_edits}")
             if self.listen_deletions:
                 if self.deletion_mode == "soft":
-                    logger.warning("  LISTEN_DELETIONS: true, DELETION_MODE=soft - Messages will be marked deleted")
+                    logger.warning(
+                        "  LISTEN_DELETIONS: true, DELETION_MODE=soft (default) - Messages will be marked deleted"
+                    )
                 else:
                     logger.warning(
                         "  ⚠️ LISTEN_DELETIONS: true, DELETION_MODE=hard - Messages will be DELETED from backup!"
@@ -1158,6 +1166,17 @@ class Config:
             )
         if self.display_chat_ids:
             logger.info(f"Display mode: Viewer restricted to {len(self.display_chat_ids)} chat(s)")
+        if self.exclude_delete_existing:
+            logger.warning(
+                "EXCLUDE_DELETE_EXISTING enabled - archived rows and files of excluded chats will be DELETED"
+            )
+        elif (
+            self.global_exclude_ids or self.private_exclude_ids or self.groups_exclude_ids or self.channels_exclude_ids
+        ):
+            logger.info(
+                "Excluded chats are not backed up (existing rows and files are kept; "
+                "EXCLUDE_DELETE_EXISTING=true deletes them)"
+            )
         if self.skip_media_chat_ids:
             cleanup_status = "will delete existing media" if self.skip_media_delete_existing else "keeps existing media"
             logger.info(f"Media downloads skipped for {len(self.skip_media_chat_ids)} chat(s) ({cleanup_status})")

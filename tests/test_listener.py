@@ -1006,6 +1006,21 @@ class TestEventHandlers:
         listener.db.mark_message_deleted.assert_called_once()
         listener.db.delete_message.assert_not_called()
 
+    def test_on_message_deleted_soft_when_mode_unset(self, listener_with_handlers, full_config):
+        """A config without deletion_mode falls back to soft, matching the Config default."""
+        listener, handlers = listener_with_handlers
+        handler = handlers[events.MessageDeleted]
+        del full_config.deletion_mode
+
+        event = MagicMock()
+        event.chat_id = -1001234567890
+        event.deleted_ids = [10]
+
+        asyncio.run(handler(event))
+
+        listener.db.mark_message_deleted.assert_called_once()
+        listener.db.delete_message.assert_not_called()
+
     def test_on_message_deleted_soft_notify_payload(self, listener_with_handlers, full_config):
         """Soft deletion emits a 'delete' notification carrying deletion_mode=soft and deleted_at."""
         listener, handlers = listener_with_handlers
