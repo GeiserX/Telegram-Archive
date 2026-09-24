@@ -1066,7 +1066,6 @@ class DatabaseAdapter:
 
     # ========== Chat Operations ==========
 
-    @retry_on_locked()
     async def _record_avatar_sighting(self, session, account_id: int, chat_id: int, photo_id: int | None) -> bool:
         """Best-effort append of one avatar_history row (031), in the caller's transaction.
 
@@ -1083,6 +1082,7 @@ class DatabaseAdapter:
             return False
         return True
 
+    @retry_on_locked()
     async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
         """Insert or update a chat record.
 

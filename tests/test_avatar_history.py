@@ -149,6 +149,13 @@ async def _photo_ids(adapter, account_id: int = 1, chat_id: int = CHAT) -> list:
 
 
 class TestWritePath:
+    def test_upsert_chat_keeps_its_lock_retry(self):
+        """The sighting helper sits right above upsert_chat; the retry decorator stays on the upsert."""
+        from src.db.adapter import DatabaseAdapter
+
+        assert hasattr(DatabaseAdapter.upsert_chat, "__wrapped__")
+        assert not hasattr(DatabaseAdapter._record_avatar_sighting, "__wrapped__")
+
     async def test_every_change_is_a_row_including_a_repeat(self, real_adapter):
         """1111 -> 2222 -> 1111 is three sightings; nothing is unique."""
         await _see(real_adapter, PHOTO_1)
@@ -200,11 +207,14 @@ class TestWritePath:
 
 class TestReadPath:
     async def test_ties_on_seen_at_order_by_id_descending(self, real_adapter):
+        # The higher id is written first, so storage order is the opposite of id
+        # order and only the explicit tiebreak gives id descending on PostgreSQL.
+        # (On SQLite the id is the rowid, so the index already orders ties by it.)
         same = datetime(2026, 1, 2, 3, 4, 5)
-        async with real_adapter.db_manager.async_session_factory() as session:
-            for photo_id in (PHOTO_1, PHOTO_2):
-                session.add(AvatarHistory(account_id=1, chat_id=CHAT, photo_id=photo_id, seen_at=same))
-            await session.commit()
+        for row_id, photo_id in ((2, PHOTO_2), (1, PHOTO_1)):
+            async with real_adapter.db_manager.async_session_factory() as session:
+                session.add(AvatarHistory(id=row_id, account_id=1, chat_id=CHAT, photo_id=photo_id, seen_at=same))
+                await session.commit()
         history = await real_adapter.get_avatar_history(CHAT, account_id=1)
         assert history == [{"photo_id": PHOTO_2, "seen_at": same}, {"photo_id": PHOTO_1, "seen_at": same}]
 
