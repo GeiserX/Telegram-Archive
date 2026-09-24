@@ -4843,3 +4843,14 @@ def test_the_two_media_rows_hide_only_when_the_figure_is_absent():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert html.count('v-if="statsData.media_files != null"') == 1
     assert html.count('v-if="statsData.total_size_mb != null"') == 1
+
+
+@unittest.skipIf(NODE is None, "node executable is not installed")
+class TestFormatSizeSubMiB(unittest.TestCase):
+    """Storage row and per-chat badge: a few KiB of media must not read as "0 MiB"."""
+
+    def test_sub_half_mib_reads_as_under_one_not_zero(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        out = _run_setup_helpers(html, ("const formatSize = (sizeMB) =>",), "[0, 0.29, 0.5, 12.3].map(formatSize)")
+        # 0 stays "0 MiB"; 0.5 and 12.3 are pinned to the output before this change.
+        self.assertEqual(out, ["0 MiB", "<1 MiB", "1 MiB", "12 MiB"])

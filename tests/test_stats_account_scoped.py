@@ -436,6 +436,31 @@ class TestRestrictedMediaIsItsOwn:
         assert "media_files" not in body
         assert "total_size_mb" not in body
 
+    async def test_a_blob_with_only_the_media_counts_map_omits_both_media_figures(self, app_on):
+        """Half a breakdown is no breakdown: the counts map alone must not scope media_files
+        while the size falls back to zero, so both keys go for a restricted principal."""
+        await seed_two_accounts(app_on)
+        await app_on.set_metadata(
+            "cached_stats",
+            '{"chats": 4, "messages": 12, "media_files": 7, "total_size_mb": 1.0,'
+            ' "per_account_chat_message_counts": {"1:-1005100001": 2},'
+            ' "per_account_chat_media_counts": {"1:-1005100001": 2}}',
+        )
+        as_principal(allowed_accounts={1})
+
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert "media_files" not in body
+        assert "total_size_mb" not in body
+
+        # An unrestricted principal still reads the archive-wide figures from the same blob.
+        as_principal(role="master", allowed_accounts=None)
+        async with client() as http:
+            body = (await http.get("/api/stats")).json()
+
+        assert (body["media_files"], body["total_size_mb"]) == (7, 1.0)
+
 
 class TestFailClosed:
     async def test_a_blob_written_before_the_change_scopes_to_zeros(self, app_on):

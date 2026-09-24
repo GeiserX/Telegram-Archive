@@ -3836,16 +3836,6 @@ class DatabaseAdapter:
             msg_count = await session.execute(select(func.count()).select_from(Message))
             msg_count = msg_count.scalar() or 0
 
-            # Media count
-            media_count = await session.execute(select(func.count(Media.id)).where(Media.downloaded == 1))
-            media_count = media_count.scalar() or 0
-
-            # DB snapshot of downloaded media sizes — the fallback when on-disk
-            # usage is unavailable (e.g. the backup volume is not mounted yet).
-            db_total_size = (
-                await session.execute(select(func.sum(Media.file_size)).where(Media.downloaded == 1))
-            ).scalar() or 0
-
             # Per-chat statistics, keyed by the account too. Grouped by
             # chat_id alone this summed both accounts' copies into one entry,
             # so a viewer entitled to one account read the other's numbers
@@ -3862,6 +3852,9 @@ class DatabaseAdapter:
             # Downloaded media per chat, grouped the same way. Bytes are the DB
             # file sizes (logical), not on-disk usage: a deduplicated blob counts
             # once per row that references it, since per-chat du is not defined.
+            # The archive-wide media count and the DB size snapshot (the storage
+            # fallback when on-disk usage is unavailable) are summed from these
+            # same rows, NULL-chat rows included, so media is scanned once.
             media_stats_query = (
                 select(
                     Media.account_id,
@@ -3875,7 +3868,11 @@ class DatabaseAdapter:
             media_stats_result = await session.execute(media_stats_query)
             per_chat_media_counts = {}
             per_chat_media_bytes = {}
+            media_count = 0
+            db_total_size = 0
             for row in media_stats_result:
+                media_count += int(row.media_count)
+                db_total_size += int(row.media_bytes)
                 if row.chat_id is None:
                     continue
                 key = account_chat_stats_key(row.account_id, row.chat_id)
