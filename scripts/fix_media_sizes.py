@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 def fix_media_sizes():
     config = Config()
+    config.log_summary()
     db = Database(config.database_path)
 
     logger.info("Starting media size fix...")

@@ -1951,15 +1951,17 @@ class TelegramBackup:
         are skipped silently.
         """
         # Settle which not-downloaded rows are the operator's own choice
-        # (size cap, media-type whitelist) before the drain, so the viewer
-        # calls them skipped rather than pending, and un-marks rows a relaxed
-        # setting now covers (#465). Rows from before 030 get classified here.
+        # (size cap, media-type whitelist, SKIP_MEDIA_CHAT_IDS) before the
+        # drain, so the viewer calls them skipped rather than pending, and
+        # un-marks rows a relaxed setting now covers (#465). Rows from before
+        # 030 get classified here.
         reasons = await self.db.reconcile_media_skip_reasons(
             self.config.get_max_media_size_bytes(),
             account_id=self.account_id,
             media_types=self.config.download_media_types,
             document_mime_types=self.config.download_document_mime_types,
             document_mime_extensions=self.config.download_document_mime_extensions,
+            skip_media_chat_ids=self.config.skip_media_chat_ids,
         )
         # isinstance: the drain's tests wire ``db`` as a bare AsyncMock.
         if isinstance(reasons, dict) and any(reasons.values()):

@@ -3205,9 +3205,17 @@ class DatabaseAdapter:
         def like(value: str) -> str:
             return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
-        allowed = [func.lower(Media.mime_type).in_(sorted(mime_types))]
-        allowed += [Media.mime_type.ilike(f"{like(mime)}%;%", escape="\\") for mime in sorted(mime_types)]
-        allowed += [Media.file_name.ilike(f"%{like(ext)}", escape="\\") for ext in sorted(mime_extensions)]
+        # COALESCE to '' in the comparing arms: a row with a name but no MIME
+        # (or the reverse) would otherwise turn every arm on the missing column
+        # NULL, and under three-valued logic the whole OR could come out NULL,
+        # so the row was neither drained nor marked filtered. '' matches no
+        # configured MIME and no extension, exactly as the predicate's falsy
+        # checks treat a missing value.
+        mime = func.coalesce(Media.mime_type, "")
+        name = func.coalesce(Media.file_name, "")
+        allowed = [func.lower(mime).in_(sorted(mime_types))]
+        allowed += [mime.ilike(f"{like(m)}%;%", escape="\\") for m in sorted(mime_types)]
+        allowed += [name.ilike(f"%{like(ext)}", escape="\\") for ext in sorted(mime_extensions)]
         # A row that stored neither a MIME nor a name cannot be judged here.
         # Keep it: it is indistinguishable from a genuine failed download, and
         # the drain re-checks it against the message before spending anything.
@@ -3223,6 +3231,7 @@ class DatabaseAdapter:
         media_types: set[str] | None = None,
         document_mime_types: set[str] | None = None,
         document_mime_extensions: set[str] | None = None,
+        skip_media_chat_ids: set[int] | None = None,
     ) -> dict[str, int]:
         """Re-derive ``skip_reason`` for every not-downloaded row from the live settings (#465).
 
@@ -3232,40 +3241,56 @@ class DatabaseAdapter:
         fetch, so the viewer stops calling them skipped the run after the
         operator relaxes a cap or a filter. Rows written before migration 030
         get classified here on the first run. Returns the counts.
+
+        ``skip_media_chat_ids`` carries SKIP_MEDIA_CHAT_IDS: the drain never
+        fetches those chats, so their rows are ``filtered`` too, and the clear
+        leaves them alone. The clears also reach ``downloaded = 1`` rows: a
+        file on disk has no reason to be skipped, and the over-size writer can
+        leave one on a file an earlier run with a higher cap already fetched.
         """
         not_metadata = Media.type.notin_(sorted(METADATA_ONLY_MEDIA_TYPES))
+        # Marks touch only rows still waiting for a file; clears touch every
+        # row, so a stale reason on a downloaded row does not outlive the run.
         scope = and_(Media.account_id == account_id, Media.downloaded == 0, not_metadata)
+        clear_scope = and_(Media.account_id == account_id, not_metadata)
         allowed = []
         if media_types:
             allowed.append(Media.type.in_(sorted(media_types)))
         if document_mime_types:
             allowed.append(self._document_mime_condition(document_mime_types, document_mime_extensions or set()))
+        # What still earns each reason; a row whose reason no longer holds is cleared.
+        still_oversize = []
+        if max_media_size_bytes is not None:
+            still_oversize.append(Media.file_size > max_media_size_bytes)
+        still_filtered = []
+        if allowed:
+            still_filtered.append(~and_(*allowed))
+        if skip_media_chat_ids:
+            still_filtered.append(Media.chat_id.in_(sorted(skip_media_chat_ids)))
+        on_disk = Media.downloaded == 1
         counts = {"oversize": 0, "filtered": 0, "cleared": 0}
-        over = Media.file_size > max_media_size_bytes if max_media_size_bytes is not None else None
         # Both clears run before both marks: a row whose reason no longer holds
         # (filter removed, cap raised) is re-marked with the reason that now
         # applies in the same pass instead of reading "pending" for one interval.
-        clears = [
-            update(Media).where(scope, Media.skip_reason == "oversize", ~over)
-            if over is not None
-            else update(Media).where(scope, Media.skip_reason == "oversize"),
-            update(Media).where(scope, Media.skip_reason == "filtered", and_(*allowed))
-            if allowed
-            else update(Media).where(scope, Media.skip_reason == "filtered"),
-        ]
+        clears = []
+        for reason, still in (("oversize", still_oversize), ("filtered", still_filtered)):
+            gone = [or_(on_disk, ~or_(*still))] if still else []
+            clears.append(update(Media).where(clear_scope, Media.skip_reason == reason, *gone))
         async with self.db_manager.async_session_factory() as session:
             for stmt in clears:
                 result = await session.execute(stmt.values(skip_reason=None))
                 counts["cleared"] += result.rowcount or 0
-            if over is not None:
-                result = await session.execute(
-                    update(Media).where(scope, Media.skip_reason.is_(None), over).values(skip_reason="oversize")
-                )
-                counts["oversize"] = result.rowcount or 0
-            if allowed:
+            if still_oversize:
                 result = await session.execute(
                     update(Media)
-                    .where(scope, Media.skip_reason.is_(None), ~and_(*allowed))
+                    .where(scope, Media.skip_reason.is_(None), *still_oversize)
+                    .values(skip_reason="oversize")
+                )
+                counts["oversize"] = result.rowcount or 0
+            if still_filtered:
+                result = await session.execute(
+                    update(Media)
+                    .where(scope, Media.skip_reason.is_(None), or_(*still_filtered))
                     .values(skip_reason="filtered")
                 )
                 counts["filtered"] = result.rowcount or 0
