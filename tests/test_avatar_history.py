@@ -537,17 +537,17 @@ class TestChatListAvatarUrl:
         hit = next(result for result in body["results"] if result["id"] == 91)
         assert hit["chat"]["avatar_url"] is None
 
-    async def test_a_missing_history_table_fails_open_to_the_newest_file(self, viewer):  # noqa: F811
-        """A viewer newer than its database must still list chats; the pre-history answer is the fallback."""
+    async def test_a_failing_history_lookup_fails_open_to_the_newest_file(self, viewer):  # noqa: F811
+        """A viewer whose history lookup breaks (older database, locked table) must still list chats
+        with the pre-history answer. The failure is injected on the adapter method: dropping the
+        table on a shared test database would break every fixture after this one."""
         await _seed_peer(viewer, 1, None)
         ref = await _ref(viewer, PEER, 1)
-        from sqlalchemy import text
+        from unittest.mock import AsyncMock, patch
 
-        async with viewer.db_manager.engine.begin() as conn:
-            await conn.execute(text("DROP TABLE avatar_history"))
-
-        listing = await _get("/api/chats")
-        single = await _get(f"/api/chats/{ref}")
+        with patch.object(viewer, "get_avatar_removals", AsyncMock(side_effect=RuntimeError("no such table"))):
+            listing = await _get("/api/chats")
+            single = await _get(f"/api/chats/{ref}")
 
         assert listing.status_code == 200 and single.status_code == 200
         row = next(chat for chat in listing.json()["chats"] if chat["ref"] == ref)
