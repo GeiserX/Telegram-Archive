@@ -1736,6 +1736,26 @@ async def serve_sender_avatar(message_id: int, chat: ChatContext = Depends(requi
     return _avatar_file_response(avatar_path)
 
 
+async def _avatar_removals_for(rows) -> set[tuple[int, int]]:
+    """Which ``(account_id, chat_id)`` of the given rows saw their photo removed.
+
+    ``rows`` yields ``(account_id, chat_id, recorded_photo_id)``; only rows
+    whose recorded id is None can be removals, so only those are asked, in
+    one query. A lookup failure reads as "no removal seen", the pre-history
+    answer, so a list never fails because of its decorations.
+    """
+    pairs = [(account_id, chat_id) for account_id, chat_id, photo_id in rows if photo_id is None]
+    pairs = [(a, c) for a, c in pairs if isinstance(a, int) and isinstance(c, int)]
+    if not pairs:
+        return set()
+    try:
+        removed = await db.get_avatar_removals(pairs)
+    except Exception as e:
+        logger.error(f"Error reading avatar removals: {type(e).__name__}")
+        return set()
+    return removed if isinstance(removed, set) else set()
+
+
 async def _avatar_seen_removed(chat_id: int, account_id: int) -> bool:
     """Whether ``account_id``'s latest avatar sighting for ``chat_id`` is a removal.
 
@@ -1994,6 +2014,9 @@ async def search_messages(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     await _mask_unentitled_sender_accounts(payload["results"], user)
+    removed = await _avatar_removals_for(
+        (row.get("account_id"), row.get("chat_id"), row.get("chat_avatar_photo_id")) for row in payload["results"]
+    )
     results = []
     for row in payload["results"]:
         results.append(
@@ -2015,7 +2038,13 @@ async def search_messages(
                     "username": row["chat_username"],
                     "type": row["chat_type"],
                     "is_forum": row["chat_is_forum"],
-                    "avatar_url": _chat_avatar_url(row["chat_id"], row["chat_type"], row["chat_ref"]),
+                    "avatar_url": _chat_avatar_url(
+                        row["chat_id"],
+                        row["chat_type"],
+                        row["chat_ref"],
+                        row.get("chat_avatar_photo_id"),
+                        seen_removed=(row.get("account_id"), row["chat_id"]) in removed,
+                    ),
                 },
             }
         )
@@ -2582,17 +2611,27 @@ def _encode_media_key(media_key: str) -> str:
     return quote(media_key, safe="")
 
 
-def _chat_avatar_url(chat_id: int | None, chat_type: str | None, ref: str | None) -> str | None:
+def _chat_avatar_url(
+    chat_id: int | None,
+    chat_type: str | None,
+    ref: str | None,
+    photo_id: int | None = None,
+    *,
+    seen_removed: bool = False,
+) -> str | None:
     """Ref-addressed avatar URL when an avatar is cached, else None.
 
     The avatar bytes route re-resolves at serve time; this only decides whether
     the viewer renders an <img> at all. Any lookup failure reads as "no avatar"
-    rather than failing the row it decorates.
+    rather than failing the row it decorates. ``photo_id`` is the id this
+    account recorded, so the existence check looks at the same file the bytes
+    route serves first; ``seen_removed`` says the account's newest sighting is
+    a removal, which the bytes route answers with 404, so no URL is advertised.
     """
-    if chat_id is None or not ref:
+    if chat_id is None or not ref or seen_removed:
         return None
     try:
-        return f"/media/avatar/{ref}" if _get_cached_avatar_path(chat_id, chat_type or "private") else None
+        return f"/media/avatar/{ref}" if _get_cached_avatar_path(chat_id, chat_type or "private", photo_id) else None
     except Exception as e:
         # Type name only: an OSError's text carries the chat-derived path.
         logger.error(f"Error finding avatar for a chat: {type(e).__name__}")
@@ -2800,8 +2839,17 @@ async def get_chats(
 
         # Ref-addressed avatar URLs; the avatar bytes route re-resolves at serve
         # time, this only decides whether the viewer renders an <img> at all.
+        removed = await _avatar_removals_for(
+            (chat.get("account_id"), chat.get("id"), chat.get("avatar_photo_id")) for chat in chats
+        )
         for chat in chats:
-            chat["avatar_url"] = _chat_avatar_url(chat.get("id"), chat.get("type"), chat.get("ref"))
+            chat["avatar_url"] = _chat_avatar_url(
+                chat.get("id"),
+                chat.get("type"),
+                chat.get("ref"),
+                chat.get("avatar_photo_id"),
+                seen_removed=(chat.get("account_id"), chat.get("id")) in removed,
+            )
 
         return {
             "chats": chats,
@@ -2844,7 +2892,14 @@ async def get_chat(chat: ChatContext = Depends(require_chat), user: UserContext 
         raise HTTPException(status_code=500, detail="Internal server error")
     if not row:
         raise HTTPException(status_code=404, detail="Chat not found")
-    row["avatar_url"] = _chat_avatar_url(row["id"], row.get("type"), row["ref"])
+    removed = await _avatar_removals_for([(row.get("account_id"), row["id"], row.get("avatar_photo_id"))])
+    row["avatar_url"] = _chat_avatar_url(
+        row["id"],
+        row.get("type"),
+        row["ref"],
+        row.get("avatar_photo_id"),
+        seen_removed=(row.get("account_id"), row["id"]) in removed,
+    )
     row["accounts"] = accounts
     return row
 
