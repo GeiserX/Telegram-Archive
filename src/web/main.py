@@ -1728,20 +1728,50 @@ async def serve_sender_avatar(message_id: int, chat: ChatContext = Depends(requi
     # The photo this chat's account sees for the sender, when it holds a DM
     # with them; any other sender keeps the newest-file fallback.
     photo_id = await db.get_avatar_photo_id(sender_id, account_id=chat.account_id)
+    if photo_id is None and await _avatar_seen_removed(sender_id, chat.account_id):
+        raise HTTPException(status_code=404, detail="File not found")
     avatar_path = _get_cached_avatar_path(sender_id, "private", photo_id)
     if not avatar_path:
         raise HTTPException(status_code=404, detail="File not found")
     return _avatar_file_response(avatar_path)
 
 
+async def _avatar_seen_removed(chat_id: int, account_id: int) -> bool:
+    """Whether ``account_id``'s latest avatar sighting for ``chat_id`` is a removal.
+
+    Asked only when the recorded photo id is None: a removal the account saw
+    must not be answered with another account's newest file, while a chat with
+    no history at all (never recorded) keeps the newest-file answer.
+    """
+    history = await db.get_avatar_history(chat_id, account_id=account_id)
+    return bool(history) and history[0]["photo_id"] is None
+
+
 @app.get("/media/avatar/{chat_ref}")
-async def serve_chat_avatar(chat: ChatContext = Depends(require_chat)):
-    """Serve a chat's avatar, addressed by its ref alone."""
+async def serve_chat_avatar(chat: ChatContext = Depends(require_chat), photo_id: int | None = Query(None)):
+    """Serve a chat's avatar, addressed by its ref alone.
+
+    ``photo_id`` asks for one earlier photo. It is served only when this
+    account recorded it for this chat (the current id or a row in
+    avatar_history), and only that exact file.
+    """
     if not _media_root:
         raise HTTPException(status_code=404, detail="Media directory not configured")
 
-    photo_id = await db.get_avatar_photo_id(chat.chat_id, account_id=chat.account_id)
-    avatar_path = _get_cached_avatar_path(chat.chat_id, chat.type or "private", photo_id)
+    recorded = await db.get_avatar_photo_id(chat.chat_id, account_id=chat.account_id)
+    if photo_id is not None:
+        if photo_id != recorded:
+            history = await db.get_avatar_history(chat.chat_id, account_id=chat.account_id)
+            if photo_id not in {row["photo_id"] for row in history}:
+                raise HTTPException(status_code=404, detail="File not found")
+        avatar_path = _exact_avatar_path(chat.chat_id, chat.type or "private", photo_id)
+        if not avatar_path:
+            raise HTTPException(status_code=404, detail="File not found")
+        return _avatar_file_response(avatar_path)
+
+    if recorded is None and await _avatar_seen_removed(chat.chat_id, chat.account_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    avatar_path = _get_cached_avatar_path(chat.chat_id, chat.type or "private", recorded)
     if not avatar_path:
         raise HTTPException(status_code=404, detail="File not found")
     return _avatar_file_response(avatar_path)
@@ -2524,6 +2554,21 @@ def _find_avatar_path(chat_id: int, chat_type: str, photo_id: int | None = None)
     return None
 
 
+def _exact_avatar_path(chat_id: int, chat_type: str, photo_id: int) -> str | None:
+    """The file for ``photo_id``, or None; never another photo's file.
+
+    Kept out of ``_avatar_cache`` on purpose: that cache answers the default
+    lookup, and an explicit request must neither read nor write it.
+    """
+    avatar_folder = "users" if chat_type == "private" else "chats"
+    avatar_dir = os.path.join(config.media_path, "avatars", avatar_folder)
+    wanted = f"{chat_id}_{photo_id}.jpg"
+    candidates = _avatar_dir_listing(avatar_dir).get(chat_id) or ()
+    if wanted in candidates and os.path.exists(os.path.join(avatar_dir, wanted)):
+        return f"avatars/{avatar_folder}/{wanted}"
+    return None
+
+
 # Cache avatar paths to avoid repeated filesystem lookups
 _avatar_cache: dict[tuple[int, int | None], str | None] = {}
 _avatar_cache_time: datetime | None = None
@@ -2994,6 +3039,35 @@ async def get_message_versions(
         if _is_db_connection_error(e):
             raise HTTPException(status_code=503, detail="Database temporarily unavailable")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/chats/{chat_ref}/avatars")
+async def get_chat_avatar_history(chat: ChatContext = Depends(require_chat)):
+    """Every profile photo this chat's account saw for it, newest first.
+
+    ``photo_id`` None is a sighting of the photo being removed and has no URL.
+    ``available`` says whether that photo's file is on disk. No chat ids.
+    """
+    try:
+        history = await db.get_avatar_history(chat.chat_id, account_id=chat.account_id)
+    except Exception as e:
+        logger.error(f"Error fetching avatar history: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    entries = []
+    for row in history:
+        photo_id = row["photo_id"]
+        path = _exact_avatar_path(chat.chat_id, chat.type or "private", photo_id) if photo_id is not None else None
+        entries.append(
+            {
+                "photo_id": photo_id,
+                "seen_at": row["seen_at"].isoformat(),
+                "url": f"/media/avatar/{chat.ref}?photo_id={photo_id}" if photo_id is not None else None,
+                "available": path is not None,
+            }
+        )
+    return entries
 
 
 @app.get("/api/chats/{chat_ref}/pinned")

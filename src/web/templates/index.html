@@ -2323,6 +2323,19 @@
                         </div>
                         <h3 class="mt-3 max-w-full text-lg font-bold text-tg-ink break-words">{{ getChatName(selectedChat) }}</h3>
                         <p class="mt-0.5 text-sm text-tg-muted">{{ chatStatusLine(selectedChat) }}</p>
+                        <!-- Earlier profile photos this account saw (avatar_history), shown only
+                             when at least one is on disk and differs from the current photo. -->
+                        <div v-if="previousAvatars.length" class="mt-3 w-full" data-testid="previous-avatars">
+                            <p class="text-xs uppercase tracking-wide text-tg-muted">Previous photos</p>
+                            <div class="mt-2 flex flex-wrap justify-center gap-2">
+                                <button v-for="(entry, index) in previousAvatars" :key="entry.photo_id" type="button"
+                                    @click="openPreviousAvatar(index)"
+                                    class="w-10 h-10 rounded-full overflow-hidden shrink-0 bg-tg-n700 focus:outline-none focus-visible:ring-2 focus-visible:ring-tg-accent-soft"
+                                    :aria-label="`Previous photo, seen ${formatDateFull(entry.seen_at)}`">
+                                    <img :src="entry.url" class="w-full h-full object-cover" alt="" loading="lazy">
+                                </button>
+                            </div>
+                        </div>
                     </section>
 
                     <dl class="px-4 py-3 space-y-3 text-sm border-b border-tg-n700">
@@ -2831,7 +2844,7 @@
             </button>
 
             <!-- Download Button -->
-            <a v-if="lightboxMedia && !noDownload" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
+            <a v-if="lightboxMedia && !noDownload && !lightboxMedia.isAvatar" :href="getMediaUrl(lightboxMedia) + '?download=1'" download
                 class="absolute top-4 right-16 z-60 p-2 text-tg-ink/70 hover:text-tg-ink transition">
                 <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -3454,6 +3467,51 @@
                     return text.length > 240 || text.split('\n').length > 4
                 })
                 watch(() => selectedChat.value?.ref, () => { descriptionExpanded.value = false })
+                // Earlier profile photos (avatar_history), loaded while the panel is open.
+                const avatarHistory = ref([])
+                // The rows worth a thumbnail: on disk, not the current photo (the newest
+                // row), each photo once. When the newest row is a removal (photo_id null),
+                // every photo still on disk is an earlier one.
+                const previousAvatarEntries = (rows) => {
+                    if (!rows || !rows.length) return []
+                    const current = rows[0].photo_id
+                    const seen = new Set()
+                    return rows.filter(row => {
+                        if (!row.available || !row.url || row.photo_id === current || seen.has(row.photo_id)) return false
+                        seen.add(row.photo_id)
+                        return true
+                    })
+                }
+                const previousAvatars = computed(() => previousAvatarEntries(avatarHistory.value))
+                const loadAvatarHistory = async (chatRef) => {
+                    try {
+                        const res = await fetch(`/api/chats/${encodeURIComponent(chatRef)}/avatars`, { credentials: 'include' })
+                        const rows = res.ok ? await res.json() : []
+                        // A response that outlived its chat must not decorate the next one.
+                        if (!showInfoPanel.value || selectedChat.value?.ref !== chatRef) return
+                        avatarHistory.value = Array.isArray(rows) ? rows : []
+                    } catch (e) {
+                        if (selectedChat.value?.ref === chatRef) avatarHistory.value = []
+                    }
+                }
+                watch(() => (showInfoPanel.value ? selectedChat.value?.ref || null : null), (chatRef) => {
+                    avatarHistory.value = []
+                    if (chatRef) loadAvatarHistory(chatRef)
+                })
+                const openPreviousAvatar = (index) => {
+                    const list = previousAvatars.value.map(entry => ({
+                        media: { type: 'photo', url: entry.url },
+                        id: `avatar-${entry.photo_id}`,
+                        date: entry.seen_at,
+                        isAvatar: true,
+                    }))
+                    if (!list[index]) return
+                    lightboxList.value = list
+                    lightboxIndex.value = index
+                    lightboxMedia.value = list[index]
+                    lightboxOpen.value = true
+                    document.addEventListener('keydown', handleLightboxKeydown)
+                }
                 const copyText = async (text, doneMessage) => {
                     if (!text) return
                     try {
@@ -9647,6 +9705,8 @@
                     openSharedMedia,
                     descriptionExpanded,
                     descriptionIsLong,
+                    previousAvatars,
+                    openPreviousAvatar,
                     copyText,
                     canOpenMedia,
                     launchMedia,
