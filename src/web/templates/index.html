@@ -1948,6 +1948,8 @@
                                                 <!-- #465: the backup records why a row will never download on its own -->
                                                 <div v-if="msg.media?.skip_reason === 'oversize'" class="text-xs text-tg-n500">Not downloaded: larger than the size limit</div>
                                                 <div v-else-if="msg.media?.skip_reason === 'filtered'" class="text-xs text-tg-n500">Not downloaded: excluded by the media filter</div>
+                                                <!-- A no-download login has every file_path blanked: the file may well be archived, it is just not served here. -->
+                                                <div v-else-if="msg.media?.no_download" class="text-xs text-tg-n500">Not available for this login</div>
                                                 <div v-else class="text-xs text-tg-n500">Will download on next backup</div>
                                             </div>
                                         </div>

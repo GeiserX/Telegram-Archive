@@ -723,6 +723,12 @@ class TestNoDownloadSessionKeepsTheReason:
         assert '<div v-if="!msg.media?.file_path && msg.media?.type"' in block
         assert "<div v-if=\"msg.media?.skip_reason === 'oversize'\"" in block
         assert "<div v-else-if=\"msg.media?.skip_reason === 'filtered'\"" in block
+        # A no-download login has every file_path blanked, so the generic
+        # "will download" line was a lie for archived files; the reason
+        # branches still win for a skipped row.
+        no_download = block.index('<div v-else-if="msg.media?.no_download"')
+        assert block.index("skip_reason === 'filtered'") < no_download
+        assert "Not available for this login" in block[no_download:]
 
 
 class TestScriptsLogTheConfigSummary:

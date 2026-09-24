@@ -1307,6 +1307,7 @@ class DatabaseAdapter:
                     "participants_count": row.Chat.participants_count,
                     "is_forum": row.Chat.is_forum,
                     "is_archived": row.Chat.is_archived,
+                    "avatar_photo_id": row.Chat.avatar_photo_id,
                     "last_synced_message_id": row.Chat.last_synced_message_id,
                     "created_at": row.Chat.created_at,
                     "updated_at": row.Chat.updated_at,
@@ -1625,6 +1626,46 @@ class DatabaseAdapter:
             )
             result = await session.execute(stmt)
             return [{"photo_id": row.photo_id, "seen_at": row.seen_at} for row in result]
+
+    async def get_avatar_removals(self, pairs: Iterable[tuple[int, int]]) -> set[tuple[int, int]]:
+        """The ``(account_id, chat_id)`` pairs whose newest avatar sighting is a removal.
+
+        One query for a page of chats, so the chat list can decline to
+        advertise a photo the account saw removed without a history lookup per
+        row. A pair with no history at all is not in the result: never
+        recorded is not the same as removed.
+        """
+        wanted = {(int(account_id), int(chat_id)) for account_id, chat_id in pairs}
+        if not wanted:
+            return set()
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(AvatarHistory.account_id, AvatarHistory.chat_id, AvatarHistory.photo_id)
+                .where(
+                    or_(
+                        *[
+                            and_(AvatarHistory.account_id == account_id, AvatarHistory.chat_id == chat_id)
+                            for account_id, chat_id in sorted(wanted)
+                        ]
+                    )
+                )
+                .order_by(
+                    AvatarHistory.account_id,
+                    AvatarHistory.chat_id,
+                    AvatarHistory.seen_at.desc(),
+                    AvatarHistory.id.desc(),
+                )
+            )
+            removed: set[tuple[int, int]] = set()
+            seen: set[tuple[int, int]] = set()
+            for row in await session.execute(stmt):
+                key = (row.account_id, row.chat_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if row.photo_id is None:
+                    removed.add(key)
+            return removed
 
     async def get_chat_id_for_message(self, message_id: int, *, account_id: int) -> int | None:
         """
@@ -4331,6 +4372,7 @@ class DatabaseAdapter:
         Chat.username.label("chat_username"),
         Chat.type.label("chat_type"),
         Chat.is_forum.label("chat_is_forum"),
+        Chat.avatar_photo_id.label("chat_avatar_photo_id"),
         ForumTopic.title.label("topic_title"),
     )
 
@@ -4425,6 +4467,7 @@ class DatabaseAdapter:
                 "chat_username": row["chat_username"],
                 "chat_type": row["chat_type"],
                 "chat_is_forum": bool(row["chat_is_forum"]),
+                "chat_avatar_photo_id": row["chat_avatar_photo_id"],
                 "topic_title": row["topic_title"],
             }
             for row in rows[:limit]
@@ -5015,6 +5058,7 @@ class DatabaseAdapter:
             "participants_count": chat.participants_count,
             "is_forum": chat.is_forum,
             "is_archived": chat.is_archived,
+            "avatar_photo_id": chat.avatar_photo_id,
         }
 
     async def get_chat_by_id(self, chat_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
