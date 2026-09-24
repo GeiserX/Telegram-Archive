@@ -5097,6 +5097,8 @@
                 // Format size in MB to appropriate unit (MB, GB, TB)
                 const formatSize = (sizeMB) => {
                     if (!sizeMB || sizeMB === 0) return '0 MiB'
+                    // Under half a MiB rounds to "0 MiB", which reads as empty next to a non-zero file count.
+                    if (sizeMB > 0 && sizeMB < 0.5) return '<1 MiB'
                     if (sizeMB >= 1024 * 1024) {
                         return (sizeMB / (1024 * 1024)).toFixed(2) + ' TiB'
                     }

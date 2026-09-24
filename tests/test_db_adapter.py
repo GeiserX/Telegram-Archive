@@ -3238,19 +3238,14 @@ class TestCalculateAndStoreStatistics:
         db_manager, mock_session = _make_mock_db_manager()
         adapter = DatabaseAdapter(db_manager)
 
-        # 6 execute calls: chat count, msg count, media count, total size,
-        # per-chat message counts, per-chat media counts/bytes
+        # 4 execute calls: chat count, msg count, per-chat message counts,
+        # per-chat media counts/bytes. The archive-wide media count and the
+        # DB size total come from the grouped media rows, not their own scans.
         chat_result = MagicMock()
         chat_result.scalar.return_value = 10
 
         msg_result = MagicMock()
         msg_result.scalar.return_value = 500
-
-        media_result = MagicMock()
-        media_result.scalar.return_value = 50
-
-        size_result = MagicMock()
-        size_result.scalar.return_value = 10485760  # 10 MB
 
         chat_stats_row = MagicMock()
         chat_stats_row.account_id = 2
@@ -3270,8 +3265,6 @@ class TestCalculateAndStoreStatistics:
         mock_session.execute.side_effect = [
             chat_result,
             msg_result,
-            media_result,
-            size_result,
             per_chat_result,
             per_chat_media_result,
         ]
@@ -3292,6 +3285,7 @@ class TestCalculateAndStoreStatistics:
 
         # Verify it stored stats
         assert adapter.set_metadata.await_count == 2
+        assert mock_session.execute.await_count == 4
 
 
 # ============================================================
@@ -3665,6 +3659,53 @@ class TestCalculateAndStoreStatisticsStorage:
 
             # du is 0 but media exists → use the DB snapshot (4 MiB), not a spurious 0.
             assert stats["total_size_mb"] == 4.0
+        finally:
+            await db_manager.close()
+
+    @pytest.mark.asyncio
+    async def test_archive_totals_equal_grouped_maps_plus_null_chat_rows(self, tmp_path):
+        """media_files and the DB bytes total are the grouped maps' sums plus NULL-chat rows.
+
+        The totals are derived from the per-(account, chat) grouped rows, so a
+        downloaded row with no chat_id (absent from both maps) must still count.
+        """
+        from src.db.base import DatabaseManager
+
+        db_manager = DatabaseManager(f"sqlite:///{tmp_path / 'stats_grouped.db'}")
+        await db_manager.init()
+        adapter = DatabaseAdapter(db_manager)
+        mib = 1024 * 1024
+        try:
+            rows = [
+                ("m_a1", 1, -1001, 1 * mib, True),
+                ("m_a2", 1, -1001, 2 * mib, True),
+                ("m_b1", 2, -1001, 4 * mib, True),
+                ("m_c1", 1, -1002, 8 * mib, True),
+                ("m_none", 1, None, 16 * mib, True),  # NULL chat: in the totals, in no map
+                ("m_skip", 1, -1002, 32 * mib, False),  # not downloaded: counted nowhere
+            ]
+            for media_id, account_id, chat_id, size, downloaded in rows:
+                await adapter.insert_media(
+                    {
+                        "id": media_id,
+                        "type": "photo",
+                        "chat_id": chat_id,
+                        "file_size": size,
+                        "downloaded": downloaded,
+                    },
+                    account_id=account_id,
+                )
+
+            stats = await adapter.calculate_and_store_statistics()
+
+            counts = stats["per_account_chat_media_counts"]
+            sizes = stats["per_account_chat_media_bytes"]
+            assert counts == {"1:-1001": 2, "2:-1001": 1, "1:-1002": 1}
+            assert stats["media_files"] == sum(counts.values()) + 1 == 5
+            assert stats["total_size_mb"] == (sum(sizes.values()) + 16 * mib) / mib == 31.0
+            cached = json.loads(await adapter.get_metadata("cached_stats"))
+            assert cached["media_files"] == 5
+            assert cached["total_size_mb"] == 31.0
         finally:
             await db_manager.close()
 
