@@ -310,6 +310,25 @@ class MessageVersion(Base):
     )
 
 
+class AvatarHistory(Base):
+    """Every profile photo id an account saw for a chat, append-only (031).
+
+    ``Chat.avatar_photo_id`` is the current pointer; ``upsert_chat`` adds a row
+    here whenever that pointer changes. ``photo_id`` NULL records a removal.
+    No unique constraint: a photo seen again after another one is a new row.
+    """
+
+    __tablename__ = "avatar_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    photo_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (Index("ix_avatar_history_account_chat_seen", "account_id", "chat_id", "seen_at"),)
+
+
 class User(Base):
     """Users table - message senders."""
 

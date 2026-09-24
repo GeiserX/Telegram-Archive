@@ -55,6 +55,7 @@ from .models import (
     PRIVATE_CHAT_TYPE,
     Account,
     AppSettings,
+    AvatarHistory,
     Chat,
     ChatFolder,
     ChatFolderMember,
@@ -1066,6 +1067,22 @@ class DatabaseAdapter:
     # ========== Chat Operations ==========
 
     @retry_on_locked()
+    async def _record_avatar_sighting(self, session, account_id: int, chat_id: int, photo_id: int | None) -> bool:
+        """Best-effort append of one avatar_history row (031), in the caller's transaction.
+
+        Runs inside a SAVEPOINT, like ``_record_message_version``, so a failure
+        here never aborts the chat upsert it belongs to.
+        """
+        values = {"account_id": account_id, "chat_id": chat_id, "photo_id": photo_id, "seen_at": utcnow_naive()}
+        insert_fn = sqlite_insert if self._is_sqlite else pg_insert
+        try:
+            async with session.begin_nested():
+                await session.execute(insert_fn(AvatarHistory).values(**values))
+        except Exception as e:
+            logger.warning("Could not record an avatar sighting (%s); chat update continues", type(e).__name__)
+            return False
+        return True
+
     async def upsert_chat(self, chat_data: dict[str, Any], *, account_id: int) -> int:
         """Insert or update a chat record.
 
@@ -1125,6 +1142,20 @@ class DatabaseAdapter:
             if "avatar_photo_id" in chat_data:
                 update_set["avatar_photo_id"] = values["avatar_photo_id"]
 
+            # Every change of the recorded photo is kept in avatar_history (031),
+            # read before the upsert overwrites it. A missing chat row counts as a
+            # stored None, so a new chat with no photo records nothing.
+            avatar_changed = False
+            if "avatar_photo_id" in chat_data:
+                stored = await session.execute(
+                    select(Chat.avatar_photo_id)
+                    .where(and_(Chat.account_id == account_id, Chat.id == chat_data["id"]))
+                    .with_for_update()
+                )
+                stored_row = stored.first()
+                stored_photo_id = stored_row[0] if stored_row else None
+                avatar_changed = stored_photo_id != values["avatar_photo_id"]
+
             if self._is_sqlite:
                 stmt = sqlite_insert(Chat).values(**values)
                 stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
@@ -1133,6 +1164,8 @@ class DatabaseAdapter:
                 stmt = stmt.on_conflict_do_update(index_elements=["account_id", "id"], set_=update_set)
 
             await session.execute(stmt)
+            if avatar_changed:
+                await self._record_avatar_sighting(session, account_id, chat_data["id"], values["avatar_photo_id"])
             await session.commit()
             return chat_data["id"]
 
@@ -1577,6 +1610,21 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             row = result.first()
             return row[0] if row else None
+
+    async def get_avatar_history(self, chat_id: int, *, account_id: int) -> list[dict[str, Any]]:
+        """Every photo id ``account_id`` saw for ``chat_id``, newest first.
+
+        ``photo_id`` None is a sighting of the photo being removed. An empty
+        list means nothing was recorded, which is not the same as a removal.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(AvatarHistory.photo_id, AvatarHistory.seen_at)
+                .where(and_(AvatarHistory.account_id == account_id, AvatarHistory.chat_id == chat_id))
+                .order_by(AvatarHistory.seen_at.desc(), AvatarHistory.id.desc())
+            )
+            result = await session.execute(stmt)
+            return [{"photo_id": row.photo_id, "seen_at": row.seen_at} for row in result]
 
     async def get_chat_id_for_message(self, message_id: int, *, account_id: int) -> int | None:
         """

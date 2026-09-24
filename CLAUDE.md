@@ -58,9 +58,9 @@ If a name or a deployment detail has already been pushed, remove it from every a
 
 This project is an archive. Anything it has captured stays. Nothing observed is deleted or overwritten: new state is recorded beside old state, and the viewer decides what to show. The goal is software that tracks everything that happens and only gains ways to search and browse it.
 
-This already holds for message text (`message_versions` is written before a row is updated), for deleted messages in soft mode (`is_deleted` and `deleted_at` keep the row and its media), for reactions (`removed_at` tombstones), for avatar files (one file per photo id, never replaced or removed), and for `sender_name` and `raw_data` (a payload with less information never overwrites one with more).
+This already holds for message text (`message_versions` is written before a row is updated), for deleted messages in soft mode (`is_deleted` and `deleted_at` keep the row and its media), for reactions (`removed_at` tombstones), for avatar files (one file per photo id, never replaced or removed), for avatar sightings (`chats.avatar_photo_id` is the current pointer, and every change of it, a removal included, adds a row to `avatar_history`), and for `sender_name` and `raw_data` (a payload with less information never overwrites one with more).
 
-New code follows the same shape: add a row, a column or a file next to the old one. Do not update in place and do not remove. Chat and user metadata (title, username, names, phone, description, participant counts, pinned state, folders, forum topics, `avatar_photo_id`) still overwrites in place. That is known debt, not a pattern to copy.
+New code follows the same shape: add a row, a column or a file next to the old one. Do not update in place and do not remove. Chat and user metadata (title, username, names, phone, description, participant counts, pinned state, folders, forum topics) still overwrites in place. That is known debt, not a pattern to copy.
 
 The only removals allowed are the ones the operator asks for by configuration: `DELETION_MODE=hard`, the `*_EXCLUDE_CHAT_IDS` lists, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`, and `VERIFY_MEDIA`, which replaces a corrupted file with a fresh copy of the same media. Temporary and partial download files are not archive state.
 
