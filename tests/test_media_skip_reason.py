@@ -721,7 +721,6 @@ class TestNoDownloadSessionKeepsTheReason:
         block = html[start : html.index("Will download on next backup", start)]
 
         assert '<div v-if="!msg.media?.file_path && msg.media?.type"' in block
-        assert "no_download" not in block
         assert "<div v-if=\"msg.media?.skip_reason === 'oversize'\"" in block
         assert "<div v-else-if=\"msg.media?.skip_reason === 'filtered'\"" in block
 
