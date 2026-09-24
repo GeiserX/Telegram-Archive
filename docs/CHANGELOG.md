@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.15.0] - 2026-09-24
+
+Deletion is now opt-in: nothing the archive captured is removed unless a setting says so. Profile photo sightings are kept, and the viewer stops promising downloads it will never make.
+
+### Changed
+- **`DELETION_MODE` defaults to `soft`.** With deletion handling on, a message deleted on Telegram is kept and marked deleted, together with its edit history, media rows and reactions. Removing it from the archive needs `DELETION_MODE=hard` set explicitly, and `docker-compose.yml` no longer passes `hard` by default. A deployment that relied on hard deletion must set it. ([#477](https://github.com/GeiserX/Telegram-Archive/pull/477))
+- **Excluded chats keep what was archived.** A chat matched by any `*_EXCLUDE_CHAT_IDS` list used to have its rows, media folder and avatar files deleted on the next run, with no flag and no warning. It is now skipped and kept unless `EXCLUDE_DELETE_EXISTING=true`, which cannot be undone; the run logs only how many chats it kept. ([#477](https://github.com/GeiserX/Telegram-Archive/pull/477))
+
+### Added
+- **Profile photo history.** Each account's sightings of a chat's profile photo are kept in an append-only table (migration 031): a new row whenever the photo changes, a row with no id when it is removed, and one seeded row per chat that already had a recorded photo. The chat info panel shows a Previous photos strip from the avatar files the archive already keeps, and a photo can be requested by id only if that account recorded it. A photo this account saw removed no longer shows another account's newest file. ([#479](https://github.com/GeiserX/Telegram-Archive/pull/479))
+
+### Fixed
+- **Media skip reasons cover the remaining shapes.** A document row with only a name or only a MIME type was neither retried nor marked; rows in `SKIP_MEDIA_CHAT_IDS` chats counted as pending; a stale reason survived on a downloaded row. All three now resolve on the next retry pass, the gallery never lists a skipped row, and the helper scripts print the startup summary again. ([#478](https://github.com/GeiserX/Telegram-Archive/pull/478))
+- **Statistics.** A storage total under half a MiB read "0 MiB" next to a non-zero file count and now reads "<1 MiB"; the statistics job scans the media table once instead of three times; a cached blob carrying only half of the per-chat media breakdown hides both media figures for a restricted viewer. ([#476](https://github.com/GeiserX/Telegram-Archive/pull/476))
+
+Upgrading: migration 031 runs on the backup's first start and is safe to re-run; upgrade both images together. If your deployment depends on hard deletion or on the exclusion purge, set `DELETION_MODE=hard` or `EXCLUDE_DELETE_EXISTING=true` before upgrading.
+
 ## [8.14.0] - 2026-09-24
 
 Messages written in Telegram's Rich Text Editor are archived instead of stored empty, each account sees the profile photo it saw, the viewer says why a file was not downloaded, and the archive no longer deletes media by default.
