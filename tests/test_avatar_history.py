@@ -317,6 +317,13 @@ class TestAvatarRoute:
         resp = await _get(f"/media/avatar/{await _ref(viewer, PEER, 1)}")
         assert resp.status_code == 200 and resp.content == BYTES_B
 
+    async def test_never_recorded_account_cannot_request_a_photo_by_id(self, viewer):  # noqa: F811
+        """No history at all: an explicit photo_id must still 404, even with the file on disk."""
+        await _seed_peer(viewer, 1, None)
+        await _seed_peer(viewer, 2, PHOTO_2)
+        resp = await _get(f"/media/avatar/{await _ref(viewer, PEER, 1)}?photo_id={PHOTO_2}")
+        assert resp.status_code == 404
+
     async def test_a_photo_id_request_does_not_change_the_default_answer(self, viewer):  # noqa: F811
         await _seed_peer(viewer, 1, PHOTO_2)
         await _seed_peer(viewer, 1, PHOTO_1)  # current is the OLDER file on disk
