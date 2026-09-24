@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.15.1] - 2026-09-24
+
+Two viewer corrections to 8.15.0.
+
+### Fixed
+- **A removed profile photo is no longer shown in the chat list.** The chat list, the chat header and search results still rendered an avatar for a chat whose photo this account had seen removed, while the image itself answered 404. Each row now checks its recorded photo against the photo history, in one query per page, and a seen removal shows no avatar. A chat that was never recorded keeps the newest file, and a failing lookup falls back to it. ([#481](https://github.com/GeiserX/Telegram-Archive/pull/481))
+- **A login without download rights no longer reads "Will download on next backup" for archived files.** The placeholder now says the file is not available for this login. A file the backup declined still shows its reason. ([#481](https://github.com/GeiserX/Telegram-Archive/pull/481))
+
+Upgrading needs no manual steps and no migration.
+
 ## [8.15.0] - 2026-09-24
 
 Deletion is now opt-in: nothing the archive captured is removed unless a setting says so. Profile photo sightings are kept, and the viewer stops promising downloads it will never make.
