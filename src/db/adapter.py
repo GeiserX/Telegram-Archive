@@ -1639,16 +1639,12 @@ class DatabaseAdapter:
         if not wanted:
             return set()
         async with self.db_manager.async_session_factory() as session:
+            # A row-value IN, not an OR of ANDs: SQLite refuses an OR chain of
+            # about a thousand terms (expression depth), and the viewer asks for
+            # pages of up to 1000 chats.
             stmt = (
                 select(AvatarHistory.account_id, AvatarHistory.chat_id, AvatarHistory.photo_id)
-                .where(
-                    or_(
-                        *[
-                            and_(AvatarHistory.account_id == account_id, AvatarHistory.chat_id == chat_id)
-                            for account_id, chat_id in sorted(wanted)
-                        ]
-                    )
-                )
+                .where(tuple_(AvatarHistory.account_id, AvatarHistory.chat_id).in_(sorted(wanted)))
                 .order_by(
                     AvatarHistory.account_id,
                     AvatarHistory.chat_id,

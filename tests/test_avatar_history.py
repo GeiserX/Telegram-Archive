@@ -465,6 +465,21 @@ class TestAvatarRemovals:
 
         assert await real_adapter.get_avatar_removals([(1, PEER)]) == set()
 
+    async def test_a_full_viewer_page_of_pairs_is_one_query_that_sqlite_accepts(self, real_adapter):
+        """The viewer fetches up to 1000 chats a page; an OR chain that long is refused by SQLite."""
+        for offset in range(1000):
+            await real_adapter.upsert_chat(
+                {"id": PEER + offset, "type": "private", "avatar_photo_id": PHOTO_1}, account_id=1
+            )
+            await real_adapter.upsert_chat(
+                {"id": PEER + offset, "type": "private", "avatar_photo_id": None}, account_id=1
+            )
+        pairs = [(1, PEER + offset) for offset in range(1000)]
+
+        removed = await real_adapter.get_avatar_removals(pairs)
+
+        assert removed == set(pairs)
+
 
 class TestChatListAvatarUrl:
     async def _chat_rows(self, ref: str):
@@ -501,3 +516,40 @@ class TestChatListAvatarUrl:
 
         assert row["avatar_url"] == f"/media/avatar/{ref}"
         assert single["avatar_url"] == f"/media/avatar/{ref}"
+
+    async def test_search_results_advertise_no_avatar_for_a_seen_removal(self, viewer):  # noqa: F811
+        await _seed_peer(viewer, 1, PHOTO_1)
+        await _seed_peer(viewer, 1, None)
+        await viewer.insert_message(
+            {
+                "id": 91,
+                "chat_id": PEER,
+                "sender_id": PEER,
+                "date": datetime(2026, 4, 1, 12, 0, 0),
+                "text": "removal probe",
+                "raw_data": {},
+            },
+            account_id=1,
+        )
+
+        body = (await _get("/api/search/messages?q=removal")).json()
+
+        hit = next(result for result in body["results"] if result["id"] == 91)
+        assert hit["chat"]["avatar_url"] is None
+
+    async def test_a_missing_history_table_fails_open_to_the_newest_file(self, viewer):  # noqa: F811
+        """A viewer newer than its database must still list chats; the pre-history answer is the fallback."""
+        await _seed_peer(viewer, 1, None)
+        ref = await _ref(viewer, PEER, 1)
+        from sqlalchemy import text
+
+        async with viewer.db_manager.engine.begin() as conn:
+            await conn.execute(text("DROP TABLE avatar_history"))
+
+        listing = await _get("/api/chats")
+        single = await _get(f"/api/chats/{ref}")
+
+        assert listing.status_code == 200 and single.status_code == 200
+        row = next(chat for chat in listing.json()["chats"] if chat["ref"] == ref)
+        assert row["avatar_url"] == f"/media/avatar/{ref}"
+        assert single.json()["avatar_url"] == f"/media/avatar/{ref}"
