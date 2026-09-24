@@ -30,6 +30,7 @@ FLAGS = [
     ("download_media", "DOWNLOAD_MEDIA", True),
     ("download_chat_description", "DOWNLOAD_CHAT_DESCRIPTION", False),
     ("skip_media_delete_existing", "SKIP_MEDIA_DELETE_EXISTING", False),
+    ("exclude_delete_existing", "EXCLUDE_DELETE_EXISTING", False),
     ("download_youtube_videos", "DOWNLOAD_YOUTUBE_VIDEOS", False),
     ("youtube_videos_delete_existing", "YOUTUBE_VIDEOS_DELETE_EXISTING", False),
     ("sync_deletions_edits", "SYNC_DELETIONS_EDITS", False),

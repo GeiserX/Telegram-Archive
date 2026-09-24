@@ -62,7 +62,7 @@ This already holds for message text (`message_versions` is written before a row 
 
 New code follows the same shape: add a row, a column or a file next to the old one. Do not update in place and do not remove. Chat and user metadata (title, username, names, phone, description, participant counts, pinned state, folders, forum topics, `avatar_photo_id`) still overwrites in place. That is known debt, not a pattern to copy.
 
-The only removals allowed are the ones the operator asks for by configuration: `DELETION_MODE=hard`, the `*_EXCLUDE_CHAT_IDS` lists, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`, and `VERIFY_MEDIA`, which replaces a corrupted file with a fresh copy of the same media. Temporary and partial download files are not archive state.
+The only removals allowed are the ones the operator asks for by configuration: `DELETION_MODE=hard` (opt-in; the default is `soft`), `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`, and `VERIFY_MEDIA`, which replaces a corrupted file with a fresh copy of the same media. Temporary and partial download files are not archive state.
 
 A new or wider removal path needs a config flag that defaults to keeping data, a README row that says it deletes, and explicit maintainer approval in the PR. When reviewing a PR, state what it deletes, what it overwrites and what it forgets, in that order.
 

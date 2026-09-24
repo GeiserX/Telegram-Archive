@@ -103,6 +103,7 @@ services:
       GROUPS_EXCLUDE_CHAT_IDS: ${GROUPS_EXCLUDE_CHAT_IDS:-}
       CHANNELS_INCLUDE_CHAT_IDS: ${CHANNELS_INCLUDE_CHAT_IDS:-}
       CHANNELS_EXCLUDE_CHAT_IDS: ${CHANNELS_EXCLUDE_CHAT_IDS:-}
+      # EXCLUDE_DELETE_EXISTING: ${EXCLUDE_DELETE_EXISTING:-false}  # true DELETES archived data of excluded chats
       # Adopt the new supergroup id when a tracked basic group migrates (#228).
       # Default false = warn only; true = follow + capture automatically.
       # FOLLOW_CHAT_MIGRATIONS: ${FOLLOW_CHAT_MIGRATIONS:-false}
@@ -126,7 +127,7 @@ services:
       # Granular listener controls (only apply when ENABLE_LISTENER=true):
       # LISTEN_EDITS: ${LISTEN_EDITS:-true}
       # LISTEN_DELETIONS: ${LISTEN_DELETIONS:-false}
-      DELETION_MODE: ${DELETION_MODE:-hard}
+      DELETION_MODE: ${DELETION_MODE:-soft}
       # LISTEN_NEW_MESSAGES: ${LISTEN_NEW_MESSAGES:-true}
       # LISTEN_NEW_MESSAGES_MEDIA: ${LISTEN_NEW_MESSAGES_MEDIA:-false}
       # LISTEN_CHAT_ACTIONS: ${LISTEN_CHAT_ACTIONS:-true}

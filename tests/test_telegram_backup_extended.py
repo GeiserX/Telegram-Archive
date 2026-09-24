@@ -74,6 +74,8 @@ def _make_backup(**overrides):
     backup.config = overrides.get("config", MagicMock())
     backup.config.should_skip_topic = MagicMock(return_value=False)
     backup.config.deletion_mode = "hard"
+    # Real default: excluding a chat keeps its archived rows and files.
+    backup.config.exclude_delete_existing = False
     # Real numerics: backup_all/_backup_dialog compare these (MagicMock <= 0 raises).
     backup.config.reaction_resweep_days = 0.0
     backup.config.reaction_resweep_max_per_chat = 500
@@ -771,11 +773,31 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
         self.assertEqual(self.backup._get_dialogs.await_count, 2)
         self.backup._backup_dialog.assert_awaited()
 
+    def test_explicitly_excluded_chats_kept_by_default(self):
+        """Default EXCLUDE_DELETE_EXISTING=false: an excluded chat is skipped but its
+        archived rows and files stay, and the run logs a count, never the chat id."""
+        user_entity = self._make_entity(User, 987654321, bot=False)
+        dialog = self._make_dialog(user_entity)
+
+        self.backup.config.global_exclude_ids = {987654321}
+        self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
+        self.backup.db.delete_chat_and_related_data = AsyncMock()
+
+        with self.assertLogs("src.telegram_backup", level="INFO") as logs:
+            _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_not_awaited()
+        self.backup._backup_dialog.assert_not_awaited()
+        joined = "\n".join(logs.output)
+        self.assertIn("1 excluded chat(s) keep their archived rows and files (EXCLUDE_DELETE_EXISTING=false)", joined)
+        self.assertNotIn("987654321", joined)
+
     def test_explicitly_excluded_chats_deleted_from_db(self):
-        """Chats in global_exclude_ids should be deleted from database."""
+        """EXCLUDE_DELETE_EXISTING=true: chats in global_exclude_ids are deleted from the database."""
         user_entity = self._make_entity(User, 100, bot=False)
         dialog = self._make_dialog(user_entity)
 
+        self.backup.config.exclude_delete_existing = True
         self.backup.config.global_exclude_ids = {100}
         self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
         self.backup.db.delete_chat_and_related_data = AsyncMock()
@@ -791,6 +813,7 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
         user_entity = self._make_entity(User, 100, bot=False)
         dialog = self._make_dialog(user_entity)
 
+        self.backup.config.exclude_delete_existing = True
         self.backup.config.global_exclude_ids = {100}
         self.backup._get_dialogs = AsyncMock(side_effect=[[], [dialog]])
         self.backup.db.delete_chat_and_related_data = AsyncMock()
@@ -820,11 +843,14 @@ class TestBackupAllNonWhitelistMode(unittest.TestCase):
         user_entity = self._make_entity(User, 100, bot=False)
         dialog = self._make_dialog(user_entity)
 
+        self.backup.config.exclude_delete_existing = True
         self.backup.config.global_exclude_ids = {100}
         self.backup._get_dialogs = AsyncMock(side_effect=[[dialog], []])
         self.backup.db.delete_chat_and_related_data = AsyncMock(side_effect=Exception("DB error"))
 
         _run(self.backup.backup_all())
+
+        self.backup.db.delete_chat_and_related_data.assert_awaited_once()
 
     def test_priority_chats_sorted_first(self):
         """Priority chats appear before non-priority in processing order."""
@@ -1075,6 +1101,18 @@ class TestSyncDeletionsAndEdits(unittest.TestCase):
     def test_deleted_message_soft_marked(self):
         """DELETION_MODE=soft marks deleted messages instead of hard deleting."""
         self.backup.config.deletion_mode = "soft"
+        self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: None})
+        self.backup.client.get_messages = AsyncMock(return_value=[None])
+        entity = MagicMock()
+
+        _run(self.backup._sync_deletions_and_edits(100, entity))
+
+        self.backup.db.mark_message_deleted.assert_awaited_once()
+        self.backup.db.delete_message.assert_not_awaited()
+
+    def test_deleted_message_soft_when_mode_unset(self):
+        """A config without deletion_mode falls back to soft, matching the Config default."""
+        del self.backup.config.deletion_mode
         self.backup.db.get_messages_sync_data = AsyncMock(return_value={1: None})
         self.backup.client.get_messages = AsyncMock(return_value=[None])
         entity = MagicMock()
