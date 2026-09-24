@@ -54,6 +54,7 @@ def deduplicate_media(dry_run: bool = False, verbose: bool = False):
         verbose: If True, show detailed output
     """
     config = Config()
+    config.log_summary()
     media_base_path = config.media_path
 
     if not os.path.exists(media_base_path):

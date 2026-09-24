@@ -253,7 +253,7 @@ class TestReconcileSkipReasons:
         backup.config = MagicMock()
         backup.config.get_max_media_size_bytes = MagicMock(return_value=123)
         backup.config.max_media_download_attempts = 5
-        backup.config.skip_media_chat_ids = set()
+        backup.config.skip_media_chat_ids = {CHAT_ID}
         backup.config.download_media_types = {"photo"}
         backup.config.download_document_mime_types = set()
         backup.config.download_document_mime_extensions = set()
@@ -270,6 +270,7 @@ class TestReconcileSkipReasons:
             media_types={"photo"},
             document_mime_types=set(),
             document_mime_extensions=set(),
+            skip_media_chat_ids={CHAT_ID},
         )
 
 
@@ -558,3 +559,181 @@ class TestCleanupLogHasNoEmptyFragment:
 
         assert "Cleaned up existing media for chat: 3 DB records deleted" in caplog.text
         assert ": ," not in caplog.text
+
+
+# ============================================================================
+# The document MIME mirror with one of its two columns NULL
+# ============================================================================
+
+
+class TestDocumentMimeMirrorWithOneNullColumn:
+    """A document row with a name but no MIME, or the reverse, used to evaluate
+    the mirror to NULL: the drain never fetched it and reconcile never marked it."""
+
+    PDF_ONLY = {"document_mime_types": {"application/pdf"}, "document_mime_extensions": {".pdf"}}
+
+    async def test_name_without_mime_outside_the_filter_is_filtered(self, adapter):
+        await _seed(adapter, "zip", 1, type="document", file_name="report.zip", mime_type=None, downloaded=False)
+
+        counts = await adapter.reconcile_media_skip_reasons(None, account_id=1, **self.PDF_ONLY)
+
+        assert counts == {"oversize": 0, "filtered": 1, "cleared": 0}
+        assert (await _row(adapter, "zip")).skip_reason == "filtered"
+
+    async def test_mime_without_name_outside_the_filter_is_filtered(self, adapter):
+        await _seed(adapter, "zip", 1, type="document", file_name=None, mime_type="application/zip", downloaded=False)
+
+        counts = await adapter.reconcile_media_skip_reasons(None, account_id=1, **self.PDF_ONLY)
+
+        assert counts == {"oversize": 0, "filtered": 1, "cleared": 0}
+        assert (await _row(adapter, "zip")).skip_reason == "filtered"
+
+    async def test_name_without_mime_inside_the_filter_stays_pending(self, adapter):
+        await _seed(adapter, "pdf", 1, type="document", file_name="a.pdf", mime_type=None, downloaded=False)
+
+        await adapter.reconcile_media_skip_reasons(None, account_id=1, **self.PDF_ONLY)
+
+        assert (await _row(adapter, "pdf")).skip_reason is None
+        pending = await adapter.get_pending_media_downloads(None, 5, account_id=1, **self.PDF_ONLY)
+        assert [m["id"] for m in pending] == ["pdf"]
+
+
+# ============================================================================
+# SKIP_MEDIA_CHAT_IDS: the drain never fetches these chats
+# ============================================================================
+
+
+class TestSkippedChatsReadFiltered:
+    async def test_a_row_in_a_skipped_chat_is_filtered_and_counted_skipped(self, adapter):
+        await _seed(adapter, "photo", 1, type="photo", file_size=10, downloaded=False)
+
+        counts = await adapter.reconcile_media_skip_reasons(
+            1000, account_id=1, media_types={"photo"}, skip_media_chat_ids={CHAT_ID}
+        )
+
+        assert counts == {"oversize": 0, "filtered": 1, "cleared": 0}
+        assert (await _row(adapter, "photo")).skip_reason == "filtered"
+        status = await adapter.get_operator_status_counts(max_attempts=5)
+        assert status == {"downloaded": 0, "pending": 0, "exhausted": 0, "skipped": 1}
+
+    async def test_the_next_pass_keeps_the_mark_instead_of_clearing_and_remarking(self, adapter):
+        await _seed(adapter, "photo", 1, type="photo", file_size=10, downloaded=False)
+        settings = {"media_types": {"photo"}, "skip_media_chat_ids": {CHAT_ID}}
+        await adapter.reconcile_media_skip_reasons(1000, account_id=1, **settings)
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1, **settings)
+
+        assert counts == {"oversize": 0, "filtered": 0, "cleared": 0}
+        assert (await _row(adapter, "photo")).skip_reason == "filtered"
+
+    async def test_removing_the_chat_from_the_set_clears_it(self, adapter):
+        await _seed(adapter, "photo", 1, type="photo", file_size=10, downloaded=False)
+        await adapter.reconcile_media_skip_reasons(1000, account_id=1, skip_media_chat_ids={CHAT_ID})
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1, skip_media_chat_ids=set())
+
+        assert counts == {"oversize": 0, "filtered": 0, "cleared": 1}
+        assert (await _row(adapter, "photo")).skip_reason is None
+        status = await adapter.get_operator_status_counts(max_attempts=5)
+        assert status["pending"] == 1 and status["skipped"] == 0
+
+
+# ============================================================================
+# Remaining assertions from the 8.14.0 review
+# ============================================================================
+
+
+class TestReconcileTypeAndMimeFiltersTogether:
+    async def test_mime_filter_inside_the_type_whitelist(self, adapter):
+        exe = {"mime_type": "application/x-msdownload", "file_name": "setup.exe"}
+        await _seed(adapter, "exe", 1, type="document", downloaded=False, **exe)
+        await _seed(
+            adapter, "pdf", 2, type="document", mime_type="application/pdf", file_name="a.pdf", downloaded=False
+        )
+        await _seed(adapter, "photo", 3, type="photo", downloaded=False)
+
+        counts = await adapter.reconcile_media_skip_reasons(
+            None,
+            account_id=1,
+            media_types={"document", "photo"},
+            document_mime_types={"application/pdf"},
+            document_mime_extensions={".pdf"},
+        )
+
+        assert counts == {"oversize": 0, "filtered": 1, "cleared": 0}
+        assert (await _row(adapter, "exe")).skip_reason == "filtered"
+        assert (await _row(adapter, "pdf")).skip_reason is None
+        assert (await _row(adapter, "photo")).skip_reason is None
+
+        relaxed = await adapter.reconcile_media_skip_reasons(None, account_id=1, media_types={"document", "photo"})
+
+        assert relaxed["cleared"] == 1
+        assert (await _row(adapter, "exe")).skip_reason is None
+
+
+class TestStaleReasonOnADownloadedRow:
+    """The over-size writer leaves ``downloaded`` alone, so a file an earlier,
+    higher-capped run fetched can carry "oversize" while it sits on disk."""
+
+    async def test_an_on_disk_row_over_the_cap_loses_the_reason(self, adapter):
+        await _seed(adapter, "have", 1, type="video", file_size=5000, downloaded=True, skip_reason="oversize")
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1)
+
+        assert counts == {"oversize": 0, "filtered": 0, "cleared": 1}
+        assert (await _row(adapter, "have")).skip_reason is None
+
+    async def test_an_on_disk_row_within_the_cap_loses_the_reason(self, adapter):
+        await _seed(adapter, "have", 1, type="video", file_size=10, downloaded=True, skip_reason="oversize")
+
+        counts = await adapter.reconcile_media_skip_reasons(1000, account_id=1)
+
+        assert counts == {"oversize": 0, "filtered": 0, "cleared": 1}
+        assert (await _row(adapter, "have")).skip_reason is None
+
+
+class TestGalleryNeverShowsASkippedRow:
+    async def test_only_files_on_disk_reach_the_gallery(self, adapter):
+        await _seed(adapter, "have", 1, type="photo", file_path="x/have.jpg", downloaded=True)
+        await _seed(adapter, "big", 2, type="photo", file_size=5000, downloaded=False, skip_reason="oversize")
+        await _seed(adapter, "doc", 3, type="photo", downloaded=False, skip_reason="filtered")
+
+        page = await adapter.get_media_paginated(CHAT_ID, limit=10, account_id=1)
+
+        assert [item["id"] for item in page["items"]] == ["have"]
+
+
+class TestNoDownloadSessionKeepsTheReason:
+    def test_the_strip_keeps_skip_reason(self):
+        pytest.importorskip("fastapi")
+        os.environ.setdefault("BACKUP_PATH", tempfile.mkdtemp(prefix="ta_test_skip_"))
+        from src.web import main as web_main
+
+        messages = [{"media": {"file_path": None, "type": "video", "skip_reason": "oversize"}}]
+        web_main._strip_original_media_paths(messages)
+
+        assert messages[0]["media"]["no_download"] is True
+        assert messages[0]["media"]["skip_reason"] == "oversize"
+
+    def test_the_placeholder_reason_branches_do_not_depend_on_the_session(self):
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        start = html.index("<!-- Placeholder for media not yet downloaded -->")
+        block = html[start : html.index("Will download on next backup", start)]
+
+        assert '<div v-if="!msg.media?.file_path && msg.media?.type"' in block
+        assert "<div v-if=\"msg.media?.skip_reason === 'oversize'\"" in block
+        assert "<div v-else-if=\"msg.media?.skip_reason === 'filtered'\"" in block
+
+
+class TestScriptsLogTheConfigSummary:
+    def test_every_script_that_builds_a_config_logs_the_summary(self):
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        building = sorted(p.name for p in scripts.glob("*.py") if "Config()" in p.read_text(encoding="utf-8"))
+        assert building == ["deduplicate_media.py", "detect_albums.py", "fix_media_sizes.py", "update_media_sizes.py"]
+        for name in building:
+            text = (scripts / name).read_text(encoding="utf-8")
+            assert text.count("config.log_summary()") == text.count("Config()"), name
+            configured = text.index("logging.basicConfig(")
+            built = text.index("config = Config()")
+            summary = text.index("config.log_summary()")
+            assert configured < built < summary, name

@@ -86,6 +86,7 @@ async def update_media_sizes(dry_run: bool = False, force: bool = False):
         force: If True, update all records including those with existing sizes
     """
     config = Config()
+    config.log_summary()
     db = await create_adapter()
 
     media_base_path = config.media_path

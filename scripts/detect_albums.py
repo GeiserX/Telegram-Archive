@@ -91,6 +91,7 @@ async def detect_albums(dry_run: bool = False, window_seconds: int = 2):
         window_seconds: Maximum seconds between messages to consider them part of same album
     """
     config = Config()
+    config.log_summary()
     db = await create_adapter()
 
     logger.info("=" * 70)
