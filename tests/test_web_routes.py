@@ -2312,7 +2312,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
                 }
             ],
         )
-        cached.assert_called_once_with(-1001, "private")
+        cached.assert_called_once_with(-1001, "private", None)
         # Internal addressing never leaks into the payload: the jump is by ref.
         self.assertNotIn("chat_id", body["results"][0])
         self.assertNotIn("account_id", body["results"][0])

@@ -439,3 +439,117 @@ await new Promise(r => setTimeout(r, 0));
 assert.deepEqual(previousAvatars.value, [], 'the stale answer never decorates the next chat');
 """)
         )
+
+
+# ============================================================================
+# The chat list and the chat header stop advertising a photo the account saw removed
+# ============================================================================
+
+
+class TestAvatarRemovals:
+    async def test_only_pairs_whose_newest_sighting_is_a_removal(self, real_adapter):
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": PHOTO_1}, account_id=1)
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": None}, account_id=1)
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": PHOTO_2}, account_id=2)
+        await real_adapter.upsert_chat({"id": PEER + 1, "type": "private"}, account_id=1)  # never recorded
+
+        removed = await real_adapter.get_avatar_removals([(1, PEER), (2, PEER), (1, PEER + 1), (3, PEER)])
+
+        assert removed == {(1, PEER)}
+        assert await real_adapter.get_avatar_removals([]) == set()
+
+    async def test_a_removal_followed_by_a_new_photo_is_not_a_removal(self, real_adapter):
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": PHOTO_1}, account_id=1)
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": None}, account_id=1)
+        await real_adapter.upsert_chat({"id": PEER, "type": "private", "avatar_photo_id": PHOTO_2}, account_id=1)
+
+        assert await real_adapter.get_avatar_removals([(1, PEER)]) == set()
+
+    async def test_a_full_viewer_page_of_pairs_is_one_query_that_sqlite_accepts(self, real_adapter):
+        """The viewer fetches up to 1000 chats a page; an OR chain that long is refused by SQLite."""
+        for offset in range(1000):
+            await real_adapter.upsert_chat(
+                {"id": PEER + offset, "type": "private", "avatar_photo_id": PHOTO_1}, account_id=1
+            )
+            await real_adapter.upsert_chat(
+                {"id": PEER + offset, "type": "private", "avatar_photo_id": None}, account_id=1
+            )
+        pairs = [(1, PEER + offset) for offset in range(1000)]
+
+        removed = await real_adapter.get_avatar_removals(pairs)
+
+        assert removed == set(pairs)
+
+
+class TestChatListAvatarUrl:
+    async def _chat_rows(self, ref: str):
+        listing = (await _get("/api/chats")).json()["chats"]
+        row = next(chat for chat in listing if chat["ref"] == ref)
+        single = (await _get(f"/api/chats/{ref}")).json()
+        return row, single
+
+    async def test_a_seen_removal_advertises_no_avatar(self, viewer):  # noqa: F811
+        """The bytes route answers 404 for this chat, so the list must not render an <img> for it."""
+        await _seed_peer(viewer, 1, PHOTO_1)
+        await _seed_peer(viewer, 1, None)
+        ref = await _ref(viewer, PEER, 1)
+
+        row, single = await self._chat_rows(ref)
+
+        assert row["avatar_url"] is None
+        assert single["avatar_url"] is None
+
+    async def test_never_recorded_keeps_the_newest_file_url(self, viewer):  # noqa: F811
+        await _seed_peer(viewer, 1, None)
+        ref = await _ref(viewer, PEER, 1)
+
+        row, single = await self._chat_rows(ref)
+
+        assert row["avatar_url"] == f"/media/avatar/{ref}"
+        assert single["avatar_url"] == f"/media/avatar/{ref}"
+
+    async def test_a_recorded_photo_keeps_its_url(self, viewer):  # noqa: F811
+        await _seed_peer(viewer, 1, PHOTO_1)
+        ref = await _ref(viewer, PEER, 1)
+
+        row, single = await self._chat_rows(ref)
+
+        assert row["avatar_url"] == f"/media/avatar/{ref}"
+        assert single["avatar_url"] == f"/media/avatar/{ref}"
+
+    async def test_search_results_advertise_no_avatar_for_a_seen_removal(self, viewer):  # noqa: F811
+        await _seed_peer(viewer, 1, PHOTO_1)
+        await _seed_peer(viewer, 1, None)
+        await viewer.insert_message(
+            {
+                "id": 91,
+                "chat_id": PEER,
+                "sender_id": PEER,
+                "date": datetime(2026, 4, 1, 12, 0, 0),
+                "text": "removal probe",
+                "raw_data": {},
+            },
+            account_id=1,
+        )
+
+        body = (await _get("/api/search/messages?q=removal")).json()
+
+        hit = next(result for result in body["results"] if result["id"] == 91)
+        assert hit["chat"]["avatar_url"] is None
+
+    async def test_a_failing_history_lookup_fails_open_to_the_newest_file(self, viewer):  # noqa: F811
+        """A viewer whose history lookup breaks (older database, locked table) must still list chats
+        with the pre-history answer. The failure is injected on the adapter method: dropping the
+        table on a shared test database would break every fixture after this one."""
+        await _seed_peer(viewer, 1, None)
+        ref = await _ref(viewer, PEER, 1)
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(viewer, "get_avatar_removals", AsyncMock(side_effect=RuntimeError("no such table"))):
+            listing = await _get("/api/chats")
+            single = await _get(f"/api/chats/{ref}")
+
+        assert listing.status_code == 200 and single.status_code == 200
+        row = next(chat for chat in listing.json()["chats"] if chat["ref"] == ref)
+        assert row["avatar_url"] == f"/media/avatar/{ref}"
+        assert single.json()["avatar_url"] == f"/media/avatar/{ref}"
