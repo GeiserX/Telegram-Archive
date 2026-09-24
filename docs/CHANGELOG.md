@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 For upgrade instructions, see [Upgrading](#upgrading) at the bottom.
 
+## [8.14.0] - 2026-09-24
+
+Messages written in Telegram's Rich Text Editor are archived instead of stored empty, each account sees the profile photo it saw, the viewer says why a file was not downloaded, and the archive no longer deletes media by default.
+
+### Added
+- **Messages composed in Telegram's Rich Text Editor are archived.** Telegram sends those with an empty wire text and the content as a block tree, which the archive never read, so every such message was stored as an empty row with nothing to search. The block tree is now rendered into the same text and formatting entities every other message uses: headings become bold, quotes become quote blocks, code becomes code blocks, lists get bullets, numbers and checkboxes, tables become pipe-separated rows, and embedded media leaves a marker with its caption. The tree itself is kept in `raw_data["rich_message"]`, and an edit replaces it together with the text. Needs Telethon 1.44.0 or newer, which the images carry. ([#470](https://github.com/GeiserX/Telegram-Archive/issues/470), [#471](https://github.com/GeiserX/Telegram-Archive/pull/471))
+- **The viewer says why a media file is not downloaded.** A file over `MAX_MEDIA_SIZE_MB` or one the media-type whitelist declined used to read "Will download on next backup" and count as pending in the Archive Status panel, although no run would ever fetch it. The backup now records the reason on the row (`media.skip_reason`, migration 030), re-derives it from the live settings on every retry pass so relaxing a cap or a filter clears it, and the viewer shows "larger than the size limit" or "excluded by the media filter" and counts those rows as skipped by settings. ([#465](https://github.com/GeiserX/Telegram-Archive/issues/465), [#474](https://github.com/GeiserX/Telegram-Archive/pull/474))
+- **Each account sees the profile photo it saw.** Avatar files are shared by every account and the viewer served whichever was newest, so a photo one account set for a contact replaced the other account's view of the same person. The backup records the photo id each account sees (`chats.avatar_photo_id`, migration 029) and the viewer serves that file first. Every photo file stays on disk as before. Contributed by [@jordanfelle](https://github.com/jordanfelle) in [#469](https://github.com/GeiserX/Telegram-Archive/pull/469).
+- **A restricted viewer reads its own media and storage figures.** A login limited to some accounts or chats had media count and storage removed from its statistics and the popup showed 0 files / 0 MiB. The statistics job now stores downloaded media count and bytes per account and chat, the popup sums them over the chats that login can see, and hides the two rows until the first calculation after the upgrade instead of showing zeros. Contributed by [@jordanfelle](https://github.com/jordanfelle) in [#473](https://github.com/GeiserX/Telegram-Archive/pull/473).
+
+### Changed
+- **`SKIP_MEDIA_DELETE_EXISTING` now defaults to `false`.** Listing a chat in `SKIP_MEDIA_CHAT_IDS` stops new downloads; it no longer also deletes what was already archived unless you set the flag. An install that relied on the old default keeps the media of skipped chats from now on; set the flag to `true` to keep deleting. When it does delete on a deduplicated archive, only the chat folder's links go and the log says the shared files behind them stay. ([#444](https://github.com/GeiserX/Telegram-Archive/issues/444))
+- **The startup summary reaches the log.** The lines that describe the active filters, listener flags and the privacy and webhook warnings were emitted before logging was configured and never appeared in a container's log. ([#445](https://github.com/GeiserX/Telegram-Archive/issues/445))
+
+### Docs
+- A design for an experimental SpacetimeDB deployment mode, parked until the self-hosted server keeps tables on disk ([#468](https://github.com/GeiserX/Telegram-Archive/pull/468)), and the archive principle the project reviews changes against: nothing captured is deleted or overwritten ([#472](https://github.com/GeiserX/Telegram-Archive/pull/472)).
+
+Upgrading needs no manual steps: migrations 029 and 030 run on the backup's first start and are safe to re-run. Upgrade both images together; the viewer's chat and media views answer errors for the seconds the backup takes to migrate.
+
 ## [8.13.0] - 2026-09-21
 
 A whitelist for which media is downloaded, and a viewer restricted to one account now reads statistics that count only that account.
