@@ -468,15 +468,16 @@ async def handle_realtime_notification(payload: dict):
             },
         )
     elif notification_type == "transcript":
-        # Ids and status only; the browser fetches the rows from
-        # /api/media/{media_id}/transcripts (docs/TRANSCRIPTION.md).
+        # Ids and status only (docs/TRANSCRIPTION.md). The storage media id
+        # stays out of the frame: it spells the chat id, which never reaches
+        # the browser. The message id names the bubble inside the chat, and
+        # the browser fetches the rows from the chat-scoped transcripts route.
         await ws_manager.broadcast_to_chat(
             chat,
             {
                 "type": "transcript",
                 "chat_ref": chat_ref,
                 "message_id": data.get("message_id"),
-                "media_id": data.get("media_id"),
                 "transcript_id": data.get("transcript_id"),
                 "status": data.get("status"),
             },
@@ -2983,6 +2984,7 @@ async def get_messages(
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.
         if isinstance(messages, list):
+            await _attach_transcripts(messages, chat)
             _attach_message_payload_urls(messages, chat)
             await _mask_unentitled_sender_accounts(messages, user)
         if user.no_download:
@@ -3181,6 +3183,185 @@ async def get_media_transcripts(media_id: str, user: UserContext = Depends(requi
     return [_transcript_payload(row) for row in rows]
 
 
+def _transcription_on() -> bool:
+    return getattr(config, "transcription_enabled", False) is True
+
+
+# The columns a bubble renders. The hashes, the job id and the storage media
+# id stay out: the last spells the chat id. Words and segments stay out of the
+# page payload too; they can run to thousands of entries per transcript.
+_TRANSCRIPT_VIEW_FIELDS = (
+    "id",
+    "status",
+    "error",
+    "text",
+    "language",
+    "source",
+    "engine_name",
+    "engine_version",
+    "preset",
+    "models",
+    "confidence",
+    "duration_s",
+    "requested_at",
+    "completed_at",
+)
+
+
+def _transcript_view(row: dict) -> dict:
+    """One transcript row as a bubble needs it, datetimes as ISO strings."""
+    view = {}
+    for key in _TRANSCRIPT_VIEW_FIELDS:
+        value = row.get(key)
+        view[key] = value.isoformat() if isinstance(value, datetime) else value
+    return view
+
+
+def _set_media_transcripts(media: dict, rows: list[dict]) -> None:
+    """``media.transcripts``: every row newest first; ``media.transcript``: the newest done one."""
+    views = [_transcript_view(row) for row in rows]
+    media["transcripts"] = views
+    media["transcript"] = next((view for view in views if view["status"] == "done"), None)
+
+
+# Media types whose bubble carries the transcript button even with no row yet.
+_TRANSCRIPT_BUBBLE_TYPES = frozenset({"voice", "video_note", "audio"})
+
+
+async def _attach_transcripts(messages: list, chat: ChatContext) -> None:
+    """Put each page's transcript rows on its media, in one query.
+
+    Runs before ``_attach_message_payload_urls``, which rewrites ``media.id``
+    from the storage id this lookup needs. A failure costs the bubbles their
+    transcripts, never the page.
+    """
+    if not _transcription_on() or not db:
+        return
+    pages = [
+        message["media"]
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("media"), dict) and message["media"].get("id")
+    ]
+    if not pages:
+        return
+    try:
+        by_media = await db.list_transcripts_for_media_ids([media["id"] for media in pages], account_id=chat.account_id)
+    except Exception as e:
+        logger.debug(f"Transcripts not attached: {type(e).__name__}")
+        return
+    if not isinstance(by_media, dict):
+        return
+    for media in pages:
+        rows = by_media.get(media["id"]) or []
+        if rows or media.get("type") in _TRANSCRIPT_BUBBLE_TYPES:
+            _set_media_transcripts(media, rows)
+
+
+@app.get("/api/transcription/status")
+async def get_transcription_status(user: UserContext = Depends(require_auth)):
+    """What the bubble and the settings row need to know, and nothing more.
+
+    ``configured`` says a server URL is set; the URL itself is not returned.
+    The server name and version come from the ``app_settings`` row the backup
+    writes when it detects the server; the viewer never asks the server.
+    """
+    enabled = _transcription_on()
+    configured = enabled and bool(getattr(config, "transcription_url", ""))
+    server = None
+    if configured and db:
+        try:
+            server = await db.get_transcription_server()
+        except Exception as e:
+            logger.debug(f"Transcription server row unreadable: {type(e).__name__}")
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "server_name": (server or {}).get("name") or None,
+        "server_version": (server or {}).get("version") or None,
+    }
+
+
+async def _ask_transcript(media_id: str, account_id: int) -> dict:
+    """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
+
+    ``force`` because a user click may add a row after a done one, which the
+    drain never does. No preset: the viewer does not read it, and a queued
+    row without one is what the drain query sends first. No outbound request.
+    """
+    row = await db.enqueue_media_transcript(media_id, account_id=account_id, force=True)
+    if row is None:
+        # Only when a racing insert won and its row vanished before the re-read.
+        raise HTTPException(status_code=503, detail="Try again")
+    return row
+
+
+def _raise_for_transcript_error(e: Exception, action: str) -> None:
+    logger.error(f"Error {action} transcripts: {type(e).__name__}")
+    if _is_db_connection_error(e):
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+    raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/media/{media_id}/transcripts")
+async def ask_media_transcript(media_id: str, user: UserContext = Depends(require_auth)):
+    """Ask for a transcript now: insert-only, same scoping as the GET beside it.
+
+    Inserts a ``queued`` row with ``job_id`` NULL unless the newest row is
+    already open, in which case that row comes back and nothing is written.
+    The next drain in the backup sends it first. The viewer makes no request
+    to the transcription server. An id the caller may not see is a 404.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    if not _transcription_on():
+        raise HTTPException(status_code=409, detail="Transcription is off")
+    try:
+        account_id = None
+        for pair in await db.get_media_chat_pairs(media_id):
+            chat = await db.get_chat_by_id(pair["chat_id"], account_id=pair["account_id"])
+            if chat and chat.get("ref") and _chat_visible(user, chat):
+                account_id = pair["account_id"]
+                break
+        if account_id is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        row = await _ask_transcript(media_id, account_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_for_transcript_error(e, "asking for")
+    return _transcript_payload(row)
+
+
+@app.get("/api/chats/{chat_ref}/media/{media_key}/transcripts")
+async def get_chat_media_transcripts(media_key: str, chat: ChatContext = Depends(require_chat)):
+    """The bubble's rows, addressed by chat ref + ``{message_id}_{type}``, newest first.
+
+    What the browser fetches on a realtime ``transcript`` frame: it never
+    holds a storage media id, which spells the chat id.
+    """
+    media = await _entitled_media_row(chat, media_key)
+    try:
+        rows = await db.list_media_transcripts(media["id"], account_id=chat.account_id)
+    except Exception as e:
+        _raise_for_transcript_error(e, "fetching")
+    return [_transcript_view(row) for row in rows]
+
+
+@app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")
+async def ask_chat_media_transcript(media_key: str, chat: ChatContext = Depends(require_chat)):
+    """The bubble's ask-now, the same insert-only rule as ``POST /api/media/{media_id}/transcripts``."""
+    if not _transcription_on():
+        raise HTTPException(status_code=409, detail="Transcription is off")
+    media = await _entitled_media_row(chat, media_key)
+    try:
+        row = await _ask_transcript(media["id"], chat.account_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_for_transcript_error(e, "asking for")
+    return _transcript_view(row)
+
+
 @app.get("/api/chats/{chat_ref}/pinned")
 async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
     """Get all pinned messages for a chat, ordered by date descending (newest first)."""
@@ -3188,6 +3369,7 @@ async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: U
         pinned_messages = await db.get_pinned_messages(chat.chat_id, account_id=chat.account_id)
         # Same renderer as the message list, so the same ref-addressed URLs.
         if isinstance(pinned_messages, list):
+            await _attach_transcripts(pinned_messages, chat)
             _attach_message_payload_urls(pinned_messages, chat)
             await _mask_unentitled_sender_accounts(pinned_messages, user)
         if user.no_download:
@@ -3896,6 +4078,7 @@ async def get_message_by_date(
         if not message:
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
+        await _attach_transcripts([message], chat)
         _attach_message_payload_urls([message], chat)
         await _mask_unentitled_sender_accounts([message], user)
         if user.no_download:

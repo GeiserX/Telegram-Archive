@@ -892,8 +892,17 @@ async def transcribe_media(
         # Imported rows carry no hash: computed here, stored on the transcript
         # row only, never written back to media.
         idempotency_key = hashlib.sha256(audio).hexdigest()
-    if not row.get("idempotency_key"):
-        await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
+    if not row.get("idempotency_key") or not row.get("preset"):
+        # A viewer ask-now row carries neither a key nor a preset. Filling the
+        # preset marks it picked up: from here the ten-minute rule of the drain
+        # query applies to it like to any other row.
+        await db.fill_media_transcript(
+            row["id"],
+            status="queued",
+            idempotency_key=idempotency_key,
+            preset=client.preset,
+            content_hash=content_hash,
+        )
 
     if server is None:
         try:

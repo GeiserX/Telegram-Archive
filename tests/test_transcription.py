@@ -1227,8 +1227,11 @@ def test_the_template_fetches_the_rows_on_a_transcript_frame():
     case = source.index("case 'transcript':")
     assert case > source.index("case 'reaction':")
     block = source[case : source.index("case 'delete':", case)]
-    assert "/api/media/${encodeURIComponent(data.media_id)}/transcripts" in block
-    assert "target.media.transcripts = rows" in block
+    assert "refreshTranscripts(transcriptMsg)" in block
+    assert "data.media_id" not in block  # the frame carries no storage id
+    helper = source[source.index("const transcriptsUrl = ") : source.index("const pressTranscript = ")]
+    assert "/api/chats/${encodeURIComponent(selectedChat.value?.ref || '')}/media/" in helper
+    assert "target.media.transcripts = rows" in source[source.index("const storeTranscriptRows = ") :]
 
 
 pytest.importorskip("fastapi")
@@ -1343,12 +1346,13 @@ class TestTranscriptsRoute(_WebTestBase):
                 "type": "transcript",
                 "chat_ref": "refA",
                 "message_id": 1,
-                "media_id": "m_1_voice",
                 "transcript_id": 7,
                 "status": "done",
             },
         )
         self.assertNotIn("text", json.dumps(frame))
+        # The storage media id spells the chat id, which never reaches the browser.
+        self.assertNotIn("m_1_voice", json.dumps(frame))
 
 
 # ============================================================================

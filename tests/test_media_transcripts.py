@@ -246,7 +246,8 @@ class TestDrainQuery:
 
     async def test_a_fresh_queued_row_is_not_selected_but_a_stale_one_is_and_carries_its_row(self, real_adapter):
         await _media(real_adapter, "m_1_voice")
-        row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)
+        # The backup always writes the preset; a row without one is an ask-now.
+        row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, preset="auto")
         assert await _drain(real_adapter) == []
         await _age(real_adapter, row["id"], minutes=11)
         rows = await real_adapter.get_media_awaiting_transcription(
@@ -254,6 +255,21 @@ class TestDrainQuery:
         )
         assert [r["id"] for r in rows] == ["m_1_voice"]
         assert rows[0]["transcript"] == {"id": row["id"], "status": "queued", "job_id": None}
+
+    async def test_an_ask_now_row_is_sent_at_once_and_first(self, real_adapter):
+        """The viewer's ask-now row (no preset) skips the ten-minute wait and leads the run."""
+        await _media(real_adapter, "m_1_voice", download_date=datetime(2026, 1, 1))
+        await _media(real_adapter, "m_2_voice", download_date=datetime(2026, 1, 3))
+        asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        assert asked["preset"] is None
+        assert await _drain(real_adapter) == ["m_1_voice", "m_2_voice"]
+        assert await _drain(real_adapter, per_run=1) == ["m_1_voice"]
+
+    async def test_an_ask_now_row_picked_up_by_the_backup_waits_like_any_other(self, real_adapter):
+        await _media(real_adapter, "m_1_voice")
+        asked = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1, force=True)
+        await real_adapter.fill_media_transcript(asked["id"], status="queued", preset="auto")
+        assert await _drain(real_adapter) == []
 
     async def test_a_stale_queued_row_with_a_job_id_is_the_pollers_business(self, real_adapter):
         await _media(real_adapter, "m_1_voice")

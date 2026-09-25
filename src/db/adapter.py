@@ -23,6 +23,7 @@ from typing import Any
 
 from sqlalchemy import (
     and_,
+    case,
     delete,
     desc,
     exists,
@@ -6398,6 +6399,30 @@ class DatabaseAdapter:
             result = await session.execute(stmt)
             return [self._transcript_to_dict(row) for row in result.scalars()]
 
+    async def list_transcripts_for_media_ids(
+        self, media_ids: Collection[str], *, account_id: int
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Every transcript row for a page of media ids, newest first per media.
+
+        One query for the whole page, so the message list carries its
+        transcripts without a request per bubble. Media with no rows are
+        absent from the result.
+        """
+        wanted = sorted({m for m in media_ids if isinstance(m, str) and m})
+        if not wanted:
+            return {}
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(wanted)))
+                .order_by(MediaTranscript.id.desc())
+            )
+            result = await session.execute(stmt)
+            by_media: dict[str, list[dict[str, Any]]] = {}
+            for row in result.scalars():
+                by_media.setdefault(row.media_id, []).append(self._transcript_to_dict(row))
+            return by_media
+
     async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
         """One transcript row by id, or None."""
         async with self.db_manager.async_session_factory() as session:
@@ -6417,9 +6442,14 @@ class DatabaseAdapter:
         process died between the insert and the submit; the row is reused),
         or is ``failed`` while fewer than three failed rows exist for it. A
         ``done`` or ``skipped`` newest row ends the loop for that media.
-        Newest download first, at most ``per_run`` rows. Each result carries
-        the media columns and ``transcript``: the newest row's id, status and
-        job_id, or None.
+
+        A ``queued`` row with no ``job_id`` and no ``preset`` is a user's
+        ask-now from the viewer, which never knows the preset: the backup
+        fills it when it picks the row up. Such a row qualifies at once and
+        sorts first, so the next drain sends it first. Then newest download
+        first, at most ``per_run`` rows. Each result carries the media
+        columns and ``transcript``: the newest row's id, status and job_id,
+        or None.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t})
         if not wanted or per_run <= 0:
@@ -6443,6 +6473,7 @@ class DatabaseAdapter:
             .correlate(Media)
             .scalar_subquery()
         )
+        asked_now = and_(newest.status == "queued", newest.job_id.is_(None), newest.preset.is_(None))
         stmt = (
             select(Media, newest.id, newest.status, newest.job_id)
             .outerjoin(
@@ -6456,12 +6487,17 @@ class DatabaseAdapter:
                     Media.type.in_(wanted),
                     or_(
                         newest.id.is_(None),
+                        asked_now,
                         and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
                         and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
                     ),
                 )
             )
-            .order_by(nulls_last(Media.download_date.desc()), Media.id.desc())
+            .order_by(
+                case((asked_now, 0), else_=1),
+                nulls_last(Media.download_date.desc()),
+                Media.id.desc(),
+            )
             .limit(per_run)
         )
         async with self.db_manager.async_session_factory() as session:
