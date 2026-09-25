@@ -58,7 +58,7 @@ Open or closed is remembered per message in `localStorage`. The chat header menu
 
 ### Search hits
 
-A search that matches inside a transcript returns the message with `matched_in: "transcript"`. The viewer expands that bubble and highlights the matched words. Chat search, which runs through [`get_messages`](../src/db/adapter.py#L4711) from the [messages route](../src/web/main.py#L2920), and [global search](../src/web/main.py#L1987) both gain this. Without FTS5 in the SQLite build, chat search falls back to an ILIKE on `messages.text` at [adapter.py](../src/db/adapter.py#L4716) and transcripts are not searchable there; the transcript predicate needs the index on both databases.
+A search that matches inside a transcript returns the message with `matched_in: "transcript"`. The viewer expands that bubble and highlights the matched words. Chat search, which runs through [`get_messages_paginated`](../src/db/adapter.py#L4637) from the [messages route](../src/web/main.py#L2920), and [global search](../src/web/main.py#L1987) both gain this. Without FTS5 in the SQLite build, chat search falls back to an ILIKE on `messages.text` at [adapter.py](../src/db/adapter.py#L4716) and transcripts are not searchable there; the transcript predicate needs the index on both databases.
 
 ### The nudge when no server is configured
 
@@ -89,7 +89,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_TYPES` | `voice,video_note` | B | Media types to transcribe. `audio` and `video` are opt-in because music and long videos are wasted work by default |
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
-| `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Empty means poll only |
+| `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_host_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media rows one drain submits, newest first |
 
@@ -136,14 +136,13 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 | `confidence` | float | Nullable |
 | `duration_s` | float | |
 | `job_id` | string | The server's job id. NULL until submitted, and always NULL for synchronous servers and for `skipped` rows |
-| `attempts` | integer | How many times the drain has submitted this row |
 | `status` | string(16) | `queued`, `running`, `done`, `failed`, `skipped` |
 | `error` | text | Reason for `failed` or `skipped` |
 | `requested_at` | datetime | |
 | `completed_at` | datetime | Nullable |
 | `created_at` | datetime | Row insert time |
 
-Unique index on `(account_id, media_id, job_id)`. Plain indexes on `(account_id, media_id)`, `idempotency_key` and `status`. Rows with `job_id` NULL, which is every `skipped` row and every synchronous-server row, are outside the unique index; for them the drain's insert-if-absent is the only duplicate guard, and it checks the newest row's status before inserting.
+Unique index on `(account_id, media_id, job_id)`. A partial unique index on `(account_id, media_id)` where `status IN ('queued', 'running')`, which both databases support, so the ask-now route in the viewer and the drain in the backup can never leave two open rows for one media even when they race across processes. Plain indexes on `(account_id, media_id)`, `idempotency_key` and `status`. `skipped` rows and synchronous-server rows have `job_id` NULL and are outside the first unique index; for them the drain's insert-if-absent is the duplicate guard, and it checks the newest row's status before inserting. The parity snapshot compares columns and uniqueness, so the partial index passes it.
 
 There is no foreign key to `media` on purpose. [`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows, and the [composite cascade on media](../src/db/models.py#L415) is inert on SQLite in any case, so a hard key would either block that cleanup or silently drop transcripts on PostgreSQL. The viewer joins on `(account_id, media_id)` first and falls back to `idempotency_key` against the surviving row's `content_hash`, so a transcript whose media row was replaced by its twin reattaches.
 
@@ -162,7 +161,7 @@ The messages table already has full-text search, SQLite FTS5 with triggers and a
 
 A second probe in the shape of [`_fts_ready`](../src/db/adapter.py#L4586) reports whether the transcript objects exist, so a database migrated to 031 and not yet to 032 keeps searching messages only.
 
-Global search does not OR a transcript `EXISTS` into [`_text_search_predicate`](../src/db/adapter.py#L4614). [`_global_search_hit_count`](../src/db/adapter.py#L4516), [`_global_search_walk`](../src/db/adapter.py#L4526) and [`_global_search_sorted_hits`](../src/db/adapter.py#L4550) page through the GIN index by key, and an `EXISTS` on another table would turn every page into a scan. Instead [`search_messages_global`](../src/db/adapter.py#L4375) builds its hit set as a UNION of two indexed key sets: message keys from the messages index, and message keys reached from transcript hits through `media` on `(account_id, media_id)`. `matched_in` is derived from which side produced the key, and a key on both sides reports `message`. Chat search in [`get_messages`](../src/db/adapter.py#L4711) uses the same union on its smaller, per-chat set.
+Global search does not OR a transcript `EXISTS` into [`_text_search_predicate`](../src/db/adapter.py#L4614). [`_global_search_hit_count`](../src/db/adapter.py#L4516), [`_global_search_walk`](../src/db/adapter.py#L4526) and [`_global_search_sorted_hits`](../src/db/adapter.py#L4550) page through the GIN index by key, and an `EXISTS` on another table would turn every page into a scan. Instead [`search_messages_global`](../src/db/adapter.py#L4375) builds its hit set as a UNION of two indexed key sets: message keys from the messages index, and message keys reached from transcript hits through `media` on `(account_id, media_id)`. `matched_in` is derived from which side produced the key, and a key on both sides reports `message`. Chat search in [`get_messages_paginated`](../src/db/adapter.py#L4637) uses the same union on its smaller, per-chat set.
 
 ### What this feature deletes, overwrites and forgets
 
@@ -175,7 +174,7 @@ Deletes: nothing on its own. The removal paths that already exist take the trans
 
 [`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows only; the transcripts stay and reattach by hash.
 
-Overwrites: `status` advances and `attempts` counts up. Every other column is written once, when the row is created or when the result arrives into empty columns. A re-transcription with another preset, another engine or a user click is a new row.
+Overwrites: `status` advances. Every other column is written once, when the row is created or when the result arrives into empty columns. A re-transcription with another preset, another engine or a user click is a new row.
 
 Forgets: the audio the server holds. akou deletes the uploaded audio and its copy of the result after its retention window. The archive keeps its own row.
 
@@ -195,7 +194,10 @@ WHERE m.downloaded = 1
   AND m.type IN (:types)
   AND (t.id IS NULL
        OR (t.status = 'queued' AND t.job_id IS NULL AND t.requested_at < :ten_minutes_ago)
-       OR (t.status = 'failed' AND t.attempts < 3))
+       OR (t.status = 'failed'
+           AND (SELECT COUNT(*) FROM media_transcripts
+                WHERE account_id = m.account_id AND media_id = m.id
+                  AND status = 'failed') < 3))
 ORDER BY m.id DESC
 LIMIT :per_run
 ```
@@ -210,8 +212,8 @@ The backup process owns the drain. It runs at the end of [`backup_all`](../src/t
 
 1. Detect the server. `GET {TRANSCRIPTION_URL}/v1/server` once per run. The backup reads `name`, `version` and `capabilities.jobs` and ignores any other field or flag it does not know. `name: "akou"` with `capabilities.jobs` true selects the job path; any other answer or a 404 selects the synchronous path. The name and version go into `app_settings` for the viewer's settings row.
 2. Reconcile. On the job path, `GET /v1/events?after=<cursor>` with the cursor stored in [`app_settings`](../src/db/models.py#L765) under `transcription.events_cursor`. Every `transcription.completed` or `transcription.failed` event whose row is not yet `done` or `failed` gets written now. A `transcription.cancelled` event stores `failed` with reason `cancelled`, and the drain query retries it. Any event type the backup does not know is skipped and the cursor still advances past it. This is what makes an unreachable callback URL harmless.
-3. Poll stragglers. Rows `queued` or `running` with a `job_id` older than ten minutes get `GET /v1/jobs/{id}`. The poll stops after the server's retention window; a row still open after `retain_days` is marked `failed` with reason `expired`, and the drain query then retries it.
-4. Submit. Run the drain query, insert-if-absent a `queued` row per media with `job_id` NULL and `attempts` plus one, and send.
+3. Poll stragglers. Rows `queued` or `running` with a `job_id` older than ten minutes get `GET /v1/jobs/{id}`, and `GET /v1/jobs/{id}/result` when the status is `done`. The poll stops after the server's retention window; a row still open after `retain_days` is marked `failed` with reason `expired`, and the drain query then retries it.
+4. Submit. Run the drain query, insert-if-absent a `queued` row per media with `job_id` NULL, and send. A submit that fails after the client's attempts marks that row `failed` with reason `submit_failed`, so it counts toward the cap of three failed rows per media. A process that dies between the insert and the submit leaves the row `queued` with `job_id` NULL; the ten-minute branch of the drain query resubmits on that same row, since nothing was stored for it, and that path has no cap because it adds no rows.
 
 Media longer than `TRANSCRIPTION_MAX_SECONDS`, by the `duration` the archive already stores, gets a `skipped` row with the reason and is never sent.
 
@@ -232,7 +234,7 @@ callback_url=<TRANSCRIPTION_CALLBACK_URL, if set>
 metadata={"content_hash": "<sha256>"}
 ```
 
-The file comes from [`resolve_stored_media_path`](../src/web/media_utils.py#L67). akou answers `202 {id, status, links}` for a new job, or `200` with the existing job in whatever state it is when it has seen the same key and the same file before, so a drain that runs twice, or an archive that holds the same audio under two media rows, never pays twice and never sees a conflict. The row stores `job_id` and moves to `running` when the server says so. `metadata` carries the hash and nothing else, so the same audio under two media rows shares one job and the callback fills both rows.
+The file comes from [`resolve_stored_media_path`](../src/web/media_utils.py#L67). akou answers `202 {id, status, links}` for a new job, or `200` with the existing job in whatever state it is when it has seen the same key and the same file before, so a drain that runs twice, or an archive that holds the same audio under two media rows, never pays twice and never sees a conflict. The row stores `job_id` and moves to `running` when the server says so. When the answer is a `200` whose status is already `done`, the completed event is behind the cursor and no callback will come, so the drain fetches `GET /v1/jobs/{id}/result` at once and stores the row. `metadata` carries the hash and nothing else, so the same audio under two media rows shares one job and the callback fills both rows.
 
 The HTTP client has the same shape as [`EventWebhookSender`](../src/event_webhook.py#L89), httpx with a bounded number of attempts and no redirects, but its own timeouts: that sender is fire-and-forget with three attempts of five seconds each, while the drain awaits an upload with a 120 second timeout and, on the synchronous path, waits up to 600 seconds for the answer. No URL or body is logged.
 
@@ -251,7 +253,7 @@ file=<bytes> model=<preset or "whisper-1"> response_format=verbose_json timestam
 
 Three writers, one row:
 
-- The callback. akou posts to `TRANSCRIPTION_CALLBACK_URL`. The viewer route verifies it, fills every `queued` or `running` row whose `idempotency_key` equals `data.metadata.content_hash`, sets `done` or `failed`, and pushes realtime.
+- The callback. akou posts to `TRANSCRIPTION_CALLBACK_URL`. The viewer route verifies it, fills every `queued` or `running` row whose `idempotency_key` equals `data.metadata.content_hash`, sets `done` or `failed`, and pushes realtime. A body over 256 KB carries `data.result_url` instead of the text; the viewer never calls out, so the route then writes nothing and leaves the row `running` for the backup, whose straggler poll fetches `GET /v1/jobs/{id}/result` for any row the server reports `done`.
 - The reconcile step of the next drain, for anything the callback did not deliver.
 - The straggler poll.
 
@@ -338,5 +340,5 @@ Each slice is one PR, ships on its own, and leaves the archive working if the ne
 
 - The contract names two compose files. This repository has one, [docker-compose.yml](../docker-compose.yml), with the PostgreSQL variant as a commented block inside it. The optional akou service goes in as another commented block in that file.
 - `TRANSCRIPTION_TYPES` including `audio` sends every music file a chat shares. The default excludes it. A per-chat override would fit the existing chat filtering model but is not in scope.
-- The ask-now route and the drain can both insert for the same media. Both use insert-if-absent against the newest row, so the outcome is one `queued` row either way, and the server's idempotency key makes a double submit return the same job.
+- The ask-now route and the drain can both insert for the same media from two processes. The partial unique index on open rows makes the second insert fail, and the loser treats that as success. The server's idempotency key makes a double submit return the same job.
 - Telegram's own transcription through `messages.transcribeAudio` is not part of this design. It needs a Premium account or the weekly free quota, returns text only, and would be a fourth `source` value with no other change.
