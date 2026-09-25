@@ -89,7 +89,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_TYPES` | `voice,video_note` | B | Media types to transcribe. `audio` and `video` are opt-in because music and long videos are wasted work by default |
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
-| `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_host_not_allowed`, which the drain logs once per run. Empty means poll only |
+| `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media rows one drain submits, newest first |
 
