@@ -694,7 +694,8 @@ class AkouServer(FakeServer):
 
     # -- what the tests drive -------------------------------------------------
 
-    def add_job(self, content_hash: str, status: str = "running", audio: bytes = AUDIO) -> str:
+    def add_job(self, content_hash: str, status: str = "running", audio: bytes = AUDIO, key: str | None = None) -> str:
+        """A job for ``content_hash``, found again by ``key`` (the hash unless the submit sent another)."""
         self.issued += 1
         job_id = f"job_{self.issued:04d}"
         self.jobs[job_id] = {
@@ -703,7 +704,7 @@ class AkouServer(FakeServer):
             "file_sha": hashlib.sha256(audio).hexdigest(),
             "error": None,
         }
-        self.by_key[content_hash] = job_id
+        self.by_key[key or content_hash] = job_id
         return job_id
 
     def finish(self, job_id: str, *, text: str = "hola desde akou", emit: bool = True) -> None:
@@ -817,7 +818,7 @@ class AkouServer(FakeServer):
             if self.jobs[job_id]["file_sha"] != file_sha:
                 return httpx.Response(422, json={"error": "idempotency_conflict", "message": "another file"})
             return httpx.Response(200, json=self._job_answer(job_id))
-        job_id = self.add_job(json.loads(fields["metadata"])["content_hash"], status="queued")
+        job_id = self.add_job(json.loads(fields["metadata"])["content_hash"], status="queued", key=key)
         return httpx.Response(202, json=self._job_answer(job_id))
 
 
@@ -1072,6 +1073,86 @@ class TestJobPath:
             [row] = await _rows(real_adapter, media_id)
             assert (row["status"], row["text"]) == ("done", "un audio, dos mensajes")
         assert sorted(c.args[2]["media_id"] for c in notifier.notify.await_args_list) == ["m_1_voice", "m_2_voice"]
+
+    async def test_a_twin_row_never_submitted_fills_from_the_same_event(self, real_adapter, tmp_path):
+        """The per-run cap sent one media; the twin's queued row, with no job id yet, fills from its job."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 3))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 2))
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_backfill_per_run=1)
+        assert (await _akou_drain(config, real_adapter, server))["submitted"] == 1
+        twin = await real_adapter.enqueue_media_transcript(
+            "m_2_voice", account_id=1, idempotency_key=SHA, preset="auto"
+        )
+        assert (twin["status"], twin["job_id"]) == ("queued", None)
+
+        server.finish("job_0001", text="un envío, dos filas")
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["reconciled"] == 2
+        for media_id in ("m_1_voice", "m_2_voice"):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["text"], row["job_id"]) == ("done", "un envío, dos filas", "job_0001")
+        assert len(server.submits) == 1
+
+    async def test_a_retry_after_a_cancelled_job_gets_a_new_job(self, real_adapter, tmp_path):
+        """akou answers the same job for the same key in any state, so a retry sends ``<sha256>.<n>``."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        server.cancel("job_0001")
+
+        stats = await _akou_drain(config, real_adapter, server)
+        assert (stats["reconciled"], stats["submitted"]) == (1, 1)
+        assert list(server.jobs) == ["job_0001", "job_0002"]
+        assert [r.headers["idempotency-key"] for r in server.submits] == [SHA, f"{SHA}.1"]
+        fields = dict(_PART.findall(server.submits[-1].content.decode("latin-1")))
+        assert json.loads(fields["metadata"]) == {"content_hash": SHA}
+        newest, cancelled = await _rows(real_adapter, "m_1_voice")
+        assert (cancelled["status"], cancelled["error"], cancelled["job_id"]) == ("failed", "cancelled", "job_0001")
+        assert (newest["status"], newest["job_id"], newest["idempotency_key"]) == ("queued", "job_0002", SHA)
+
+        # The new job's event carries the bare hash and fills the new row.
+        server.finish("job_0002", text="segundo intento")
+        await _akou_drain(config, real_adapter, server)
+        newest = (await _rows(real_adapter, "m_1_voice"))[0]
+        assert (newest["status"], newest["text"]) == ("done", "segundo intento")
+
+    async def test_the_cursor_moves_only_after_the_page_is_stored(self, real_adapter, tmp_path):
+        """A crash between two fills of one page re-reads the page; nothing is skipped or written twice."""
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        before = await real_adapter.get_transcription_events_cursor()
+        server.finish(server.by_key["1" * 64], text="primera")
+        server.finish(server.by_key["2" * 64], text="segunda")
+
+        real_fill = real_adapter.fill_open_transcripts_by_key
+        calls = 0
+
+        async def second_fill_crashes(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("the database went away")
+            return await real_fill(*args, **kwargs)
+
+        with (
+            patch.object(real_adapter, "fill_open_transcripts_by_key", new=second_fill_crashes),
+            pytest.raises(RuntimeError),
+        ):
+            await _akou_drain(config, real_adapter, server)
+        assert await real_adapter.get_transcription_events_cursor() == before
+        assert (await _rows(real_adapter, "m_2_voice"))[0]["status"] == "queued"
+
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["reconciled"] == 1  # the first event was stored already and writes nothing again
+        for media_id, text in (("m_1_voice", "primera"), ("m_2_voice", "segunda")):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["text"]) == ("done", text)
+        assert await real_adapter.get_transcription_events_cursor() == "2"
 
     async def test_a_server_without_jobs_keeps_the_synchronous_path(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -1446,6 +1527,20 @@ class TestCallbackRoute:
             },
         }
         assert "llegó" not in json.dumps(payload)
+
+    async def test_a_twin_row_never_submitted_fills_from_the_callback(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        await _media(real_adapter, tmp_path, "m_2_voice")
+        twin = await real_adapter.enqueue_media_transcript(
+            "m_2_voice", account_id=1, idempotency_key=SHA, source="akou"
+        )
+        assert twin["job_id"] is None
+        body, headers = _delivery(_akou_result("job_0001", SHA, "dos filas, un callback"))
+        assert (await _post(body, headers)).status_code == 204
+        for media_id in ("m_1_voice", "m_2_voice"):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["text"], row["job_id"]) == ("done", "dos filas, un callback", "job_0001")
+        assert callback_route.await_count == 2
 
     async def test_a_stale_timestamp_is_refused(self, real_adapter, tmp_path, callback_route):
         await _running_row(real_adapter, tmp_path)

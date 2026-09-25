@@ -100,6 +100,15 @@ async def _seed_three(adapter) -> None:
     await _voice(adapter, 4, "nothing relevant", text="nor here", minutes=4)
 
 
+async def _seed_lighthouse(adapter) -> None:
+    """Message 5's media was transcribed twice and both takes match; message 4 once."""
+    await _chat(adapter)
+    await _voice(adapter, 4, "lighthouse keeper", minutes=4)
+    media_id = await _voice(adapter, 5, "lighthouse keeper", minutes=5)
+    again = await adapter.enqueue_media_transcript(media_id, account_id=1, force=True)
+    await adapter.fill_media_transcript(again["id"], status="done", text="the lighthouse keeper")
+
+
 class TestGlobalSearch:
     async def test_a_transcript_only_match_is_found_and_says_where(self, real_adapter):
         await _seed_three(real_adapter)
@@ -127,6 +136,17 @@ class TestGlobalSearch:
         payload = await _global(real_adapter, "lighthouse", limit=1)
         assert _hits(payload["results"]) == [(5, "transcript")]
         assert payload["has_more"] is False
+
+    async def test_both_paths_count_messages_when_one_media_has_two_matching_transcripts(self, real_adapter):
+        """The walk cuts each side to ``offset + limit + 1`` keys; a repeated key must not use that depth up."""
+        await _seed_lighthouse(real_adapter)
+        async with real_adapter.db_manager.async_session_factory() as session:
+            predicate = await real_adapter._text_search_predicate(session, "lighthouse")
+            transcripts = await real_adapter._transcript_search_predicate(session, "lighthouse")
+            assert transcripts is not None
+            for path in (real_adapter._global_search_walk, real_adapter._global_search_sorted_hits):
+                rows = await path(session, predicate, UNRESTRICTED, 1, 0, transcript_predicate=transcripts)
+                assert [(row["id"], row["via_transcript"]) for row in rows] == [(5, 1), (4, 1)], path.__name__
 
     async def test_an_unfinished_transcript_matches_nothing(self, real_adapter):
         await _chat(real_adapter)
@@ -167,8 +187,13 @@ class TestChatSearch:
         await _chat(real_adapter)
         await _chat(real_adapter, OTHER_CHAT)
         await _chat(real_adapter, account_id=2)
+        # Each foreign hit shares its message id with a message of this chat
+        # that does not match, so a hit key that lost its chat or account
+        # bound would name that message and show up here.
         await _voice(real_adapter, 1, "quarantine rules", chat_id=OTHER_CHAT)
+        await _voice(real_adapter, 1, "nothing relevant")
         await _voice(real_adapter, 2, "quarantine rules", account_id=2)
+        await _voice(real_adapter, 2, "nor here", minutes=2)
         await _voice(real_adapter, 3, "quarantine here", minutes=3)
         assert _hits(await _chat_search(real_adapter, "quarantine")) == [(3, "transcript")]
 
@@ -226,6 +251,18 @@ class TestPostgres:
             rest = await _global(real_adapter, "harbour", limit=4, offset=4, dense_hits=dense_hits)
             assert _hits(first["results"]) + _hits(rest["results"]) == expected, dense_hits
             assert (first["has_more"], rest["has_more"]) == (True, False), dense_hits
+
+    async def test_the_walk_reaches_every_message_behind_a_twice_transcribed_one(self, real_adapter):
+        await _seed_lighthouse(real_adapter)
+        for dense_hits in (1, 1000):
+            walked, offset = [], 0
+            while True:
+                page = await _global(real_adapter, "lighthouse", limit=1, offset=offset, dense_hits=dense_hits)
+                walked.extend(_hits(page["results"]))
+                if not page["has_more"]:
+                    break
+                offset += 1
+            assert walked == [(5, "transcript"), (4, "transcript")], dense_hits
 
     async def test_the_hit_count_counts_messages_not_matches(self, real_adapter):
         await _seed_three(real_adapter)
@@ -312,3 +349,12 @@ def test_the_marks_reach_the_transcript_text() -> None:
     opener = opener[: opener.index("\n                }\n")]
     assert "row.matched_in === 'transcript'" in opener
     assert "{ query, messageId: row.id, transcript: true }" in opener
+
+
+def test_a_transcript_hit_says_why_it_matched_in_the_sidebar() -> None:
+    """A voice message usually has no text, so its snippet alone would be empty."""
+    html = _html()
+    row = html[html.index('<span v-html="searchSnippetHtml(row.text)"></span>') :]
+    row = row[: row.index("</p>")]
+    assert "<span v-if=\"row.matched_in === 'transcript'\"" in row
+    assert "Matched in the transcript" in row

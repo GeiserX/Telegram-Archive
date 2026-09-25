@@ -356,6 +356,12 @@ services:
   # settings, the API key for TRANSCRIPTION_API_KEY and the whsec_ secret for
   # TRANSCRIPTION_WEBHOOK_SECRET.
   #
+  # akou's server image is not published yet, so this block cannot start
+  # until it is; pin whichever semver tag ships it. In a container akou must
+  # listen beyond loopback, and it refuses to unless its settings say a proxy
+  # fronts it: set api.bind to 0.0.0.0 and server.behind_proxy to true (see
+  # akou's docs/install.md).
+  #
   # akou:
   #   image: geiserx/akou:0.2.0
   #   container_name: akou

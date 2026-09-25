@@ -1,0 +1,240 @@
+"""The akou contract in one place: the event page, a job's outcome, the webhook signature.
+
+The backup (``src/transcription.py``) and the viewer's callback route
+(``src/web/main.py``) both read these. Standard library only, on purpose:
+the viewer image installs the ``viewer-runtime`` dependency group, which
+has no HTTP client, and copies this file but not ``transcription.py``.
+
+Where akou's documents leave a shape open, the shape assumed here is
+written once: the event page in ``parse_events_page``, a job's outcome in
+``job_outcome`` and ``_failure_reason``, and the per-attempt
+``Idempotency-Key`` in ``attempt_key``. ``ServerInfo.retain_days`` and
+``_error_code`` in ``transcription.py`` are the other two.
+"""
+
+import base64
+import binascii
+import hashlib
+import hmac
+import re
+import time
+from typing import Any
+
+# ``media_transcripts.source`` of the akou job path.
+SOURCE_AKOU = "akou"
+
+# The event types of akou's feed and callback (SERVER.md SV-E1). Any other
+# type is skipped and the cursor still moves past it.
+EVENT_COMPLETED = "transcription.completed"
+EVENT_FAILED = "transcription.failed"
+EVENT_CANCELLED = "transcription.cancelled"
+
+# A refused request's error code is stored and logged only when it looks
+# like one of akou's snake_case codes; anything else becomes ``HTTP <code>``.
+_SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+# The Standard Webhooks rules of the callback (SERVER.md SV-E2).
+WEBHOOK_TOLERANCE_SECONDS = 5 * 60
+WEBHOOK_SECRET_PREFIX = "whsec_"
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def parse_events_page(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """One page of ``GET /v1/events``: the events and the cursor to read after them.
+
+    Assumed body, since SV-E1 names only "the key's events after the
+    cursor, oldest first, with the next cursor":
+    ``{"events": [{"id", "type", "timestamp", "data"}, ...], "next_cursor": "<opaque>"}``.
+    The cursor is opaque and stored as a string (an integer is accepted and
+    stringified). Without ``next_cursor`` the last event's ``id`` is the
+    cursor; with neither, None, and the stored cursor stays where it is.
+    """
+    events = payload.get("events")
+    events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+    cursor = payload.get("next_cursor")
+    if isinstance(cursor, int) and not isinstance(cursor, bool):
+        cursor = str(cursor)
+    if not isinstance(cursor, str) or not cursor:
+        last_id = events[-1].get("id") if events else None
+        cursor = last_id if isinstance(last_id, str) and last_id else None
+    return events, cursor
+
+
+def flat_job(job: dict[str, Any]) -> dict[str, Any]:
+    """A job answer in the flat shape of the result route and the webhook ``data``.
+
+    ``POST /v1/jobs`` and ``GET /v1/jobs/{id}`` answer ``{id, status, ...}``
+    with any result nested under ``result``; the result route and the
+    webhook carry the result fields flat beside ``job_id``, ``status`` and
+    ``metadata``. Everything downstream reads the flat shape.
+    """
+    result = job.get("result")
+    flat = dict(result) if isinstance(result, dict) else {}
+    flat["job_id"] = job.get("id") if isinstance(job.get("id"), str) else job.get("job_id")
+    flat["status"] = job.get("status")
+    for name in ("error", "metadata"):
+        if name in job and name not in flat:
+            flat[name] = job[name]
+    return flat
+
+
+def _failure_reason(data: dict[str, Any]) -> str:
+    """The stored reason of a failed job: akou's error code when it looks like one, else ``failed``."""
+    error = data.get("error")
+    code = error.get("code") if isinstance(error, dict) else error
+    if isinstance(code, str) and _SAFE_CODE.fullmatch(code):
+        return code
+    return "failed"
+
+
+def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> tuple[str, dict[str, Any]] | None:
+    """A job's flat result or event data as ``(row status, columns)``; None while it is still open.
+
+    ``done`` maps the SV-J4 fields onto the row: text, language and its
+    confidence, duration, words ``[{w, s, e, c}]``, segments
+    ``[{s, e, text, speaker}]``, the mean confidence and ``engine.models``.
+    ``engine_name`` is ``akou``, the server, like the synchronous path; the
+    ASR model is in ``models``. ``failed`` stores akou's error code as the
+    reason and ``cancelled`` stores ``cancelled``; the drain query retries
+    both. A ``done`` without inline ``text`` (the callback's ``result_url``
+    form) returns None: the caller fetches the result route or leaves the
+    row for the backup.
+    """
+    status = data.get("status")
+    if status == "failed":
+        return "failed", {"error": _failure_reason(data), "source": SOURCE_AKOU}
+    if status == "cancelled":
+        return "failed", {"error": "cancelled", "source": SOURCE_AKOU}
+    if status != "done" or not isinstance(data.get("text"), str):
+        return None
+    engine = data.get("engine") if isinstance(data.get("engine"), dict) else {}
+    raw_models = engine.get("models")
+    models = [m for m in raw_models if isinstance(m, str)] if isinstance(raw_models, list) else []
+    words = [
+        {"w": w.get("w"), "s": _number(w.get("s")), "e": _number(w.get("e")), "c": _number(w.get("c"))}
+        for w in data.get("words") or []
+        if isinstance(w, dict)
+    ]
+    segments = [
+        {
+            "s": _number(seg.get("s")),
+            "e": _number(seg.get("e")),
+            "text": seg.get("text") if isinstance(seg.get("text"), str) else "",
+            "speaker": seg.get("speaker") if isinstance(seg.get("speaker"), str) else None,
+        }
+        for seg in data.get("segments") or []
+        if isinstance(seg, dict)
+    ]
+    language = data.get("language")
+    return "done", {
+        "text": data["text"],
+        "language": language if isinstance(language, str) and language else None,
+        "language_confidence": _number(data.get("language_confidence")),
+        "duration_s": _number(data.get("duration_s")),
+        "confidence": _number(data.get("confidence")),
+        "words": words,
+        "segments": segments,
+        "models": models,
+        "source": SOURCE_AKOU,
+        "engine_name": SOURCE_AKOU,
+        "engine_version": engine_version or None,
+    }
+
+
+def event_data(event: dict[str, Any]) -> dict[str, Any] | None:
+    """An event's ``data`` with the status its type implies; None for a type this client does not know.
+
+    The same body arrives by the callback and by the event feed:
+    ``{type, timestamp, data}`` (SERVER.md SV-E3). The status comes from
+    the type, so a ``transcription.cancelled`` event stores ``cancelled``
+    whatever its data says.
+    """
+    status = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}.get(event.get("type"))
+    data = event.get("data")
+    if status is None or not isinstance(data, dict):
+        return None
+    return {**data, "status": status}
+
+
+def metadata_hash(data: dict[str, Any]) -> str | None:
+    """``data.metadata.content_hash``: the audio's SHA-256 the archive sent with the job."""
+    metadata = data.get("metadata")
+    value = metadata.get("content_hash") if isinstance(metadata, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def webhook_key(secret: Any) -> bytes | None:
+    """The HMAC key of a ``whsec_`` secret: the base64-decoded bytes after the prefix, or None."""
+    if not isinstance(secret, str) or not secret.startswith(WEBHOOK_SECRET_PREFIX):
+        return None
+    try:
+        key = base64.b64decode(secret[len(WEBHOOK_SECRET_PREFIX) :], validate=True)
+    except binascii.Error, ValueError:
+        return None
+    return key or None
+
+
+def verify_webhook(
+    key: bytes, webhook_id: str, timestamp: str, signature: str, body: bytes, *, now: float | None = None
+) -> str | None:
+    """Standard Webhooks verification; None when the delivery is genuine, else the reason.
+
+    The timestamp must be within five minutes of ``now`` in either
+    direction (``stale``). The signature is HMAC-SHA256 over
+    ``{webhook-id}.{webhook-timestamp}.{raw body}``; the header is a
+    space-separated list of ``v1,<base64>`` values, and any one matching
+    accepts, so a rotated secret keeps working during the overlap. Every
+    value is compared in constant time (``bad_signature``).
+    """
+    try:
+        sent_at = int(timestamp)
+    except ValueError:
+        return "stale"
+    if abs((time.time() if now is None else now) - sent_at) > WEBHOOK_TOLERANCE_SECONDS:
+        return "stale"
+    signed = webhook_id.encode() + b"." + timestamp.encode() + b"." + body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest())
+    matched = False
+    for entry in signature.split():
+        version, _, value = entry.partition(",")
+        if version == "v1" and hmac.compare_digest(expected, value.encode("utf-8", "replace")):
+            matched = True
+    return None if matched else "bad_signature"
+
+
+async def apply_job_outcome(
+    db, data: dict[str, Any], *, content_hash: str | None = None, engine_version: str | None = None
+) -> list[dict[str, Any]]:
+    """Store one job's outcome in every open row for its audio; the rows filled.
+
+    The callback, the event feed and the straggler poll all land here, and
+    the adapter's row rule makes a repeat of an outcome already applied
+    write nothing. ``content_hash`` defaults to ``data.metadata.content_hash``.
+    """
+    outcome = job_outcome(data, engine_version=engine_version)
+    key = content_hash or metadata_hash(data)
+    if outcome is None or not key:
+        return []
+    status, columns = outcome
+    job_id = data.get("job_id") if isinstance(data.get("job_id"), str) else None
+    return await db.fill_open_transcripts_by_key(key, job_id=job_id, status=status, **columns)
+
+
+def attempt_key(content_hash: str, earlier_attempts: int) -> str:
+    """The ``Idempotency-Key`` of one submit: the audio's SHA-256, then ``.<n>`` from the second attempt on.
+
+    akou keeps a key as long as its job and answers the same job for the
+    same key in whatever state it is (SV-J2), so a failed or cancelled job
+    would come back on every retry. ``earlier_attempts`` counts this
+    media's rows that already ended ``done`` or ``failed``: a first attempt
+    sends the bare hash, so the same audio under two media rows still
+    shares one job, and every later attempt names a new job. Assumed: akou
+    accepts any opaque string up to 255 characters as a key, since SV-J2
+    names no format.
+    """
+    return content_hash if earlier_attempts <= 0 else f"{content_hash}.{earlier_attempts}"

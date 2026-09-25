@@ -3588,7 +3588,9 @@ class TelegramBackup:
                 logger.warning(f"Failed to delete a YouTube preview video: {type(e).__name__}")
 
         try:
-            deleted_records = await self.db.delete_media_records([r["id"] for r in targets], account_id=self.account_id)
+            deleted_records = await self.db.delete_media_records(
+                [r["id"] for r in targets], account_id=self.account_id, with_transcripts=True
+            )
         except Exception as e:
             # The files are already gone and the rows are not. Stop here rather
             # than reaping blobs against a refcount the surviving rows make

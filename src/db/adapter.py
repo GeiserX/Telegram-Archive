@@ -1588,7 +1588,12 @@ class DatabaseAdapter:
         *,
         account_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Get messages within a date range (None account_id = unscoped until phase 4)."""
+        """Get messages within a date range (None account_id = unscoped until phase 4).
+
+        Each row carries its ``account_id``: unscoped, two accounts' private
+        chats with the same peer share a chat id and message ids, and the
+        export tells them apart by the account.
+        """
         async with self.db_manager.async_session_factory() as session:
             stmt = select(Message)
 
@@ -1608,7 +1613,7 @@ class DatabaseAdapter:
             stmt = stmt.order_by(Message.date.asc())
 
             result = await session.execute(stmt)
-            return [self._message_to_dict(m) for m in result.scalars()]
+            return [{**self._message_to_dict(m), "account_id": m.account_id} for m in result.scalars()]
 
     async def find_message_by_date(
         self, chat_id: int, target_date: datetime, *, account_id: int | None = None
@@ -2395,7 +2400,10 @@ class DatabaseAdapter:
                 lower_media.chat_id == Message.chat_id,
                 lower_media.message_id == Message.id,
                 lower_media.account_id < Message.account_id,
-                select(literal(1)).where(*lower_transcript_match).exists(),
+                # Correlated by name: auto-correlation reaches one level up only,
+                # and this EXISTS sits two levels below the transcript row whose
+                # text it compares, so without it the text rule matched any row.
+                select(literal(1)).where(*lower_transcript_match).correlate(MediaTranscript, lower_media).exists(),
             ]
 
             deleted_stmt = deleted_stmt.where(
@@ -3081,12 +3089,19 @@ class DatabaseAdapter:
             )
         return records
 
-    async def delete_media_records(self, media_ids: Collection[str], *, account_id: int) -> int:
+    async def delete_media_records(
+        self, media_ids: Collection[str], *, account_id: int, with_transcripts: bool = False
+    ) -> int:
         """Delete specific media rows by id. Returns how many were removed.
 
         A media id repeats across accounts (``{chat}_{msg}_{type}``), so the
         account leads the predicate here exactly as it does in
         ``increment_media_download_attempts``.
+
+        ``with_transcripts`` also deletes the transcript rows of those media.
+        Only the flag-gated ``YOUTUBE_VIDEOS_DELETE_EXISTING`` cleanup passes
+        it; the pending-twin cleanup, which runs on every backup, removes the
+        media row only, the way ``delete_voice_note_audio_twins`` does.
         """
         ids = list(media_ids)
         if not ids:
@@ -3097,11 +3112,12 @@ class DatabaseAdapter:
             # and a large archive can exceed that in one cleanup pass.
             for start in range(0, len(ids), 500):
                 chunk = ids[start : start + 500]
-                await session.execute(
-                    delete(MediaTranscript).where(
-                        and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(chunk))
+                if with_transcripts:
+                    await session.execute(
+                        delete(MediaTranscript).where(
+                            and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(chunk))
+                        )
                     )
-                )
                 stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(chunk)))
                 result = await session.execute(stmt)
                 deleted += result.rowcount or 0
@@ -3124,9 +3140,9 @@ class DatabaseAdapter:
         the very same ``file_path``, so the file stays referenced by the row that
         remains. Returns the number of rows deleted.
 
-        Transcripts are left alone: the voice twin carries the same audio, so
-        a transcript of the removed row reattaches to it by hash
-        (docs/TRANSCRIPTION.md).
+        Transcripts are left alone: a transcript of the removed row stays in
+        its table, shown nowhere, and the voice twin gets its own on the next
+        drain (docs/TRANSCRIPTION.md).
         """
         twin = aliased(Media)
         async with self.db_manager.async_session_factory() as session:
@@ -4705,6 +4721,9 @@ class DatabaseAdapter:
         The message side reads ``messages`` through its own index. The
         transcript side reads ``media_transcripts`` through its index and
         reaches the message through ``media``. Both are scoped the same way.
+        The transcript side is DISTINCT: a media transcribed twice, or a
+        message with two transcribed media, is one key, so a side cut to
+        ``offset + limit + 1`` rows by the walk holds that many messages.
         """
         stmt = select(
             Message.account_id,
@@ -4714,7 +4733,7 @@ class DatabaseAdapter:
             literal_column("1" if via_transcript else "0").label("via_transcript"),
         )
         if via_transcript:
-            stmt = self._transcript_hit_messages(stmt)
+            stmt = self._transcript_hit_messages(stmt).distinct()
         else:
             stmt = stmt.select_from(Message)
         return self._global_search_scoped(stmt.where(predicate), scope, fold_shared=fold_shared)
@@ -6739,8 +6758,10 @@ class DatabaseAdapter:
 
         A ``queued`` row with no ``job_id`` and no ``preset`` is a user's
         ask-now from the viewer, which never knows the preset: the backup
-        fills it when it picks the row up. Such a row qualifies at once and
-        sorts first, so the next drain sends it first. Then newest download
+        fills it when it picks the row up. Such a row qualifies at once,
+        whatever its type (the viewer does not know ``types`` and refuses
+        types no server transcribes), and sorts first, so the next drain
+        sends it first. Then newest download
         first, at most ``per_run`` rows. Each result carries the media
         columns and ``transcript``: the newest row's id, status and job_id,
         or None.
@@ -6778,7 +6799,7 @@ class DatabaseAdapter:
                 and_(
                     Media.account_id == account_id,
                     Media.downloaded == 1,
-                    Media.type.in_(wanted),
+                    or_(Media.type.in_(wanted), asked_now),
                     or_(
                         newest.id.is_(None),
                         asked_now,

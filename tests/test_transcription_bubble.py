@@ -385,6 +385,60 @@ def test_attribution_picker_and_settings_row() -> None:
     )
 
 
+def test_a_chat_switch_during_a_request_never_writes_into_the_other_chat() -> None:
+    """Message 7 of chat A and message 7 of chat B are two messages; a late answer for A stays out of B."""
+    _run_node(
+        _script(
+            """
+            transcriptionState.value = { enabled: true, configured: true }
+            const inA = voice(7, []), inB = voice(7, [])
+            let release
+            const held = body => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => body }) })
+            const switchChat = () => { selectedChat.value = { ref: 'refB' }; messages.value = [inB] }
+
+            messages.value = [inA]
+            respond = () => held([done(21, { text: 'chat A words' })])
+            const refreshing = refreshTranscripts(inA)
+            switchChat()
+            release()
+            await refreshing
+            assert.deepEqual(inB.media.transcripts, [])
+            assert.equal(inB.media.transcript, undefined)
+
+            selectedChat.value = { ref: 'refA' }
+            messages.value = [inA]
+            respond = () => held({ id: 22, status: 'queued' })
+            const pressing = pressTranscript(inA)
+            switchChat()
+            release()
+            await pressing
+            assert.deepEqual(inB.media.transcripts, [])
+            assert.equal(transcriptStatus(inB), 'none')
+            assert.deepEqual(toasts, [])
+            """
+        )
+    )
+
+
+def test_a_refused_ask_shows_the_servers_reason() -> None:
+    _run_node(
+        _script(
+            """
+            transcriptionState.value = { enabled: true, configured: true }
+            const msg = voice(3, [])
+            messages.value = [msg]
+            respond = () => ({ ok: false, status: 409, json: async () => ({ detail: 'Not downloaded yet' }) })
+            await pressTranscript(msg)
+            assert.deepEqual(toasts, ['Not downloaded yet'])
+            assert.equal(transcriptStatus(msg), 'none', 'no row, no stroke')
+            respond = () => ({ ok: false, status: 500, json: async () => ({ detail: 'Internal server error' }) })
+            await pressTranscript(msg)
+            assert.deepEqual(toasts, ['Not downloaded yet', 'Could not ask for a transcript'])
+            """
+        )
+    )
+
+
 # ============================================================================
 # Routes, on a real database
 # ============================================================================
@@ -469,6 +523,34 @@ class TestAskNowRoute:
             by_chat = await client.post(f"/api/chats/{await _chat_ref(real_adapter)}/media/1_voice/transcripts")
         assert (by_id.status_code, unknown.status_code, by_chat.status_code) == (404, 404, 404)
         assert await real_adapter.list_media_transcripts("m_1_voice", account_id=1) == []
+
+    async def test_a_media_the_drain_would_never_send_is_a_409_and_no_row(self, real_adapter, viewer):
+        """Not downloaded yet, or a type no server transcribes: its queued row would never move."""
+        await _media(real_adapter, "m_1_voice", downloaded=False)
+        await _media(real_adapter, "m_2_photo", media_type="photo")
+        ref = await _chat_ref(real_adapter)
+        async with _client() as client:
+            pending = [
+                await client.post("/api/media/m_1_voice/transcripts"),
+                await client.post(f"/api/chats/{ref}/media/1_voice/transcripts"),
+            ]
+            photo = [
+                await client.post("/api/media/m_2_photo/transcripts"),
+                await client.post(f"/api/chats/{ref}/media/2_photo/transcripts"),
+            ]
+        assert [resp.status_code for resp in pending + photo] == [409, 409, 409, 409]
+        assert {resp.json()["detail"] for resp in pending} == {"Not downloaded yet"}
+        for media_id in ("m_1_voice", "m_2_photo"):
+            assert await real_adapter.list_media_transcripts(media_id, account_id=1) == []
+
+    async def test_an_asked_type_outside_transcription_types_is_still_sent(self, real_adapter, viewer):
+        """The viewer does not know TRANSCRIPTION_TYPES, so the drain honours the click."""
+        await _media(real_adapter, "m_1_audio", media_type="audio")
+        await _media(real_adapter, "m_2_audio", media_type="audio")
+        async with _client() as client:
+            resp = await client.post("/api/media/m_1_audio/transcripts")
+        assert resp.status_code == 200, resp.text
+        assert await _drain(real_adapter, types=("voice",)) == ["m_1_audio"]
 
     async def test_transcription_off_refuses_and_writes_nothing(self, real_adapter, viewer):
         await _media(real_adapter, "m_1_voice")

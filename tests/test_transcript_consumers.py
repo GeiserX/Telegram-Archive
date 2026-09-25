@@ -100,9 +100,15 @@ class TestDeletePaths:
         assert await real_adapter.delete_media_for_chat(CHAT, account_id=1) == 2
         assert await _transcript_keys(real_adapter) == {(1, ids["other_chat"]), (2, ids["other_account"])}
 
-    async def test_delete_media_records_takes_the_named_media_transcripts_only(self, real_adapter):
+    async def test_delete_media_records_keeps_the_transcripts_unless_asked(self, real_adapter):
+        """The pending-twin cleanup runs on every backup with no flag: the media row goes, its transcript stays."""
         ids = await _seed_for_deletes(real_adapter)
         assert await real_adapter.delete_media_records([ids["a"]], account_id=1) == 1
+        assert (1, ids["a"]) in await _transcript_keys(real_adapter)
+
+    async def test_delete_media_records_with_transcripts_takes_the_named_media_transcripts_only(self, real_adapter):
+        ids = await _seed_for_deletes(real_adapter)
+        assert await real_adapter.delete_media_records([ids["a"]], account_id=1, with_transcripts=True) == 1
         assert await _transcript_keys(real_adapter) == {
             (1, ids["b"]),
             (1, ids["other_chat"]),
@@ -115,7 +121,7 @@ class TestDeletePaths:
         assert await _transcript_keys(real_adapter) == {(1, ids["other_chat"]), (2, ids["other_account"])}
 
     async def test_the_twin_cleanup_keeps_the_transcripts(self, real_adapter):
-        """The audio twin goes; its transcript stays and reattaches to the voice row by hash."""
+        """The audio twin goes; its transcript row stays in the table."""
         audio = await _voice(real_adapter, 5, media_type="audio", file_path="fixture/5.ogg")
         await real_adapter.insert_media(
             {
@@ -169,6 +175,17 @@ class TestChangesFeed:
         await self._complete_at(real_adapter, WHEN)
         assert len(await real_adapter.get_recent_changes()) == 3
 
+    async def test_different_transcripts_of_one_shared_message_are_two_changes(self, real_adapter):
+        """The text names the event: two accounts' different results are two events, not one."""
+        await _voice(real_adapter, 1, "first account words")
+        await _voice(real_adapter, 1, "second account words", account_id=2)
+        await self._complete_at(real_adapter, WHEN)
+        changes = await real_adapter.get_recent_changes()
+        assert sorted((c["kind"], c["text"]) for c in changes) == [
+            ("transcript", "first account words"),
+            ("transcript", "second account words"),
+        ]
+
 
 class TestExports:
     async def test_the_viewer_export_carries_every_row_on_its_message(self, real_adapter):
@@ -194,6 +211,17 @@ class TestExports:
         assert data["statistics"]["total_transcripts"] == 1
         (message,) = data["messages"]
         assert [row["text"] for row in message["transcripts"]] == ["cli words"]
+
+    async def test_the_cli_export_keeps_two_accounts_private_chats_apart(self, real_adapter, tmp_path):
+        """Both accounts hold message 7 of a private chat with the same peer: two conversations."""
+        await _voice(real_adapter, 7, "account one words", chat_id=555, chat_type="private")
+        await _voice(real_adapter, 7, "account two words", chat_id=555, account_id=2, chat_type="private")
+        output = tmp_path / "export.json"
+        await BackupExporter(real_adapter).export_to_json(str(output), chat_id=555)
+        data = json.loads(output.read_text(encoding="utf-8"))
+        assert data["statistics"]["total_transcripts"] == 2
+        by_account = {m["account_id"]: [row["text"] for row in m["transcripts"]] for m in data["messages"]}
+        assert by_account == {1: ["account one words"], 2: ["account two words"]}
 
 
 # ============================================================================

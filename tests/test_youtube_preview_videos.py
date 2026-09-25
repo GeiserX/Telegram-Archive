@@ -430,6 +430,8 @@ class TestCleanupExistingVideos(_AsyncCase):
         self.assertFalse(os.path.exists(blob))
         backup.db.delete_media_records.assert_awaited_once()
         self.assertEqual(sorted(backup.db.delete_media_records.await_args.args[0]), ["r0", "r1", "r2"])
+        # The flag-gated removal takes the transcripts of the media it removes.
+        self.assertIs(backup.db.delete_media_records.await_args.kwargs["with_transcripts"], True)
 
     def test_a_blob_another_row_still_points_at_survives(self):
         """The safety that makes the reap legal at all. One chat's link is

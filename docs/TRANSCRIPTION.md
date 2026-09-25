@@ -144,7 +144,7 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 
 Unique index on `(account_id, media_id, job_id)`. A partial unique index on `(account_id, media_id)` where `status IN ('queued', 'running')`, which both databases support, so the ask-now route in the viewer and the drain in the backup can never leave two open rows for one media even when they race across processes. Plain indexes on `(account_id, media_id)`, `idempotency_key` and `status`. `skipped` rows and synchronous-server rows have `job_id` NULL and are outside the first unique index; for them the drain's insert-if-absent is the duplicate guard, and it checks the newest row's status before inserting. The parity snapshot compares columns and uniqueness, so the partial index passes it.
 
-There is no foreign key to `media` on purpose. [`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows, and the [composite cascade on media](../src/db/models.py#L415) is inert on SQLite in any case, so a hard key would either block that cleanup or silently drop transcripts on PostgreSQL. The viewer joins on `(account_id, media_id)` first and falls back to `idempotency_key` against the surviving row's `content_hash`, so a transcript whose media row was replaced by its twin reattaches.
+There is no foreign key to `media` on purpose. [`delete_voice_note_audio_twins`](../src/db/adapter.py#L3122) removes media rows, and the [composite cascade on media](../src/db/models.py#L415) is inert on SQLite in any case, so a hard key would either block that cleanup or silently drop transcripts on PostgreSQL. The viewer joins on `(account_id, media_id)` only. A transcript whose media row a twin cleanup removed stays in the table and no page, search or export shows it. The surviving row has no transcript of its own, so the next drain sends it; within akou's retention window akou answers with the job it already finished for the same audio, so nothing is transcribed twice.
 
 ### Migration rules
 
@@ -169,10 +169,10 @@ Deletes: nothing on its own. The removal paths that already exist take the trans
 
 - `DELETION_MODE=hard` through [`delete_message`](../src/db/adapter.py#L1723), called from the [listener](../src/listener.py#L702) and the [backup](../src/telegram_backup.py#L2716).
 - `EXCLUDE_DELETE_EXISTING` through [`delete_chat_and_related_data`](../src/db/adapter.py#L4026), called at [telegram_backup.py](../src/telegram_backup.py#L1432).
-- `YOUTUBE_VIDEOS_DELETE_EXISTING` through [`delete_media_records`](../src/db/adapter.py#L2936), called at [telegram_backup.py](../src/telegram_backup.py#L2092).
-- `SKIP_MEDIA_DELETE_EXISTING` through `delete_media_records` and [`delete_media_for_chat`](../src/db/adapter.py#L2848), called at [telegram_backup.py](../src/telegram_backup.py#L3572) and [L3658](../src/telegram_backup.py#L3658).
+- `YOUTUBE_VIDEOS_DELETE_EXISTING` through [`delete_media_records`](../src/db/adapter.py#L3087) with `with_transcripts=True`, called at [telegram_backup.py](../src/telegram_backup.py#L3591).
+- `SKIP_MEDIA_DELETE_EXISTING` through [`delete_media_for_chat`](../src/db/adapter.py#L2998), called at [telegram_backup.py](../src/telegram_backup.py#L3679).
 
-[`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows only; the transcripts stay and reattach by hash. A later removal path takes the rows of the media it removes, so a transcript whose twin row was already gone before a `DELETION_MODE=hard` delete of its message stays behind, reachable by no search or export.
+Two cleanups that run on every backup with no flag remove media rows only and leave their transcripts in the table, shown nowhere, as described under the schema: [`delete_voice_note_audio_twins`](../src/db/adapter.py#L3122), and the pending-twin cleanup at [telegram_backup.py](../src/telegram_backup.py#L2111), which calls `delete_media_records` without `with_transcripts`. A later removal path takes the rows of the media it removes, so a transcript whose twin row was already gone before a `DELETION_MODE=hard` delete of its message stays behind, reachable by no search or export.
 
 Overwrites: `status` advances. Every other column is written once, when the row is created or when the result arrives into empty columns. A re-transcription with another preset, another engine or a user click is a new row.
 
@@ -224,7 +224,7 @@ Before the upload the drain needs the audio's SHA-256. When [`media.content_hash
 ```
 POST {TRANSCRIPTION_URL}/v1/jobs
 Authorization: Bearer <TRANSCRIPTION_API_KEY>
-Idempotency-Key: <sha256>
+Idempotency-Key: <sha256>, or <sha256>.<n> on a retry
 Content-Type: multipart/form-data
 
 file=<the bytes from resolve_stored_media_path>
@@ -235,6 +235,8 @@ metadata={"content_hash": "<sha256>"}
 ```
 
 The file comes from [`resolve_stored_media_path`](../src/web/media_utils.py#L67). akou answers `202 {id, status, links}` for a new job, or `200` with the existing job in whatever state it is when it has seen the same key and the same file before, so a drain that runs twice, or an archive that holds the same audio under two media rows, never pays twice and never sees a conflict. The row stores `job_id` and moves to `running` when the server says so. When the answer is a `200` whose status is already `done`, the completed event is behind the cursor and no callback will come, so the drain fetches `GET /v1/jobs/{id}/result` at once and stores the row. `metadata` carries the hash and nothing else, so the same audio under two media rows shares one job and the callback fills both rows.
+
+akou keeps a key as long as its job, and a failed or cancelled job would come back for the same key on every retry. So the key is the bare hash only on a media's first attempt; when the media already has `n` rows that ended `done` or `failed`, the key is `<sha256>.<n>` and names a new job. `metadata.content_hash` and the `idempotency_key` column stay the bare hash, which is what fills the rows. The key is built in one place, `attempt_key` in [src/transcription_contract.py](../src/transcription_contract.py).
 
 The HTTP client has the same shape as [`EventWebhookSender`](../src/event_webhook.py#L89), httpx with a bounded number of attempts and no redirects, but its own timeouts: that sender is fire-and-forget with three attempts of five seconds each, while the drain awaits an upload with a 120 second timeout and, on the synchronous path, waits up to 600 seconds for the answer. No URL or body is logged.
 
@@ -321,7 +323,7 @@ We do not send chat titles, sender names, message text or ids to the server. `me
 | Chat and global search | `matched_in` on each hit |
 | `/api/changes` at [main.py](../src/web/main.py#L3046) | A `transcript` kind beside the `deleted` and `edited` kinds, dated by `completed_at` and carrying `text` and `language`, so pollers see new transcripts. Like the other kinds it lists one row per event: two accounts holding one channel list its transcript once, matched by text |
 | CLI export in [export_backup.py](../src/export_backup.py#L50) and the viewer export | Every transcript row, all columns, newest first, under `transcripts` on the message whose media it transcribes. Neither export has a media object to put it in, so it sits on the message; the CLI export's `statistics` gains `total_transcripts` |
-| `POST /api/chats/{ref}/media/{message_id}_{type}/transcripts` and `POST /api/media/{media_id}/transcripts` | New. The first is what the button calls to ask now, the second the same for a client that holds the storage id. Inserts a `queued` row with `job_id` NULL and no preset if the newest row is not already `queued` or `running`, and returns the row. The next drain submits it first. The viewer makes no request to the server |
+| `POST /api/chats/{ref}/media/{message_id}_{type}/transcripts` and `POST /api/media/{media_id}/transcripts` | New. The first is what the button calls to ask now, the second the same for a client that holds the storage id. Inserts a `queued` row with `job_id` NULL and no preset if the newest row is not already `queued` or `running`, and returns the row. The next drain submits it first, whatever `TRANSCRIPTION_TYPES` says, since the viewer does not know that list. A media that is not downloaded yet, or whose type is not voice, video_note, audio or video, is a 409 and gets no row, because the drain would never send it. The viewer makes no request to the server |
 | `GET /api/chats/{ref}/media/{message_id}_{type}/transcripts` | New. The bubble's rows, newest first, without the hashes, the job id or the storage media id. What the browser fetches on a realtime event |
 | `GET /api/transcription/status` | New. `enabled`, `configured`, and the server name and version from the `app_settings` row, for the button, the nudge and the settings row |
 | The MCP server and the n8n node, in their own repositories | No change. Both pass message JSON through, so `media.transcript` arrives as soon as the viewer sends it |

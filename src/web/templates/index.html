@@ -1440,6 +1440,7 @@
                                     </div>
                                     <p class="text-sm text-tg-muted line-clamp-2 break-words">
                                         <span v-if="row.sender_name && row.chat.type !== 'private'" class="text-tg-ink/80">{{ row.sender_name }}: </span><span v-html="searchSnippetHtml(row.text)"></span>
+                                        <span v-if="row.matched_in === 'transcript'" class="italic">{{ row.text ? ' · ' : '' }}Matched in the transcript</span>
                                         <span v-if="row.is_deleted" class="ml-1 text-[10px] uppercase tracking-wide text-red-400">deleted</span>
                                     </p>
                                 </div>
@@ -6354,12 +6355,15 @@
                     }
                 }
                 const transcriptsUrl = (msg) => `/api/chats/${encodeURIComponent(selectedChat.value?.ref || '')}/media/${encodeURIComponent(msg.media.id)}/transcripts`
+                // Both awaits below check the chat is still the one they asked in:
+                // another chat's message with the same id is another message.
                 const refreshTranscripts = async (msg) => {
-                    if (!selectedChat.value?.ref || !msg?.media?.id) return
+                    const chatRef = selectedChat.value?.ref
+                    if (!chatRef || !msg?.media?.id) return
                     try {
                         const res = await fetch(transcriptsUrl(msg), { credentials: 'include' })
                         const rows = res.ok ? await res.json() : null
-                        if (Array.isArray(rows)) storeTranscriptRows(msg, rows)
+                        if (Array.isArray(rows) && selectedChat.value?.ref === chatRef) storeTranscriptRows(msg, rows)
                     } catch (e) { /* the next frame or page load catches up */ }
                 }
                 const pressTranscript = async (msg) => {
@@ -6377,16 +6381,20 @@
                         transcriptNudgeForced.value = true
                         return
                     }
-                    if (transcriptStatus(msg) === 'loading' || !selectedChat.value?.ref || !msg?.media?.id) return
+                    const chatRef = selectedChat.value?.ref
+                    if (transcriptStatus(msg) === 'loading' || !chatRef || !msg?.media?.id) return
                     // No transcript yet, or the last one failed: ask now. The row
                     // is queued at once; the next drain in the backup sends it first.
                     transcriptBusy.value = { ...transcriptBusy.value, [key]: true }
                     transcriptRequested.add(key)
                     const started = Date.now()
                     let row = null
+                    let refusal = ''
                     try {
                         const res = await fetch(transcriptsUrl(msg), { method: 'POST', credentials: 'include' })
-                        row = res.ok ? await res.json() : null
+                        if (res.ok) row = await res.json()
+                        // 409: the server names why it will not ask (not downloaded yet, say).
+                        else if (res.status === 409) refusal = String((await res.json().catch(() => null))?.detail || '')
                     } catch (e) {
                         row = null
                     }
@@ -6395,11 +6403,15 @@
                     const next = { ...transcriptBusy.value }
                     delete next[key]
                     transcriptBusy.value = next
+                    if (selectedChat.value?.ref !== chatRef) {
+                        transcriptRequested.delete(key)
+                        return
+                    }
                     if (row && row.id != null) {
                         storeTranscriptRows(msg, [row, ...transcriptRows(msg).filter(r => r.id !== row.id)])
                     } else {
                         transcriptRequested.delete(key)
-                        showToast('Could not ask for a transcript')
+                        showToast(refusal || 'Could not ask for a transcript')
                     }
                 }
                 const toggleExpandAllTranscripts = () => {

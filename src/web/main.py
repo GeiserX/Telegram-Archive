@@ -47,7 +47,7 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
-from ..transcription import apply_job_outcome, event_data, verify_webhook, webhook_key
+from ..transcription_contract import apply_job_outcome, event_data, verify_webhook, webhook_key
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -3292,14 +3292,25 @@ async def get_transcription_status(user: UserContext = Depends(require_auth)):
     }
 
 
-async def _ask_transcript(media_id: str, account_id: int) -> dict:
+# What the drain can send when a user asks, whatever TRANSCRIPTION_TYPES says:
+# the drain query lets an ask-now row through the type filter.
+_TRANSCRIBABLE_TYPES = frozenset({"voice", "video_note", "audio", "video"})
+
+
+async def _ask_transcript(media: dict | None, account_id: int) -> dict:
     """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
 
     ``force`` because a user click may add a row after a done one, which the
     drain never does. No preset: the viewer does not read it, and a queued
     row without one is what the drain query sends first. No outbound request.
+    A media the drain would never send is a 409 and no row: another type, or
+    a file not downloaded yet, whose queued row would never move.
     """
-    row = await db.enqueue_media_transcript(media_id, account_id=account_id, force=True)
+    if not media or media.get("type") not in _TRANSCRIBABLE_TYPES:
+        raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
+    if not media.get("downloaded"):
+        raise HTTPException(status_code=409, detail="Not downloaded yet")
+    row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
     if row is None:
         # Only when a racing insert won and its row vanished before the re-read.
         raise HTTPException(status_code=503, detail="Try again")
@@ -3335,7 +3346,7 @@ async def ask_media_transcript(media_id: str, user: UserContext = Depends(requir
                 break
         if account_id is None:
             raise HTTPException(status_code=404, detail="Media not found")
-        row = await _ask_transcript(media_id, account_id)
+        row = await _ask_transcript(await db.get_media_by_id(media_id, account_id=account_id), account_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -3365,7 +3376,7 @@ async def ask_chat_media_transcript(media_key: str, chat: ChatContext = Depends(
         raise HTTPException(status_code=409, detail="Transcription is off")
     media = await _entitled_media_row(chat, media_key)
     try:
-        row = await _ask_transcript(media["id"], chat.account_id)
+        row = await _ask_transcript(media, chat.account_id)
     except HTTPException:
         raise
     except Exception as e:
