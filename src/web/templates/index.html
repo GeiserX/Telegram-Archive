@@ -1791,8 +1791,14 @@
 
                             <!-- Voice/Audio List -->
                             <template v-else-if="mediaGalleryTab === 'voice'">
+                                <input v-if="mediaGalleryItems.length" v-model="mediaGalleryFilter" type="search"
+                                    placeholder="Filter by name or transcript" aria-label="Filter voice messages by name or transcript"
+                                    class="w-full mb-2 px-3 py-1.5 rounded-lg bg-tg-n800/50 text-sm text-tg-ink placeholder-tg-n500 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                <p v-if="mediaGalleryItems.length && !galleryVoiceItems.length" class="px-3 py-6 text-center text-sm text-tg-n500">
+                                    No loaded voice message matches.
+                                </p>
                                 <div class="space-y-1">
-                                    <div v-for="item in mediaGalleryItems" :key="item.id"
+                                    <div v-for="item in galleryVoiceItems" :key="item.id"
                                         class="flex items-center gap-3 p-3 rounded-lg bg-tg-n800/50 hover:bg-tg-n700/50 cursor-pointer"
                                         @click="jumpToMessage(item)">
                                         <div class="w-10 h-10 rounded-full bg-tg-accent-strong flex items-center justify-center flex-shrink-0">
@@ -1801,6 +1807,7 @@
                                         <div class="flex-1 min-w-0">
                                             <div class="text-sm text-tg-ink">{{ item.sender_name || 'Unknown' }}</div>
                                             <div class="text-xs text-tg-n400">{{ formatDuration(item.duration) }}</div>
+                                            <div v-if="galleryTranscriptLine(item)" dir="auto" class="text-xs text-tg-n300 truncate">{{ galleryTranscriptLine(item) }}</div>
                                         </div>
                                         <div class="text-xs text-tg-n500">{{ formatMediaDate(item.message_date) }}</div>
                                     </div>
@@ -2905,7 +2912,7 @@
                     </div>
                 </div>
                 <p class="mb-3 text-xs text-tg-muted">
-                    Deletions and edits the archive kept. Deletions appear here when DELETION_MODE=soft.
+                    Deletions, edits and voice transcripts the archive kept. Deletions appear here when DELETION_MODE=soft.
                 </p>
                 <div class="flex-1 overflow-y-auto space-y-2 pr-1">
                     <div v-if="changesLoading && !changesFeed.length" class="text-sm text-tg-muted py-6 text-center">Loading…</div>
@@ -2915,7 +2922,7 @@
                     <article v-for="change in changesFeed" :key="change.kind + change.chat.ref + change.message_id + change.date"
                         class="rounded-xl border border-tg-n700 bg-tg-n900/60 p-3">
                         <header class="flex items-center gap-2 text-xs mb-1.5">
-                            <span :class="change.kind === 'deleted' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'"
+                            <span :class="change.kind === 'deleted' ? 'bg-red-500/20 text-red-300' : change.kind === 'transcript' ? 'bg-sky-500/20 text-sky-300' : 'bg-amber-500/20 text-amber-300'"
                                 class="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide">
                                 {{ change.kind }}
                             </span>
@@ -2925,6 +2932,9 @@
                         </header>
                         <div v-if="change.kind === 'deleted'" class="text-sm text-tg-n200 whitespace-pre-wrap break-words">
                             {{ change.text || '(no text — media or service message)' }}
+                        </div>
+                        <div v-else-if="change.kind === 'transcript'" dir="auto" class="text-sm text-tg-n200 whitespace-pre-wrap break-words">
+                            {{ change.text || '(empty transcript)' }}
                         </div>
                         <div v-else class="text-sm space-y-1">
                             <div class="text-tg-n400 line-through whitespace-pre-wrap break-words">{{ change.old_text || '(empty)' }}</div>
@@ -6421,6 +6431,26 @@
                     if (!state.configured) return 'on, no server configured'
                     if (!state.server_name) return 'on, server not detected yet'
                     return `on, ${state.server_name}${state.server_version ? ' ' + state.server_version : ''}`
+                })
+                // The gallery's Voice tab: the first line of the newest transcript under
+                // each item, and a filter box over the loaded items that matches the file
+                // name and the text of every finished transcript, case-insensitively.
+                const mediaGalleryFilter = ref('')
+                const galleryTranscriptLine = (item) => {
+                    const text = item?.transcript?.text || ''
+                    return text.split('\n').map(line => line.trim()).find(Boolean) || ''
+                }
+                const galleryVoiceItems = computed(() => {
+                    const items = mediaGalleryItems.value
+                    const query = mediaGalleryFilter.value.trim().toLocaleLowerCase()
+                    if (!query) return items
+                    return items.filter(item => {
+                        const haystack = [item.file_name || '']
+                        for (const row of Array.isArray(item.transcripts) ? item.transcripts : []) {
+                            if (row.status === 'done' && row.text) haystack.push(row.text)
+                        }
+                        return haystack.some(text => text.toLocaleLowerCase().includes(query))
+                    })
                 })
                 // End of the voice transcript block.
 
@@ -10230,6 +10260,9 @@
                     showMediaGallery,
                     mediaGalleryTab,
                     mediaGalleryItems,
+                    mediaGalleryFilter,
+                    galleryVoiceItems,
+                    galleryTranscriptLine,
                     mediaGalleryLoading,
                     mediaGalleryHasMore,
                     mediaGalleryCounts,

@@ -3238,13 +3238,21 @@ async def _attach_transcripts(messages: list, chat: ChatContext) -> None:
     from the storage id this lookup needs. A failure costs the bubbles their
     transcripts, never the page.
     """
+    await _attach_media_transcripts(
+        [
+            message["media"]
+            for message in messages
+            if isinstance(message, dict) and isinstance(message.get("media"), dict)
+        ],
+        chat,
+    )
+
+
+async def _attach_media_transcripts(media_dicts: list, chat: ChatContext) -> None:
+    """``media.transcript`` and ``media.transcripts`` on media dicts that still carry their storage id."""
     if not _transcription_on() or not db:
         return
-    pages = [
-        message["media"]
-        for message in messages
-        if isinstance(message, dict) and isinstance(message.get("media"), dict) and message["media"].get("id")
-    ]
+    pages = [media for media in media_dicts if isinstance(media, dict) and media.get("id")]
     if not pages:
         return
     try:
@@ -3435,6 +3443,8 @@ async def get_chat_media(
             after_key=after_key,
             account_id=chat.account_id,
         )
+        # Before the id below becomes the chat-free key: the lookup needs the storage id.
+        await _attach_media_transcripts(result["items"], chat)
         for item in result["items"]:
             media_key = _url_media_key(item.get("message_id"), item.get("type"))
             item["id"] = media_key

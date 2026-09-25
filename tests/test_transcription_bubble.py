@@ -161,6 +161,7 @@ const stored = new Map(Object.entries(__STORED__));
 const localStorage = { getItem: k => stored.has(k) ? stored.get(k) : null, setItem: (k, v) => stored.set(k, String(v)) };
 const messages = ref([]);
 const messageHighlight = ref(null);
+const mediaGalleryItems = ref([]);
 const selectedChat = ref({ ref: 'refA' });
 const toasts = [];
 const showToast = message => toasts.push(message);

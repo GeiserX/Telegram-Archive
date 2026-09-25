@@ -2,7 +2,7 @@
 
 Every voice message and round video the archive downloads gets a transcript, written beside the audio and shown inside the bubble. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
 
-This is a design. Nothing here is implemented yet. The rollout section at the end says in which order it lands.
+Implemented in this branch, slices 1 to 7 of the rollout section at the end. Where the code deliberately differs from the first design, the text below says what it does.
 
 ## The simple version
 
@@ -70,7 +70,7 @@ Transcription is on by default, so a fresh install has it enabled with no server
 
 ### Media gallery
 
-The Voice tab of the gallery, `typeMap.voice` at [index.html](../src/web/templates/index.html#L6091), shows the first line of the newest transcript under each item. Its filter box matches on transcript text as well as the file name.
+The Voice tab of the gallery, `typeMap.voice` in [index.html](../src/web/templates/index.html), shows the first line of the newest transcript under each item. The tab had no filter box, so it gains one: it matches the file name and the text of every finished transcript, case-insensitively, over the items loaded so far. Searching every transcript of a chat is the chat search's job.
 
 ### Accessibility
 
@@ -161,7 +161,7 @@ The messages table already has full-text search, SQLite FTS5 with triggers and a
 
 A second probe in the shape of [`_fts_ready`](../src/db/adapter.py#L4586) reports whether the transcript objects exist, so a database migrated to 031 and not yet to 032 keeps searching messages only.
 
-Global search does not OR a transcript `EXISTS` into [`_text_search_predicate`](../src/db/adapter.py#L4614). [`_global_search_hit_count`](../src/db/adapter.py#L4516), [`_global_search_walk`](../src/db/adapter.py#L4526) and [`_global_search_sorted_hits`](../src/db/adapter.py#L4550) page through the GIN index by key, and an `EXISTS` on another table would turn every page into a scan. Instead [`search_messages_global`](../src/db/adapter.py#L4375) builds its hit set as a UNION of two indexed key sets: message keys from the messages index, and message keys reached from transcript hits through `media` on `(account_id, media_id)`. `matched_in` is derived from which side produced the key, and a key on both sides reports `message`. Chat search in [`get_messages_paginated`](../src/db/adapter.py#L4637) uses the same union on its smaller, per-chat set.
+Global search does not OR a transcript `EXISTS` into [`_text_search_predicate`](../src/db/adapter.py#L4614). [`_global_search_hit_count`](../src/db/adapter.py#L4516), [`_global_search_walk`](../src/db/adapter.py#L4526) and [`_global_search_sorted_hits`](../src/db/adapter.py#L4550) page through the GIN index by key, and an `EXISTS` on another table would turn every page into a scan. Instead [`search_messages_global`](../src/db/adapter.py#L4375) builds its hit set as a UNION of two indexed key sets: message keys from the messages index, and message keys reached from transcript hits through `media` on `(account_id, media_id)`. `matched_in` is derived from which side produced the key, and a key on both sides reports `message`. Chat search in [`get_messages_paginated`](../src/db/adapter.py#L4637) uses the same union on its smaller, per-chat set. On the dense-term walk each side walks its own newest `offset + limit + 1` keys, and the page is cut from their union, so paging by key stays exact.
 
 ### What this feature deletes, overwrites and forgets
 
@@ -172,7 +172,7 @@ Deletes: nothing on its own. The removal paths that already exist take the trans
 - `YOUTUBE_VIDEOS_DELETE_EXISTING` through [`delete_media_records`](../src/db/adapter.py#L2936), called at [telegram_backup.py](../src/telegram_backup.py#L2092).
 - `SKIP_MEDIA_DELETE_EXISTING` through `delete_media_records` and [`delete_media_for_chat`](../src/db/adapter.py#L2848), called at [telegram_backup.py](../src/telegram_backup.py#L3572) and [L3658](../src/telegram_backup.py#L3658).
 
-[`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows only; the transcripts stay and reattach by hash.
+[`delete_voice_note_audio_twins`](../src/db/adapter.py#L2957) removes media rows only; the transcripts stay and reattach by hash. A later removal path takes the rows of the media it removes, so a transcript whose twin row was already gone before a `DELETION_MODE=hard` delete of its message stays behind, reachable by no search or export.
 
 Overwrites: `status` advances. Every other column is written once, when the row is created or when the result arrives into empty columns. A re-transcription with another preset, another engine or a user click is a new row.
 
@@ -319,8 +319,8 @@ We do not send chat titles, sender names, message text or ids to the server. `me
 | `GET /api/media/{media_id}/transcripts` | New. Every row for one media, newest first. What the browser fetches on a realtime event and what the version picker reads |
 | `/api/chats/{ref}/media` at [main.py](../src/web/main.py#L3147) | The same two fields on each [gallery item](../src/db/adapter.py#L2733) |
 | Chat and global search | `matched_in` on each hit |
-| `/api/changes` at [main.py](../src/web/main.py#L3046) | A `transcript` kind beside the [`deleted`](../src/db/adapter.py#L2291) and [`edited`](../src/db/adapter.py#L2302) kinds the feed knows today, so pollers see new transcripts |
-| CLI export in [export_backup.py](../src/export_backup.py#L50) and the viewer export | Every transcript row inside the message's media object, built where the [export media dict](../src/db/adapter.py#L4998) is built |
+| `/api/changes` at [main.py](../src/web/main.py#L3046) | A `transcript` kind beside the `deleted` and `edited` kinds, dated by `completed_at` and carrying `text` and `language`, so pollers see new transcripts. Like the other kinds it lists one row per event: two accounts holding one channel list its transcript once, matched by text |
+| CLI export in [export_backup.py](../src/export_backup.py#L50) and the viewer export | Every transcript row, all columns, newest first, under `transcripts` on the message whose media it transcribes. Neither export has a media object to put it in, so it sits on the message; the CLI export's `statistics` gains `total_transcripts` |
 | `POST /api/chats/{ref}/media/{message_id}_{type}/transcripts` and `POST /api/media/{media_id}/transcripts` | New. The first is what the button calls to ask now, the second the same for a client that holds the storage id. Inserts a `queued` row with `job_id` NULL and no preset if the newest row is not already `queued` or `running`, and returns the row. The next drain submits it first. The viewer makes no request to the server |
 | `GET /api/chats/{ref}/media/{message_id}_{type}/transcripts` | New. The bubble's rows, newest first, without the hashes, the job id or the storage media id. What the browser fetches on a realtime event |
 | `GET /api/transcription/status` | New. `enabled`, `configured`, and the server name and version from the `app_settings` row, for the button, the nudge and the settings row |

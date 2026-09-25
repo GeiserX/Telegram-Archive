@@ -68,6 +68,15 @@ class BackupExporter:
         # Get messages
         messages = await self.db.get_messages_by_date_range(chat_id, start_dt, end_dt)
         message_versions = await self.db.get_message_versions_by_date_range(chat_id, start_dt, end_dt)
+        # Voice transcripts sit on the message whose media they transcribe.
+        transcripts = await self.db.get_transcripts_for_export(chat_id)
+        by_message: dict[tuple, list] = {}
+        for row in transcripts:
+            by_message.setdefault((row["chat_id"], row["message_id"]), []).append(row)
+        for message in messages:
+            rows = by_message.get((message.get("chat_id"), message.get("id")))
+            if rows:
+                message["transcripts"] = rows
 
         # Get chats
         chats = await self.db.get_all_chats()
@@ -81,6 +90,7 @@ class BackupExporter:
                 "total_messages": len(messages),
                 "total_chats": len(chats_dict),
                 "total_message_versions": len(message_versions),
+                "total_transcripts": sum(len(message.get("transcripts", ())) for message in messages),
             },
             "chats": chats,
             "messages": messages,

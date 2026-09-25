@@ -151,6 +151,18 @@ services:
       # EVENT_WEBHOOK_CHAT_IDS: ${EVENT_WEBHOOK_CHAT_IDS:-}
       # EVENT_WEBHOOK_BODY_TEMPLATE: ${EVENT_WEBHOOK_BODY_TEMPLATE:-}
 
+      # Voice transcription (docs/TRANSCRIPTION.md): on by default, idle until
+      # TRANSCRIPTION_URL points at an akou server (see the optional service below)
+      TRANSCRIPTION_ENABLED: ${TRANSCRIPTION_ENABLED:-true}
+      TRANSCRIPTION_URL: ${TRANSCRIPTION_URL:-}
+      # TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
+      # TRANSCRIPTION_PRESET: ${TRANSCRIPTION_PRESET:-auto}
+      # TRANSCRIPTION_TYPES: ${TRANSCRIPTION_TYPES:-voice,video_note}
+      # TRANSCRIPTION_MAX_SECONDS: ${TRANSCRIPTION_MAX_SECONDS:-1800}
+      # TRANSCRIPTION_LANGUAGE: ${TRANSCRIPTION_LANGUAGE:-}
+      # TRANSCRIPTION_CALLBACK_URL: ${TRANSCRIPTION_CALLBACK_URL:-}
+      # TRANSCRIPTION_BACKFILL_PER_RUN: ${TRANSCRIPTION_BACKFILL_PER_RUN:-50}
+
       # Batch sync alternative (expensive — prefer ENABLE_LISTENER instead)
       SYNC_DELETIONS_EDITS: ${SYNC_DELETIONS_EDITS:-false}
       VERIFY_MEDIA: ${VERIFY_MEDIA:-false}
@@ -271,6 +283,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-telegram_backup}
 
+      # Voice transcription (docs/TRANSCRIPTION.md). The viewer never calls the
+      # server: it shows TRANSCRIPTION_URL and receives the signed callback.
+      TRANSCRIPTION_ENABLED: ${TRANSCRIPTION_ENABLED:-true}
+      TRANSCRIPTION_URL: ${TRANSCRIPTION_URL:-}
+      # TRANSCRIPTION_WEBHOOK_SECRET: ${TRANSCRIPTION_WEBHOOK_SECRET:-}
+
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
@@ -326,6 +344,25 @@ services:
   #     VIEWER_PASSWORD: secure_password_here
   #   volumes:
   #     - ./data:/data
+  #   networks:
+  #     - telegram-network
+
+  # ================================
+  # akou speech-to-text (Optional)
+  # ================================
+  # Uncomment to transcribe voice messages on this host. akou can run on any
+  # host instead; TRANSCRIPTION_URL points at wherever it runs, here
+  # http://akou:8476. See https://github.com/GeiserX/akou for its server
+  # settings, the API key for TRANSCRIPTION_API_KEY and the whsec_ secret for
+  # TRANSCRIPTION_WEBHOOK_SECRET.
+  #
+  # akou:
+  #   image: geiserx/akou:0.2.0
+  #   container_name: akou
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./akou/data:/data
+  #     - ./akou/models:/models
   #   networks:
   #     - telegram-network
 

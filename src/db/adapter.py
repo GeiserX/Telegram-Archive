@@ -1778,14 +1778,30 @@ class DatabaseAdapter:
             "media_type": media_row[0] if media_row else None,
         }
 
+    @staticmethod
+    def _delete_transcripts_of(media_predicate, *, account_id: int):
+        """DELETE of the transcript rows of the media ``media_predicate`` selects.
+
+        The flag-gated removal paths take a media row's transcripts with it
+        (docs/TRANSCRIPTION.md): run this before deleting the media, in the
+        same transaction. There is no foreign key to cascade through.
+        """
+        return delete(MediaTranscript).where(
+            and_(
+                MediaTranscript.account_id == account_id,
+                MediaTranscript.media_id.in_(select(Media.id).where(media_predicate)),
+            )
+        )
+
     @retry_on_locked()
     async def delete_message(self, chat_id: int, message_id: int, *, account_id: int) -> dict | None:
         """Delete a specific message and its media.
 
         Returns a pre-deletion snapshot of the row (see _deletion_snapshot) so
         the listener can fire the event webhook with the destroyed content, or
-        None when the message was never archived. The four DELETEs still run
-        unconditionally — orphan-cleanup behavior is unchanged.
+        None when the message was never archived. The DELETEs still run
+        unconditionally — orphan-cleanup behavior is unchanged. The message's
+        media take their transcript rows with them.
         """
         async with self.db_manager.async_session_factory() as session:
             snapshot = await self._deletion_snapshot(session, account_id, chat_id, message_id)
@@ -1799,7 +1815,13 @@ class DatabaseAdapter:
                     )
                 )
             )
-            # Delete associated media
+            # Delete the transcripts of the media below, then the media
+            await session.execute(
+                self._delete_transcripts_of(
+                    and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id),
+                    account_id=account_id,
+                )
+            )
             await session.execute(
                 delete(Media).where(
                     and_(Media.account_id == account_id, Media.chat_id == chat_id, Media.message_id == message_id)
@@ -2208,16 +2230,19 @@ class DatabaseAdapter:
         limit: int = 50,
         scope: ChatScope | None = None,
     ) -> list[dict[str, Any]]:
-        """The what-changed feed: deletions and edits the archive captured.
+        """The what-changed feed: deletions, edits and transcripts the archive captured.
 
         The archive's differentiator is that it KEEPS what disappeared; this
-        is the query that finally lists it. Two streams share one shape:
+        is the query that finally lists it. Three streams share one shape:
 
         * ``deleted`` — soft-deleted messages (``is_deleted=1``), dated by
           ``deleted_at``, carrying the text the archive kept.
         * ``edited`` — ``message_versions`` rows, dated by ``captured_at``
           (when the archive observed the supersession), carrying the old text
           plus the message's CURRENT text.
+        * ``transcript`` — finished voice transcripts, dated by
+          ``completed_at``, carrying the transcript text and its language, so
+          a poller sees new transcripts (docs/TRANSCRIPTION.md).
 
         Newest first. ``before`` is an exclusive keyset cursor over the
         per-row date: pass the last row's ``date`` back to page. Rows sharing
@@ -2275,16 +2300,38 @@ class DatabaseAdapter:
                 )
                 .join(Chat, and_(Chat.account_id == MessageVersion.account_id, Chat.id == MessageVersion.chat_id))
             )
+            transcript_stmt = (
+                self._transcript_hit_messages(
+                    select(
+                        Message.id.label("message_id"),
+                        MediaTranscript.completed_at.label("date"),
+                        MediaTranscript.text,
+                        MediaTranscript.language,
+                        Message.sender_name,
+                        Chat.ref,
+                        Chat.title,
+                        Chat.first_name,
+                        Chat.last_name,
+                        Chat.username,
+                        Chat.type.label("chat_type"),
+                    )
+                )
+                .join(Chat, and_(Chat.account_id == Message.account_id, Chat.id == Message.chat_id))
+                .where(MediaTranscript.status == "done", MediaTranscript.completed_at.isnot(None))
+            )
             if since is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at >= since)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at >= since)
+                transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at >= since)
             if before is not None:
                 deleted_stmt = deleted_stmt.where(Message.deleted_at < before)
                 edited_stmt = edited_stmt.where(MessageVersion.captured_at < before)
+                transcript_stmt = transcript_stmt.where(MediaTranscript.completed_at < before)
             if scope is not None:
                 for predicate in scope.sql_predicates():
                     deleted_stmt = deleted_stmt.where(predicate)
                     edited_stmt = edited_stmt.where(predicate)
+                    transcript_stmt = transcript_stmt.where(predicate)
 
             # One row per EVENT, not per chat copy. Both accounts' listeners
             # see the same deletion in a channel they both hold, so both
@@ -2322,12 +2369,34 @@ class DatabaseAdapter:
             # otherwise list. Without them an event whose other copy fell just
             # outside the window would vanish from the page instead of being
             # deduplicated.
+            # A transcript is an event of the message: two accounts holding one
+            # channel each transcribe their own media row of the same audio,
+            # and the text names the result the way the superseded text names
+            # an edit.
+            lower_media = aliased(Media, name="lower_transcribed_media")
+            lower_media_chat = aliased(Chat, name="lower_transcribed_chat")
+            lower_transcript = aliased(MediaTranscript, name="lower_transcript")
+            lower_transcript_match = [
+                lower_transcript.account_id == lower_media.account_id,
+                lower_transcript.media_id == lower_media.id,
+                lower_transcript.status == "done",
+                lower_transcript.completed_at.isnot(None),
+                lower_transcript.text.is_not_distinct_from(MediaTranscript.text),
+            ]
             if since is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at >= since)
                 edited_duplicate.append(lower_edited.captured_at >= since)
+                lower_transcript_match.append(lower_transcript.completed_at >= since)
             if before is not None:
                 deleted_duplicate.append(lower_deleted.deleted_at < before)
                 edited_duplicate.append(lower_edited.captured_at < before)
+                lower_transcript_match.append(lower_transcript.completed_at < before)
+            transcript_duplicate = [
+                lower_media.chat_id == Message.chat_id,
+                lower_media.message_id == Message.id,
+                lower_media.account_id < Message.account_id,
+                select(literal(1)).where(*lower_transcript_match).exists(),
+            ]
 
             deleted_stmt = deleted_stmt.where(
                 self._event_not_already_listed(
@@ -2340,8 +2409,15 @@ class DatabaseAdapter:
                 )
             )
 
+            transcript_stmt = transcript_stmt.where(
+                self._event_not_already_listed(
+                    scope, lower_rows=lower_media, lower_chat=lower_media_chat, event_match=transcript_duplicate
+                )
+            )
+
             deleted_stmt = deleted_stmt.order_by(Message.deleted_at.desc()).limit(per_stream)
             edited_stmt = edited_stmt.order_by(MessageVersion.captured_at.desc()).limit(per_stream)
+            transcript_stmt = transcript_stmt.order_by(MediaTranscript.completed_at.desc()).limit(per_stream)
 
             changes: list[dict[str, Any]] = []
             for row in (await session.execute(deleted_stmt)).all():
@@ -2365,6 +2441,18 @@ class DatabaseAdapter:
                         "sender_name": row.sender_name,
                         "old_text": row.old_text,
                         "new_text": row.new_text,
+                    }
+                )
+            for row in (await session.execute(transcript_stmt)).all():
+                changes.append(
+                    {
+                        "kind": "transcript",
+                        "date": row.date.isoformat() if row.date else None,
+                        "chat": _chat_fields(row),
+                        "message_id": row.message_id,
+                        "sender_name": row.sender_name,
+                        "text": row.text,
+                        "language": row.language,
                     }
                 )
             changes.sort(key=lambda c: c["date"] or "", reverse=True)
@@ -2916,8 +3004,9 @@ class DatabaseAdapter:
             Number of media records deleted
         """
         async with self.db_manager.async_session_factory() as session:
-            stmt = delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id))
-            result = await session.execute(stmt)
+            chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
+            await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
+            result = await session.execute(delete(Media).where(chat_media))
             await session.commit()
             return result.rowcount
 
@@ -3007,7 +3096,13 @@ class DatabaseAdapter:
             # Chunked: SQLite caps a statement at 999 bound parameters by default,
             # and a large archive can exceed that in one cleanup pass.
             for start in range(0, len(ids), 500):
-                stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(ids[start : start + 500])))
+                chunk = ids[start : start + 500]
+                await session.execute(
+                    delete(MediaTranscript).where(
+                        and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id.in_(chunk))
+                    )
+                )
+                stmt = delete(Media).where(and_(Media.account_id == account_id, Media.id.in_(chunk)))
                 result = await session.execute(stmt)
                 deleted += result.rowcount or 0
             await session.commit()
@@ -3028,6 +3123,10 @@ class DatabaseAdapter:
         Only rows go, and only when the ``voice`` twin is downloaded and names
         the very same ``file_path``, so the file stays referenced by the row that
         remains. Returns the number of rows deleted.
+
+        Transcripts are left alone: the voice twin carries the same audio, so
+        a transcript of the removed row reattaches to it by hash
+        (docs/TRANSCRIPTION.md).
         """
         twin = aliased(Media)
         async with self.db_manager.async_session_factory() as session:
@@ -4105,8 +4204,10 @@ class DatabaseAdapter:
                     and_(MessageVersion.account_id == account_id, MessageVersion.chat_id == chat_id)
                 )
             )
-            # Delete media records
-            await session.execute(delete(Media).where(and_(Media.account_id == account_id, Media.chat_id == chat_id)))
+            # Delete the transcripts of the chat's media, then the media records
+            chat_media = and_(Media.account_id == account_id, Media.chat_id == chat_id)
+            await session.execute(self._delete_transcripts_of(chat_media, account_id=account_id))
+            await session.execute(delete(Media).where(chat_media))
             # Delete reactions
             await session.execute(
                 delete(Reaction).where(and_(Reaction.account_id == account_id, Reaction.chat_id == chat_id))
@@ -5507,13 +5608,18 @@ class DatabaseAdapter:
             to_date: naive-UTC EXCLUSIVE upper bound on Message.date
 
         Yields:
-            Message dictionaries with user info
+            Message dictionaries with user info. A message whose media has
+            transcripts carries them all under ``transcripts``, newest first.
         """
+        transcripts: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        for row in await self.get_transcripts_for_export(chat_id, account_id=account_id):
+            transcripts.setdefault((row["account_id"], row["message_id"]), []).append(row)
         async with self.db_manager.async_session_factory() as session:
             if include_media:
                 stmt = (
                     select(
                         Message.id,
+                        Message.account_id,
                         Message.date,
                         Message.text,
                         Message.is_outgoing,
@@ -5541,6 +5647,7 @@ class DatabaseAdapter:
                 stmt = (
                     select(
                         Message.id,
+                        Message.account_id,
                         Message.date,
                         Message.text,
                         Message.is_outgoing,
@@ -5581,6 +5688,8 @@ class DatabaseAdapter:
                 if include_media:
                     msg["media_type"] = row.media_type
                     msg["media_path"] = row.media_file_path
+                if (row.account_id, row.id) in transcripts:
+                    msg["transcripts"] = transcripts[(row.account_id, row.id)]
                 yield msg
 
     # ========== Forum Topic Operations (v6.2.0) ==========
@@ -6577,6 +6686,36 @@ class DatabaseAdapter:
             for row in result.scalars():
                 by_media.setdefault(row.media_id, []).append(self._transcript_to_dict(row))
             return by_media
+
+    async def get_transcripts_for_export(
+        self, chat_id: int | None = None, *, account_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Every transcript row with the ``chat_id`` and ``message_id`` its media belongs to.
+
+        For the two exports: every column, datetimes as ISO strings, newest
+        row first. A transcript whose media row is gone has no message to sit
+        under and is left out. ``None`` scopes mean every chat or account.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript, Media.chat_id, Media.message_id)
+                .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+                .order_by(MediaTranscript.id.desc())
+            )
+            if chat_id is not None:
+                stmt = stmt.where(Media.chat_id == chat_id)
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            rows = []
+            for transcript, media_chat_id, message_id in await session.execute(stmt):
+                row = self._transcript_to_dict(transcript)
+                for key in ("requested_at", "completed_at", "created_at"):
+                    if isinstance(row[key], datetime):
+                        row[key] = row[key].isoformat()
+                row["chat_id"] = media_chat_id
+                row["message_id"] = message_id
+                rows.append(row)
+            return rows
 
     async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
         """One transcript row by id, or None."""
