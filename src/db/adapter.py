@@ -39,7 +39,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import aliased
 
 from ..message_utils import (
@@ -49,10 +49,18 @@ from ..message_utils import (
     utcnow_naive,
 )
 from .base import DatabaseManager
-from .fts import PG_TSQUERY_FROM_SEARCH, PG_TSVECTOR_COLUMN, SQLITE_FTS_TABLE, fts_match_query, search_has_words
+from .fts import (
+    PG_TSQUERY_FROM_SEARCH,
+    PG_TSVECTOR_COLUMN,
+    SQLITE_FTS_TABLE,
+    SQLITE_TRANSCRIPT_FTS_TABLE,
+    fts_match_query,
+    search_has_words,
+)
 from .models import (
     DEFAULT_ACCOUNT_ID,
     PRIVATE_CHAT_TYPE,
+    TRANSCRIPT_OPEN_STATUSES,
     Account,
     AppSettings,
     AvatarHistory,
@@ -61,6 +69,7 @@ from .models import (
     ChatFolderMember,
     ForumTopic,
     Media,
+    MediaTranscript,
     Message,
     MessageVersion,
     Metadata,
@@ -80,6 +89,51 @@ logger = logging.getLogger(__name__)
 # Bare (peerless) events can only ever refer to the common message box, whose
 # ids sit above it — the same constant migration 022 types placeholders with.
 SUPERGROUP_ID_CEILING = -(10**12)
+
+# Media transcripts (032). ``status`` only advances along this rank; a row at
+# a terminal status is never written again. The drain query retries a media
+# whose newest row failed only while it has fewer than this many failed rows.
+TRANSCRIPT_STATUS_RANK = {"queued": 0, "running": 1, "done": 2, "failed": 2, "skipped": 2}
+TRANSCRIPT_TERMINAL_STATUSES = frozenset({"done", "failed", "skipped"})
+TRANSCRIPT_MAX_FAILED_ROWS = 3
+TRANSCRIPT_JSON_COLUMNS = frozenset({"models", "words", "segments"})
+TRANSCRIPT_FILL_COLUMNS = frozenset(
+    {
+        "content_hash",
+        "idempotency_key",
+        "source",
+        "engine_name",
+        "engine_version",
+        "preset",
+        "models",
+        "language",
+        "language_confidence",
+        "text",
+        "words",
+        "segments",
+        "confidence",
+        "duration_s",
+        "job_id",
+        "error",
+        "completed_at",
+    }
+)
+# app_settings keys the backup writes for the viewer's settings row and for
+# the akou event feed; both appear in the master-only settings dump, neither
+# is a secret.
+TRANSCRIPTION_EVENTS_CURSOR_KEY = "transcription.events_cursor"
+TRANSCRIPTION_SERVER_KEY = "transcription.server"
+
+
+def _json_list(value: str | None) -> list:
+    """A JSON-text column as a list; anything unreadable is an empty list."""
+    if not value:
+        return []
+    try:
+        loaded = json.loads(value)
+    except ValueError, TypeError:
+        return []
+    return loaded if isinstance(loaded, list) else []
 
 
 def _strip_tz(dt: datetime | None) -> datetime | None:
@@ -482,6 +536,7 @@ class DatabaseAdapter:
         self._is_sqlite = db_manager._is_sqlite
         # Full-text capability, probed once on first search: None = unknown.
         self._fts_ready_cache: bool | None = None
+        self._transcript_fts_ready_cache: bool | None = None
         # (read_at, {telegram_user_id: account_id}) — see _account_owner_ids.
         self._account_owner_cache: tuple[float, dict[int, int]] | None = None
 
@@ -4611,6 +4666,30 @@ class DatabaseAdapter:
             self._fts_ready_cache = row.first() is not None
         return self._fts_ready_cache
 
+    async def _transcript_fts_ready(self, session) -> bool:
+        """Whether migration 032's transcript search objects exist in THIS database.
+
+        Same contract as ``_fts_ready``: probed once per adapter. A database
+        migrated to 031 and not yet to 032 keeps searching messages only.
+        """
+        if self._transcript_fts_ready_cache is None:
+            if self._is_sqlite:
+                row = await session.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t").bindparams(
+                        t=SQLITE_TRANSCRIPT_FTS_TABLE
+                    )
+                )
+            else:
+                row = await session.execute(
+                    text(
+                        "SELECT 1 FROM pg_attribute "
+                        "WHERE attrelid = to_regclass('media_transcripts') "
+                        "AND attname = :c AND NOT attisdropped"
+                    ).bindparams(c=PG_TSVECTOR_COLUMN)
+                )
+            self._transcript_fts_ready_cache = row.first() is not None
+        return self._transcript_fts_ready_cache
+
     async def _text_search_predicate(self, session, search: str):
         """An indexed word-prefix predicate for ``search``, or None for ILIKE.
 
@@ -6110,6 +6189,314 @@ class DatabaseAdapter:
             "use_count": token.use_count,
             "created_at": token.created_at.isoformat() if token.created_at else None,
         }
+
+    # ========================================================================
+    # Media transcripts (032, docs/TRANSCRIPTION.md)
+    # ========================================================================
+
+    @staticmethod
+    def _transcript_to_dict(row: MediaTranscript) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "media_id": row.media_id,
+            "content_hash": row.content_hash,
+            "idempotency_key": row.idempotency_key,
+            "source": row.source,
+            "engine_name": row.engine_name,
+            "engine_version": row.engine_version,
+            "preset": row.preset,
+            "models": _json_list(row.models),
+            "language": row.language,
+            "language_confidence": row.language_confidence,
+            "text": row.text,
+            "words": _json_list(row.words),
+            "segments": _json_list(row.segments),
+            "confidence": row.confidence,
+            "duration_s": row.duration_s,
+            "job_id": row.job_id,
+            "status": row.status,
+            "error": row.error,
+            "requested_at": row.requested_at,
+            "completed_at": row.completed_at,
+            "created_at": row.created_at,
+        }
+
+    @staticmethod
+    async def _newest_transcript(session, media_id: str, account_id: int) -> MediaTranscript | None:
+        stmt = (
+            select(MediaTranscript)
+            .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id))
+            .order_by(MediaTranscript.id.desc())
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    @retry_on_locked()
+    async def enqueue_media_transcript(
+        self,
+        media_id: str,
+        *,
+        account_id: int,
+        content_hash: str | None = None,
+        idempotency_key: str | None = None,
+        preset: str | None = None,
+        source: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any] | None:
+        """Insert-if-absent of a ``queued`` row for one media; the open row, or None.
+
+        The newest row decides. Open (``queued`` or ``running``): nothing is
+        inserted and that row is returned, so a drain that runs twice and the
+        viewer's ask-now route share one row. ``done`` or ``skipped``: None,
+        and no row, unless ``force`` says the user asked for another
+        transcript. ``failed``: a new row (the drain query caps those at
+        three per media). Two processes racing past the read both try to
+        insert; the partial unique index on open rows stops the second, and
+        the loser returns the winner's row as if it were its own.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+            if newest is not None:
+                if newest.status in TRANSCRIPT_OPEN_STATUSES:
+                    return self._transcript_to_dict(newest)
+                if newest.status in ("done", "skipped") and not force:
+                    return None
+            now = utcnow_naive()
+            row = MediaTranscript(
+                account_id=account_id,
+                media_id=media_id,
+                content_hash=content_hash,
+                idempotency_key=idempotency_key,
+                preset=preset,
+                source=source,
+                status="queued",
+                requested_at=now,
+                created_at=now,
+            )
+            session.add(row)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                newest = await self._newest_transcript(session, media_id, account_id)
+                return self._transcript_to_dict(newest) if newest is not None else None
+            await session.refresh(row)
+            return self._transcript_to_dict(row)
+
+    @retry_on_locked()
+    async def fill_media_transcript(
+        self, transcript_id: int, *, status: str, account_id: int | None = None, **columns: Any
+    ) -> bool:
+        """Advance one row's ``status`` and fill its empty columns; True when a row changed.
+
+        ``status`` only moves forward: queued, running, then done, failed or
+        skipped, and a row that already reached a final status is left alone,
+        so a repeated delivery of the same result changes nothing. Every other
+        column is written once: a value lands only where the column is still
+        NULL (COALESCE), which is the archive rule that nothing captured is
+        overwritten. JSON columns take a list or a ready string.
+        """
+        if status not in TRANSCRIPT_STATUS_RANK:
+            raise ValueError(f"unknown transcript status: {status}")
+        unknown = set(columns) - TRANSCRIPT_FILL_COLUMNS
+        if unknown:
+            raise ValueError(f"not a fillable transcript column: {', '.join(sorted(unknown))}")
+        values: dict[str, Any] = {"status": status}
+        for name, value in columns.items():
+            if value is None:
+                continue
+            if name in TRANSCRIPT_JSON_COLUMNS and not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False)
+            values[name] = func.coalesce(getattr(MediaTranscript, name), value)
+        if status in TRANSCRIPT_TERMINAL_STATUSES and "completed_at" not in values:
+            values["completed_at"] = func.coalesce(MediaTranscript.completed_at, utcnow_naive())
+        rank = TRANSCRIPT_STATUS_RANK[status]
+        allowed_from = [
+            name
+            for name, current in TRANSCRIPT_STATUS_RANK.items()
+            if current <= rank and name not in TRANSCRIPT_TERMINAL_STATUSES
+        ]
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                update(MediaTranscript)
+                .where(and_(MediaTranscript.id == transcript_id, MediaTranscript.status.in_(allowed_from)))
+                .values(**values)
+            )
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            result = await session.execute(stmt)
+            await session.commit()
+            return (result.rowcount or 0) > 0
+
+    @retry_on_locked()
+    async def mark_media_transcript_skipped(
+        self,
+        media_id: str,
+        *,
+        account_id: int,
+        reason: str,
+        content_hash: str | None = None,
+        duration_s: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Record that a media is not sent (too long); the ``skipped`` row.
+
+        An open row for the media (a user asked before the drain saw the
+        length) is closed as skipped instead of leaving it queued forever; a
+        newest row already skipped is left as it is; otherwise a new row.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            newest = await self._newest_transcript(session, media_id, account_id)
+        if newest is not None and newest.status in TRANSCRIPT_OPEN_STATUSES:
+            await self.fill_media_transcript(
+                newest.id, status="skipped", error=reason, content_hash=content_hash, duration_s=duration_s
+            )
+            return await self.get_media_transcript(newest.id)
+        if newest is not None and newest.status == "skipped":
+            return self._transcript_to_dict(newest)
+        now = utcnow_naive()
+        async with self.db_manager.async_session_factory() as session:
+            row = MediaTranscript(
+                account_id=account_id,
+                media_id=media_id,
+                content_hash=content_hash,
+                duration_s=duration_s,
+                status="skipped",
+                error=reason,
+                requested_at=now,
+                completed_at=now,
+                created_at=now,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return self._transcript_to_dict(row)
+
+    async def list_media_transcripts(self, media_id: str, *, account_id: int) -> list[dict[str, Any]]:
+        """Every transcript row for one media, newest first."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id))
+                .order_by(MediaTranscript.id.desc())
+            )
+            result = await session.execute(stmt)
+            return [self._transcript_to_dict(row) for row in result.scalars()]
+
+    async def get_media_transcript(self, transcript_id: int, *, account_id: int | None = None) -> dict[str, Any] | None:
+        """One transcript row by id, or None."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = select(MediaTranscript).where(MediaTranscript.id == transcript_id)
+            if account_id is not None:
+                stmt = stmt.where(MediaTranscript.account_id == account_id)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._transcript_to_dict(row) if row is not None else None
+
+    async def get_media_awaiting_transcription(
+        self, *, account_id: int, types: Collection[str], per_run: int, stale_before: datetime
+    ) -> list[dict[str, Any]]:
+        """The drain query: downloaded media of ``types`` that still needs a transcript.
+
+        A media qualifies when its newest transcript row is missing, or is
+        ``queued`` with no ``job_id`` and older than ``stale_before`` (a
+        process died between the insert and the submit; the row is reused),
+        or is ``failed`` while fewer than three failed rows exist for it. A
+        ``done`` or ``skipped`` newest row ends the loop for that media.
+        Newest download first, at most ``per_run`` rows. Each result carries
+        the media columns and ``transcript``: the newest row's id, status and
+        job_id, or None.
+        """
+        wanted = sorted({t for t in types if isinstance(t, str) and t})
+        if not wanted or per_run <= 0:
+            return []
+        newest = aliased(MediaTranscript, name="newest_transcript")
+        newest_id = (
+            select(func.max(MediaTranscript.id))
+            .where(and_(MediaTranscript.account_id == Media.account_id, MediaTranscript.media_id == Media.id))
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        failed_rows = (
+            select(func.count(MediaTranscript.id))
+            .where(
+                and_(
+                    MediaTranscript.account_id == Media.account_id,
+                    MediaTranscript.media_id == Media.id,
+                    MediaTranscript.status == "failed",
+                )
+            )
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(Media, newest.id, newest.status, newest.job_id)
+            .outerjoin(
+                newest,
+                and_(newest.account_id == Media.account_id, newest.media_id == Media.id, newest.id == newest_id),
+            )
+            .where(
+                and_(
+                    Media.account_id == account_id,
+                    Media.downloaded == 1,
+                    Media.type.in_(wanted),
+                    or_(
+                        newest.id.is_(None),
+                        and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
+                        and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
+                    ),
+                )
+            )
+            .order_by(nulls_last(Media.download_date.desc()), Media.id.desc())
+            .limit(per_run)
+        )
+        async with self.db_manager.async_session_factory() as session:
+            result = await session.execute(stmt)
+            rows = []
+            for media, transcript_id, transcript_status, transcript_job_id in result:
+                rows.append(
+                    {
+                        "id": media.id,
+                        "account_id": media.account_id,
+                        "message_id": media.message_id,
+                        "chat_id": media.chat_id,
+                        "type": media.type,
+                        "file_path": media.file_path,
+                        "file_name": media.file_name,
+                        "file_size": media.file_size,
+                        "mime_type": media.mime_type,
+                        "duration": media.duration,
+                        "content_hash": media.content_hash,
+                        "transcript": (
+                            {"id": transcript_id, "status": transcript_status, "job_id": transcript_job_id}
+                            if transcript_id is not None
+                            else None
+                        ),
+                    }
+                )
+            return rows
+
+    async def get_transcription_events_cursor(self) -> str | None:
+        """Where the akou event feed was last read, or None before the first read."""
+        return await self.get_setting(TRANSCRIPTION_EVENTS_CURSOR_KEY)
+
+    async def set_transcription_events_cursor(self, cursor: str) -> None:
+        await self.set_setting(TRANSCRIPTION_EVENTS_CURSOR_KEY, cursor)
+
+    async def get_transcription_server(self) -> dict[str, str] | None:
+        """``{"name", "version"}`` of the server the backup last detected, or None."""
+        raw = await self.get_setting(TRANSCRIPTION_SERVER_KEY)
+        if not raw:
+            return None
+        try:
+            loaded = json.loads(raw)
+        except ValueError, TypeError:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        return {"name": str(loaded.get("name") or ""), "version": str(loaded.get("version") or "")}
+
+    async def set_transcription_server(self, name: str, version: str) -> None:
+        await self.set_setting(TRANSCRIPTION_SERVER_KEY, json.dumps({"name": name, "version": version}))
 
     # ========================================================================
     # App Settings (v7.2.0 - key-value store)

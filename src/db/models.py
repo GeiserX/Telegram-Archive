@@ -38,6 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -327,6 +328,68 @@ class AvatarHistory(Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
 
     __table_args__ = (Index("ix_avatar_history_account_chat_seen", "account_id", "chat_id", "seen_at"),)
+
+
+# Transcript rows with one of these statuses are "open": at most one per media
+# (the partial unique index below), so the drain and the viewer's ask-now
+# route can never leave two in flight even when they race across processes.
+TRANSCRIPT_OPEN_STATUSES = ("queued", "running")
+TRANSCRIPT_OPEN_WHERE = text("status IN ('queued', 'running')")
+
+
+class MediaTranscript(Base):
+    """Every transcript of a media file, append-only (032, docs/TRANSCRIPTION.md).
+
+    Follows ``AvatarHistory`` in shape. A transcript is a new row here, never
+    a change to the media row; a second transcript with another engine or
+    preset is another row. ``status`` advances (queued, running, then done,
+    failed or skipped) and every other column is written once. No foreign key
+    to ``media`` on purpose: ``delete_voice_note_audio_twins`` removes media
+    rows, and the viewer reattaches a transcript by ``idempotency_key``
+    against the surviving twin's ``content_hash``. JSON columns are Text,
+    like ``raw_data``.
+    """
+
+    __tablename__ = "media_transcripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))
+    source: Mapped[str | None] = mapped_column(String(16))
+    engine_name: Mapped[str | None] = mapped_column(String(255))
+    engine_version: Mapped[str | None] = mapped_column(String(255))
+    preset: Mapped[str | None] = mapped_column(String(16))
+    models: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(16))
+    language_confidence: Mapped[float | None] = mapped_column(Float)
+    text: Mapped[str | None] = mapped_column(Text)
+    words: Mapped[str | None] = mapped_column(Text)
+    segments: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    duration_s: Mapped[float | None] = mapped_column(Float)
+    job_id: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (
+        Index("uq_media_transcripts_account_media_job", "account_id", "media_id", "job_id", unique=True),
+        Index(
+            "uq_media_transcripts_open",
+            "account_id",
+            "media_id",
+            unique=True,
+            sqlite_where=TRANSCRIPT_OPEN_WHERE,
+            postgresql_where=TRANSCRIPT_OPEN_WHERE,
+        ),
+        Index("ix_media_transcripts_account_media", "account_id", "media_id"),
+        Index("ix_media_transcripts_idempotency_key", "idempotency_key"),
+        Index("ix_media_transcripts_status", "status"),
+    )
 
 
 class User(Base):
