@@ -36,6 +36,7 @@ from src.transcription import (
     result_columns,
     transcribe_media,
 )
+from src.transcription_contract import parse_events_page
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -734,8 +735,12 @@ class AkouServer(FakeServer):
     def add_event(self, event_type: str, data: dict) -> None:
         self.events.append(
             {
-                "id": f"evt_{len(self.events) + 1:04d}",
+                # akou's feed event (src/main/server/jobs.ts eventView): a string id,
+                # the integer cursor, and the job id beside the data.
+                "id": f"msg_{len(self.events) + 1:04d}",
+                "cursor": len(self.events) + 1,
                 "type": event_type,
+                "job_id": data.get("job_id") if isinstance(data, dict) else None,
                 "timestamp": "2026-01-02T03:04:05Z",
                 "data": data,
             }
@@ -785,9 +790,17 @@ class AkouServer(FakeServer):
             unknown = set(request.url.params) - {"after", "wait"}
             if unknown:
                 return httpx.Response(400, json={"error": "unknown_parameter"})
-            after = int(request.url.params.get("after", "0"))
+            raw_after = request.url.params.get("after", "0")
+            if not raw_after.isdigit():
+                # akou reads `after` as a non-negative integer and refuses anything else.
+                return httpx.Response(400, json={"error": "bad_param", "message": "after is an integer"})
+            after = int(raw_after)
             page = self.events[after : after + self.page_size]
-            return httpx.Response(200, json={"events": page, "next_cursor": str(after + len(page))})
+            cursor = page[-1]["cursor"] if page else after
+            return httpx.Response(
+                200,
+                json={"events": page, "cursor": cursor, "has_more": cursor < len(self.events)},
+            )
         match = re.search(r"/v1/jobs/([^/]+)(/result)?$", path)
         if request.method == "GET" and match:
             self.requests.append(request)
@@ -1685,3 +1698,29 @@ def test_the_viewer_config_reads_the_secret_without_telegram_credentials(tmp_pat
         config = Config()
     assert config.api_id is None
     assert config.transcription_webhook_secret == WEBHOOK_SECRET
+
+
+class TestParseEventsPage:
+    """The event page as akou's feed answers it (akou src/main/api/routes/jobs.ts GET /events)."""
+
+    def test_the_top_level_integer_cursor_is_the_next_after(self):
+        page = {
+            "events": [{"id": "msg_0007", "cursor": 7, "type": "transcription.completed", "data": {}}],
+            "cursor": 7,
+            "has_more": False,
+        }
+        events, cursor = parse_events_page(page)
+        assert len(events) == 1
+        assert cursor == "7"
+
+    def test_the_event_id_is_never_used_as_a_cursor(self):
+        page = {"events": [{"id": "msg_0009", "type": "transcription.completed", "data": {}}]}
+        assert parse_events_page(page)[1] is None
+
+    def test_the_last_event_cursor_is_used_when_the_page_has_none(self):
+        page = {"events": [{"id": "msg_0001", "cursor": 1}, {"id": "msg_0002", "cursor": 2}]}
+        assert parse_events_page(page)[1] == "2"
+
+    def test_an_empty_page_keeps_the_stored_cursor(self):
+        assert parse_events_page({"events": [], "cursor": 12, "has_more": False}) == ([], "12")
+        assert parse_events_page({}) == ([], None)

@@ -47,22 +47,31 @@ def _number(value: Any) -> float | None:
 def parse_events_page(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
     """One page of ``GET /v1/events``: the events and the cursor to read after them.
 
-    Assumed body, since SV-E1 names only "the key's events after the
-    cursor, oldest first, with the next cursor":
-    ``{"events": [{"id", "type", "timestamp", "data"}, ...], "next_cursor": "<opaque>"}``.
-    The cursor is opaque and stored as a string (an integer is accepted and
-    stringified). Without ``next_cursor`` the last event's ``id`` is the
-    cursor; with neither, None, and the stored cursor stays where it is.
+    akou answers ``{"events": [{"id", "cursor", "type", "timestamp", "job_id",
+    "data"}, ...], "cursor": <int>, "has_more": <bool>}``. The cursor is an
+    integer sequence number, and ``after`` must be that integer: an event's
+    ``id`` is a ``msg_`` string that akou refuses as a cursor. The top-level
+    ``cursor`` wins; without it, the last event's own ``cursor``; with
+    neither, None, and the stored cursor stays where it is. The cursor is
+    stored as a decimal string.
     """
     events = payload.get("events")
     events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
-    cursor = payload.get("next_cursor")
-    if isinstance(cursor, int) and not isinstance(cursor, bool):
-        cursor = str(cursor)
-    if not isinstance(cursor, str) or not cursor:
-        last_id = events[-1].get("id") if events else None
-        cursor = last_id if isinstance(last_id, str) and last_id else None
+    cursor = _int_cursor(payload.get("cursor"))
+    if cursor is None and events:
+        cursor = _int_cursor(events[-1].get("cursor"))
     return events, cursor
+
+
+def _int_cursor(value: Any) -> str | None:
+    """A feed cursor as a decimal string, or None when it is not a non-negative integer."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return str(value)
+    if isinstance(value, str) and value.isdigit():
+        return value
+    return None
 
 
 def flat_job(job: dict[str, Any]) -> dict[str, Any]:
