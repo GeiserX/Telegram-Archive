@@ -126,6 +126,11 @@ PG_TSQUERY_FROM_SEARCH = (
     "FROM unnest(to_tsvector('simple', :fts_search)))"
 )
 
+# The same query built for the transcript side of a search. Its own bind name:
+# chat and global search put both sides in one statement, and two text()
+# clauses may not share a bind parameter name.
+PG_TRANSCRIPT_TSQUERY_FROM_SEARCH = PG_TSQUERY_FROM_SEARCH.replace(":fts_search", ":transcript_search")
+
 
 def sqlite_has_fts5(connection) -> bool:
     """Whether this SQLite build compiled FTS5 in (exotic builds leave it out)."""

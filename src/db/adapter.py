@@ -30,11 +30,13 @@ from sqlalchemy import (
     false,
     func,
     literal,
+    literal_column,
     nulls_last,
     or_,
     select,
     text,
     tuple_,
+    union,
     union_all,
     update,
 )
@@ -51,6 +53,7 @@ from ..message_utils import (
 )
 from .base import DatabaseManager
 from .fts import (
+    PG_TRANSCRIPT_TSQUERY_FROM_SEARCH,
     PG_TSQUERY_FROM_SEARCH,
     PG_TSVECTOR_COLUMN,
     SQLITE_FTS_TABLE,
@@ -4466,6 +4469,16 @@ class DatabaseAdapter:
         ``dense_hits`` and ``walk_timeout_ms`` exist for tests that want to
         drive each PostgreSQL path with a handful of rows.
 
+        Voice transcripts are searched too (docs/TRANSCRIPTION.md): the hit
+        set is the UNION of two indexed key sets, message keys from the
+        messages index and message keys reached from transcript hits through
+        ``media`` on ``(account_id, media_id)``. Never an OR or an EXISTS in
+        the message predicate, which would turn every page into a scan. Each
+        row's ``matched_in`` is ``transcript`` when only the transcript side
+        produced its key, else ``message``. Without the transcript search
+        objects (SQLite without FTS5, or a database not yet at 032) the
+        transcript side is absent.
+
         Returns ``{"results": [...], "has_more": bool, "indexed": bool}``; one
         extra row is fetched to answer ``has_more``.
         """
@@ -4480,27 +4493,26 @@ class DatabaseAdapter:
             predicate = await self._text_search_predicate(session, search)
             if predicate is None:
                 return {"results": [], "has_more": False, "indexed": False}
+            sides = {
+                "fold_shared": fold_shared,
+                "transcript_predicate": await self._transcript_search_predicate(session, search),
+            }
 
             if (
                 self._is_sqlite
-                or await self._global_search_hit_count(session, predicate, scope, dense_hits, fold_shared=fold_shared)
-                < dense_hits
+                or await self._global_search_hit_count(session, predicate, scope, dense_hits, **sides) < dense_hits
             ):
-                rows = await self._global_search_sorted_hits(
-                    session, predicate, scope, limit, offset, fold_shared=fold_shared
-                )
+                rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset, **sides)
             else:
                 try:
                     rows = await self._global_search_walk(
-                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms, fold_shared=fold_shared
+                        session, predicate, scope, limit, offset, timeout_ms=walk_timeout_ms, **sides
                     )
                 except DBAPIError as exc:
                     if not _is_statement_timeout(exc):
                         raise
                     await session.rollback()
-                    rows = await self._global_search_sorted_hits(
-                        session, predicate, scope, limit, offset, fold_shared=fold_shared
-                    )
+                    rows = await self._global_search_sorted_hits(session, predicate, scope, limit, offset, **sides)
 
         results = [
             {
@@ -4521,6 +4533,7 @@ class DatabaseAdapter:
                 "chat_is_forum": bool(row["chat_is_forum"]),
                 "chat_avatar_photo_id": row["chat_avatar_photo_id"],
                 "topic_title": row["topic_title"],
+                "matched_in": "transcript" if row["via_transcript"] else "message",
             }
             for row in rows[:limit]
         ]
@@ -4569,15 +4582,106 @@ class DatabaseAdapter:
             ),
         )
 
-    async def _global_search_hit_count(
-        self, session, predicate, scope: ChatScope, cap: int, *, fold_shared: bool = False
-    ) -> int:
-        """How many rows match, counted through the index and stopped at ``cap``."""
-        hits = self._global_search_scoped(
-            select(literal(1)).select_from(Message).where(predicate), scope, fold_shared=fold_shared
+    @staticmethod
+    def _transcript_hit_messages(stmt):
+        """Put ``media_transcripts`` in FROM and join it through ``media`` to the message that carries it."""
+        return (
+            stmt.select_from(MediaTranscript)
+            .join(Media, and_(Media.account_id == MediaTranscript.account_id, Media.id == MediaTranscript.media_id))
+            .join(
+                Message,
+                and_(
+                    Message.account_id == Media.account_id,
+                    Message.chat_id == Media.chat_id,
+                    Message.id == Media.message_id,
+                ),
+            )
         )
-        capped = hits.limit(cap).subquery("search_hits")
+
+    def _global_search_side_keys(self, predicate, scope: ChatScope, *, fold_shared: bool = False, via_transcript=False):
+        """One side of the hit set: message keys, their date and which side found them.
+
+        The message side reads ``messages`` through its own index. The
+        transcript side reads ``media_transcripts`` through its index and
+        reaches the message through ``media``. Both are scoped the same way.
+        """
+        stmt = select(
+            Message.account_id,
+            Message.chat_id,
+            Message.id,
+            Message.date,
+            literal_column("1" if via_transcript else "0").label("via_transcript"),
+        )
+        if via_transcript:
+            stmt = self._transcript_hit_messages(stmt)
+        else:
+            stmt = stmt.select_from(Message)
+        return self._global_search_scoped(stmt.where(predicate), scope, fold_shared=fold_shared)
+
+    def _global_search_sides(self, predicate, transcript_predicate, scope: ChatScope, *, fold_shared: bool):
+        sides = [self._global_search_side_keys(predicate, scope, fold_shared=fold_shared)]
+        if transcript_predicate is not None:
+            sides.append(
+                self._global_search_side_keys(transcript_predicate, scope, fold_shared=fold_shared, via_transcript=True)
+            )
+        return sides
+
+    async def _global_search_hit_count(
+        self, session, predicate, scope: ChatScope, cap: int, *, fold_shared: bool = False, transcript_predicate=None
+    ) -> int:
+        """How many distinct messages match, counted through the indexes and stopped at ``cap``."""
+        sides = [
+            side.limit(cap).subquery(f"search_side_{index}")
+            for index, side in enumerate(
+                self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+            )
+        ]
+        if len(sides) == 1:
+            capped = select(literal(1)).select_from(sides[0]).subquery("search_hits")
+        else:
+            keys = union(*(select(side.c.account_id, side.c.chat_id, side.c.id) for side in sides)).subquery("keys")
+            capped = select(literal(1)).select_from(keys).limit(cap).subquery("search_hits")
         return int((await session.execute(select(func.count()).select_from(capped))).scalar_one())
+
+    def _global_search_page_rows(self, sides, limit: int, offset: int, *, materialize: bool):
+        """One page of the hit set, keyed and sorted before the joins, then its columns.
+
+        Two sides are a UNION ALL grouped by key: a message found by both
+        reports the message side (``via_transcript`` 0), and each key is one
+        row, so offsets and ``has_more`` count messages, not matches.
+        """
+        if len(sides) == 1:
+            hits = sides[0].cte("search_hits")
+        else:
+            hits = union_all(*(select(*side.subquery().c) for side in sides)).cte("search_hits")
+        if materialize:
+            hits = hits.prefix_with("MATERIALIZED")
+        via = hits.c.via_transcript
+        page = select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
+        if len(sides) == 1:
+            page = page.add_columns(via.label("via_transcript"))
+        else:
+            page = page.add_columns(func.min(via).label("via_transcript")).group_by(
+                hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date
+            )
+        page = (
+            page.order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+            .subquery("search_page")
+        )
+        return self._global_search_joins(
+            select(*self._GLOBAL_SEARCH_COLUMNS, page.c.via_transcript)
+            .select_from(page)
+            .join(
+                Message,
+                and_(
+                    Message.account_id == page.c.account_id,
+                    Message.chat_id == page.c.chat_id,
+                    Message.id == page.c.id,
+                ),
+            )
+        ).order_by(page.c.date.desc(), page.c.account_id.desc(), page.c.chat_id.desc(), page.c.id.desc())
 
     async def _global_search_walk(
         self,
@@ -4589,14 +4693,21 @@ class DatabaseAdapter:
         *,
         timeout_ms: int | None = None,
         fold_shared: bool = False,
+        transcript_predicate=None,
     ):
-        """Newest-first walk that filters as it goes — the shape for dense terms."""
-        stmt = self._global_search_joins(select(*self._GLOBAL_SEARCH_COLUMNS).select_from(Message)).where(predicate)
-        for scope_predicate in scope.sql_predicates():
-            stmt = stmt.where(scope_predicate)
-        if fold_shared:
-            stmt = stmt.where(scope.displayed_copy_predicate())
-        stmt = stmt.order_by(*(column.desc() for column in self._GLOBAL_SEARCH_ORDER)).limit(limit + 1).offset(offset)
+        """Newest-first walk that filters as it goes — the shape for dense terms.
+
+        Each side walks its own newest ``offset + limit + 1`` keys; the page
+        of the union is always inside the union of those tops, so paging by
+        key stays exact.
+        """
+        depth = offset + limit + 1
+        order = [column.desc() for column in self._GLOBAL_SEARCH_ORDER]
+        sides = [
+            side.order_by(*order).limit(depth)
+            for side in self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+        ]
+        stmt = self._global_search_page_rows(sides, limit, offset, materialize=False)
         if timeout_ms is not None:
             # SET LOCAL: scoped to this transaction, so the pooled connection
             # never carries it into another request.
@@ -4604,7 +4715,15 @@ class DatabaseAdapter:
         return (await session.execute(stmt)).mappings().all()
 
     async def _global_search_sorted_hits(
-        self, session, predicate, scope: ChatScope, limit: int, offset: int, *, fold_shared: bool = False
+        self,
+        session,
+        predicate,
+        scope: ChatScope,
+        limit: int,
+        offset: int,
+        *,
+        fold_shared: bool = False,
+        transcript_predicate=None,
     ):
         """Materialise the hit keys through the index, sort them, then fetch one page.
 
@@ -4612,31 +4731,8 @@ class DatabaseAdapter:
         into the date walk it prefers, and the page is cut BEFORE the joins so
         a dense term never joins every hit to fetch twenty rows.
         """
-        keys = select(Message.account_id, Message.chat_id, Message.id, Message.date).select_from(Message)
-        hits = (
-            self._global_search_scoped(keys.where(predicate), scope, fold_shared=fold_shared)
-            .cte("search_hits")
-            .prefix_with("MATERIALIZED")
-        )
-        page = (
-            select(hits.c.account_id, hits.c.chat_id, hits.c.id, hits.c.date)
-            .order_by(hits.c.date.desc(), hits.c.account_id.desc(), hits.c.chat_id.desc(), hits.c.id.desc())
-            .limit(limit + 1)
-            .offset(offset)
-            .subquery("search_page")
-        )
-        stmt = self._global_search_joins(
-            select(*self._GLOBAL_SEARCH_COLUMNS)
-            .select_from(page)
-            .join(
-                Message,
-                and_(
-                    Message.account_id == page.c.account_id,
-                    Message.chat_id == page.c.chat_id,
-                    Message.id == page.c.id,
-                ),
-            )
-        ).order_by(page.c.date.desc(), page.c.account_id.desc(), page.c.chat_id.desc(), page.c.id.desc())
+        sides = self._global_search_sides(predicate, transcript_predicate, scope, fold_shared=fold_shared)
+        stmt = self._global_search_page_rows(sides, limit, offset, materialize=True)
         return (await session.execute(stmt)).mappings().all()
 
     async def _fts_ready(self, session) -> bool:
@@ -4714,6 +4810,30 @@ class DatabaseAdapter:
         # string only ever travels as a bind parameter.
         return text(f"messages.text_search @@ {PG_TSQUERY_FROM_SEARCH}").bindparams(fts_search=search)
 
+    async def _transcript_search_predicate(self, session, search: str):
+        """The transcript side of a search: an indexed predicate on ``media_transcripts``, or None.
+
+        None when this database lacks migration 032's search objects (SQLite
+        built without FTS5, or not yet migrated) or the search has no word.
+        Kept apart from ``_text_search_predicate`` on purpose: callers union
+        the two sides as key sets and never OR them into one predicate.
+        """
+        if not await self._transcript_fts_ready(session):
+            return None
+        if self._is_sqlite:
+            match = fts_match_query(search)
+            if match is None:
+                return None
+            return text(
+                "media_transcripts.id IN "
+                "(SELECT rowid FROM media_transcripts_fts WHERE media_transcripts_fts MATCH :transcript_match)"
+            ).bindparams(transcript_match=match)
+        if not search_has_words(search):
+            return None
+        return text(f"media_transcripts.text_search @@ {PG_TRANSCRIPT_TSQUERY_FROM_SEARCH}").bindparams(
+            transcript_search=search
+        )
+
     async def get_messages_paginated(
         self,
         chat_id: int,
@@ -4787,9 +4907,30 @@ class DatabaseAdapter:
             if topic_id is not None:
                 stmt = stmt.where(func.coalesce(Message.reply_to_top_id, 1) == topic_id)
 
+            # Chat search, like global search, is the UNION of two indexed key
+            # sets: the message index and the transcript index reached through
+            # media (docs/TRANSCRIPTION.md). ``transcript_predicate`` stays None
+            # on the ILIKE fallback and without the transcript objects.
+            fts_predicate = transcript_predicate = None
             if search:
                 fts_predicate = await self._text_search_predicate(session, search)
                 if fts_predicate is not None:
+                    transcript_predicate = await self._transcript_search_predicate(session, search)
+                if transcript_predicate is not None:
+                    message_keys = select(Message.account_id, Message.id).where(
+                        Message.chat_id == chat_id, fts_predicate
+                    )
+                    transcript_keys = self._transcript_hit_messages(select(Message.account_id, Message.id)).where(
+                        Media.chat_id == chat_id, transcript_predicate
+                    )
+                    if account_id is not None:
+                        message_keys = message_keys.where(Message.account_id == account_id)
+                        transcript_keys = transcript_keys.where(Message.account_id == account_id)
+                    hit_keys = union(message_keys, transcript_keys).subquery("chat_search_hits")
+                    stmt = stmt.where(
+                        tuple_(Message.account_id, Message.id).in_(select(hit_keys.c.account_id, hit_keys.c.id))
+                    )
+                elif fts_predicate is not None:
                     stmt = stmt.where(fts_predicate)
                 else:
                     escaped = search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
@@ -4861,6 +5002,20 @@ class DatabaseAdapter:
 
             version_counts = {msg["id"]: 0 for msg in messages}
             page_message_ids = [msg["id"] for msg in messages]
+
+            if search:
+                # matched_in: "transcript" when only the transcript side found
+                # the row. One indexed read over the page's own ids.
+                by_message = set(zip(row_accounts, page_message_ids, strict=True))
+                if transcript_predicate is not None and page_message_ids:
+                    matched_stmt = select(Message.account_id, Message.id).where(
+                        Message.chat_id == chat_id, Message.id.in_(page_message_ids), fts_predicate
+                    )
+                    if account_id is not None:
+                        matched_stmt = matched_stmt.where(Message.account_id == account_id)
+                    by_message = {(row.account_id, row.id) for row in await session.execute(matched_stmt)}
+                for account, msg in zip(row_accounts, messages, strict=True):
+                    msg["matched_in"] = "message" if (account, msg["id"]) in by_message else "transcript"
 
             # v6.0.0 media as a nested object — batched for the page. When a
             # message carries several media rows, ONE is attached

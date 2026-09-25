@@ -2046,6 +2046,9 @@ async def search_messages(
                 "sender_account_id": row["sender_account_id"],
                 "is_deleted": row["is_deleted"],
                 "topic_title": row["topic_title"],
+                # "transcript" when only a voice transcript matched: the viewer
+                # opens that bubble and marks the words there.
+                "matched_in": row["matched_in"],
                 "chat": {
                     "ref": row["chat_ref"],
                     "title": row["chat_title"],

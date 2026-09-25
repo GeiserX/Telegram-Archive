@@ -2169,7 +2169,7 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap">{{ selectedTranscript(msg).text }}</p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
                                                             <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
@@ -2283,7 +2283,7 @@
                                                 </div>
                                                 <div :id="transcriptRegionId(msg)" :class="isTranscriptExpanded(msg) ? 'mt-2' : ''">
                                                     <template v-if="showTranscriptText(msg)">
-                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap">{{ selectedTranscript(msg).text }}</p>
+                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
                                                         <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                             <span class="min-w-0 flex-1">
                                                                 <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
@@ -4672,7 +4672,11 @@
                     // search that produced this hit gets to mark it.
                     if (!opened || !query || searchQuery.value.trim() !== query) return
                     if (selectedChat.value?.ref !== row.chat.ref) return
-                    messageHighlight.value = { query, messageId: row.id }
+                    // A hit found only in a voice transcript opens that bubble so its
+                    // marked words are on screen (docs/TRANSCRIPTION.md, "Search hits").
+                    messageHighlight.value = row.matched_in === 'transcript'
+                        ? { query, messageId: row.id, transcript: true }
+                        : { query, messageId: row.id }
                 }
 
                 // Same word rule as the search itself: letters, digits and underscore.
@@ -4792,7 +4796,8 @@
 
                 // Idempotent: unwrap what the last pass marked, then mark what the current
                 // intent asks for. Cheap when there is no intent, which is nearly always.
-                // Every DOM change stays INSIDE .message-text, whose children are v-html
+                // Every DOM change stays INSIDE .message-text (and .transcript-text, the
+                // expanded voice transcript, rendered the same way), whose children are v-html
                 // output Vue does not manage. Never touch the container itself: Vue 3
                 // delimits its fragments with empty text nodes, and one normalize() on
                 // the container removed them and left every later patch of the list
@@ -4800,7 +4805,7 @@
                 const applyMessageHighlight = () => {
                     const container = messagesContainer.value
                     if (!container) return
-                    for (const block of container.querySelectorAll('.message-text')) {
+                    for (const block of container.querySelectorAll('.message-text, .transcript-text')) {
                         const marks = block.querySelectorAll('mark[data-search-mark]')
                         if (!marks.length) continue
                         marks.forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')))
@@ -4813,7 +4818,7 @@
                     // jump already relies on); the in-chat filter marks every row it shows.
                     const scope = intent.messageId == null ? container : findMessageElement(intent.messageId)
                     if (!scope) return
-                    for (const block of scope.querySelectorAll('.message-text')) markMatchesIn(block, pattern)
+                    for (const block of scope.querySelectorAll('.message-text, .transcript-text')) markMatchesIn(block, pattern)
                 }
                 watch(messageHighlight, () => nextTick(applyMessageHighlight))
                 // The mark on a hit belongs to the search that opened it: clearing the
@@ -6256,8 +6261,21 @@
                     return configured ? 'none' : 'unconfigured'
                 }
                 const transcriptsExpandedForChat = () => transcriptExpandAll.value[selectedChat.value?.ref || ''] === true
+                // A search that matched inside a transcript opens that bubble: the
+                // in-chat filter every row the server marks matched_in "transcript",
+                // a global hit the one row it landed on. A press closes it for as
+                // long as that search is on screen; the next search opens it again.
+                const transcriptHitClosed = ref({})
+                const transcriptSearchHit = (msg) => {
+                    const intent = messageHighlight.value
+                    if (!intent || !msg) return false
+                    if (transcriptHitClosed.value[transcriptKey(msg)] === intent) return false
+                    if (intent.messageId == null) return msg.matched_in === 'transcript'
+                    return intent.transcript === true && intent.messageId === msg.id
+                }
                 const isTranscriptExpanded = (msg) => {
                     if (!doneTranscripts(msg).length) return false
+                    if (transcriptSearchHit(msg)) return true
                     const stored = transcriptOpen.value[transcriptKey(msg)]
                     if (stored === true || stored === false) return stored
                     return transcriptsExpandedForChat()
@@ -6337,6 +6355,11 @@
                 const pressTranscript = async (msg) => {
                     const key = transcriptKey(msg)
                     if (doneTranscripts(msg).length) {
+                        if (transcriptSearchHit(msg)) {
+                            transcriptHitClosed.value = { ...transcriptHitClosed.value, [key]: messageHighlight.value }
+                            setTranscriptOpen(msg, false)
+                            return
+                        }
                         setTranscriptOpen(msg, !isTranscriptExpanded(msg))
                         return
                     }
@@ -10478,6 +10501,7 @@
 
                     showStatusPanel,
                     // Voice transcripts (docs/TRANSCRIPTION.md)
+                    escapeHtml,
                     transcriptionState,
                     transcriptionSettingText,
                     transcriptPlaceholderBars,
