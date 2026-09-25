@@ -28,11 +28,15 @@ the chat id), a file name or transcript text. Counts and reasons only.
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -77,6 +81,10 @@ MAX_EVENT_PAGES = 20
 # A refused request's error code is stored and logged only when it looks
 # like one of akou's snake_case codes; anything else becomes ``HTTP <code>``.
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+# The Standard Webhooks rules of the callback (SERVER.md SV-E2).
+WEBHOOK_TOLERANCE_SECONDS = 5 * 60
+WEBHOOK_SECRET_PREFIX = "whsec_"
 
 
 class TranscriptionError(Exception):
@@ -399,6 +407,7 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
 
 # ============================================================================
 # The akou contract in one place: the event page, a job's outcome, the webhook
+# signature. The backup and the viewer's callback route both read these.
 # ============================================================================
 
 
@@ -504,11 +513,65 @@ def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> t
     }
 
 
+def event_data(event: dict[str, Any]) -> dict[str, Any] | None:
+    """An event's ``data`` with the status its type implies; None for a type this client does not know.
+
+    The same body arrives by the callback and by the event feed:
+    ``{type, timestamp, data}`` (SERVER.md SV-E3). The status comes from
+    the type, so a ``transcription.cancelled`` event stores ``cancelled``
+    whatever its data says.
+    """
+    status = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}.get(event.get("type"))
+    data = event.get("data")
+    if status is None or not isinstance(data, dict):
+        return None
+    return {**data, "status": status}
+
+
 def metadata_hash(data: dict[str, Any]) -> str | None:
     """``data.metadata.content_hash``: the audio's SHA-256 the archive sent with the job."""
     metadata = data.get("metadata")
     value = metadata.get("content_hash") if isinstance(metadata, dict) else None
     return value if isinstance(value, str) and value else None
+
+
+def webhook_key(secret: Any) -> bytes | None:
+    """The HMAC key of a ``whsec_`` secret: the base64-decoded bytes after the prefix, or None."""
+    if not isinstance(secret, str) or not secret.startswith(WEBHOOK_SECRET_PREFIX):
+        return None
+    try:
+        key = base64.b64decode(secret[len(WEBHOOK_SECRET_PREFIX) :], validate=True)
+    except binascii.Error, ValueError:
+        return None
+    return key or None
+
+
+def verify_webhook(
+    key: bytes, webhook_id: str, timestamp: str, signature: str, body: bytes, *, now: float | None = None
+) -> str | None:
+    """Standard Webhooks verification; None when the delivery is genuine, else the reason.
+
+    The timestamp must be within five minutes of ``now`` in either
+    direction (``stale``). The signature is HMAC-SHA256 over
+    ``{webhook-id}.{webhook-timestamp}.{raw body}``; the header is a
+    space-separated list of ``v1,<base64>`` values, and any one matching
+    accepts, so a rotated secret keeps working during the overlap. Every
+    value is compared in constant time (``bad_signature``).
+    """
+    try:
+        sent_at = int(timestamp)
+    except ValueError:
+        return "stale"
+    if abs((time.time() if now is None else now) - sent_at) > WEBHOOK_TOLERANCE_SECONDS:
+        return "stale"
+    signed = webhook_id.encode() + b"." + timestamp.encode() + b"." + body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest())
+    matched = False
+    for entry in signature.split():
+        version, _, value = entry.partition(",")
+        if version == "v1" and hmac.compare_digest(expected, value.encode("utf-8", "replace")):
+            matched = True
+    return None if matched else "bad_signature"
 
 
 async def apply_job_outcome(
@@ -684,14 +747,14 @@ async def reconcile_events(db, client: TranscriptionClient, server: ServerInfo, 
     for _ in range(MAX_EVENT_PAGES):
         events, next_cursor = await client.get_events(cursor)
         for event in events:
-            status = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}.get(
-                event.get("type")
-            )
-            data = event.get("data")
-            if status is None or not isinstance(data, dict):
+            data = event_data(event)
+            if data is None:
                 continue
-            data = {**data, "status": status}
-            if status == "done" and not isinstance(data.get("text"), str) and isinstance(data.get("job_id"), str):
+            if (
+                data["status"] == "done"
+                and not isinstance(data.get("text"), str)
+                and isinstance(data.get("job_id"), str)
+            ):
                 # The large-result form carries ``result_url`` instead of the text.
                 try:
                     result = await client.get_result(data["job_id"])

@@ -1349,3 +1349,240 @@ class TestTranscriptsRoute(_WebTestBase):
             },
         )
         self.assertNotIn("text", json.dumps(frame))
+
+
+# ============================================================================
+# The signed callback route (slice 5)
+# ============================================================================
+
+import base64  # noqa: E402
+import hmac  # noqa: E402
+import time  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+CALLBACK_PATH = "/api/transcriptions/callback"
+WEBHOOK_KEY = b"test@value/here-webhook-key"
+WEBHOOK_SECRET = "whsec_" + base64.b64encode(WEBHOOK_KEY).decode()
+
+
+def _sign(webhook_id: str, timestamp: str, body: bytes, key: bytes = WEBHOOK_KEY) -> str:
+    """The Standard Webhooks signature, computed here independently of the route."""
+    digest = hmac.new(key, f"{webhook_id}.{timestamp}.".encode() + body, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode()
+
+
+def _delivery(data: dict, *, event_type: str = "transcription.completed", webhook_id: str = "msg_0001", **sign):
+    body = json.dumps({"type": event_type, "timestamp": "2026-01-02T03:04:05Z", "data": data}).encode()
+    timestamp = str(int(time.time()))
+    headers = {
+        "webhook-id": webhook_id,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": _sign(webhook_id, timestamp, body, **sign),
+        "content-type": "application/json",
+    }
+    return body, headers
+
+
+async def _post(content, headers: dict) -> httpx.Response:
+    async with AsyncClient(transport=ASGITransport(app=web_main.app), base_url="http://test") as client:
+        return await client.post(CALLBACK_PATH, content=content, headers=headers)
+
+
+@pytest.fixture
+async def callback_route(real_adapter):
+    """The route installed with a test secret on the real app, the database a real adapter."""
+    saved_db, saved_key = web_main.db, web_main._transcription_webhook_key
+    web_main.db = real_adapter
+    assert web_main.install_transcription_callback(web_main.app, WEBHOOK_SECRET) is True
+    try:
+        with patch.object(web_main, "handle_realtime_notification", new=AsyncMock()) as push:
+            yield push
+    finally:
+        web_main.app.router.routes[:] = [
+            r for r in web_main.app.router.routes if getattr(r, "path", None) != CALLBACK_PATH
+        ]
+        web_main.db = saved_db
+        web_main._transcription_webhook_key = saved_key
+
+
+async def _running_row(adapter, tmp_path, media_id: str = "m_1_voice", job_id: str = "job_0001") -> dict:
+    await _media(adapter, tmp_path, media_id)
+    row = await adapter.enqueue_media_transcript(media_id, account_id=1, idempotency_key=SHA, source="akou")
+    await adapter.fill_media_transcript(row["id"], status="running", job_id=job_id)
+    return row
+
+
+class TestCallbackRoute:
+    async def test_a_valid_delivery_fills_the_row_and_broadcasts_ids_and_status(
+        self, real_adapter, tmp_path, callback_route
+    ):
+        row = await _running_row(real_adapter, tmp_path)
+        await real_adapter.set_transcription_server("akou", "0.3.0")
+        body, headers = _delivery(_akou_result("job_0001", SHA, "llegó por el callback"))
+        resp = await _post(body, headers)
+        assert resp.status_code == 204
+        [stored] = await _rows(real_adapter, "m_1_voice")
+        assert (stored["id"], stored["status"], stored["text"]) == (row["id"], "done", "llegó por el callback")
+        assert (stored["engine_name"], stored["engine_version"]) == ("akou", "0.3.0")
+        callback_route.assert_awaited_once()
+        payload = callback_route.await_args.args[0]
+        assert payload == {
+            "type": "transcript",
+            "chat_id": CHAT,
+            "account_id": 1,
+            "data": {
+                "account_id": 1,
+                "chat_id": CHAT,
+                "message_id": 1,
+                "media_id": "m_1_voice",
+                "transcript_id": row["id"],
+                "status": "done",
+            },
+        }
+        assert "llegó" not in json.dumps(payload)
+
+    async def test_a_stale_timestamp_is_refused(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA))
+        for offset in (-301, 301):
+            stale = str(int(time.time()) + offset)
+            resp = await _post(
+                body, {**headers, "webhook-timestamp": stale, "webhook-signature": _sign("msg_0001", stale, body)}
+            )
+            assert resp.status_code == 401
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
+        callback_route.assert_not_awaited()
+
+    async def test_a_wrong_secret_or_a_changed_body_is_refused(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA), key=b"another test@value/here key")
+        assert (await _post(body, headers)).status_code == 401
+        body, headers = _delivery(_akou_result("job_0001", SHA))
+        assert (await _post(body.replace(b"hola", b"hol4"), headers)).status_code == 401
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
+        callback_route.assert_not_awaited()
+
+    async def test_a_signature_list_is_accepted_when_only_the_second_value_matches(
+        self, real_adapter, tmp_path, callback_route
+    ):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA))
+        old = _sign("msg_0001", headers["webhook-timestamp"], body, key=b"the retired test@value/here key")
+        headers["webhook-signature"] = f"{old} v2,ignored {headers['webhook-signature']}"
+        assert (await _post(body, headers)).status_code == 204
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "done"
+
+    async def test_missing_headers_are_a_400(self, real_adapter, tmp_path, callback_route):
+        body, headers = _delivery(_akou_result("job_0001", SHA))
+        for name in ("webhook-id", "webhook-timestamp", "webhook-signature"):
+            partial = {k: v for k, v in headers.items() if k != name}
+            assert (await _post(body, partial)).status_code == 400, name
+
+    async def test_a_replayed_delivery_writes_nothing(self, real_adapter, tmp_path, callback_route):
+        """Not even into a newer open row for the same audio a user asked for since."""
+        first = await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA, "primera entrega"))
+        assert (await _post(body, headers)).status_code == 204
+        again = await real_adapter.enqueue_media_transcript(
+            "m_1_voice", account_id=1, idempotency_key=SHA, source="akou", force=True
+        )
+        assert (await _post(body, headers)).status_code == 204
+        newest, done = await _rows(real_adapter, "m_1_voice")
+        assert (done["id"], done["text"]) == (first["id"], "primera entrega")
+        assert (newest["id"], newest["status"], newest["text"]) == (again["id"], "queued", None)
+        callback_route.assert_awaited_once()
+
+    async def test_an_oversized_body_with_a_length_is_refused_before_it_is_read(
+        self, real_adapter, tmp_path, callback_route
+    ):
+        await _running_row(real_adapter, tmp_path)
+        data = _akou_result("job_0001", SHA, "x" * (256 * 1024))
+        body, headers = _delivery(data)  # correctly signed: only the size refuses it
+        resp = await _post(body, headers)
+        assert resp.status_code == 413
+        # A small, correctly signed body that declares a length over the cap is
+        # refused on the header alone, before a byte of it is read.
+        small, small_headers = _delivery(_akou_result("job_0001", SHA, "pequeño"))
+        resp = await _post(small, {**small_headers, "content-length": str(256 * 1024 + 1)})
+        assert resp.status_code == 413
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
+
+    async def test_an_oversized_chunked_body_is_refused(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA, "x" * (256 * 1024)))
+
+        async def chunks():
+            for start in range(0, len(body), 16 * 1024):
+                yield body[start : start + 16 * 1024]
+
+        resp = await _post(chunks(), headers)
+        assert resp.status_code == 413
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
+
+        # The same streamed shape under the cap goes through.
+        small, small_headers = _delivery(_akou_result("job_0001", SHA, "cabe"), webhook_id="msg_0002")
+
+        async def small_chunks():
+            yield small[:10]
+            yield small[10:]
+
+        assert (await _post(small_chunks(), small_headers)).status_code == 204
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["text"] == "cabe"
+
+    async def test_result_url_instead_of_text_writes_nothing(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        data = _akou_result("job_0001", SHA)
+        for name in ("text", "words", "segments"):
+            data.pop(name)
+        data["result_url"] = "/v1/jobs/job_0001/result"
+        body, headers = _delivery(data)
+        assert (await _post(body, headers)).status_code == 204
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["text"]) == ("running", None)
+        callback_route.assert_not_awaited()
+
+    async def test_a_hash_no_open_row_carries_and_an_unknown_type_write_nothing(
+        self, real_adapter, tmp_path, callback_route
+    ):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0009", "0" * 64))
+        assert (await _post(body, headers)).status_code == 204
+        body, headers = _delivery(_akou_result("job_0001", SHA), event_type="transcription.previewed")
+        assert (await _post(body, headers)).status_code == 204
+        assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
+        callback_route.assert_not_awaited()
+
+    async def test_failed_and_cancelled_deliveries_store_their_reason(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        data = {"job_id": "job_0001", "status": "failed", "error": {"code": "decode_failed", "message": "text"}}
+        body, headers = _delivery({**data, "metadata": {"content_hash": SHA}}, event_type="transcription.failed")
+        assert (await _post(body, headers)).status_code == 204
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"]) == ("failed", "decode_failed")
+
+
+def test_the_route_is_absent_without_a_usable_secret():
+    # The test environment sets no TRANSCRIPTION_WEBHOOK_SECRET.
+    assert CALLBACK_PATH not in [getattr(r, "path", None) for r in web_main.app.routes]
+    bare = FastAPI()
+    for secret in ("", None, "not-a-whsec-secret", "whsec_", "whsec_!!not base64!!"):
+        assert web_main.install_transcription_callback(bare, secret) is False, secret
+    assert CALLBACK_PATH not in [getattr(r, "path", None) for r in bare.routes]
+    assert web_main.install_transcription_callback(bare, WEBHOOK_SECRET) is True
+    assert CALLBACK_PATH in [getattr(r, "path", None) for r in bare.routes]
+
+
+def test_the_viewer_config_reads_the_secret_without_telegram_credentials(tmp_path):
+    from src.config import Config
+
+    env = {
+        "BACKUP_PATH": str(tmp_path),
+        "DATABASE_PATH": str(tmp_path / "viewer.db"),
+        "TRANSCRIPTION_WEBHOOK_SECRET": WEBHOOK_SECRET,
+    }
+    with patch.dict(os.environ, env, clear=True):
+        config = Config()
+    assert config.api_id is None
+    assert config.transcription_webhook_secret == WEBHOOK_SECRET

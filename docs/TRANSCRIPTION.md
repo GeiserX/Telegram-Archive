@@ -299,11 +299,11 @@ The bearer key travels only in the `Authorization` header to `TRANSCRIPTION_URL`
 
 `POST /api/transcriptions/callback` on the viewer is the only inbound endpoint this feature adds. It differs from [`/internal/push`](../src/web/main.py#L3573), which trusts private addresses and a shared bearer: akou may be on another network, so this route trusts nothing about the source address and verifies every request:
 
-1. Body size cap of 1 MiB, enforced twice: a `Content-Length` check before reading, and a cap on the streamed read for chunked bodies with no length.
+1. Body size cap of 256 KiB, the size above which akou sends `result_url` instead of the text, enforced twice: a `Content-Length` check before reading, and a cap on the streamed read for chunked bodies with no length.
 2. `webhook-id`, `webhook-timestamp` and `webhook-signature` headers must all be present.
 3. The timestamp must be within five minutes of now, either direction.
 4. Signature: HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}`. The key is the base64-decoded bytes after the `whsec_` prefix of `TRANSCRIPTION_WEBHOOK_SECRET`. The header holds a space-separated list of `v1,<base64>` values; any one matching accepts, which lets the key rotate without downtime. Comparison is constant-time.
-5. The body's `data.metadata.content_hash` must match a `queued` or `running` row with the same `job_id`. Anything else returns 202 and writes nothing, so a probe learns nothing about which hashes exist. A repeat of an event already applied hits the row rule and also writes nothing.
+5. The body's `data.metadata.content_hash` fills every `queued` or `running` row with that `idempotency_key` whose `job_id` is empty or the event's job. Anything else returns 204 and writes nothing, so a probe learns nothing about which hashes exist. A repeat of an event already applied hits the row rule and also writes nothing.
 
 Auth in the viewer is per route through [`require_auth`](../src/web/main.py#L1361) and this route declares none; there is no login redirect middleware to exempt it from. The only rate limiter today is the [login one](../src/web/main.py#L774), 15 attempts per 5 minutes per IP, and it is not reused: a signed route with a constant-time check needs at most a generous bucket of its own, and none is acceptable. The route is registered only when `TRANSCRIPTION_WEBHOOK_SECRET` is set. The viewer needs no new dependency for it: verification is `hmac` and `hashlib` from the standard library, and the viewer never calls out.
 

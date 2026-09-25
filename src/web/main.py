@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -47,6 +47,7 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
+from ..transcription import apply_job_outcome, event_data, verify_webhook, webhook_key
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -3681,6 +3682,124 @@ async def internal_push(request: Request):
     except Exception as e:
         logger.warning(f"Error handling internal push: {e}")
         return {"status": "error", "detail": "Internal push processing failed"}
+
+
+# ============================================================================
+# Signed transcription callback (docs/TRANSCRIPTION.md, slice 5)
+# ============================================================================
+# akou posts each job's outcome here, signed per Standard Webhooks. The route
+# trusts nothing about the source address and declares no require_auth: the
+# signature is the authentication. It exists only when the viewer holds
+# TRANSCRIPTION_WEBHOOK_SECRET, and the viewer never makes an outbound request
+# for it: a delivery that carries ``result_url`` instead of the text writes
+# nothing and the backup's straggler poll fetches the result.
+
+TRANSCRIPTION_CALLBACK_PATH = "/api/transcriptions/callback"
+TRANSCRIPTION_CALLBACK_MAX_BYTES = 256 * 1024
+_TRANSCRIPTION_CALLBACK_HEADERS = ("webhook-id", "webhook-timestamp", "webhook-signature")
+_transcription_webhook_key: bytes | None = None
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes | None:
+    """The raw body, or None once it passes ``limit`` bytes; stops reading there."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def transcription_callback(request: Request):
+    """Verify one delivery from akou and store its outcome; 204 whenever it was genuine.
+
+    Checks run before the body is parsed, cheapest first: the three
+    Standard Webhooks headers (400), the size cap on ``Content-Length``
+    and on the streamed read for a body sent without one (413), then the
+    five-minute timestamp window and the HMAC over the raw body (401).
+    A genuine delivery fills every open row for ``data.metadata.content_hash``
+    under the row rule, so a replay, an unknown event type and a hash no
+    open row carries all answer 204 and write nothing. Each filled row is
+    pushed to the chat's sockets in-process with ids and status only.
+    """
+    key = _transcription_webhook_key
+    if key is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    headers = [request.headers.get(name, "") for name in _TRANSCRIPTION_CALLBACK_HEADERS]
+    if not all(headers):
+        raise HTTPException(status_code=400, detail="Missing webhook headers")
+    webhook_id, timestamp, signature = headers
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_large = int(declared) > TRANSCRIPTION_CALLBACK_MAX_BYTES
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+        if too_large:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    body = await _read_capped_body(request, TRANSCRIPTION_CALLBACK_MAX_BYTES)
+    if body is None:
+        raise HTTPException(status_code=413, detail="Payload too large")
+    reason = verify_webhook(key, webhook_id, timestamp, signature, body)
+    if reason is not None:
+        logger.warning(f"Rejected transcription callback: {reason}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        event = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    data = event_data(event) if isinstance(event, dict) else None
+    if data is None or db is None:
+        return Response(status_code=204)
+    server = await db.get_transcription_server()
+    engine_version = server["version"] if server and server.get("name") == "akou" else None
+    filled = await apply_job_outcome(db, data, engine_version=engine_version)
+    for row in filled:
+        media = await db.get_media_by_id(row["media_id"], account_id=row["account_id"])
+        if media is None or media.get("chat_id") is None:
+            continue
+        payload = {
+            "type": "transcript",
+            "chat_id": media["chat_id"],
+            "account_id": row["account_id"],
+            "data": {
+                "account_id": row["account_id"],
+                "chat_id": media["chat_id"],
+                "message_id": media.get("message_id"),
+                "media_id": row["media_id"],
+                "transcript_id": row["id"],
+                "status": row["status"],
+            },
+        }
+        try:
+            await handle_realtime_notification(payload)
+        except Exception as e:
+            logger.debug(f"Transcript broadcast failed: {type(e).__name__}")
+    return Response(status_code=204)
+
+
+def install_transcription_callback(target_app: FastAPI, secret: Any) -> bool:
+    """Register the callback route when ``secret`` is a usable ``whsec_`` secret; True when it did."""
+    global _transcription_webhook_key
+    key = webhook_key(secret)
+    if key is None:
+        return False
+    _transcription_webhook_key = key
+    target_app.add_api_route(
+        TRANSCRIPTION_CALLBACK_PATH,
+        transcription_callback,
+        methods=["POST"],
+        status_code=204,
+        include_in_schema=False,
+    )
+    return True
+
+
+if getattr(config, "transcription_enabled", False) is True:
+    install_transcription_callback(app, getattr(config, "transcription_webhook_secret", ""))
 
 
 # Cache chat stats to avoid re-running 3 aggregate queries on every chat open.
