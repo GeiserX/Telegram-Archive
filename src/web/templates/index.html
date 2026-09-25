@@ -5673,6 +5673,32 @@
                             }
                             break
 
+                        case 'transcript':
+                            // A transcript row changed (docs/TRANSCRIPTION.md). The frame
+                            // carries ids and status only; fetch the rows and store them on
+                            // the message's media object, which re-renders that message.
+                            if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
+                                break
+                            }
+                            if (!data.media_id) {
+                                break
+                            }
+                            const transcriptMsg = messages.value.find(m => m.id === data.message_id)
+                            if (!transcriptMsg?.media || (transcriptMsg.media.id && transcriptMsg.media.id !== data.media_id)) {
+                                break
+                            }
+                            fetch(`/api/media/${encodeURIComponent(data.media_id)}/transcripts`, { credentials: 'include' })
+                                .then(res => res.ok ? res.json() : null)
+                                .then(rows => {
+                                    if (!Array.isArray(rows)) return
+                                    const target = messages.value.find(m => m.id === data.message_id)
+                                    if (!target?.media) return
+                                    target.media.transcripts = rows
+                                    target.media.transcript = rows.find(r => r.status === 'done') || null
+                                })
+                                .catch(() => {})
+                            break
+
                         case 'delete':
                             if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
                                 break

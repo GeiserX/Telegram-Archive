@@ -7,13 +7,14 @@ keep polling. Warnings name the variable and never echo the value, and
 ``log_summary`` prints the scheme and host only, never the key or the secret.
 """
 
+import logging
 import os
 import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.config import Config
+from src.config import Config, setup_logging
 
 KEY = "test@value/here"
 SECRET = "whsec_dGVzdEB2YWx1ZS9oZXJl"
@@ -183,3 +184,14 @@ class TestTranscriptionConfig(unittest.TestCase):
         with self.assertLogs("src.config", level="INFO") as logs:
             config.log_summary()
         self.assertTrue(any("TRANSCRIPTION disabled" in line for line in logs.output))
+
+    def test_setup_logging_silences_httpx_request_lines(self):
+        """httpx logs every request URL at INFO; the server URL must not reach the log."""
+        httpx_logger = logging.getLogger("httpx")
+        previous = httpx_logger.level
+        try:
+            httpx_logger.setLevel(logging.NOTSET)
+            setup_logging(self._config())
+            self.assertEqual(httpx_logger.level, logging.WARNING)
+        finally:
+            httpx_logger.setLevel(previous)

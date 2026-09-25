@@ -466,6 +466,20 @@ async def handle_realtime_notification(payload: dict):
                 "reactions": data.get("reactions", []),
             },
         )
+    elif notification_type == "transcript":
+        # Ids and status only; the browser fetches the rows from
+        # /api/media/{media_id}/transcripts (docs/TRANSCRIPTION.md).
+        await ws_manager.broadcast_to_chat(
+            chat,
+            {
+                "type": "transcript",
+                "chat_ref": chat_ref,
+                "message_id": data.get("message_id"),
+                "media_id": data.get("media_id"),
+                "transcript_id": data.get("transcript_id"),
+                "status": data.get("status"),
+            },
+        )
 
 
 async def session_cleanup_task():
@@ -3123,6 +3137,47 @@ async def get_chat_avatar_history(chat: ChatContext = Depends(require_chat)):
             }
         )
     return entries
+
+
+def _transcript_payload(row: dict) -> dict:
+    """One transcript row for the API: datetimes as ISO strings, nothing dropped."""
+    payload = dict(row)
+    for key in ("requested_at", "completed_at", "created_at"):
+        value = payload.get(key)
+        payload[key] = value.isoformat() if isinstance(value, datetime) else value
+    return payload
+
+
+@app.get("/api/media/{media_id}/transcripts")
+async def get_media_transcripts(media_id: str, user: UserContext = Depends(require_auth)):
+    """Every transcript row for one media, newest first (docs/TRANSCRIPTION.md).
+
+    What the browser fetches on a realtime ``transcript`` event and what the
+    version picker reads. A media id names one row per account, so each
+    account's copy is resolved to its chat and passes the same visibility
+    rule as every ``{chat_ref}`` route; an id that names nothing the caller
+    may see is a uniform 404.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        rows: list[dict] = []
+        visible = False
+        for pair in await db.get_media_chat_pairs(media_id):
+            chat = await db.get_chat_by_id(pair["chat_id"], account_id=pair["account_id"])
+            if not chat or not chat.get("ref") or not _chat_visible(user, chat):
+                continue
+            visible = True
+            rows.extend(await db.list_media_transcripts(media_id, account_id=pair["account_id"]))
+    except Exception as e:
+        logger.error(f"Error fetching transcripts: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not visible:
+        raise HTTPException(status_code=404, detail="Media not found")
+    rows.sort(key=lambda row: row["id"], reverse=True)
+    return [_transcript_payload(row) for row in rows]
 
 
 @app.get("/api/chats/{chat_ref}/pinned")

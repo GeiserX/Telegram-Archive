@@ -6372,6 +6372,21 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
+    async def get_media_chat_pairs(self, media_id: str) -> list[dict[str, Any]]:
+        """``{account_id, chat_id, message_id}`` of every account's row for one media id.
+
+        The id string is only unique per account, so the viewer resolves each
+        copy to its chat and applies the visibility rule per copy.
+        """
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(Media.account_id, Media.chat_id, Media.message_id)
+                .where(Media.id == media_id)
+                .order_by(Media.account_id)
+            )
+            result = await session.execute(stmt)
+            return [{"account_id": row[0], "chat_id": row[1], "message_id": row[2]} for row in result]
+
     async def list_media_transcripts(self, media_id: str, *, account_id: int) -> list[dict[str, Any]]:
         """Every transcript row for one media, newest first."""
         async with self.db_manager.async_session_factory() as session:

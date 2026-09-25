@@ -91,6 +91,7 @@ from .parallel_download import (
     ParallelDownloadUnavailable,
     supports_parallel_download,
 )
+from .transcription import drain_transcriptions
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
@@ -1607,6 +1608,9 @@ class TelegramBackup:
             if self.config.verify_media:
                 await self._verify_and_redownload_media()
 
+            # Transcribe the voice messages and round videos downloaded so far
+            await self._drain_transcriptions()
+
         except Exception as e:
             # No exc_info here either — same reason. Losing the stack on a rare
             # failure is the accepted cost of the logging rule.
@@ -1619,6 +1623,21 @@ class TelegramBackup:
                 await self.db.set_metadata("backup_in_progress", "0")
             except Exception as e:
                 logger.warning(f"Failed to clear backup_in_progress flag: {e}")
+
+    async def _drain_transcriptions(self) -> None:
+        """Send new voice messages and round videos to the transcription server.
+
+        Runs after the two media sweeps so a file downloaded this run is
+        transcribed this run (docs/TRANSCRIPTION.md). A transcription problem
+        is never a backup failure: the archive is the system of record and
+        the next run's drain picks up whatever this one left.
+        """
+        if getattr(self.config, "transcription_enabled", False) is not True:
+            return
+        try:
+            await drain_transcriptions(self.config, self.db, account_id=self.account_id)
+        except Exception as e:
+            logger.warning(f"Transcription drain failed: {describe_exception(e)}")
 
     async def _get_dialogs(self, archived: bool = False) -> list:
         """

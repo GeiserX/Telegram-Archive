@@ -2003,6 +2003,9 @@ def setup_logging(config: Config):
 
     # Set Telethon logging to WARNING to reduce noise
     logging.getLogger("telethon").setLevel(logging.WARNING)
+    # httpx logs every request's full URL at INFO. The transcription server
+    # and the event webhook URLs never belong in the container log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":
