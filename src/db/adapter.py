@@ -6490,6 +6490,77 @@ class DatabaseAdapter:
                 )
             return rows
 
+    async def fill_open_transcripts_by_key(
+        self, idempotency_key: str, *, job_id: str | None, status: str, **columns: Any
+    ) -> list[dict[str, Any]]:
+        """Write one job's outcome into every open row for the same audio; the rows filled.
+
+        The callback, the event feed and the straggler poll all land here.
+        The row rule first: when any row already reached a final status for
+        ``job_id``, the outcome was applied before and nothing is written, so
+        a replayed delivery or an old event re-read after a user asked for a
+        new transcript changes nothing. Otherwise every ``queued`` or
+        ``running`` row, in any account, whose ``idempotency_key`` is this
+        hash and whose ``job_id`` is empty or this job gets the outcome, so
+        the same audio under two media rows shares one job and both fill.
+        Each fill goes through ``fill_media_transcript``, so only empty
+        columns are written.
+        """
+        if not idempotency_key:
+            return []
+        async with self.db_manager.async_session_factory() as session:
+            if job_id:
+                applied = await session.execute(
+                    select(MediaTranscript.id)
+                    .where(
+                        and_(
+                            MediaTranscript.job_id == job_id,
+                            MediaTranscript.status.in_(TRANSCRIPT_TERMINAL_STATUSES),
+                        )
+                    )
+                    .limit(1)
+                )
+                if applied.first() is not None:
+                    return []
+            job_match = MediaTranscript.job_id.is_(None)
+            if job_id:
+                job_match = or_(job_match, MediaTranscript.job_id == job_id)
+            result = await session.execute(
+                select(MediaTranscript.id, MediaTranscript.account_id, MediaTranscript.media_id)
+                .where(
+                    and_(
+                        MediaTranscript.idempotency_key == idempotency_key,
+                        MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
+                        job_match,
+                    )
+                )
+                .order_by(MediaTranscript.id)
+            )
+            open_rows = list(result)
+        filled = []
+        for row_id, account_id, media_id in open_rows:
+            if await self.fill_media_transcript(row_id, status=status, job_id=job_id, **columns):
+                filled.append({"id": row_id, "account_id": account_id, "media_id": media_id, "status": status})
+        return filled
+
+    async def get_open_job_transcripts(self, *, account_id: int, requested_before: datetime) -> list[dict[str, Any]]:
+        """Open rows of one account submitted as a job before ``requested_before``: the stragglers."""
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(
+                    and_(
+                        MediaTranscript.account_id == account_id,
+                        MediaTranscript.status.in_(TRANSCRIPT_OPEN_STATUSES),
+                        MediaTranscript.job_id.is_not(None),
+                        MediaTranscript.requested_at < requested_before,
+                    )
+                )
+                .order_by(MediaTranscript.id)
+            )
+            result = await session.execute(stmt)
+            return [self._transcript_to_dict(row) for row in result.scalars()]
+
     async def get_transcription_events_cursor(self) -> str | None:
         """Where the akou event feed was last read, or None before the first read."""
         return await self.get_setting(TRANSCRIPTION_EVENTS_CURSOR_KEY)

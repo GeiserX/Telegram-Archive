@@ -12,10 +12,13 @@ URL's query.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import sys
+import urllib.parse
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -148,6 +151,15 @@ async def _media(
     )
     await adapter.insert_media(row, account_id=1)
     return row
+
+
+def _stats(**counts: int) -> dict[str, int]:
+    """A drain's counts: every key at zero except the ones named."""
+    stats = dict.fromkeys(
+        ("done", "failed", "skipped", "submitted", "refused", "unreachable", "noop", "reconciled", "polled"), 0
+    )
+    stats.update(counts)
+    return stats
 
 
 async def _rows(adapter, media_id: str) -> list[dict]:
@@ -348,7 +360,7 @@ class TestDrain:
         stats = await drain_transcriptions(
             config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
         )
-        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
+        assert stats == _stats()
         assert len(server.transcribe_requests) == 1
         assert len(await _rows(real_adapter, "m_1_voice")) == 1
 
@@ -395,7 +407,7 @@ class TestDrain:
             config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
         )
 
-        assert stats == {"done": 1, "failed": 0, "skipped": 1, "unreachable": 0, "noop": 0}
+        assert stats == _stats(done=1, skipped=1)
         assert len(server.transcribe_requests) == 1
         skipped = (await _rows(real_adapter, "m_1_voice"))[0]
         assert skipped["status"] == "skipped"
@@ -433,7 +445,7 @@ class TestDrain:
         client = TranscriptionClient(config, transport=httpx.MockTransport(boom))
         with caplog.at_level(logging.DEBUG, logger="src.transcription"):
             stats = await drain_transcriptions(config, real_adapter, account_id=1, notifier=AsyncMock(), client=client)
-        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
+        assert stats == _stats()
         assert await _rows(real_adapter, "m_1_voice") == []
         assert any("unreachable" in record.getMessage() for record in caplog.records)
 
@@ -452,7 +464,7 @@ class TestDrain:
                 config, real_adapter, account_id=1, notifier=notifier, client=_client(config, down)
             )
 
-        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 1, "noop": 0}
+        assert stats == _stats(unreachable=1)
         # Three attempts on the first media, then the run ends: the second
         # media was never tried and has no row at all.
         assert len(down.transcribe_requests) == 3
@@ -510,14 +522,14 @@ class TestDrain:
         assert await real_adapter.get_transcription_server() is None
 
         akou = FakeServer(
-            server_status=200, server_body={"name": "akou", "version": "0.2.0", "capabilities": {"jobs": True}}
+            server_status=200, server_body={"name": "akou", "version": "0.2.0", "capabilities": {"jobs": False}}
         )
         await _media(real_adapter, tmp_path, "m_2_voice")
         stats = await drain_transcriptions(
             config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, akou)
         )
         assert await real_adapter.get_transcription_server() == {"name": "akou", "version": "0.2.0"}
-        # jobs offered but the job path is slice 4: the synchronous path is taken.
+        # akou without jobs (app mode): the synchronous path is taken.
         assert stats["done"] == 1
         assert len(akou.transcribe_requests) == 1
         # akou reads the preset in ``model``; nobody else does.
@@ -554,7 +566,7 @@ class TestDrain:
         ):
             with caplog.at_level(logging.DEBUG, logger="src.transcription"):
                 stats = await drain_transcriptions(config, real_adapter, account_id=1, client=_client(config, server))
-            assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
+            assert stats == _stats()
         assert server.requests == []
         assert not [r for r in caplog.records if r.levelno >= logging.INFO]
 
@@ -625,6 +637,450 @@ class TestDrain:
         assert "token=" not in joined
         assert "akou.example.test" not in joined
         assert str(CHAT) not in joined
+
+
+# ============================================================================
+# The akou job path (slice 4)
+# ============================================================================
+
+AKOU_INFO = {"name": "akou", "version": "0.3.0", "capabilities": {"jobs": True, "webhooks": True, "events": True}}
+CALLBACK = "https://archive.example.test/api/transcriptions/callback"
+# Every field SV-J1 documents; akou refuses anything else with 400.
+JOB_FIELDS = {"file", "preset", "language", "keywords[]", "diarize", "callback_url", "metadata"}
+_PART = re.compile(r'name="([^"]+)"(?:; filename="[^"]*")?\r\n(?:Content-Type: [^\r]*\r\n)?\r\n(.*?)\r\n--', re.DOTALL)
+
+
+def _akou_result(job_id: str, content_hash: str, text: str = "hola desde akou") -> dict:
+    """The flat result of SV-J4, as the result route and the webhook data carry it."""
+    return {
+        "job_id": job_id,
+        "status": "done",
+        "text": text,
+        "language": "es",
+        "language_confidence": 0.97,
+        "duration_s": 4.2,
+        "words": [{"w": "hola", "s": 0.31, "e": 0.62, "c": 0.94}],
+        "segments": [{"s": 0.31, "e": 3.9, "text": text, "speaker": None}],
+        "confidence": 0.93,
+        "engine": {"name": "parakeet", "version": "1", "preset": "fast", "models": ["parakeet-test-model"]},
+        "metadata": {"content_hash": content_hash},
+    }
+
+
+class AkouServer(FakeServer):
+    """``FakeServer`` playing akou: the server route, jobs, the result route and the event feed.
+
+    Jobs are keyed by ``Idempotency-Key`` as SV-J2 says: the same key and
+    the same file answer 200 with the existing job in whatever state it is,
+    the same key with another file answers 422 ``idempotency_conflict``. A
+    ``callback_url`` whose host is not in ``callback_hosts`` answers 422
+    ``callback_not_allowed``. Unknown fields and any query parameter on
+    ``POST /v1/jobs`` answer 400, as every /v1 route does. Finishing a job
+    appends to the event feed; ``page_size`` pages it.
+    """
+
+    def __init__(self, *, callback_hosts=("archive.example.test",), page_size: int = 50, retain_days=None):
+        info = dict(AKOU_INFO)
+        if retain_days is not None:
+            info["retain_days"] = retain_days
+        super().__init__(server_status=200, server_body=info)
+        self.callback_hosts = set(callback_hosts)
+        self.page_size = page_size
+        self.jobs: dict[str, dict] = {}
+        self.by_key: dict[str, str] = {}
+        self.events: list[dict] = []
+        self.issued = 0  # job ids are never reused, even after a job is deleted
+        self.nest_result = True  # a done job answer carries its result under "result"
+
+    # -- what the tests drive -------------------------------------------------
+
+    def add_job(self, content_hash: str, status: str = "running", audio: bytes = AUDIO) -> str:
+        self.issued += 1
+        job_id = f"job_{self.issued:04d}"
+        self.jobs[job_id] = {
+            "status": status,
+            "hash": content_hash,
+            "file_sha": hashlib.sha256(audio).hexdigest(),
+            "error": None,
+        }
+        self.by_key[content_hash] = job_id
+        return job_id
+
+    def finish(self, job_id: str, *, text: str = "hola desde akou", emit: bool = True) -> None:
+        job = self.jobs[job_id]
+        job["status"] = "done"
+        job["text"] = text
+        if emit:
+            self.add_event("transcription.completed", _akou_result(job_id, job["hash"], text))
+
+    def fail(self, job_id: str, code: str = "decode_failed") -> None:
+        job = self.jobs[job_id]
+        job["status"] = "failed"
+        job["error"] = {"code": code, "message": "server text that is never stored"}
+        self.add_event(
+            "transcription.failed",
+            {"job_id": job_id, "status": "failed", "error": job["error"], "metadata": {"content_hash": job["hash"]}},
+        )
+
+    def cancel(self, job_id: str) -> None:
+        job = self.jobs[job_id]
+        job["status"] = "cancelled"
+        self.add_event(
+            "transcription.cancelled",
+            {"job_id": job_id, "status": "cancelled", "metadata": {"content_hash": job["hash"]}},
+        )
+
+    def add_event(self, event_type: str, data: dict) -> None:
+        self.events.append(
+            {
+                "id": f"evt_{len(self.events) + 1:04d}",
+                "type": event_type,
+                "timestamp": "2026-01-02T03:04:05Z",
+                "data": data,
+            }
+        )
+
+    # -- requests by kind -----------------------------------------------------
+
+    def _paths(self, method: str, suffix: str) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == method and r.url.path.endswith(suffix)]
+
+    @property
+    def submits(self) -> list[httpx.Request]:
+        return self._paths("POST", "/v1/jobs")
+
+    @property
+    def event_reads(self) -> list[httpx.Request]:
+        return self._paths("GET", "/v1/events")
+
+    @property
+    def job_reads(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "GET" and "/v1/jobs/" in r.url.path]
+
+    # -- the routes -----------------------------------------------------------
+
+    def _job_answer(self, job_id: str) -> dict:
+        job = self.jobs[job_id]
+        answer = {
+            "id": job_id,
+            "status": job["status"],
+            "created_at": "2026-01-02T03:04:05Z",
+            "links": {"self": f"/v1/jobs/{job_id}", "result": f"/v1/jobs/{job_id}/result"},
+        }
+        if job["status"] == "done" and self.nest_result:
+            result = _akou_result(job_id, job["hash"], job["text"])
+            answer["result"] = {k: v for k, v in result.items() if k not in ("job_id", "status", "metadata")}
+        if job["error"]:
+            answer["error"] = job["error"]
+        return answer
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/v1/jobs"):
+            self.requests.append(request)
+            return self._submit(request)
+        if request.method == "GET" and path.endswith("/v1/events"):
+            self.requests.append(request)
+            unknown = set(request.url.params) - {"after", "wait"}
+            if unknown:
+                return httpx.Response(400, json={"error": "unknown_parameter"})
+            after = int(request.url.params.get("after", "0"))
+            page = self.events[after : after + self.page_size]
+            return httpx.Response(200, json={"events": page, "next_cursor": str(after + len(page))})
+        match = re.search(r"/v1/jobs/([^/]+)(/result)?$", path)
+        if request.method == "GET" and match:
+            self.requests.append(request)
+            job_id = match.group(1)
+            if job_id not in self.jobs:
+                return httpx.Response(404, json={"error": "not_found", "message": "no such job"})
+            job = self.jobs[job_id]
+            if match.group(2):
+                if job["status"] != "done":
+                    return httpx.Response(409, json={"error": "not_done", "message": "not finished"})
+                return httpx.Response(200, json=_akou_result(job_id, job["hash"], job["text"]))
+            return httpx.Response(200, json=self._job_answer(job_id))
+        return super()._handle(request)
+
+    def _submit(self, request: httpx.Request) -> httpx.Response:
+        if request.url.query:
+            return httpx.Response(400, json={"error": "unknown_parameter", "message": "no query on this route"})
+        fields = dict(_PART.findall(request.content.decode("latin-1")))
+        if set(fields) - JOB_FIELDS:
+            return httpx.Response(400, json={"error": "unknown_field", "message": "refused"})
+        callback = fields.get("callback_url")
+        if callback and urllib.parse.urlsplit(callback).hostname not in self.callback_hosts:
+            return httpx.Response(422, json={"error": "callback_not_allowed", "message": "host not allowed"})
+        key = request.headers["idempotency-key"]
+        file_sha = hashlib.sha256(fields["file"].encode("latin-1")).hexdigest()
+        if key in self.by_key:
+            job_id = self.by_key[key]
+            if self.jobs[job_id]["file_sha"] != file_sha:
+                return httpx.Response(422, json={"error": "idempotency_conflict", "message": "another file"})
+            return httpx.Response(200, json=self._job_answer(job_id))
+        job_id = self.add_job(json.loads(fields["metadata"])["content_hash"], status="queued")
+        return httpx.Response(202, json=self._job_answer(job_id))
+
+
+async def _backdate(adapter, **delta) -> None:
+    """Move every open row's request time back by ``delta``."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from src.db.models import MediaTranscript
+    from src.message_utils import utcnow_naive
+
+    async with adapter.db_manager.async_session_factory() as session:
+        await session.execute(
+            update(MediaTranscript)
+            .where(MediaTranscript.status.in_(("queued", "running")))
+            .values(requested_at=utcnow_naive() - timedelta(**delta))
+        )
+        await session.commit()
+
+
+def _akou_config(tmp_path, **overrides) -> SimpleNamespace:
+    return _config(str(tmp_path), **{"transcription_callback_url": "", **overrides})
+
+
+async def _akou_drain(config, adapter, server: AkouServer, notifier=None) -> dict:
+    return await drain_transcriptions(
+        config, adapter, account_id=1, notifier=notifier or AsyncMock(), client=_client(config, server)
+    )
+
+
+SHA = hashlib.sha256(AUDIO).hexdigest()
+
+
+class TestJobPath:
+    async def test_submit_sends_the_documented_fields_and_stores_the_job_id(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path, transcription_callback_url=CALLBACK, transcription_preset="fast")
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats == _stats(submitted=1)
+        assert server.transcribe_requests == []  # the job path, never the OpenAI route
+        request = server.submits[0]
+        assert request.url.query == b""  # never ``wait``: akou refuses unknown parameters
+        assert request.headers["idempotency-key"] == SHA
+        assert request.headers["authorization"] == f"Bearer {KEY}"
+        fields = dict(_PART.findall(request.content.decode("latin-1")))
+        assert fields["preset"] == "fast"
+        assert fields["language"] == "auto"
+        assert fields["callback_url"] == CALLBACK
+        assert json.loads(fields["metadata"]) == {"content_hash": SHA}
+        assert fields["file"] == AUDIO.decode("latin-1")
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["job_id"], row["source"], row["idempotency_key"]) == (
+            "queued",
+            "job_0001",
+            "akou",
+            SHA,
+        )
+
+        # No callback URL configured: the field is not sent at all.
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="d" * 64)
+        await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        fields = dict(_PART.findall(server.submits[-1].content.decode("latin-1")))
+        assert "callback_url" not in fields
+        assert server.submits[-1].headers["idempotency-key"] == "d" * 64
+
+    async def test_a_200_with_the_existing_running_job_stores_that_job(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        job_id = server.add_job(SHA, status="running")
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        assert stats == _stats(submitted=1)
+        assert len(server.jobs) == 1  # no second job for the same audio
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["job_id"]) == ("running", job_id)
+
+    async def test_an_answer_already_done_is_stored_at_once(self, real_adapter, tmp_path):
+        """From the nested ``result``, or from the result route when the answer carries none."""
+        for nested, media_id in ((True, "m_1_voice"), (False, "m_2_voice")):
+            audio_hash = "e" * 64 if nested else "f" * 64
+            await _media(real_adapter, tmp_path, media_id, content_hash=audio_hash)
+            server = AkouServer()
+            server.nest_result = nested
+            job_id = server.add_job(audio_hash, status="queued")
+            server.finish(job_id, text=f"ya estaba hecho {media_id}", emit=False)
+            notifier = AsyncMock()
+            stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server, notifier)
+            assert stats["done"] == 1
+            [row] = await _rows(real_adapter, media_id)
+            assert row["status"] == "done"
+            assert row["job_id"] == job_id
+            assert row["text"] == f"ya estaba hecho {media_id}"
+            assert row["language"] == "es"
+            assert row["language_confidence"] == 0.97
+            assert row["confidence"] == 0.93
+            assert row["duration_s"] == 4.2
+            assert row["words"] == [{"w": "hola", "s": 0.31, "e": 0.62, "c": 0.94}]
+            assert row["segments"][0]["text"] == f"ya estaba hecho {media_id}"
+            assert row["models"] == ["parakeet-test-model"]
+            assert (row["source"], row["engine_name"], row["engine_version"]) == ("akou", "akou", "0.3.0")
+            result_reads = [r for r in server.job_reads if r.url.path.endswith("/result")]
+            assert len(result_reads) == (0 if nested else 1)
+            notifier.notify.assert_awaited_once()
+            assert notifier.notify.await_args.args[2]["status"] == "done"
+
+    async def test_callback_not_allowed_fails_the_row_warns_once_and_ends_the_run(self, real_adapter, tmp_path, caplog):
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64, download_date=datetime(2026, 1, 3))
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64, download_date=datetime(2026, 1, 2))
+        server = AkouServer(callback_hosts=())
+        config = _akou_config(tmp_path, transcription_callback_url=CALLBACK)
+        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+            stats = await _akou_drain(config, real_adapter, server)
+        assert stats["refused"] == 1
+        assert len(server.submits) == 1  # the second media was never sent
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"]) == ("failed", "callback_not_allowed")
+        assert await _rows(real_adapter, "m_2_voice") == []
+        assert sum("callback_not_allowed" in r.getMessage() for r in caplog.records) == 1
+        assert all(CALLBACK not in r.getMessage() for r in caplog.records)
+
+    async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
+        server = AkouServer()
+        server.add_job("9" * 64, audio=b"some other file")
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        assert stats["failed"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"], row["job_id"]) == ("failed", "idempotency_conflict", None)
+
+    async def test_the_event_feed_fills_a_row_no_callback_reached(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        [row] = await _rows(real_adapter, "m_1_voice")
+        server.finish(row["job_id"], text="llegó por el feed")
+
+        notifier = AsyncMock()
+        stats = await _akou_drain(config, real_adapter, server, notifier)
+        assert stats["reconciled"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["text"]) == ("done", "llegó por el feed")
+        assert server.job_reads == []  # the feed was enough; the row is not a straggler yet
+        # The first read ever has no cursor; each later one starts at the stored cursor.
+        assert [r.url.params.get("after") for r in server.event_reads] == [None, "0", "1"]
+        assert await real_adapter.get_transcription_events_cursor() == "1"
+        notifier.notify.assert_awaited_once()
+        assert notifier.notify.await_args.args[2]["media_id"] == "m_1_voice"
+
+        # The next run reads after the stored cursor and writes nothing.
+        stats = await _akou_drain(config, real_adapter, server)
+        assert server.event_reads[-1].url.params["after"] == "1"
+        assert stats["reconciled"] == 0
+
+    async def test_failed_and_cancelled_events_store_their_reason(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="a" * 64)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="b" * 64)
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        server.fail(server.by_key["a" * 64])
+        server.cancel(server.by_key["b" * 64])
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["reconciled"] == 2
+        failed = (await _rows(real_adapter, "m_1_voice"))[-1]
+        cancelled = (await _rows(real_adapter, "m_2_voice"))[-1]
+        assert (failed["status"], failed["error"]) == ("failed", "decode_failed")
+        assert (cancelled["status"], cancelled["error"]) == ("failed", "cancelled")
+
+    async def test_unknown_event_types_are_skipped_and_the_cursor_moves_past_them(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer(page_size=2)
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        job_id = server.by_key[SHA]
+        # Shaped like a finished result, so only its type keeps it out of the row.
+        server.add_event(
+            "transcription.previewed",
+            {"job_id": job_id, "status": "done", "text": "not a transcript", "metadata": {"content_hash": SHA}},
+        )
+        server.add_event("transcription.progress", {"job_id": job_id, "metadata": {"content_hash": SHA}})
+        server.add_event("transcription.completed", "not an object")
+        server.finish(job_id, text="después de tres desconocidos")
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["reconciled"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["text"]) == ("done", "después de tres desconocidos")
+        assert await real_adapter.get_transcription_events_cursor() == "4"
+        assert [r.url.params.get("after") for r in server.event_reads[-3:]] == ["0", "2", "4"]
+
+    async def test_the_straggler_poll_finishes_a_job_the_feed_never_reported(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
+        server = AkouServer()
+        server.nest_result = False
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        server.finish(server.by_key["1" * 64], text="por sondeo", emit=False)
+        server.jobs[server.by_key["2" * 64]]["status"] = "running"
+
+        # Younger than ten minutes: not polled yet.
+        await _akou_drain(config, real_adapter, server)
+        assert server.job_reads == []
+
+        await _backdate(real_adapter, minutes=11)
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["polled"] == 1
+        done = (await _rows(real_adapter, "m_1_voice"))[0]
+        assert (done["status"], done["text"]) == ("done", "por sondeo")
+        running = (await _rows(real_adapter, "m_2_voice"))[0]
+        assert running["status"] == "running"
+        done_job, running_job = server.by_key["1" * 64], server.by_key["2" * 64]
+        paths = sorted(r.url.path.rsplit("/v1/", 1)[1] for r in server.job_reads)
+        assert paths == sorted([f"jobs/{done_job}", f"jobs/{done_job}/result", f"jobs/{running_job}"])
+
+    async def test_a_row_past_retention_expires_and_is_resubmitted(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer(retain_days=2)
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        [first] = await _rows(real_adapter, "m_1_voice")
+        # akou deleted the job and its key after its retention window.
+        del server.jobs[first["job_id"]]
+        del server.by_key[SHA]
+        await _backdate(real_adapter, days=2, minutes=1)
+
+        stats = await _akou_drain(config, real_adapter, server)
+        assert server.job_reads == []  # an expired row costs no request
+        newest, expired = await _rows(real_adapter, "m_1_voice")
+        assert (expired["id"], expired["status"], expired["error"]) == (first["id"], "failed", "expired")
+        assert (newest["status"], newest["job_id"]) == ("queued", "job_0002")
+        assert stats["submitted"] == 1
+
+    async def test_two_media_with_the_same_audio_share_one_job_and_both_fill(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        await _media(real_adapter, tmp_path, "m_2_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        stats = await _akou_drain(config, real_adapter, server)
+        assert stats["submitted"] == 2
+        assert list(server.jobs) == ["job_0001"]  # the second submit got the first job back
+        first = (await _rows(real_adapter, "m_1_voice"))[0]
+        second = (await _rows(real_adapter, "m_2_voice"))[0]
+        assert first["job_id"] == second["job_id"] == "job_0001"
+
+        server.finish("job_0001", text="un audio, dos mensajes")
+        notifier = AsyncMock()
+        stats = await _akou_drain(config, real_adapter, server, notifier)
+        assert stats["reconciled"] == 2
+        for media_id in ("m_1_voice", "m_2_voice"):
+            [row] = await _rows(real_adapter, media_id)
+            assert (row["status"], row["text"]) == ("done", "un audio, dos mensajes")
+        assert sorted(c.args[2]["media_id"] for c in notifier.notify.await_args_list) == ["m_1_voice", "m_2_voice"]
+
+    async def test_a_server_without_jobs_keeps_the_synchronous_path(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        server.server_body = {**AKOU_INFO, "capabilities": {"jobs": False}}
+        stats = await _akou_drain(_akou_config(tmp_path), real_adapter, server)
+        assert stats["done"] == 1
+        assert server.submits == [] and server.event_reads == []
+        assert len(server.transcribe_requests) == 1
 
 
 # ============================================================================
