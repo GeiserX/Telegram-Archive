@@ -188,6 +188,9 @@ def webhook_key(secret: Any) -> bytes | None:
     return key or None
 
 
+_TIMESTAMP = re.compile(r"-?\d{1,12}")
+
+
 def verify_webhook(
     key: bytes, webhook_id: str, timestamp: str, signature: str, body: bytes, *, now: float | None = None
 ) -> str | None:
@@ -200,10 +203,11 @@ def verify_webhook(
     accepts, so a rotated secret keeps working during the overlap. Every
     value is compared in constant time (``bad_signature``).
     """
-    try:
-        sent_at = int(timestamp)
-    except ValueError:
+    # Unix seconds fit in 12 digits; a longer number would overflow the float
+    # comparison below and turn an unauthenticated request into a 500.
+    if not _TIMESTAMP.fullmatch(timestamp):
         return "stale"
+    sent_at = int(timestamp)
     if abs((time.time() if now is None else now) - sent_at) > WEBHOOK_TOLERANCE_SECONDS:
         return "stale"
     signed = webhook_id.encode() + b"." + timestamp.encode() + b"." + body

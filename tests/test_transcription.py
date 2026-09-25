@@ -1567,6 +1567,16 @@ class TestCallbackRoute:
         assert (await _rows(real_adapter, "m_1_voice"))[0]["status"] == "running"
         callback_route.assert_not_awaited()
 
+    async def test_an_absurd_timestamp_is_a_401_not_a_500(self, real_adapter, tmp_path, callback_route):
+        await _running_row(real_adapter, tmp_path)
+        body, headers = _delivery(_akou_result("job_0001", SHA))
+        for absurd in ("9" * 400, "12.5", "1e9"):
+            resp = await _post(
+                body, {**headers, "webhook-timestamp": absurd, "webhook-signature": _sign("msg_0001", absurd, body)}
+            )
+            assert resp.status_code == 401
+        callback_route.assert_not_awaited()
+
     async def test_a_wrong_secret_or_a_changed_body_is_refused(self, real_adapter, tmp_path, callback_route):
         await _running_row(real_adapter, tmp_path)
         body, headers = _delivery(_akou_result("job_0001", SHA), key=b"another test@value/here key")
