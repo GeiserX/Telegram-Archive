@@ -1341,9 +1341,11 @@ class Config:
         Warnings name the variable and the expected format but never echo the
         configured value. Runs only when TRANSCRIPTION_ENABLED=true. An empty
         URL is valid: it is the "no server configured" state the viewer nudges
-        about. A bad URL disables the feature; a bad callback URL, a callback
-        URL without a secret, or a malformed secret drop the callback and keep
-        polling, which always works.
+        about. A bad URL disables the feature; a bad callback URL drops the
+        callback and a malformed secret drops the secret, and polling, which
+        always works, keeps going. The callback URL and the secret are not
+        checked against each other: the backup sends the URL and the viewer
+        holds the secret, so one process normally sees only one of them.
         """
         if self.transcription_url:
             parsed = urllib.parse.urlparse(self.transcription_url)
@@ -1380,12 +1382,6 @@ class Config:
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 logger.warning(
                     "TRANSCRIPTION_CALLBACK_URL must be an http:// or https:// URL with a hostname - "
-                    "callback dropped, polling keeps working"
-                )
-                self.transcription_callback_url = ""
-            elif not self.transcription_webhook_secret:
-                logger.warning(
-                    "TRANSCRIPTION_CALLBACK_URL needs TRANSCRIPTION_WEBHOOK_SECRET to verify deliveries - "
                     "callback dropped, polling keeps working"
                 )
                 self.transcription_callback_url = ""

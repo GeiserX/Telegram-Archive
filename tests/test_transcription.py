@@ -4,9 +4,11 @@ A fake server behind ``httpx.MockTransport`` answers ``/v1/server`` with a
 404 (any non-akou server) and ``/v1/audio/transcriptions`` with a fixed
 ``verbose_json``. The drain stores one done row and never resends for the
 same media; a failing server adds one failed row per drain and the drain
-stops after three; media over the limit gets a skipped row and no request;
-the listener enqueues a just-downloaded voice message; the viewer route
-returns the rows; and no log line carries the key or the URL's query.
+stops after three; a server that goes down mid-run leaves the row queued,
+ends the run and spends no failed row; media over the limit gets a skipped
+row and no request; the listener enqueues a just-downloaded voice message;
+the viewer route returns the rows; and no log line carries the key or the
+URL's query.
 """
 
 import asyncio
@@ -55,10 +57,18 @@ VERBOSE_JSON = {
 class FakeServer:
     """Scripted transcription server: counts requests, answers by path."""
 
-    def __init__(self, *, server_status: int = 404, server_body: dict | None = None, transcribe_status: int = 200):
+    def __init__(
+        self,
+        *,
+        server_status: int = 404,
+        server_body: dict | None = None,
+        transcribe_status: int = 200,
+        transcribe_down: bool = False,
+    ):
         self.server_status = server_status
         self.server_body = server_body
         self.transcribe_status = transcribe_status
+        self.transcribe_down = transcribe_down  # /v1/server answers, the upload cannot connect
         self.requests: list[httpx.Request] = []
         self.transport = httpx.MockTransport(self._handle)
 
@@ -69,6 +79,8 @@ class FakeServer:
                 return httpx.Response(200, json=self.server_body or {})
             return httpx.Response(self.server_status)
         if request.url.path.endswith("/v1/audio/transcriptions"):
+            if self.transcribe_down:
+                raise httpx.ConnectError(f"cannot reach {URL}")
             if self.transcribe_status == 200:
                 return httpx.Response(200, json=VERBOSE_JSON)
             if self.transcribe_status == 302:
@@ -103,7 +115,16 @@ def _client(config, server: FakeServer) -> TranscriptionClient:
     return client
 
 
-async def _media(adapter, tmp_path, media_id: str, *, duration: int = 12, content_hash=None, on_disk=True) -> dict:
+async def _media(
+    adapter,
+    tmp_path,
+    media_id: str,
+    *,
+    duration: int = 12,
+    content_hash=None,
+    on_disk=True,
+    download_date: datetime = datetime(2026, 1, 2, 3, 4, 5),
+) -> dict:
     path = tmp_path / str(CHAT) / f"{media_id}.ogg"
     if on_disk:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,8 +138,14 @@ async def _media(adapter, tmp_path, media_id: str, *, duration: int = 12, conten
         "downloaded": True,
         "duration": duration,
         "content_hash": content_hash,
-        "download_date": datetime(2026, 1, 2, 3, 4, 5),
+        "download_date": download_date,
     }
+    # The parents first: PostgreSQL enforces fk_media_message, SQLite does not.
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "fixture chat"}, account_id=1)
+    await adapter.insert_message(
+        {"id": row["message_id"], "chat_id": CHAT, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}},
+        account_id=1,
+    )
     await adapter.insert_media(row, account_id=1)
     return row
 
@@ -159,13 +186,14 @@ class TestClient:
         with pytest.raises(TranscriptionError) as excinfo:
             await client.detect_server()
         assert excinfo.value.reason == "ConnectError"
+        assert excinfo.value.transient is True
         assert KEY not in str(excinfo.value)
 
     async def test_transcribe_sends_the_openai_multipart_with_the_bearer_key(self, tmp_path):
         server = FakeServer()
         config = _config(str(tmp_path), transcription_language="es", transcription_hotwords=["Neutral", "akou"])
         client = _client(config, server)
-        payload = await client.transcribe(AUDIO, "note.ogg", prompt="Neutral, akou")
+        payload = await client.transcribe(AUDIO, "note.ogg", model="auto", prompt="Neutral, akou")
         assert payload == VERBOSE_JSON
         request = server.transcribe_requests[0]
         assert request.url.scheme == "http"
@@ -188,44 +216,53 @@ class TestClient:
 
     async def test_no_key_means_no_authorization_header(self, tmp_path):
         server = FakeServer()
-        await _client(_config(str(tmp_path), transcription_api_key=""), server).transcribe(AUDIO, "a.ogg")
+        client = _client(_config(str(tmp_path), transcription_api_key=""), server)
+        await client.transcribe(AUDIO, "a.ogg", model="auto")
         assert "authorization" not in server.transcribe_requests[0].headers
 
-    async def test_empty_preset_falls_back_to_whisper_1(self, tmp_path):
-        server = FakeServer()
-        await _client(_config(str(tmp_path), transcription_preset=""), server).transcribe(AUDIO, "a.ogg")
-        assert 'name="model"\r\n\r\nwhisper-1\r\n' in server.transcribe_requests[0].content.decode("latin-1")
+    def test_the_preset_is_the_model_for_akou_only(self, tmp_path):
+        """Only akou reads a preset in ``model``; speaches or LocalAI would refuse "auto" for good."""
+        client = _client(_config(str(tmp_path), transcription_preset="best"), FakeServer())
+        assert client.sync_model(ServerInfo(name="akou", version="0.2.0", jobs=True)) == "best"
+        assert client.sync_model(ServerInfo(name="akou")) == "best"
+        assert client.sync_model(ServerInfo()) == "whisper-1"
+        assert client.sync_model(ServerInfo(name="speaches", version="1")) == "whisper-1"
+        assert (
+            _client(_config(str(tmp_path), transcription_preset=""), FakeServer()).sync_model(ServerInfo(name="akou"))
+            == "whisper-1"
+        )
 
     async def test_5xx_is_retried_up_to_three_attempts_then_fails(self, tmp_path):
         server = FakeServer(transcribe_status=503)
         with pytest.raises(TranscriptionError) as excinfo:
-            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg")
+            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
         assert excinfo.value.reason == "HTTP 503"
+        assert excinfo.value.transient is False  # the server answered: a failed row is right
         assert len(server.transcribe_requests) == 3
 
     async def test_4xx_is_permanent_after_one_attempt(self, tmp_path):
         server = FakeServer(transcribe_status=422)
         with pytest.raises(TranscriptionError) as excinfo:
-            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg")
+            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
         assert excinfo.value.reason == "HTTP 422"
+        assert excinfo.value.transient is False
         assert len(server.transcribe_requests) == 1
 
     async def test_redirects_are_not_followed(self, tmp_path):
         server = FakeServer(transcribe_status=302)
         with pytest.raises(TranscriptionError) as excinfo:
-            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg")
+            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
         assert excinfo.value.reason == "HTTP 302"
         assert len(server.requests) == 1
 
-    async def test_the_job_path_is_a_named_stub_for_slice_4(self, tmp_path):
-        client = _client(_config(str(tmp_path)), FakeServer())
-        for call in (
-            client.submit_job(AUDIO, "a.ogg", idempotency_key="x"),
-            client.fetch_events(None),
-            client.poll_job("job-1"),
-        ):
-            with pytest.raises(NotImplementedError):
-                await call
+    async def test_a_transport_failure_on_every_attempt_is_transient(self, tmp_path):
+        server = FakeServer(transcribe_down=True)
+        with pytest.raises(TranscriptionError) as excinfo:
+            await _client(_config(str(tmp_path)), server).transcribe(AUDIO, "a.ogg", model="auto")
+        assert excinfo.value.reason == "ConnectError"
+        assert excinfo.value.transient is True
+        assert len(server.transcribe_requests) == 3
+        assert KEY not in str(excinfo.value)
 
     def test_bad_or_missing_url_means_not_configured(self, tmp_path):
         assert not TranscriptionClient(_config(str(tmp_path), transcription_url="")).configured
@@ -264,6 +301,12 @@ class TestDrain:
 
         assert stats["done"] == 1
         assert len(server.transcribe_requests) == 1
+        # A 404 on /v1/server is not akou: the preset stays home and the
+        # OpenAI model name goes out, or a server that validates it (speaches,
+        # LocalAI) would answer 4xx for good.
+        body = server.transcribe_requests[0].content.decode("latin-1")
+        assert 'name="model"\r\n\r\nwhisper-1\r\n' in body
+        assert 'name="model"\r\n\r\nauto\r\n' not in body
         rows = await _rows(real_adapter, "m_1_voice")
         assert len(rows) == 1
         row = rows[0]
@@ -276,7 +319,7 @@ class TestDrain:
         assert row["language"] == "es"
         assert row["duration_s"] == 2.5
         assert row["words"][0] == {"w": "hola", "s": 0.0, "e": 0.4, "c": 0.98}
-        assert row["models"] == ["auto"]
+        assert row["models"] == ["whisper-1"]
         assert isinstance(row["completed_at"], datetime)
         # The media row carries no hash, so the audio was hashed at drain
         # time and stored on the transcript row only.
@@ -305,7 +348,7 @@ class TestDrain:
         stats = await drain_transcriptions(
             config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
         )
-        assert stats == {"done": 0, "failed": 0, "skipped": 0, "noop": 0}
+        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
         assert len(server.transcribe_requests) == 1
         assert len(await _rows(real_adapter, "m_1_voice")) == 1
 
@@ -352,7 +395,7 @@ class TestDrain:
             config, real_adapter, account_id=1, notifier=notifier, client=_client(config, server)
         )
 
-        assert stats == {"done": 1, "failed": 0, "skipped": 1, "noop": 0}
+        assert stats == {"done": 1, "failed": 0, "skipped": 1, "unreachable": 0, "noop": 0}
         assert len(server.transcribe_requests) == 1
         skipped = (await _rows(real_adapter, "m_1_voice"))[0]
         assert skipped["status"] == "skipped"
@@ -390,9 +433,73 @@ class TestDrain:
         client = TranscriptionClient(config, transport=httpx.MockTransport(boom))
         with caplog.at_level(logging.DEBUG, logger="src.transcription"):
             stats = await drain_transcriptions(config, real_adapter, account_id=1, notifier=AsyncMock(), client=client)
-        assert stats == {"done": 0, "failed": 0, "skipped": 0, "noop": 0}
+        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
         assert await _rows(real_adapter, "m_1_voice") == []
         assert any("unreachable" in record.getMessage() for record in caplog.records)
+
+    async def test_a_server_that_goes_down_mid_run_leaves_the_row_queued_and_ends_the_run(
+        self, real_adapter, tmp_path, caplog
+    ):
+        """An outage is not an answer: no failed row, no retry budget spent, the rest waits."""
+        await _media(real_adapter, tmp_path, "m_1_voice", download_date=datetime(2026, 1, 2))
+        await _media(real_adapter, tmp_path, "m_2_voice", download_date=datetime(2026, 1, 1))
+        down = FakeServer(transcribe_down=True)
+        config = _config(str(tmp_path))
+        notifier = AsyncMock()
+
+        with caplog.at_level(logging.WARNING, logger="src.transcription"):
+            stats = await drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=notifier, client=_client(config, down)
+            )
+
+        assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 1, "noop": 0}
+        # Three attempts on the first media, then the run ends: the second
+        # media was never tried and has no row at all.
+        assert len(down.transcribe_requests) == 3
+        rows = await _rows(real_adapter, "m_1_voice")
+        assert [r["status"] for r in rows] == ["queued"]
+        assert rows[0]["error"] is None
+        assert await _rows(real_adapter, "m_2_voice") == []
+        notifier.notify.assert_not_awaited()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "unreachable" in warnings[0].getMessage()
+
+        # Three outages in a row spend nothing. The first media's row is
+        # fresh, so those runs skip it and try the second media, which gets
+        # its own queued row the same way; neither ever gets a failed row.
+        for _ in range(3):
+            await drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=notifier, client=_client(config, down)
+            )
+        first_row = rows[0]
+        second_row = (await _rows(real_adapter, "m_2_voice"))[0]
+        assert [r["status"] for r in await _rows(real_adapter, "m_1_voice")] == ["queued"]
+        assert [r["status"] for r in await _rows(real_adapter, "m_2_voice")] == ["queued"]
+
+        # Once the rows are older than the stale window and the server is
+        # back, the same rows are filled; no second row appears for either.
+        from datetime import timedelta
+
+        from sqlalchemy import update
+
+        from src.db.models import MediaTranscript
+        from src.message_utils import utcnow_naive
+
+        async with real_adapter.db_manager.async_session_factory() as session:
+            await session.execute(
+                update(MediaTranscript)
+                .where(MediaTranscript.status == "queued")
+                .values(requested_at=utcnow_naive() - STALE_QUEUED - timedelta(minutes=1))
+            )
+            await session.commit()
+        up = FakeServer()
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=1, notifier=notifier, client=_client(config, up)
+        )
+        assert stats["done"] == 2
+        assert [(r["id"], r["status"]) for r in await _rows(real_adapter, "m_1_voice")] == [(first_row["id"], "done")]
+        assert [(r["id"], r["status"]) for r in await _rows(real_adapter, "m_2_voice")] == [(second_row["id"], "done")]
 
     async def test_the_server_row_is_written_only_when_the_server_names_itself(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
@@ -413,10 +520,13 @@ class TestDrain:
         # jobs offered but the job path is slice 4: the synchronous path is taken.
         assert stats["done"] == 1
         assert len(akou.transcribe_requests) == 1
+        # akou reads the preset in ``model``; nobody else does.
+        assert 'name="model"\r\n\r\nauto\r\n' in akou.transcribe_requests[0].content.decode("latin-1")
         row = (await _rows(real_adapter, "m_2_voice"))[0]
         assert row["engine_name"] == "akou"
         assert row["engine_version"] == "0.2.0"
         assert row["source"] == "openai"
+        assert row["models"] == ["auto"]
 
     async def test_per_run_and_types_are_honoured(self, real_adapter, tmp_path):
         for n in range(3):
@@ -444,7 +554,7 @@ class TestDrain:
         ):
             with caplog.at_level(logging.DEBUG, logger="src.transcription"):
                 stats = await drain_transcriptions(config, real_adapter, account_id=1, client=_client(config, server))
-            assert stats == {"done": 0, "failed": 0, "skipped": 0, "noop": 0}
+            assert stats == {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
         assert server.requests == []
         assert not [r for r in caplog.records if r.levelno >= logging.INFO]
 

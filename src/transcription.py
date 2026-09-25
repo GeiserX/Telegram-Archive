@@ -9,9 +9,13 @@ This slice implements the synchronous path: the server is asked once per
 run what it is (``GET /v1/server``), and the audio goes to the OpenAI
 transcription endpoint (``POST /v1/audio/transcriptions``) whose answer is
 stored at once. The akou job path (``POST /v1/jobs``, the event feed and
-the straggler poll) is slice 4; its entry points are stubs below and the
-drain takes the synchronous path whenever the server offers no jobs or
-that path is not implemented yet.
+the straggler poll) is slice 4; until it lands the drain takes the
+synchronous path whatever the server offers.
+
+A server that cannot be reached is transient: the row stays ``queued`` and
+the ten-minute branch of the drain query resubmits on it, so an outage
+never spends the cap of three failed rows. An HTTP error is an answer and
+is stored as a ``failed`` row.
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -43,19 +47,23 @@ STALE_QUEUED = timedelta(minutes=10)
 SOURCE_SYNC = "openai"
 SOURCE_AKOU = "akou"
 
-# The OpenAI endpoint's model name when no preset is configured.
+# The OpenAI endpoint's ``model`` for any server that is not akou. Only akou
+# reads the preset there (a preset name or an engine id); an OpenAI-compatible
+# server that validates the field would refuse "auto" for good.
 DEFAULT_SYNC_MODEL = "whisper-1"
-
-# Flipped in slice 4. Until then the drain never calls the job stubs.
-JOB_PATH_IMPLEMENTED = False
 
 
 class TranscriptionError(Exception):
-    """A request that failed for good. ``reason`` is safe to store and to log."""
+    """A request that failed. ``reason`` is safe to store and to log.
 
-    def __init__(self, reason: str) -> None:
+    ``transient`` is True when the server could not be reached at all, so
+    the caller leaves the row queued instead of storing a failed one.
+    """
+
+    def __init__(self, reason: str, *, transient: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -112,10 +120,11 @@ class TranscriptionClient:
     def configured(self) -> bool:
         return bool(self._base_url)
 
-    @property
-    def model(self) -> str:
-        """The synchronous endpoint's ``model`` field: the preset, or whisper-1."""
-        return self.preset or DEFAULT_SYNC_MODEL
+    def sync_model(self, server: ServerInfo) -> str:
+        """The synchronous endpoint's ``model``: the preset for akou, whisper-1 for anyone else."""
+        if server.name == SOURCE_AKOU and self.preset:
+            return self.preset
+        return DEFAULT_SYNC_MODEL
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path}"
@@ -130,14 +139,14 @@ class TranscriptionClient:
 
         akou answers ``name``, ``version`` and ``capabilities.jobs``; every
         other field or flag is ignored. A 404, a non-JSON body or any other
-        shape selects the synchronous path. Raises ``TranscriptionError``
-        only when the server cannot be reached at all.
+        shape selects the synchronous path. Raises a transient
+        ``TranscriptionError`` only when the server cannot be reached at all.
         """
         async with self._client(self.DETECT_TIMEOUT_SECONDS) as client:
             try:
                 response = await client.get(self._url("/v1/server"))
             except httpx.TransportError as e:
-                raise TranscriptionError(type(e).__name__) from None
+                raise TranscriptionError(type(e).__name__, transient=True) from None
         if response.status_code != 200:
             return ServerInfo()
         try:
@@ -155,15 +164,16 @@ class TranscriptionClient:
             jobs=isinstance(capabilities, dict) and capabilities.get("jobs") is True,
         )
 
-    async def transcribe(self, audio: bytes, filename: str, *, prompt: str | None = None) -> dict[str, Any]:
+    async def transcribe(self, audio: bytes, filename: str, *, model: str, prompt: str | None = None) -> dict[str, Any]:
         """``POST /v1/audio/transcriptions`` and return the ``verbose_json`` answer.
 
-        Multipart with the model, ``response_format=verbose_json`` and
-        ``timestamp_granularities[]=word``, plus the configured language
+        Multipart with ``model`` (see ``sync_model``), ``response_format=verbose_json``
+        and ``timestamp_granularities[]=word``, plus the configured language
         and the hotword prompt when any. Raises ``TranscriptionError`` with
-        a reason that names no URL.
+        a reason that names no URL; it is transient when every attempt was
+        a transport failure, permanent when the server answered.
         """
-        data = {"model": self.model, "response_format": "verbose_json", "timestamp_granularities[]": "word"}
+        data = {"model": model, "response_format": "verbose_json", "timestamp_granularities[]": "word"}
         if self.language:
             data["language"] = self.language
         if prompt:
@@ -175,13 +185,16 @@ class TranscriptionClient:
             write=self.UPLOAD_TIMEOUT_SECONDS,
         )
         reason = "unknown"
+        transient = False
         async with self._client(timeout) as client:
             for attempt in range(self.ATTEMPTS):
                 try:
                     response = await client.post(self._url("/v1/audio/transcriptions"), data=data, files=files)
                 except httpx.TransportError as e:
                     reason = type(e).__name__
+                    transient = True
                 else:
+                    transient = False
                     if response.status_code < 300:
                         try:
                             payload = response.json()
@@ -196,19 +209,7 @@ class TranscriptionClient:
                         break
                 if attempt < self.ATTEMPTS - 1:
                     await asyncio.sleep(self.backoffs[attempt])
-        raise TranscriptionError(reason)
-
-    async def submit_job(self, audio: bytes, filename: str, *, idempotency_key: str) -> dict[str, Any]:
-        """Slice 4: ``POST /v1/jobs`` with the Idempotency-Key and the callback URL."""
-        raise NotImplementedError("slice 4: the akou job path")
-
-    async def fetch_events(self, after: str | None) -> list[dict[str, Any]]:
-        """Slice 4: ``GET /v1/events?after=<cursor>``, the reconcile step of the drain."""
-        raise NotImplementedError("slice 4: the akou job path")
-
-    async def poll_job(self, job_id: str) -> dict[str, Any]:
-        """Slice 4: ``GET /v1/jobs/{id}`` and ``/result``, the straggler poll."""
-        raise NotImplementedError("slice 4: the akou job path")
+        raise TranscriptionError(reason, transient=transient)
 
 
 def _prompt_for(config) -> str | None:
@@ -295,12 +296,14 @@ async def transcribe_media(
 ) -> str:
     """One media through the synchronous path; the drain and the listener both call this.
 
-    Returns ``done``, ``failed``, ``skipped`` or ``noop``. The queued row is
-    inserted first (insert-if-absent, so a second call while one is open
-    reuses it), the audio is hashed when the media row carries no hash, and
-    the answer fills the same row. The row stays ``queued`` during the
-    request on purpose: a process that dies mid-request leaves a row the
-    next drain resubmits after ten minutes, with no failed row added.
+    Returns ``done``, ``failed``, ``skipped``, ``unreachable`` or ``noop``.
+    The queued row is inserted first (insert-if-absent, so a second call
+    while one is open reuses it), the audio is hashed when the media row
+    carries no hash, and the answer fills the same row. The row stays
+    ``queued`` during the request on purpose: a process that dies
+    mid-request, and a server that cannot be reached (``unreachable``),
+    both leave a row the next drain resubmits after ten minutes, with no
+    failed row added.
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -357,11 +360,16 @@ async def transcribe_media(
         except TranscriptionError as e:
             # The row stays queued; the next drain resubmits it after ten minutes.
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
-            return "noop"
+            return "unreachable"
 
+    model = client.sync_model(server)
     try:
-        payload = await client.transcribe(audio, os.path.basename(path), prompt=_prompt_for(config))
+        payload = await client.transcribe(audio, os.path.basename(path), model=model, prompt=_prompt_for(config))
     except TranscriptionError as e:
+        if e.transient:
+            # Same as above: an outage is not an answer and spends no failed row.
+            logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
+            return "unreachable"
         await db.fill_media_transcript(
             row["id"],
             status="failed",
@@ -381,7 +389,7 @@ async def transcribe_media(
         engine_name=server.name or SOURCE_SYNC,
         engine_version=server.version or None,
         preset=client.preset,
-        **result_columns(payload, model=client.model),
+        **result_columns(payload, model=model),
     )
     await _notify(notifier, media, row["id"], "done", account_id)
     return "done"
@@ -400,9 +408,11 @@ async def drain_transcriptions(
     The middle two steps belong to the akou job path (slice 4); until it
     lands, and whenever the server offers no jobs, every media takes the
     synchronous path. Returns the counts of what this run did. Never raises
-    for a server problem: an unreachable server is one warning and no rows.
+    for a server problem: an unreachable server is one warning and no rows,
+    whether it is down at detection or goes down mid-run, in which case the
+    run ends there and the rest waits for the next one.
     """
-    stats = {"done": 0, "failed": 0, "skipped": 0, "noop": 0}
+    stats = {"done": 0, "failed": 0, "skipped": 0, "unreachable": 0, "noop": 0}
     if getattr(config, "transcription_enabled", False) is not True:
         return stats
     client = client or TranscriptionClient(config)
@@ -423,8 +433,6 @@ async def drain_transcriptions(
             logger.debug(f"Could not record the transcription server: {describe_exception(e)}")
 
     # 2. Reconcile and 3. poll stragglers: the job path, slice 4.
-    if server.jobs and not JOB_PATH_IMPLEMENTED:
-        logger.debug("Transcription: the server offers jobs but the job path is not implemented; synchronous path")
 
     # 4. Submit.
     types = getattr(config, "transcription_types", None)
@@ -446,11 +454,16 @@ async def drain_transcriptions(
             config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
         )
         stats[outcome] = stats.get(outcome, 0) + 1
+        if outcome == "unreachable":
+            # transcribe_media warned once; every media after this one would
+            # wait out the same connect timeouts for the same answer.
+            break
     logger.info(
-        "Transcription drain: %d done, %d failed, %d skipped of %d media",
+        "Transcription drain: %d done, %d failed, %d skipped, %d unreachable of %d media",
         stats["done"],
         stats["failed"],
         stats["skipped"],
+        stats["unreachable"],
         len(media_rows),
     )
     return stats

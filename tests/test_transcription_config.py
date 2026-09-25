@@ -1,10 +1,12 @@
 """TRANSCRIPTION_* parsing (docs/TRANSCRIPTION.md): warn and degrade, never abort.
 
 The feature is on by default with no server: that is the nudge state and it
-is valid. A bad server URL disables the feature; a bad callback URL, a
-callback URL without a secret, or a malformed secret drop the callback and
-keep polling. Warnings name the variable and never echo the value, and
-``log_summary`` prints the scheme and host only, never the key or the secret.
+is valid. A bad server URL disables the feature; a bad callback URL drops the
+callback and a malformed secret drops the secret, and polling keeps going.
+The callback URL (backup) and the secret (viewer) are independent, since each
+process normally holds only one of them. Warnings name the variable and never
+echo the value, and ``log_summary`` prints the scheme and host only, never
+the key or the secret.
 """
 
 import logging
@@ -123,16 +125,15 @@ class TestTranscriptionConfig(unittest.TestCase):
         self.assertEqual(config.transcription_callback_url, "")
         self.assertTrue(any("TRANSCRIPTION_CALLBACK_URL" in line for line in logs.output))
 
-    def test_callback_url_without_secret_is_invalid(self):
-        with self.assertLogs("src.config", level="WARNING") as logs:
+    def test_callback_url_without_secret_is_the_backup_process(self):
+        """The backup sends the URL, the viewer holds the secret: no warning, URL kept."""
+        with self.assertNoLogs("src.config", level="WARNING"):
             config = self._config(
                 TRANSCRIPTION_URL=self.URL, TRANSCRIPTION_CALLBACK_URL="https://viewer.example.test/cb"
             )
         self.assertTrue(config.transcription_enabled)
-        self.assertEqual(config.transcription_callback_url, "")
-        joined = "\n".join(logs.output)
-        self.assertIn("TRANSCRIPTION_CALLBACK_URL", joined)
-        self.assertIn("TRANSCRIPTION_WEBHOOK_SECRET", joined)
+        self.assertEqual(config.transcription_callback_url, "https://viewer.example.test/cb")
+        self.assertEqual(config.transcription_webhook_secret, "")
 
     def test_secret_must_start_with_whsec(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
@@ -142,7 +143,7 @@ class TestTranscriptionConfig(unittest.TestCase):
                 TRANSCRIPTION_WEBHOOK_SECRET="plain-" + KEY,
             )
         self.assertEqual(config.transcription_webhook_secret, "")
-        self.assertEqual(config.transcription_callback_url, "")  # no usable secret, so no callback either
+        self.assertEqual(config.transcription_callback_url, "https://viewer.example.test/cb")  # independent
         joined = "\n".join(logs.output)
         self.assertIn("TRANSCRIPTION_WEBHOOK_SECRET", joined)
         self.assertNotIn(KEY, joined)

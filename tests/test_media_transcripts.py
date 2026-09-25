@@ -19,6 +19,11 @@ TYPES = ("voice", "video_note")
 
 
 async def _media(adapter, media_id: str, *, account_id: int = 1, media_type: str = "voice", **extra) -> dict:
+    """A downloaded media row with its parent chat and message.
+
+    PostgreSQL enforces ``fk_media_message``; SQLite does not, so a media
+    row without parents would pass there and fail on the other engine.
+    """
     row = {
         "id": media_id,
         "message_id": int(media_id.split("_")[1]),
@@ -29,6 +34,11 @@ async def _media(adapter, media_id: str, *, account_id: int = 1, media_type: str
         "duration": 12,
         "download_date": datetime(2026, 1, 2, 3, 4, 5),
     } | extra
+    await adapter.upsert_chat({"id": CHAT, "type": "group", "title": "fixture chat"}, account_id=account_id)
+    await adapter.insert_message(
+        {"id": row["message_id"], "chat_id": CHAT, "text": "", "date": datetime(2026, 9, 1, 12), "raw_data": {}},
+        account_id=account_id,
+    )
     await adapter.insert_media(row, account_id=account_id)
     return row
 

@@ -244,10 +244,10 @@ When the server is not akou, the drain calls the OpenAI endpoint instead and sto
 
 ```
 POST {TRANSCRIPTION_URL}/v1/audio/transcriptions
-file=<bytes> model=<preset or "whisper-1"> response_format=verbose_json timestamp_granularities[]=word
+file=<bytes> model=<the preset when the server is akou, else "whisper-1"> response_format=verbose_json timestamp_granularities[]=word
 ```
 
-`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. This is also what a user gets from speaches, LocalAI or whisper.cpp today.
+`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. This is also what a user gets from speaches, LocalAI or whisper.cpp today. Only akou reads a preset name in `model`; a server that validates the field would refuse it for good, so everyone else gets `whisper-1`. A server that answers with an HTTP error after the client's attempts gets a `failed` row; a server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
 
 ### Completion
 
