@@ -351,6 +351,10 @@ class TestClient:
             "pt-BR": "pt-BR",
             "yue": "yue",
             "zh-Hant-TW": "zh-Hant-TW",
+            # Three letters where a two-letter code exists become the two letters (ElevenLabs says "eng").
+            "eng": "en",
+            "eng-US": "en-US",
+            "fil": "fil",
             "spanish": "es",
             "Haitian Creole": "ht",
             "javanese": "jv",
@@ -2092,7 +2096,14 @@ async def _done_source(
             options_tag = tag({"preset": preset, "language": "auto", "diarize": bool(diarize)})
         else:
             options_tag = tag(
-                {"provider": "openai", "model": "whisper-1", "language": "auto", "diarize": False, "prompt": ""}
+                {
+                    "provider": "openai",
+                    "model": "whisper-1",
+                    "language": "auto",
+                    "diarize": False,
+                    "prompt": "",
+                    "host": "akou.example.test:9000",
+                }
             )
     row = await adapter.enqueue_media_transcript(
         media_id, account_id=account_id, content_hash=HASH, idempotency_key=HASH, preset=preset
@@ -2395,6 +2406,7 @@ class TestCopyAcrossAccounts:
             "language": changed.get("transcription_language", "auto"),
             "diarize": False,
             "prompt": ", ".join(changed.get("transcription_hotwords", [])),
+            "host": "akou.example.test:9000",
         }
         assert (row["copied_from_id"], row["options_tag"]) == (None, options_tag(expected)), "it records its own"
 
@@ -2418,6 +2430,37 @@ class TestCopyAcrossAccounts:
             config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
         )
         assert (other["copied"], other["submitted"]) == (0, 1)
+
+    async def test_another_host_on_the_openai_endpoint_is_another_server(self, real_adapter, tmp_path):
+        """OpenAI, Groq, Mistral and self-hosted servers all write source "openai": the host tells them apart."""
+        await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")
+        await _media_in_account(real_adapter, tmp_path, 2, "m_7_video", media_type="voice")
+        from src.transcription_contract import options_tag
+
+        # The tag the code itself records for an answer from akou.example.test:9000.
+        at_first_host = _config(str(tmp_path))
+        tag = options_tag(TranscriptionClient(at_first_host).request_options(ServerInfo(), at_first_host))
+        await _done_source(real_adapter, 1, "m_1_video", options_tag=tag)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_url="https://stt.example.test/openai")
+
+        stats = await drain_transcriptions(
+            config, real_adapter, account_id=2, notifier=AsyncMock(), client=_client(config, server)
+        )
+
+        assert (stats["copied"], stats["done"]) == (0, 1)
+
+    async def test_a_server_naming_itself_after_a_provider_is_still_the_openai_endpoint(self, real_adapter, tmp_path):
+        """Under auto the request went to the OpenAI endpoint, whatever name the server gives itself."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = FakeServer(server_status=200, server_body={"name": "deepgram", "version": "1"})
+        config = _config(str(tmp_path), transcription_diarize=True)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats["done"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["source"], row["diarize"]) == ("openai", False)
 
     async def test_a_row_from_before_the_options_tag_is_never_copied(self, real_adapter, tmp_path):
         await _media_in_account(real_adapter, tmp_path, 1, "m_1_video", media_type="voice")

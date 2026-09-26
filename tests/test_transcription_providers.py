@@ -691,10 +691,12 @@ class TestAssemblyAI:
 # ============================================================================
 
 # The response example of https://elevenlabs.io/docs/api-reference/speech-to-text/convert,
-# with a spacing entry and a second speaker as a diarized answer has them.
+# with a spacing entry and a second speaker as a diarized answer has them. ElevenLabs
+# answers the language in three letters and says how long the audio is.
 ELEVENLABS_RESULT = {
-    "language_code": "en",
+    "language_code": "eng",
     "language_probability": 0.98,
+    "audio_duration_secs": 12.5,
     "text": "Hello world!",
     "words": [
         {"text": "Hello", "start": 0, "end": 0.5, "type": "word", "speaker_id": "speaker_1", "logprob": -0.124},
@@ -725,7 +727,8 @@ class TestElevenLabs:
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["source"], row["engine_name"]) == ("done", "elevenlabs", "elevenlabs")
         assert row["text"] == "Hello world!"
-        assert (row["language"], row["language_confidence"]) == ("en", 0.98)
+        assert (row["language"], row["language_confidence"]) == ("en", 0.98), "eng stored as en"
+        assert row["duration_s"] == 12.5
         assert row["words"] == [
             {"w": "Hello", "s": 0.0, "e": 0.5, "c": None},
             {"w": "world!", "s": 0.55, "e": 1.0, "c": None},

@@ -49,7 +49,7 @@ class ElevenLabsProvider:
             "text": text if isinstance(text, str) else "",
             "language": language_tag(payload.get("language_code")),
             "language_confidence": _number(payload.get("language_probability")),
-            "duration_s": None,  # the answer carries none, and the media row has its own
+            "duration_s": _number(payload.get("audio_duration_secs")),
             "words": words,
             "segments": segments_from_words(words, [w.get("speaker_id") for w in raw_words]),
             "models": [model],

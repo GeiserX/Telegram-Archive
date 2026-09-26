@@ -191,18 +191,6 @@ class ServerInfo:
     def job_path(self) -> bool:
         return self.name == SOURCE_AKOU and self.jobs
 
-    @property
-    def source(self) -> str:
-        """``media_transcripts.source`` of an answer from this server: akou, a native provider, or openai."""
-        if self.job_path:
-            return SOURCE_AKOU
-        return self.name if self.name in NATIVE_PROVIDERS else SOURCE_SYNC
-
-    @property
-    def diarizes(self) -> bool:
-        """Whether TRANSCRIPTION_DIARIZE reaches this server: akou's job path and the native providers."""
-        return self.job_path or self.name in NATIVE_PROVIDERS
-
 
 # The transport errors that mean the server was never reached. Any other
 # httpx.TransportError came after the connection was made: ``stalled``.
@@ -289,6 +277,19 @@ class TranscriptionClient:
     def configured(self) -> bool:
         return bool(self._base_url)
 
+    def answer_source(self, server: ServerInfo) -> str:
+        """``media_transcripts.source`` of an answer: akou's job path, else what this client sends through.
+
+        Read from the configured provider, never from the name a server
+        gives itself: under ``auto`` a server calling itself ``deepgram``
+        still got an OpenAI-endpoint request.
+        """
+        return SOURCE_AKOU if server.job_path else self.sync_source
+
+    def diarizes(self, server: ServerInfo) -> bool:
+        """Whether TRANSCRIPTION_DIARIZE reaches the server: akou's job path, or an adapter that diarizes."""
+        return server.job_path or (self.provider.name in NATIVE_PROVIDERS and self.provider.diarizes)
+
     def job_options(self) -> dict[str, Any]:
         """The options a job request sends, exactly as sent: the form fields and the key both read this."""
         return {"preset": self.preset or "auto", "language": self.language or "auto", "diarize": self.diarize}
@@ -306,8 +307,11 @@ class TranscriptionClient:
             "provider": self.provider.name,
             "model": self.sync_model(server),
             "language": self.language or "auto",
-            "diarize": self.diarize and server.diarizes,
+            "diarize": self.diarize and self.diarizes(server),
             "prompt": _prompt_for(config) or "",
+            # The OpenAI endpoint is one source for OpenAI, Groq, Mistral and
+            # every self-hosted server: the host tells their answers apart.
+            "host": urllib.parse.urlsplit(self._base_url).netloc.lower(),
         }
 
     def sync_model(self, server: ServerInfo) -> str:
@@ -1102,11 +1106,11 @@ COPIED_COLUMNS = (
 )
 
 
-def _answer_origin(server: ServerInfo) -> tuple[str, str]:
+def _answer_origin(client: TranscriptionClient, server: ServerInfo) -> tuple[str, str]:
     """The ``source`` and ``engine_name`` a row gets from this server, on either path."""
     if server.job_path:
         return SOURCE_AKOU, SOURCE_AKOU
-    return server.source, server.name or SOURCE_SYNC
+    return client.answer_source(server), server.name or SOURCE_SYNC
 
 
 async def _copy_transcript(
@@ -1141,11 +1145,11 @@ async def _copy_transcript(
             server = await client.detect_server()
         except TranscriptionError:
             return None  # the send path below meets the same outage and says so
-    source, engine_name = _answer_origin(server)
+    source, engine_name = _answer_origin(client, server)
     found = await db.find_copyable_transcript(
         content_hash,
         client.preset,
-        diarize=client.diarize and server.diarizes,
+        diarize=client.diarize and client.diarizes(server),
         source=source,
         engine_name=engine_name,
         options_tag=options_tag(client.request_options(server, config)),
@@ -1263,7 +1267,7 @@ async def transcribe_media(
 
     # The source is written once; before the server is known (the
     # listener's call) it is left for the answer to fill.
-    source = None if server is None else server.source
+    source = None if server is None else client.answer_source(server)
     row = await db.enqueue_media_transcript(
         media_id,
         account_id=account_id,
@@ -1378,7 +1382,7 @@ async def _send(
     await db.fill_media_transcript(
         row["id"],
         status="queued",
-        diarize=client.diarize and server.diarizes,
+        diarize=client.diarize and client.diarizes(server),
         options_tag=options_tag(client.request_options(server, config)),
     )
     if server.job_path:
@@ -1416,7 +1420,7 @@ async def _send(
             "media": media,
             "account_id": account_id,
             "error": e.reason,
-            "source": server.source,
+            "source": client.answer_source(server),
             "engine_name": server.name or None,
             "engine_version": server.version or None,
         }
@@ -1430,7 +1434,7 @@ async def _send(
     await db.fill_media_transcript(
         row["id"],
         status="done",
-        source=server.source,
+        source=client.answer_source(server),
         engine_name=server.name or SOURCE_SYNC,
         engine_version=server.version or None,
         preset=client.preset,
