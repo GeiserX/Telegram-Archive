@@ -1,6 +1,6 @@
 # Automatic voice transcription
 
-Every voice message the archive downloads gets a transcript, written beside the audio and shown inside the bubble. Every other file with sound, round videos, music, videos, and audio or video files sent as documents, gets one when its button is pressed, or ahead of time when the operator lists its type. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
+Every voice message the archive downloads gets a transcript, written beside the audio and shown inside the bubble. Every other file with sound, round videos, music, videos, and audio or video files sent as documents, gets one when its button is pressed, or ahead of time when the operator lists its type. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too, and Deepgram, AssemblyAI and ElevenLabs work through adapters of their own; see [Providers](#providers).
 
 Implemented in this branch, slices 1 to 7 of the rollout section at the end. Where the code deliberately differs from the first design, the text below says what it does.
 
@@ -90,14 +90,17 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | Variable | Default | Reads | Meaning |
 | --- | --- | --- | --- |
 | `TRANSCRIPTION_ENABLED` | `true` | B/V | Master switch. Off means no drain, no button, no nudge |
-| `TRANSCRIPTION_URL` | empty | B/V | Base URL of akou or any OpenAI-compatible transcription server. Empty with the feature on is the "no server configured" state. The viewer reads it for display only and never connects to it |
-| `TRANSCRIPTION_API_KEY` | empty | B | Bearer key for the server. Treated as a secret, never logged |
+| `TRANSCRIPTION_URL` | empty | B/V | Base URL of akou, any OpenAI-compatible transcription server, or the provider's API (`https://api.deepgram.com`, `https://api.assemblyai.com`, `https://api.elevenlabs.io`). Empty with the feature on is the "no server configured" state. The viewer reads it for display only and never connects to it |
+| `TRANSCRIPTION_API_KEY` | empty | B | Key for the server, sent the way the provider expects (a bearer key for akou and the OpenAI endpoint). Treated as a secret, never logged |
+| `TRANSCRIPTION_PROVIDER` | `auto` | B | `auto` asks the server what it is and picks akou's job path or the OpenAI endpoint. `akou` insists on the job path, `openai` sends straight to the OpenAI endpoint, and `deepgram`, `assemblyai` and `elevenlabs` use their own adapters. See [Providers](#providers) |
+| `TRANSCRIPTION_MODEL` | empty | B | The model name the server is asked for, for every server but akou. Empty means `whisper-1` on the OpenAI endpoint, `nova-3` on Deepgram, `scribe_v2` on ElevenLabs, and AssemblyAI's own choice |
+| `TRANSCRIPTION_HOTWORDS` | empty | B | Comma-separated words the server should expect (names, jargon), sent as `prompt` on the OpenAI endpoint. The job path and the adapters do not send them |
 | `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; ignored by other servers |
 | `TRANSCRIPTION_TYPES` | `voice` | B | Media types transcribed ahead of time, like the official apps do for voice messages. Also accepts `video_note`, `audio`, `video` and `document`, where `document` means only a document whose stored `mime_type` starts with `audio/` or `video/`. `animation` is never eligible: Telegram's GIF-style clips have no sound. The list does not limit the button: any file with sound can be asked for one at a time |
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
-| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`. `0` means no limit; a negative value warns and means the same |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`, and so does a file the server itself refuses with 413. `0` means no limit; a negative value warns and means the same. Set `25` for OpenAI, Groq's free tier and vLLM's default |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
-| `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. Off sends `diarize=false`, so this global setting always wins over any server-side default in akou. The synchronous OpenAI path has no such field and does not diarize |
+| `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. Off sends `diarize=false`, so this global setting always wins over any server-side default in akou. Deepgram, AssemblyAI and ElevenLabs label speakers with it too. The OpenAI endpoint has no such field and does not diarize |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media rows one drain submits, newest first. On the akou job path it is also how many jobs may be open per account: a drain submits only what the open ones leave room for |
@@ -113,8 +116,9 @@ A `_validate_transcription` method next to [`_validate_event_webhook`](../src/co
 - `TRANSCRIPTION_CALLBACK_URL` must be `http://` or `https://` with a hostname, or empty. A bad value drops the callback with a warning and keeps polling. Polling always works.
 - `TRANSCRIPTION_TYPES` accepts only `voice`, `video_note`, `audio`, `video` and `document`. Unknown names are dropped with a warning.
 - `TRANSCRIPTION_PRESET` outside the five names falls back to `auto` with a warning.
+- `TRANSCRIPTION_PROVIDER` outside its six names falls back to `auto` with a warning that does not echo the value.
 
-[`log_summary`](../src/config.py#L1078) prints one line: enabled or not, the URL's scheme and host only, the preset and the types. The key and the secret never appear in logs. The master-only [`/api/admin/settings`](../src/web/main.py#L4341) dumps every `app_settings` row, so the two rows this feature stores there, the event cursor and the detected server name and version, appear in that dump. Neither is a secret.
+[`log_summary`](../src/config.py#L1078) prints one line: enabled or not, the URL's scheme and host only, the provider, the preset and the types. The key and the secret never appear in logs. The master-only [`/api/admin/settings`](../src/web/main.py#L4341) dumps every `app_settings` row, so the two rows this feature stores there, the event cursor and the detected server name and version, appear in that dump. Neither is a secret.
 
 ### Default on with a nudge
 
@@ -133,7 +137,7 @@ Migration `032` adds one append-only table. It follows [`AvatarHistory`](../src/
 | `media_id` | string | Same string as `media.id`, no foreign key |
 | `content_hash` | string(64) | Copied from [`media.content_hash`](../src/db/models.py#L390) when present |
 | `idempotency_key` | string(64) | The audio's SHA-256 as sent to the server. Equal to `content_hash` when the media row has one, computed at drain time when it does not. Never written back to `media` |
-| `source` | string(16) | `akou`, `openai` or `telegram` |
+| `source` | string(16) | `akou`, `openai` (the OpenAI endpoint, whatever server answers it), `deepgram`, `assemblyai`, `elevenlabs` or `telegram` |
 | `engine_name` | string | For example `akou` |
 | `engine_version` | string | |
 | `preset` | string(16) | The preset requested |
@@ -225,7 +229,7 @@ One exception for speed: when the listener downloads a voice message immediately
 
 The backup process owns the drain. It runs at the end of [`backup_all`](../src/telegram_backup.py#L1046), right after the [two media sweeps](../src/telegram_backup.py#L1604). One drain does four things in order:
 
-1. Detect the server. `GET {TRANSCRIPTION_URL}/v1/server` once per run. The backup reads `name`, `version` and `capabilities.jobs` and ignores any other field or flag it does not know. `name: "akou"` with `capabilities.jobs` true selects the job path; any other answer or a 404 selects the synchronous path. The name and version go into `app_settings` for the viewer's settings row.
+1. Detect the server. With `TRANSCRIPTION_PROVIDER=auto` or `akou`, `GET {TRANSCRIPTION_URL}/v1/server` once per run. The backup reads `name`, `version` and `capabilities.jobs` and ignores any other field or flag it does not know. `name: "akou"` with `capabilities.jobs` true selects the job path; any other answer or a 404 selects the synchronous path, except with `akou`, where it ends the run with one warning and sends nothing. `openai` and the adapters ask nothing. The name and version go into `app_settings` for the viewer's settings row; a server that names nothing is recorded as `openai`, so the row never keeps the name of an earlier server.
 2. Reconcile. On the job path, `GET /v1/events?after=<cursor>`, where the cursor is akou's integer sequence number from the page's `cursor` field, never an event's `msg_` id. It is stored in [`app_settings`](../src/db/models.py#L765) under `transcription.events_cursor`. Every `transcription.completed` or `transcription.failed` event whose row is not yet `done` or `failed` gets written now. A `transcription.cancelled` event stores `failed` with reason `cancelled`, and the drain query retries it. Any event type the backup does not know is skipped and the cursor still advances past it. So is an event akou has scrubbed (`data.deleted` true, which it writes after a delete or at the end of its retention window): its result is gone, so it is never fetched and never read as an empty transcript. This is what makes an unreachable callback URL harmless.
 3. Poll stragglers. Rows `queued` or `running` whose `job_id` was stored more than ten minutes ago get `GET /v1/jobs/{id}`, and `GET /v1/jobs/{id}/result` when the status is `done`. The poll stops after the server's retention window; a row still open `retain_days` after its job id was stored is marked `failed` with reason `expired`, and the drain query then retries it. Both ages count from `job_stored_at`, not from the insert, because a row can wait `queued` through an outage before it is submitted. The retry sends the next per-attempt key and gets a new job; if a server ever answered with the job the expired row still holds, the new row stays `queued` without it, since one media cannot hold one job twice.
 4. Submit. Run the drain query, insert-if-absent a `queued` row per media with `job_id` NULL, and send. The query returns the ask-now rows first, then the media of `TRANSCRIPTION_PRIORITY_CHAT_IDS` in list order, then the rest newest first. On the job path the run submits at most `TRANSCRIPTION_BACKFILL_PER_RUN` minus the account's rows that still hold an open job, so a server slower than the backlog never grows the open rows or the straggler poll. A refusal about the file (`idempotency_conflict`, or a job akou ran and failed) marks that row `failed` with akou's code, so it counts toward the cap of three failed rows per media. A refusal about the server or its configuration is not about the file and spends nothing: a wrong or rotated key (401, 403), a rate limit (429), a preset akou cannot run yet (409 `preset_unavailable`, which akou also answers while it downloads its models), a callback host off the key's allowlist (422 `callback_not_allowed`), and a 5xx after the client's attempts. The row stays `queued`, the drain logs one warning and ends the run, and the ten-minute branch resubmits it once the cause is fixed. The same answers from the event feed or the straggler poll end the run before the submit step. A process that dies between the insert and the submit leaves the row `queued` with `job_id` NULL; the ten-minute branch of the drain query resubmits on that same row, since nothing was stored for it, and that path has no cap because it adds no rows.
@@ -246,7 +250,7 @@ The upload is streamed from disk: the file is never read into memory, and a retr
 
 ### The same audio in two accounts
 
-Before any ffprobe, extraction or upload, the drain looks for a `done` row, in any account, that this server would give again: its `idempotency_key` is this media's `content_hash`, its preset is the one the drain would send, its `source` and `engine_name` are this server's (`akou` and `akou` on the job path, `openai` and the server's name, or `openai`, on the synchronous one), and its `diarize` matches what the drain would ask for (`TRANSCRIPTION_DIARIZE` on akou's job path; never on the synchronous path; a row from before the column counts as not diarized). The listener's immediate call, which does not know the server yet, asks it only when some row could be copied. When there is one, this media gets its own row, `done`, with that row's text, language, words, segments, models, engine, confidence and duration copied, and `copied_from_id` naming the source; a press waiting on this media is the row that gets filled. Nothing goes to the server, and nothing is deleted or overwritten. A media that already has a `done` row of its own is never copied into, so a press after a done transcript asks the server for a new one, even when the same audio under another media holds a copy of the old one. A `done` row with empty text (silence) is copied like any other. A media without a stored hash is sent as before.
+Before any ffprobe, extraction or upload, the drain looks for a `done` row, in any account, that this server would give again: its `idempotency_key` is this media's `content_hash`, its preset is the one the drain would send, its `source` and `engine_name` are this server's (`akou` and `akou` on the job path, `openai` and the server's name, or `openai`, on the OpenAI endpoint, the provider's name twice with an adapter), and its `diarize` matches what the drain would ask for (`TRANSCRIPTION_DIARIZE` on akou's job path and the adapters; never on the OpenAI endpoint; a row from before the column counts as not diarized). The listener's immediate call, which does not know the server yet, asks it only when some row could be copied. When there is one, this media gets its own row, `done`, with that row's text, language, words, segments, models, engine, confidence and duration copied, and `copied_from_id` naming the source; a press waiting on this media is the row that gets filled. Nothing goes to the server, and nothing is deleted or overwritten. A media that already has a `done` row of its own is never copied into, so a press after a done transcript asks the server for a new one, even when the same audio under another media holds a copy of the old one. A `done` row with empty text (silence) is copied like any other. A media without a stored hash is sent as before.
 
 The copy lives under this media's account, so search and the exports find it there. A viewer restricted to one account sees a transcript only through media that account holds: the source row in another account is never shown to it.
 
@@ -276,16 +280,26 @@ akou keeps a key as long as its job, and a failed or cancelled job would come ba
 
 The HTTP client has the same shape as [`EventWebhookSender`](../src/event_webhook.py#L89), httpx with a bounded number of attempts and no redirects, but its own timeouts: that sender is fire-and-forget with three attempts of five seconds each, while the drain awaits an upload with a 120 second timeout and, on the synchronous path, waits up to 600 seconds for the answer. No URL or body is logged.
 
-### The synchronous fallback
+### The synchronous path
 
-When the server is not akou, the drain calls the OpenAI endpoint instead and stores the answer in the same row at once:
+When the server is not akou's job path, the drain calls the OpenAI endpoint instead, or the provider's own API with an adapter (see [Providers](#providers)), and stores the answer in the same row at once:
 
 ```
 POST {TRANSCRIPTION_URL}/v1/audio/transcriptions
-file=<bytes> model=<the preset when the server is akou, else "whisper-1"> response_format=verbose_json timestamp_granularities[]=word timestamp_granularities[]=segment
+file=<bytes> model=<the preset when the server is akou, else TRANSCRIPTION_MODEL or "whisper-1"> response_format=verbose_json timestamp_granularities[]=word timestamp_granularities[]=segment [language] [prompt]
 ```
 
-`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. Both granularities are asked for because a server that follows OpenAI's rule, akou among them, returns segments only when `segment` is named. `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. This is also what a user gets from speaches, LocalAI or whisper.cpp today. Only akou reads a preset name in `model`; a server that validates the field would refuse it for good, so everyone else gets `whisper-1`. A server that answers with a 4xx gets a `failed` row. A 5xx after the client's attempts also gets one, since this server decodes the file inside the request and the file may be the cause, and it ends the run. So does a request the server took and never answered, a read or write timeout: that request is sent once, never retried, because another attempt would wait out the same timeout and hand the server the same work again. A wrong key or a rate limit (401, 403, 429) is not about the file: the row stays `queued` and the run ends. A server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
+`verbose_json` carries `text`, `language`, `duration`, `words` and `segments`, which map onto the same columns. Both granularities are asked for because a server that follows OpenAI's rule, akou among them, returns segments only when `segment` is named. Words are read from the top-level `words`, or from each segment's `words` when there is none (whisper.cpp nests them there); a segment's speaker is `speaker`, or `speaker_id` (Mistral). `source` is `openai`, `job_id` stays NULL, and no callback or event feed is involved. Only akou reads a preset name in `model`; a server that validates the field would refuse it for good, so everyone else gets `TRANSCRIPTION_MODEL`, `whisper-1` when it is empty. A server that refuses `verbose_json` with a 400 (OpenAI's gpt-4o-transcribe family answers only `json`; Mistral refuses timings together with a language) is asked once more for plain `json`, which stores the text without timings, and the rest of the run asks for `json` straight away.
+
+What an answer costs:
+
+- A server that cannot be reached at all is an outage, not an answer: the row stays `queued`, the run ends there, and the ten-minute branch of the drain query resubmits on the same row, so an outage never spends the cap of three failed rows.
+- A wrong key, no credit or a rate limit (401, 402, 403, 429) is not about the file: the row stays `queued` and the run ends.
+- A 413 is the server's own size limit: a `skipped` row with reason `too_large`, the same as the archive's own limit.
+- Any other 4xx is about the file only once the server has transcribed a file in the same run. Before that it may just as well be about the server: an unknown model answers 404 and a codec the server cannot decode answers 400, for every file. So a refusal before the run's first transcript stores nothing and the row stays `queued`; when a later file of the run is transcribed, the held refusals are stored as `failed` rows, and when two files are refused before any is transcribed, the run ends with one warning and every row stays `queued`. Fixing the server's setup loses no voice message. After the first transcript of the run, a 4xx is a `failed` row at once.
+- A 5xx after the client's attempts gets a `failed` row, since this server decodes the file inside the request and the file may be the cause, and it ends the run. So does a request the server took and never answered, a read or write timeout: that request is sent once, never retried, because another attempt would wait out the same timeout and hand the server the same work again.
+
+The listener's immediate call knows nothing of the run: a 4xx there leaves the row `queued` for the next drain.
 
 ### Completion
 
@@ -327,11 +341,45 @@ sequenceDiagram
     B->>V: realtime notify
 ```
 
+## Providers
+
+`TRANSCRIPTION_PROVIDER` picks how the backup talks to `TRANSCRIPTION_URL`. `auto`, the default, is the behaviour described above: akou's job path when `/v1/server` says so, the OpenAI endpoint otherwise.
+
+| Provider | `TRANSCRIPTION_URL` | Request | Notes |
+| --- | --- | --- | --- |
+| `auto` | akou or any OpenAI-compatible server | `GET /v1/server`, then akou's job path or the OpenAI endpoint | Nothing changes for an install that sets nothing |
+| `akou` | akou | The job path only | A server that does not answer as akou with jobs ends the run with one warning and spends nothing |
+| `openai` | `https://api.openai.com`, `https://api.groq.com/openai`, `https://api.mistral.ai`, a self-hosted server | The OpenAI endpoint, with no `/v1/server` question | `TRANSCRIPTION_MODEL` names the model: `whisper-large-v3-turbo` on Groq, `voxtral-mini-latest` on Mistral, the served name on vLLM or LocalAI, `gpt-4o-transcribe` on OpenAI (text only, no timings) |
+| `deepgram` | `https://api.deepgram.com` | `POST /v1/listen` with the raw audio, `Authorization: Token <key>`, `model`, `smart_format`, `detect_language` or `language`, and `diarize_model=latest` with `TRANSCRIPTION_DIARIZE` | Synchronous. Words carry the punctuated form and a speaker number |
+| `assemblyai` | `https://api.assemblyai.com` (or `https://api.eu.assemblyai.com`) | `POST /v2/upload`, `POST /v2/transcript`, then `GET /v2/transcript/{id}` every 3 seconds, `authorization: <key>` | Waited for inside one call, up to 600 seconds; a transcript not finished by then is a `failed` row with reason `timeout` and ends the run, and the retry uploads again. Times arrive in milliseconds and are stored in seconds |
+| `elevenlabs` | `https://api.elevenlabs.io` | `POST /v1/speech-to-text` multipart with `model_id`, word timestamps and `diarize` always stated, `xi-api-key: <key>` | Synchronous. Spacing and audio-event entries are not stored as words |
+
+No provider webhook is used: the three sign their callbacks three different ways, and the archive already treats polling as the path that never loses a result. The callback route, `TRANSCRIPTION_CALLBACK_URL` and `TRANSCRIPTION_WEBHOOK_SECRET` stay akou's. Every provider keeps its own copy of the audio and the transcript under its own retention rules; the archive keeps its row.
+
+Self-hosted servers on the OpenAI endpoint, as tested:
+
+- speaches answers `whisper-1` only when `Systran/faster-whisper-large-v3` is installed. Set `TRANSCRIPTION_MODEL` to an installed model instead.
+- LocalAI answers only a model name it has configured: set `TRANSCRIPTION_MODEL` to it. Its `verbose_json` carries no words and no language unless `TRANSCRIPTION_LANGUAGE` is set.
+- whisper.cpp's `whisper-server` needs `--inference-path /v1/audio/transcriptions --convert -l auto`. Without `--convert` it cannot read Ogg Opus and refuses every file; without `-l auto` it assumes English and translates other speech into English.
+- vLLM answers only its served model name, returns no words, and reports no detected language.
+
+### Adding a provider
+
+A provider is one module in [src/transcription_providers/](../src/transcription_providers/) and its name in `TRANSCRIPTION_PROVIDERS` in [src/config.py](../src/config.py). The module holds a `PROVIDER` object with:
+
+- `name`: the setting's value and the module's name, also the rows' `source` and `engine_name` (16 characters at most).
+- `default_model`: sent when `TRANSCRIPTION_MODEL` is empty; `""` leaves the field out.
+- `diarizes`: whether `TRANSCRIPTION_DIARIZE` reaches it.
+- `auth_headers(key)`: the headers that carry `TRANSCRIPTION_API_KEY`.
+- `async transcribe(client, upload, filename, *, model, prompt)`: send the open file and return the row's columns: `text`, `language`, `duration_s`, `words` as `[{w, s, e, c}]`, `segments` as `[{s, e, text, speaker}]`, `models`, and optionally `language_confidence` and `confidence`.
+
+It sends through `client.request_json(method, path, timeout=..., body=upload)` for a raw body, or with `files=` for multipart. That call already retries, follows no redirect, logs no URL and raises `TranscriptionError` with the HTTP status, so the rules of the synchronous path apply unchanged. `client.language` and `client.diarize` are the settings. The test is a fake built from the provider's documented request and response examples, like [tests/test_transcription_providers.py](../tests/test_transcription_providers.py).
+
 ## Security
 
 ### Outbound
 
-The bearer key travels only in the `Authorization` header to `TRANSCRIPTION_URL`, and only from the backup process. The key and the secret are never logged and never appear in `log_summary`. Redirects are not followed. Uploads go to the configured host only; there is no URL in the media row that could redirect them.
+The key travels only in the header the provider expects (`Authorization`, or `xi-api-key` for ElevenLabs) to `TRANSCRIPTION_URL`, and only from the backup process. The key and the secret are never logged and never appear in `log_summary`. Redirects are not followed. Uploads go to the configured host only; there is no URL in the media row that could redirect them.
 
 ### The callback route
 

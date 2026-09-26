@@ -767,13 +767,15 @@ class TestDrain:
         assert [(r["status"], r["error"]) for r in await _rows(real_adapter, "m_1_voice")] == [("failed", "HTTP 502")]
         assert await _rows(real_adapter, "m_2_voice") == []
 
-    async def test_the_server_row_is_written_only_when_the_server_names_itself(self, real_adapter, tmp_path):
+    async def test_the_server_row_names_the_server_or_the_openai_endpoint(self, real_adapter, tmp_path):
+        """A server that names nothing is recorded as "openai", so an earlier akou row never lingers."""
+        await real_adapter.set_transcription_server("akou", "0.1.0")
         await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path))
         await drain_transcriptions(
             config, real_adapter, account_id=1, notifier=AsyncMock(), client=_client(config, FakeServer())
         )
-        assert await real_adapter.get_transcription_server() is None
+        assert await real_adapter.get_transcription_server() == {"name": "openai", "version": ""}
 
         akou = FakeServer(
             server_status=200, server_body={"name": "akou", "version": "0.2.0", "capabilities": {"jobs": False}}

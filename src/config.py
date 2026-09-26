@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice"})
 TRANSCRIPTION_VALID_TYPES = TRANSCRIBABLE_TYPES
 TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
+# TRANSCRIPTION_PROVIDER: auto asks the server (akou's job path or the OpenAI
+# endpoint), akou insists on the job path, openai skips the question, and
+# every other name is a module in src/transcription_providers/. Adding a
+# provider is that module and its name here.
+TRANSCRIPTION_PROVIDERS = frozenset({"auto", "akou", "openai", "deepgram", "assemblyai", "elevenlabs"})
 TRANSCRIPTION_SECRET_PREFIX = "whsec_"
 
 
@@ -1001,6 +1006,15 @@ class Config:
         self.transcription_url = os.getenv("TRANSCRIPTION_URL", "").strip()
         self.transcription_api_key = os.getenv("TRANSCRIPTION_API_KEY", "").strip()
         self.transcription_preset = os.getenv("TRANSCRIPTION_PRESET", "auto").strip().lower() or "auto"
+        self.transcription_provider = os.getenv("TRANSCRIPTION_PROVIDER", "auto").strip().lower() or "auto"
+        # The model name for the OpenAI endpoint and the native providers; empty
+        # means the provider's default (whisper-1 on the OpenAI endpoint).
+        self.transcription_model = os.getenv("TRANSCRIPTION_MODEL", "").strip()
+        # Words the server should expect (names, jargon), sent as the OpenAI
+        # endpoint's ``prompt``.
+        self.transcription_hotwords = [
+            word.strip() for word in os.getenv("TRANSCRIPTION_HOTWORDS", "").split(",") if word.strip()
+        ]
         self.transcription_types: set[str] = set(TRANSCRIPTION_DEFAULT_TYPES)
         self.transcription_max_seconds = 1800
         self.transcription_max_upload_mb = 500
@@ -1227,8 +1241,8 @@ class Config:
             else:
                 server = "no server configured (set TRANSCRIPTION_URL)"
             logger.info(
-                f"TRANSCRIPTION enabled - server: {server}, preset: {self.transcription_preset}, "
-                f"types: {', '.join(sorted(self.transcription_types))}"
+                f"TRANSCRIPTION enabled - server: {server}, provider: {self.transcription_provider}, "
+                f"preset: {self.transcription_preset}, types: {', '.join(sorted(self.transcription_types))}"
             )
         else:
             logger.info("TRANSCRIPTION disabled")
@@ -1396,6 +1410,12 @@ class Config:
                 "TRANSCRIPTION_PRESET must be one of lite, fast, best, fusion or auto - falling back to auto"
             )
             self.transcription_preset = "auto"
+        if self.transcription_provider not in TRANSCRIPTION_PROVIDERS:
+            logger.warning(
+                "TRANSCRIPTION_PROVIDER must be one of "
+                f"{', '.join(sorted(TRANSCRIPTION_PROVIDERS))} - falling back to auto"
+            )
+            self.transcription_provider = "auto"
         types_raw = os.getenv("TRANSCRIPTION_TYPES", "")
         if types_raw.strip():
             requested = {part.strip().lower() for part in types_raw.split(",") if part.strip()}

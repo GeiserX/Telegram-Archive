@@ -5,13 +5,16 @@ at the end of every backup and the listener calls the same per-media
 function the moment it downloads a voice message. Every result is a new row
 in ``media_transcripts``; nothing here changes or removes a media row.
 
-The server is asked once per run what it is (``GET /v1/server``). akou
+``TRANSCRIPTION_PROVIDER`` picks the path. With ``auto``, the default, the
+server is asked once per run what it is (``GET /v1/server``). akou
 with ``capabilities.jobs`` takes the job path: ``POST /v1/jobs`` with the
 audio's SHA-256 as the ``Idempotency-Key`` (``<sha256>.<n>`` on a retry),
 then the result arrives by the signed callback into the viewer, by the
 event feed the next drain reads, or by the straggler poll. Every other server takes the synchronous path:
 the OpenAI transcription endpoint (``POST /v1/audio/transcriptions``),
-whose answer is stored at once.
+whose answer is stored at once. ``akou`` insists on the job path,
+``openai`` skips the question, and a provider with an adapter of its own
+(``src/transcription_providers``) replaces the OpenAI request with its own.
 
 Where akou's documents leave a shape open, the shape assumed is written
 once: ``ServerInfo``'s ``retain_days`` and ``_error_code`` here, the event
@@ -28,7 +31,10 @@ path), ends the run the same way and also leaves the row ``queued``. Any
 other HTTP error is an answer about the file and is stored as a ``failed``
 row, and so is a synchronous request the server took and never answered
 (a read or write timeout, or a 5xx after every attempt), which also ends
-the run.
+the run. On the synchronous path a 4xx counts as an answer about the file
+only once the server has transcribed a file in the same run: a server that
+refuses every file (an unknown model, a codec it cannot read) is set up
+wrong, and its refusals keep the rows queued instead of spending them.
 
 PII rule: this module never logs a URL (httpx exception strings embed it,
 so exceptions log as class names), the bearer key, a media id (it carries
@@ -65,6 +71,8 @@ from .transcription_contract import (
     language_tag,
     parse_events_page,
 )
+from .transcription_providers import NATIVE_PROVIDERS
+from .transcription_providers import load as load_provider
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
@@ -77,10 +85,15 @@ STALE_QUEUED = timedelta(minutes=10)
 # the job path's, in transcription_contract.
 SOURCE_SYNC = "openai"
 
-# The OpenAI endpoint's ``model`` for any server that is not akou. Only akou
-# reads the preset there (a preset name or an engine id); an OpenAI-compatible
-# server that validates the field would refuse "auto" for good.
+# The OpenAI endpoint's ``model`` for any server that is not akou, unless
+# TRANSCRIPTION_MODEL names another. Only akou reads the preset there (a
+# preset name or an engine id); an OpenAI-compatible server that validates
+# the field would refuse "auto" for good.
 DEFAULT_SYNC_MODEL = "whisper-1"
+
+# The seconds between two polls of a provider that transcribes on its side
+# (AssemblyAI) inside one synchronous call.
+PROVIDER_POLL_SECONDS = 3.0
 
 # akou keeps a job's audio and result this long unless ``GET /v1/server``
 # says otherwise (SERVER.md SV-J6, ``server.retain_days``). A row still open
@@ -172,6 +185,18 @@ class ServerInfo:
     def job_path(self) -> bool:
         return self.name == SOURCE_AKOU and self.jobs
 
+    @property
+    def source(self) -> str:
+        """``media_transcripts.source`` of an answer from this server: akou, a native provider, or openai."""
+        if self.job_path:
+            return SOURCE_AKOU
+        return self.name if self.name in NATIVE_PROVIDERS else SOURCE_SYNC
+
+    @property
+    def diarizes(self) -> bool:
+        """Whether TRANSCRIPTION_DIARIZE reaches this server: akou's job path and the native providers."""
+        return self.job_path or self.name in NATIVE_PROVIDERS
+
 
 # The transport errors that mean the server was never reached. Any other
 # httpx.TransportError came after the connection was made: ``stalled``.
@@ -184,12 +209,12 @@ _CONFIG_REFUSALS = frozenset({"preset_unavailable", "callback_not_allowed"})
 
 
 def _server_refused(e: TranscriptionError) -> bool:
-    """A refusal about the server or its configuration: a wrong key, a rate limit, a preset, a callback host.
+    """A refusal about the server or its configuration: a wrong key, no credit, a rate limit, a preset, a callback host.
 
     Every media of the run would get the same answer, so none of them
     spends a failed row: the row stays queued and the run ends.
     """
-    return e.status in (401, 403, 429) or e.reason in _CONFIG_REFUSALS
+    return e.status in (401, 402, 403, 429) or e.reason in _CONFIG_REFUSALS
 
 
 def _server_failed(e: TranscriptionError) -> bool:
@@ -231,25 +256,51 @@ class TranscriptionClient:
         # Defensive getattr + type checks, as the webhook sender: tests build
         # configs as bare MagicMock whose attributes are truthy.
         self._base_url = _base_url(getattr(config, "transcription_url", None))
+        provider_name = getattr(config, "transcription_provider", None)
+        self.provider_name = provider_name if isinstance(provider_name, str) and provider_name else "auto"
+        self.provider = load_provider(self.provider_name)
         key = getattr(config, "transcription_api_key", None)
-        self._headers = {"Authorization": f"Bearer {key}"} if isinstance(key, str) and key else {}
+        self._headers = self.provider.auth_headers(key) if isinstance(key, str) and key else {}
+        model = getattr(config, "transcription_model", None)
+        self.model = model if isinstance(model, str) and model else self.provider.default_model
         preset = getattr(config, "transcription_preset", None)
         self.preset = preset if isinstance(preset, str) else "auto"
         language = getattr(config, "transcription_language", None)
         self.language = language if isinstance(language, str) else ""
         self.diarize = getattr(config, "transcription_diarize", None) is True
         self.backoffs = self.BACKOFFS
+        self.poll_interval = PROVIDER_POLL_SECONDS
         self._transport = transport
+        # Per run: the OpenAI endpoint still takes verbose_json (see the openai
+        # provider), and this server has transcribed a file (see ``_send``).
+        self.verbose = True
+        self.transcribed = False
+
+    @property
+    def sync_source(self) -> str:
+        """The ``source`` a synchronous row gets before the server is known."""
+        return self.provider.name if self.provider.name in NATIVE_PROVIDERS else SOURCE_SYNC
 
     @property
     def configured(self) -> bool:
         return bool(self._base_url)
 
     def sync_model(self, server: ServerInfo) -> str:
-        """The synchronous endpoint's ``model``: the preset for akou, whisper-1 for anyone else."""
+        """The synchronous ``model``: the preset for akou, else TRANSCRIPTION_MODEL or the provider's default."""
         if server.name == SOURCE_AKOU and self.preset:
             return self.preset
-        return DEFAULT_SYNC_MODEL
+        return self.model
+
+    def sync_timeout(self) -> httpx.Timeout:
+        """An upload whose answer is the transcript: 600 seconds for the answer."""
+        return httpx.Timeout(
+            self.SYNC_RESPONSE_TIMEOUT_SECONDS,
+            connect=self.CONNECT_TIMEOUT_SECONDS,
+            write=self.UPLOAD_TIMEOUT_SECONDS,
+        )
+
+    def poll_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(self.POLL_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path}"
@@ -266,7 +317,13 @@ class TranscriptionClient:
         other field or flag is ignored. A 404, a non-JSON body or any other
         shape selects the synchronous path. Raises a transient
         ``TranscriptionError`` only when the server cannot be reached at all.
+        ``TRANSCRIPTION_PROVIDER=openai`` and the native providers ask
+        nothing: the answer is known.
         """
+        if self.provider_name in NATIVE_PROVIDERS:
+            return ServerInfo(name=self.provider_name)
+        if self.provider_name == "openai":
+            return ServerInfo()
         async with self._client(self.DETECT_TIMEOUT_SECONDS) as client:
             try:
                 response = await client.get(self._url("/v1/server"))
@@ -296,7 +353,13 @@ class TranscriptionClient:
         )
 
     async def transcribe(
-        self, audio: bytes | BinaryIO, filename: str, *, model: str, prompt: str | None = None
+        self,
+        audio: bytes | BinaryIO,
+        filename: str,
+        *,
+        model: str,
+        prompt: str | None = None,
+        verbose: bool = True,
     ) -> dict[str, Any]:
         """``POST /v1/audio/transcriptions`` and return the ``verbose_json`` answer.
 
@@ -304,32 +367,41 @@ class TranscriptionClient:
         and ``timestamp_granularities[]`` as both ``word`` and ``segment`` (a
         server that follows OpenAI's rule returns segments only when asked),
         plus the configured language
-        and the hotword prompt when any. Raises ``TranscriptionError`` with
+        and the hotword prompt when any. ``verbose=False`` asks for plain
+        ``json`` with no timings instead. Raises ``TranscriptionError`` with
         a reason that names no URL; it is transient when every attempt was
         a transport failure, permanent when the server answered.
         """
-        data: dict[str, Any] = {
-            "model": model,
-            "response_format": "verbose_json",
-            "timestamp_granularities[]": ["word", "segment"],
-        }
+        data: dict[str, Any] = {"model": model, "response_format": "json"}
+        if verbose:
+            data["response_format"] = "verbose_json"
+            data["timestamp_granularities[]"] = ["word", "segment"]
         if self.language:
             data["language"] = self.language
         if prompt:
             data["prompt"] = prompt
         files = {"file": (filename, audio, "application/octet-stream")}
-        timeout = httpx.Timeout(
-            self.SYNC_RESPONSE_TIMEOUT_SECONDS,
-            connect=self.CONNECT_TIMEOUT_SECONDS,
-            write=self.UPLOAD_TIMEOUT_SECONDS,
+        return await self.request_json(
+            "POST", "/v1/audio/transcriptions", timeout=self.sync_timeout(), data=data, files=files
         )
-        response = await self._send("POST", "/v1/audio/transcriptions", timeout=timeout, data=data, files=files)
+
+    async def request_json(
+        self, method: str, path: str, *, timeout: float | httpx.Timeout, body: BinaryIO | None = None, **kwargs
+    ) -> dict[str, Any]:
+        """One request to ``TRANSCRIPTION_URL`` + ``path`` and its JSON object; what a provider sends through.
+
+        ``body`` is an open file sent as the raw request body, streamed from
+        disk and rewound on every attempt. Any answer of 300 or more raises
+        ``TranscriptionError`` with its status (a redirect lands here too).
+        """
+        response = await self._send(method, path, timeout=timeout, body=body, **kwargs)
         if response.status_code >= 300:
-            # Permanent (4xx) - a redirect (3xx) lands here too.
             raise TranscriptionError(_error_code(response), status=response.status_code)
         return _json_object(response)
 
-    async def _send(self, method: str, path: str, *, timeout: float | httpx.Timeout, **kwargs) -> httpx.Response:
+    async def _send(
+        self, method: str, path: str, *, timeout: float | httpx.Timeout, body: BinaryIO | None = None, **kwargs
+    ) -> httpx.Response:
         """One request with bounded attempts; the first answer that is not 429 or 5xx.
 
         Transport errors, 429 and 5xx are retried, except a POST the server
@@ -345,6 +417,9 @@ class TranscriptionClient:
         status = None
         async with self._client(timeout) as client:
             for attempt in range(self.ATTEMPTS):
+                if body is not None:
+                    kwargs["content"] = _file_chunks(body)
+                    kwargs["headers"] = {**kwargs.get("headers", {}), "Content-Length": str(_file_size(body))}
                 try:
                     response = await client.request(method, self._url(path), **kwargs)
                 except httpx.TransportError as e:
@@ -439,6 +514,17 @@ class TranscriptionClient:
         return _json_object(response)
 
 
+async def _file_chunks(handle: BinaryIO):
+    """An open file from its start, in chunks: a raw request body that never sits in memory."""
+    handle.seek(0)
+    while chunk := handle.read(1024 * 1024):
+        yield chunk
+
+
+def _file_size(handle: BinaryIO) -> int:
+    return os.fstat(handle.fileno()).st_size
+
+
 def _json_object(response: httpx.Response) -> dict[str, Any]:
     try:
         payload = response.json()
@@ -469,7 +555,7 @@ def _error_code(response: httpx.Response) -> str:
 
 
 def _prompt_for(config) -> str | None:
-    """The hotword prompt: an optional list of words a later slice may configure."""
+    """The hotword prompt: TRANSCRIPTION_HOTWORDS joined, sent as ``prompt`` on the OpenAI endpoint."""
     hotwords = getattr(config, "transcription_hotwords", None)
     if not isinstance(hotwords, (list, tuple)):
         return None
@@ -478,7 +564,16 @@ def _prompt_for(config) -> str | None:
 
 
 def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
-    """Map a ``verbose_json`` answer onto the transcript row's columns."""
+    """Map a ``verbose_json`` answer onto the transcript row's columns.
+
+    Words come from the top-level ``words``, or from each segment's own
+    ``words`` when there is none (whisper.cpp nests them there). A segment's
+    speaker is ``speaker``, or ``speaker_id`` (Mistral). whisper.cpp's
+    ``detected_language_probability`` is the language confidence.
+    """
+    raw_words = _dicts(payload.get("words"))
+    if not raw_words:
+        raw_words = [w for seg in _dicts(payload.get("segments")) for w in _dicts(seg.get("words"))]
     words = [
         {
             "w": w.get("word"),
@@ -486,14 +581,14 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
             "e": _number(w.get("end")),
             "c": _number(w.get("probability")),
         }
-        for w in _dicts(payload.get("words"))
+        for w in raw_words
     ]
     segments = [
         {
             "s": _number(seg.get("start")),
             "e": _number(seg.get("end")),
             "text": seg.get("text") if isinstance(seg.get("text"), str) else "",
-            "speaker": seg.get("speaker") if isinstance(seg.get("speaker"), str) else None,
+            "speaker": _speaker(seg),
         }
         for seg in _dicts(payload.get("segments"))
     ]
@@ -501,11 +596,19 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
     return {
         "text": text if isinstance(text, str) else "",
         "language": language_tag(payload.get("language")),
+        "language_confidence": _number(payload.get("detected_language_probability")),
         "duration_s": _number(payload.get("duration")),
         "words": words,
         "segments": segments,
         "models": [model],
     }
+
+
+def _speaker(segment: dict[str, Any]) -> str | None:
+    for name in ("speaker", "speaker_id"):
+        if isinstance(segment.get(name), str):
+            return segment[name]
+    return None
 
 
 def _file_sha256(path: str) -> str:
@@ -948,7 +1051,7 @@ def _answer_origin(server: ServerInfo) -> tuple[str, str]:
     """The ``source`` and ``engine_name`` a row gets from this server, on either path."""
     if server.job_path:
         return SOURCE_AKOU, SOURCE_AKOU
-    return SOURCE_SYNC, server.name or SOURCE_SYNC
+    return server.source, server.name or SOURCE_SYNC
 
 
 async def _copy_transcript(
@@ -986,7 +1089,7 @@ async def _copy_transcript(
     found = await db.find_copyable_transcript(
         content_hash,
         client.preset,
-        diarize=client.diarize and server.job_path,
+        diarize=client.diarize and server.diarizes,
         source=source,
         engine_name=engine_name,
         **lookup,
@@ -1026,11 +1129,12 @@ async def transcribe_media(
     client: TranscriptionClient | None = None,
     server: ServerInfo | None = None,
     notifier: RealtimeNotifier | None = None,
+    held: list[dict[str, Any]] | None = None,
 ) -> str:
     """One media to the server; the drain and the listener both call this.
 
     Returns ``done``, ``failed``, ``skipped``, ``submitted``, ``refused``,
-    ``unreachable``, ``stalled`` or ``noop``. The queued row is inserted first
+    ``unreachable``, ``stalled``, ``rejected`` or ``noop``. The queued row is inserted first
     (insert-if-absent, so a second call while one is open reuses it), the
     audio is hashed when the media row carries no hash, and the answer
     fills the same row: at once on the synchronous path, or with the job
@@ -1044,6 +1148,10 @@ async def transcribe_media(
     drain ends the run. ``refused`` is a refusal about the server or its
     configuration (see ``_server_refused``; on the job path a 5xx too): the
     row stays queued, no failed row is spent, and the drain ends the run.
+    ``rejected`` is a 4xx on the synchronous path from a server that has not
+    transcribed a file in this run yet: the row stays queued and, when the
+    caller passes ``held``, the refusal is appended there for the drain to
+    store as failed once the server proves it can transcribe (see ``_send``).
     """
     client = client or TranscriptionClient(config)
     if not client.configured:
@@ -1095,7 +1203,7 @@ async def transcribe_media(
 
     # The source is written once; before the server is known (the
     # listener's call) it is left for the answer to fill.
-    source = None if server is None else (SOURCE_AKOU if server.job_path else SOURCE_SYNC)
+    source = None if server is None else server.source
     row = await db.enqueue_media_transcript(
         media_id,
         account_id=account_id,
@@ -1115,7 +1223,9 @@ async def transcribe_media(
         await db.fill_media_transcript(row["id"], status="queued", preset=client.preset, content_hash=content_hash)
 
     if not path or not os.path.isfile(path):
-        await db.fill_media_transcript(row["id"], status="failed", error="file_missing", source=source or SOURCE_SYNC)
+        await db.fill_media_transcript(
+            row["id"], status="failed", error="file_missing", source=source or client.sync_source
+        )
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
     try:
@@ -1126,7 +1236,7 @@ async def transcribe_media(
         # Unreadable (permissions, a disk error): an answer about this file,
         # not an outage, so it spends a failed row instead of stopping the run.
         await db.fill_media_transcript(
-            row["id"], status="failed", error="file_unreadable", source=source or SOURCE_SYNC
+            row["id"], status="failed", error="file_unreadable", source=source or client.sync_source
         )
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
@@ -1166,6 +1276,7 @@ async def transcribe_media(
                 client=client,
                 server=server,
                 notifier=notifier,
+                held=held,
             )
     finally:
         if extracted:
@@ -1186,8 +1297,19 @@ async def _send(
     client: TranscriptionClient,
     server: ServerInfo | None,
     notifier,
+    held: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Detect the server if the caller has not, then the job path or the synchronous request."""
+    """Detect the server if the caller has not, then the job path or the synchronous request.
+
+    On the synchronous path a 4xx is an answer about the file only once
+    this server has transcribed a file in the run (``client.transcribed``).
+    Before that it may just as well be about the server: an unknown model
+    (404), a codec it cannot decode (400) or any setup that refuses every
+    file. Such a refusal stores nothing: the row stays queued (``rejected``)
+    and, with ``held``, the drain stores it as failed when a later file of
+    the same run is transcribed. A 413 is the server's own size limit: a
+    ``skipped`` row with reason ``too_large``, like the archive's own limit.
+    """
     if server is None:
         try:
             server = await client.detect_server()
@@ -1195,9 +1317,12 @@ async def _send(
             # The row stays queued; the next drain resubmits it after ten minutes.
             logger.warning(f"Transcription server unreachable ({e.reason}); the media stays queued")
             return "unreachable"
+    if client.provider_name == SOURCE_AKOU and not server.job_path:
+        logger.warning(_NOT_AKOU)
+        return "refused"
 
     # What this request asks for, so a later copy reuses only a like answer.
-    await db.fill_media_transcript(row["id"], status="queued", diarize=client.diarize and server.job_path)
+    await db.fill_media_transcript(row["id"], status="queued", diarize=client.diarize and server.diarizes)
     if server.job_path:
         return await _submit_job(
             config,
@@ -1216,7 +1341,7 @@ async def _send(
 
     model = client.sync_model(server)
     try:
-        payload = await client.transcribe(upload, filename, model=model, prompt=_prompt_for(config))
+        columns = await client.provider.transcribe(client, upload, filename, model=model, prompt=_prompt_for(config))
     except TranscriptionError as e:
         if e.transient and not e.stalled:
             # Same as above: an outage is not an answer and spends no failed row.
@@ -1225,33 +1350,70 @@ async def _send(
         if _server_refused(e):
             logger.warning(f"Transcription server refused the request ({e.reason}); the media stays queued")
             return "refused"
-        await db.fill_media_transcript(
-            row["id"],
-            status="failed",
-            error=e.reason,
-            source=SOURCE_SYNC,
-            engine_name=server.name or None,
-            engine_version=server.version or None,
-        )
-        await _notify(notifier, media, row["id"], "failed", account_id)
-        logger.warning(f"Transcription failed ({e.reason})")
+        if e.status == 413:
+            skipped = await db.mark_media_transcript_skipped(
+                media["id"],
+                account_id=account_id,
+                reason=TOO_LARGE,
+                content_hash=media.get("content_hash"),
+                duration_s=_number(media.get("duration")),
+            )
+            if skipped is not None:
+                await _notify(notifier, media, skipped["id"], "skipped", account_id)
+            return "skipped"
+        failed = {
+            "row_id": row["id"],
+            "media": media,
+            "account_id": account_id,
+            "error": e.reason,
+            "source": server.source,
+            "engine_name": server.name or None,
+            "engine_version": server.version or None,
+        }
+        if e.status is not None and e.status < 500 and not client.transcribed:
+            if held is not None:
+                held.append(failed)
+            return "rejected"
+        await _store_failed(db, notifier, failed)
         # A server that took the request and never answered, or failed it with
         # a 5xx after every attempt, would do the same to every later media: the
         # run ends here. A 5xx still spends a failed row on this path, since the
         # server decodes the file inside the request and the file may be the cause.
         return "stalled" if e.stalled or _server_failed(e) else "failed"
 
+    client.transcribed = True
     await db.fill_media_transcript(
         row["id"],
         status="done",
-        source=SOURCE_SYNC,
+        source=server.source,
         engine_name=server.name or SOURCE_SYNC,
         engine_version=server.version or None,
         preset=client.preset,
-        **result_columns(payload, model=model),
+        **columns,
     )
     await _notify(notifier, media, row["id"], "done", account_id)
     return "done"
+
+
+# The warning when TRANSCRIPTION_PROVIDER=akou and the server is not akou's job path.
+_NOT_AKOU = (
+    "Transcription: TRANSCRIPTION_PROVIDER=akou but the server did not answer as akou with jobs; "
+    "nothing sent, the media stays queued"
+)
+
+
+async def _store_failed(db, notifier, failed: dict[str, Any]) -> None:
+    """A failed row for a synchronous answer about the file, and its push."""
+    await db.fill_media_transcript(
+        failed["row_id"],
+        status="failed",
+        error=failed["error"],
+        source=failed["source"],
+        engine_name=failed["engine_name"],
+        engine_version=failed["engine_version"],
+    )
+    await _notify(notifier, failed["media"], failed["row_id"], "failed", failed["account_id"])
+    logger.warning(f"Transcription failed ({failed['error']})")
 
 
 async def drain_transcriptions(
@@ -1302,11 +1464,15 @@ async def drain_transcriptions(
     except TranscriptionError as e:
         logger.warning(f"Transcription server unreachable ({e.reason}); skipping this run")
         return stats
-    if server.name:
-        try:
-            await db.set_transcription_server(server.name, server.version)
-        except Exception as e:
-            logger.debug(f"Could not record the transcription server: {describe_exception(e)}")
+    if client.provider_name == SOURCE_AKOU and not server.job_path:
+        logger.warning(_NOT_AKOU)
+        return stats
+    try:
+        # A server that names nothing is recorded as "openai", the endpoint it
+        # answers, so the settings row never keeps the name of an earlier server.
+        await db.set_transcription_server(server.name or SOURCE_SYNC, server.version)
+    except Exception as e:
+        logger.debug(f"Could not record the transcription server: {describe_exception(e)}")
 
     if notifier is None:
         notifier = RealtimeNotifier(getattr(db, "db_manager", None))
@@ -1350,15 +1516,32 @@ async def drain_transcriptions(
     if not media_rows:
         logger.debug("Transcription: nothing to send")
         return stats
+    held: list[dict[str, Any]] = []
     for media in media_rows:
         outcome = await transcribe_media(
-            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier
+            config, db, media, account_id=account_id, client=client, server=server, notifier=notifier, held=held
         )
+        if outcome == "rejected":
+            # Counted below, once the run knows whether the server transcribes at all.
+            if len(held) >= 2:
+                break  # two files refused, none transcribed: the server, not the files
+            continue
         stats[outcome] = stats.get(outcome, 0) + 1
         if outcome in ("unreachable", "stalled", "refused"):
             # transcribe_media warned once; every media after this one would
             # wait out the same timeouts, or get the same refusal.
             break
+    if held and client.transcribed:
+        # The server transcribed another file of this run: the refusals were about their files.
+        for failed in held:
+            await _store_failed(db, notifier, failed)
+        stats["failed"] += len(held)
+    elif held:
+        stats["refused"] += len(held)
+        logger.warning(
+            f"Transcription server refused {len(held)} file(s) ({held[-1]['error']}) and transcribed none this run; "
+            "they stay queued. Check TRANSCRIPTION_MODEL and the server's setup"
+        )
     logger.info(
         "Transcription drain: %d done, %d copied, %d failed, %d skipped, %d submitted, %d refused, %d unreachable "
         "of %d media; %d filled from the event feed, %d from the poll",
