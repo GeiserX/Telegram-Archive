@@ -1326,8 +1326,11 @@ class AkouServer(FakeServer):
             if self.jobs[job_id]["file_sha"] != file_sha:
                 return httpx.Response(422, json={"error": "idempotency_conflict", "message": "another file"})
             return httpx.Response(200, json=self._job_answer(job_id))
+        # As akou does: auto is resolved to the preset it will run before the
+        # job is stored, and diarize comes back as a JSON boolean.
+        preset = fields.get("preset")
         options = {
-            "preset": fields.get("preset"),
+            "preset": "fast" if preset == "auto" else preset,
             "language": fields.get("language"),
             "diarize": fields.get("diarize") == "true",
         }
@@ -1525,31 +1528,59 @@ class TestJobPath:
             "content_hash": audio
         }
 
-    async def test_an_answer_made_with_other_options_is_failed_not_stored(self, real_adapter, tmp_path):
-        """akou handing back an older job for the key: never stored as a diarized row with no speakers."""
+    async def test_a_default_auto_job_answered_with_the_preset_akou_resolved_is_stored(self, real_adapter, tmp_path):
+        """akou turns preset=auto into the preset it will run before storing the job; that is no mismatch."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+
+        assert (await _akou_drain(config, real_adapter, server))["submitted"] == 1
+        job_id = server.by_hash[SHA]
+        assert server._job_answer(job_id)["preset"] == "fast", "the fake answers like akou"
+        server.finish(job_id, text="con preset resuelto")
+        await _akou_drain(config, real_adapter, server)
+
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"], row["text"]) == ("done", None, "con preset resuelto")
+
+    async def test_a_named_preset_answered_with_another_is_a_mismatch(self, real_adapter, tmp_path):
         audio = "f" * 64
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash=audio)
-        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="7" * 64)
         server = AkouServer()
         server.add_job(
             audio,
-            status="done",
-            key=_key(audio, diarize=True),
-            options={"preset": "auto", "language": "auto", "diarize": False},
-        )
-        server.jobs[server.by_hash[audio]]["text"] = "sin hablantes"
-        server.add_job(
-            "7" * 64,
             status="queued",
-            key=_key("7" * 64, diarize=True),
-            options={"preset": "best", "language": "auto", "diarize": True},
+            key=_key(audio, preset="best"),
+            options={"preset": "fast", "language": "auto", "diarize": False},
         )
+        config = _akou_config(tmp_path, transcription_preset="best")
+
+        assert (await _akou_drain(config, real_adapter, server))["failed"] == 1
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"], row["job_id"]) == ("failed", "options_mismatch", None)
+        # The retry names a new job, made with the preset asked for.
+        await _akou_drain(config, real_adapter, server)
+        assert server.submits[-1].headers["idempotency-key"] == _key(audio, 1, preset="best")
+        newest = (await _rows(real_adapter, "m_1_voice"))[0]
+        assert newest["status"] == "queued" and server.jobs[newest["job_id"]]["options"]["preset"] == "best"
+
+    async def test_diarize_asked_and_answered_without_is_a_mismatch(self, real_adapter, tmp_path):
+        """An old undiarized job under the key is never stored as a diarized row with no speakers."""
+        cases = {"m_1_voice": ("1" * 64, False), "m_2_voice": ("2" * 64, "false")}  # a JSON boolean, and a string
+        server = AkouServer()
+        for media_id, (audio, answered) in cases.items():
+            await _media(real_adapter, tmp_path, media_id, content_hash=audio)
+            server.add_job(
+                audio,
+                status="done",
+                key=_key(audio, diarize=True),
+                options={"preset": "fast", "language": "auto", "diarize": answered},
+            )
+            server.jobs[server.by_hash[audio]]["text"] = "sin hablantes"
         config = _akou_config(tmp_path, transcription_diarize=True)
 
-        stats = await _akou_drain(config, real_adapter, server)
-
-        assert stats["failed"] == 2
-        for media_id in ("m_1_voice", "m_2_voice"):
+        assert (await _akou_drain(config, real_adapter, server))["failed"] == 2
+        for media_id in cases:
             [row] = await _rows(real_adapter, media_id)
             assert (row["status"], row["error"], row["job_id"], row["text"]) == (
                 "failed",
@@ -1557,14 +1588,6 @@ class TestJobPath:
                 None,
                 None,
             ), media_id
-        # The retry names a new job with the options asked for.
-        await _akou_drain(config, real_adapter, server)
-        assert server.submits[-1].headers["idempotency-key"] in {
-            _key(audio, 1, diarize=True),
-            _key("7" * 64, 1, diarize=True),
-        }
-        newest = (await _rows(real_adapter, "m_1_voice"))[0]
-        assert newest["status"] == "queued" and server.jobs[newest["job_id"]]["options"]["diarize"] is True
 
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)

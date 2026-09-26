@@ -745,6 +745,24 @@ async def _store_job_outcome(
     return filled
 
 
+def _options_disagree(job: dict[str, Any], sent: dict[str, Any]) -> bool:
+    """True when akou's job answer names other options than the request sent.
+
+    ``diarize`` is compared as a boolean: akou answers a JSON boolean, and a
+    string form is read as one. The preset is compared only when the request
+    named one: akou resolves ``auto`` to the preset it will run before it
+    stores the job, so an ``auto`` request answered with ``fast`` agrees. An
+    answer that carries neither field (an older akou) never disagrees.
+    """
+    answered = job.get("diarize")
+    if isinstance(answered, str):
+        answered = answered.strip().lower() == "true"
+    if isinstance(answered, bool) and answered != bool(sent["diarize"]):
+        return True
+    preset = job.get("preset")
+    return sent["preset"] != "auto" and isinstance(preset, str) and preset != sent["preset"]
+
+
 async def _submit_job(
     config,
     db,
@@ -819,8 +837,7 @@ async def _submit_job(
         await db.fill_media_transcript(row["id"], status="failed", error="invalid_job", source=SOURCE_AKOU)
         await _notify(notifier, media, row["id"], "failed", account_id)
         return "failed"
-    sent = client.job_options()
-    if any(name in job and job[name] != sent[name] for name in ("preset", "diarize")):
+    if _options_disagree(job, client.job_options()):
         # akou answered a job made with other options, an old one under a
         # reused key: storing it would label an undiarized answer as
         # diarized, or one preset's answer as another's. A failed row, so the
