@@ -283,10 +283,10 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `STATS_CALCULATION_HOUR` | `3` | B | Hour (0-23) to recalculate backup statistics daily |
 | `PRIORITY_CHAT_IDS` | - | B | Comma-separated chat IDs to process first in all operations |
 | `SKIP_MEDIA_CHAT_IDS` | - | B | Skip media downloads for specific chats (messages still backed up with text) |
-| `EXCLUDE_DELETE_EXISTING` | `false` | B | Also delete what the archive already holds for chats in any `*_EXCLUDE_CHAT_IDS` list: their messages and other rows, their media folder and their avatars. Cannot be undone. Off by default: an excluded chat stops being backed up and keeps what was already archived |
-| `SKIP_MEDIA_DELETE_EXISTING` | `false` | B | Also delete the media files and DB records already archived for chats in the skip list. Off by default: the archive keeps what it downloaded. On a deduplicated archive only the chat folder's links are removed; the shared file behind them stays in `_shared/` and is not reclaimed |
+| `EXCLUDE_DELETE_EXISTING` | `false` | B | Also delete what the archive already holds for chats in any `*_EXCLUDE_CHAT_IDS` list: their messages and other rows, their media and their transcripts, their media folder and their avatars. Cannot be undone. Off by default: an excluded chat stops being backed up and keeps what was already archived |
+| `SKIP_MEDIA_DELETE_EXISTING` | `false` | B | Also delete the media files and DB records already archived for chats in the skip list, and their transcripts. Off by default: the archive keeps what it downloaded. On a deduplicated archive only the chat folder's links are removed; the shared file behind them stays in `_shared/` and is not reclaimed |
 | `DOWNLOAD_YOUTUBE_VIDEOS` | `false` | B | Archive the video file Telegram attaches to a YouTube link preview. Off by default; the message, link and thumbnail are archived either way |
-| `YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | B | Also delete YouTube link-preview videos already downloaded (needs `DOWNLOAD_YOUTUBE_VIDEOS=false`). Cannot be undone |
+| `YOUTUBE_VIDEOS_DELETE_EXISTING` | `false` | B | Also delete YouTube link-preview videos already downloaded (needs `DOWNLOAD_YOUTUBE_VIDEOS=false`), and their transcripts. Cannot be undone |
 | `SKIP_TOPIC_IDS` | - | B | Skip specific topics in forum supergroups (format: `chat_id:topic_id,...`) |
 | `LOG_LEVEL` | `INFO` | B/V | Logging verbosity: `DEBUG`, `INFO`, `WARNING`/`WARN`, `ERROR` |
 | `LOG_CHAT_TITLES` | `false` | B | Name the chat on the two per-chat progress lines: `[27/27] Backing up: "My Group"`. Opt-in. Chat ids are never logged either way, a one-to-one chat is named by kind only (`private chat`) and never by the person, and titles are sanitised so a chosen title cannot forge a log line |
@@ -319,7 +319,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `ENABLE_LISTENER` | `false` | B | **Master switch** — enables all `LISTEN_*` features below |
 | `LISTEN_EDITS` | `true` | B | Apply text edits in real-time |
 | `LISTEN_DELETIONS` | `false` | B | Process deletion events from Telegram. Opt-in only |
-| `DELETION_MODE` | `soft` | B | When deletions are processed: `soft` keeps messages and marks them deleted, `hard` removes archived messages and cannot be undone. `hard` is opt-in |
+| `DELETION_MODE` | `soft` | B | When deletions are processed: `soft` keeps messages and marks them deleted, `hard` removes archived messages, their media and their transcripts and cannot be undone. `hard` is opt-in |
 | `LISTEN_NEW_MESSAGES` | `true` | B | Save new messages in real-time between scheduled backups |
 | `LISTEN_NEW_MESSAGES_MEDIA` | `false` | B | Also download media immediately (vs. next scheduled backup) |
 | `LISTEN_CHAT_ACTIONS` | `true` | B | Track chat photo, title, and member changes |
@@ -339,6 +339,17 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `EVENT_WEBHOOK_EVENTS` | both | B | Comma list: `message_edited`, `message_deleted` |
 | `EVENT_WEBHOOK_CHAT_IDS` | — | B | Comma-separated marked chat ids to fire for; empty = all chats the listener processes |
 | `EVENT_WEBHOOK_BODY_TEMPLATE` | JSON body | B | Custom body with `{placeholder}` / `{placeholder\|filter}` substitution; empty = default JSON body |
+| **Voice Transcription** | | | See [Voice Transcription](#voice-transcription) below |
+| `TRANSCRIPTION_ENABLED` | `true` | B/V | **Master switch**. Off means no drain, no transcript button and no nudge |
+| `TRANSCRIPTION_URL` | — | B/V | Base URL of an [akou](https://github.com/GeiserX/akou) server or any server with the OpenAI transcription endpoint. Empty with the feature on shows a one-line nudge and nothing fails. The viewer reads it for display only and never connects to it |
+| `TRANSCRIPTION_API_KEY` | — | B | Bearer key for the server. Treated as a secret, never logged |
+| `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; other servers ignore it |
+| `TRANSCRIPTION_TYPES` | `voice,video_note` | B | Media types to transcribe; `audio` and `video` are opt-in |
+| `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason |
+| `TRANSCRIPTION_LANGUAGE` | — | B | Optional language hint; empty lets the server detect it |
+| `TRANSCRIPTION_CALLBACK_URL` | — | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the key's callback allowlist in akou. Empty means the backup polls instead, which loses nothing |
+| `TRANSCRIPTION_WEBHOOK_SECRET` | — | V | The `whsec_` secret akou printed for the key. The callback route exists only when it is set. Never logged |
+| `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media one backup run sends, newest first. With akou it also caps the jobs open at once per account |
 | **Database** | | | See [Database Configuration](#database-configuration) below |
 | `DATABASE_URL` | - | B/V | Full database URL (highest priority, overrides all below) |
 | `DB_TYPE` | `sqlite` | B/V | Database engine: `sqlite` or `postgresql` |
@@ -556,6 +567,24 @@ EVENT_WEBHOOK_BODY_TEMPLATE: '{"topic":"my-archive","title":"{event} in {chat_ti
 **Delivery contract:** `POST`/`PUT`, 5-second timeout, up to 3 attempts (transport errors, HTTP 429 and 5xx retry; other statuses are treated as permanent), redirects are **not** followed, and beyond 100 in-flight deliveries new events are dropped (counted in listener stats). There is no persistence or redelivery — the archive itself is the system of record; a failed webhook only loses the ping.
 
 **Two caveats, loudly:** sweep-detected changes (`SYNC_DELETIONS_EDITS`) never fire the webhook — only the real-time listener does. And deletion events require `LISTEN_DELETIONS=true`, which is **off by default**; startup logs a warning for any selected event that can never fire under the current flags. The body carries message content by design — point the URL only at services you control.
+
+### Voice Transcription
+
+Voice messages and round videos get a transcript, written beside the audio and shown inside the bubble: a small button next to the waveform swaps the text in under it. The engine is [akou](https://github.com/GeiserX/akou), a speech-to-text server that can run on any host; any server with the OpenAI transcription endpoint (speaches, LocalAI, whisper.cpp) works too. The feature is on by default and does nothing until `TRANSCRIPTION_URL` points at a server:
+
+```yaml
+TRANSCRIPTION_URL: "http://akou:8476"         # or any host that runs akou
+TRANSCRIPTION_API_KEY: "..."                  # akou's bearer key, backup only
+# Optional, for results within seconds instead of on the next backup run:
+TRANSCRIPTION_CALLBACK_URL: "https://archive.example.test/api/transcriptions/callback"
+TRANSCRIPTION_WEBHOOK_SECRET: "whsec_..."      # viewer only
+```
+
+**How it works:** only the backup process talks to the server. At the end of every backup run it sends up to `TRANSCRIPTION_BACKFILL_PER_RUN` downloaded voice messages that have no transcript yet, newest first, so everything archived before the server existed is transcribed over the following runs. Results arrive through the signed callback into the viewer, through akou's event feed on the next run, or through a per-job poll; an archive with no reachable callback URL loses nothing. The viewer never makes an outbound request for this feature.
+
+**Archive rules:** a transcript is a new row, never a change to the media row, and a second transcript with another engine or preset is another row. Transcripts are searchable from the chat search box and the global search (a hit found only in a transcript opens that bubble), appear in the Voice tab of Shared Media, in `/api/changes` as a `transcript` change, and in both JSON exports. The only paths that remove them are the flag-gated deletes above (`DELETION_MODE=hard`, `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`), which take the transcripts of the media they remove.
+
+**Privacy:** the audio is the only content that leaves the archive, and only to the configured host. No chat titles, names, message text or ids are sent. A viewer login with downloads disabled sees no transcripts, since a transcript is the audio's content. The full design is in [docs/TRANSCRIPTION.md](docs/TRANSCRIPTION.md).
 
 ### Group → supergroup migrations
 

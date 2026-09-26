@@ -463,6 +463,72 @@
             background: rgb(var(--tg-bg) / 1);
         }
 
+        /* The transcript button (docs/TRANSCRIPTION.md): a rounded square
+           beside the waveform. Every colour reads a theme token, so the
+           seven palettes and the light ones need nothing of their own. While
+           a transcript is queued or running a stroke loops around the
+           outline: pathLength="100" on the rect makes the dash arithmetic
+           independent of the button size. */
+        .transcript-btn {
+            position: relative;
+            width: 2rem;
+            height: 2rem;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.5rem;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            white-space: nowrap;
+            color: rgb(var(--tg-n300));
+            background: rgb(var(--tg-ink) / 0.08);
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .transcript-btn:hover {
+            color: rgb(var(--tg-ink));
+            background: rgb(var(--tg-ink) / 0.16);
+        }
+        .transcript-btn:focus-visible {
+            outline: 2px solid rgb(var(--tg-accent-soft));
+            outline-offset: 2px;
+        }
+        .transcript-btn[aria-expanded="true"] {
+            color: rgb(var(--tg-accent-soft));
+        }
+        /* Over the circle of a round video: a black scrim, like the other
+           media overlays, so it reads on any frame and any palette. */
+        .transcript-btn--overlay,
+        .transcript-btn--overlay:hover {
+            position: absolute;
+            bottom: 0.25rem;
+            color: #fff;
+            background: rgb(0 0 0 / 0.55);
+        }
+        .transcript-loop {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+            pointer-events: none;
+        }
+        .transcript-loop rect {
+            fill: none;
+            stroke: rgb(var(--tg-accent));
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-dasharray: 25 75;
+            animation: transcript-loop 1.2s linear infinite;
+        }
+        @keyframes transcript-loop {
+            to { stroke-dashoffset: -100; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .transcript-loop rect { animation-duration: 4s; }
+        }
+
 
         /* Date Separator — floats/sticks at the top of the scroll pane while
            that day's messages are in view, like the native apps. Works in the
@@ -1374,6 +1440,7 @@
                                     </div>
                                     <p class="text-sm text-tg-muted line-clamp-2 break-words">
                                         <span v-if="row.sender_name && row.chat.type !== 'private'" class="text-tg-ink/80">{{ row.sender_name }}: </span><span v-html="searchSnippetHtml(row.text)"></span>
+                                        <span v-if="row.matched_in === 'transcript'" class="italic">{{ row.text ? ' · ' : '' }}Matched in the transcript</span>
                                         <span v-if="row.is_deleted" class="ml-1 text-[10px] uppercase tracking-wide text-red-400">deleted</span>
                                     </p>
                                 </div>
@@ -1550,6 +1617,18 @@
                                 </svg>
                             </button>
 
+                            <!-- Expand all transcripts in this chat (docs/TRANSCRIPTION.md),
+                                 remembered per chat. A message the reader opened or closed
+                                 by hand keeps its own state until this is pressed again. -->
+                            <button v-if="transcriptionState.enabled" type="button" @click="toggleExpandAllTranscripts"
+                                :aria-pressed="transcriptsExpandedForChat() ? 'true' : 'false'"
+                                :aria-label="transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts'"
+                                :title="transcriptsExpandedForChat() ? 'Collapse all transcripts' : 'Expand all transcripts'"
+                                class="tap-target p-1.5 sm:p-2 rounded-lg transition shrink-0 text-xs font-semibold whitespace-nowrap"
+                                :class="transcriptsExpandedForChat() ? 'text-tg-ink bg-tg-n700' : 'text-tg-n400 hover:text-tg-ink hover:bg-tg-ink/10'">
+                                <span aria-hidden="true">{{ transcriptsExpandedForChat() ? 'A→' : '→A' }}</span>
+                            </button>
+
                             <!-- Info panel toggle (#433): the apps' right-hand "Chat Info" column -->
                             <button ref="infoPanelToggleBtn" type="button" @click="toggleInfoPanel"
                                 :aria-expanded="showInfoPanel ? 'true' : 'false'" aria-controls="info-panel"
@@ -1574,6 +1653,24 @@
                                 d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                         </svg>
                         <span class="truncate">{{ migrationBanner.text }}</span>
+                    </div>
+
+                    <!-- Transcription nudge (docs/TRANSCRIPTION.md): on by default with no
+                         server, so the first voice message on screen says how to turn it
+                         on. Dismiss is remembered; the transcript button reopens it. -->
+                    <div v-if="transcriptNudgeVisible" role="note"
+                        class="px-4 py-2 bg-tg-accent/10 border-b border-tg-accent/30 flex items-center gap-3 text-sm text-tg-accent-faint">
+                        <span class="shrink-0 text-xs font-semibold text-tg-accent-soft" aria-hidden="true">→A</span>
+                        <span class="min-w-0 flex-1">Voice messages can be transcribed automatically. Point
+                            <code class="text-xs">TRANSCRIPTION_URL</code> at an
+                            <a href="https://github.com/GeiserX/akou" target="_blank" rel="noopener noreferrer"
+                                class="underline hover:text-tg-ink">akou</a> server.</span>
+                        <button type="button" @click="dismissTranscriptNudge" aria-label="Dismiss"
+                            class="shrink-0 p-1 rounded text-tg-accent-soft hover:text-tg-ink focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
                     </div>
 
                     <!-- Pinned Message Banner (only shown in normal view, not in pinned-only view) -->
@@ -1695,8 +1792,14 @@
 
                             <!-- Voice/Audio List -->
                             <template v-else-if="mediaGalleryTab === 'voice'">
+                                <input v-if="mediaGalleryItems.length" v-model="mediaGalleryFilter" type="search"
+                                    placeholder="Filter by name or transcript" aria-label="Filter voice messages by name or transcript"
+                                    class="w-full mb-2 px-3 py-1.5 rounded-lg bg-tg-n800/50 text-sm text-tg-ink placeholder-tg-n500 focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                <p v-if="mediaGalleryItems.length && !galleryVoiceItems.length" class="px-3 py-6 text-center text-sm text-tg-n500">
+                                    No loaded voice message matches.
+                                </p>
                                 <div class="space-y-1">
-                                    <div v-for="item in mediaGalleryItems" :key="item.id"
+                                    <div v-for="item in galleryVoiceItems" :key="item.id"
                                         class="flex items-center gap-3 p-3 rounded-lg bg-tg-n800/50 hover:bg-tg-n700/50 cursor-pointer"
                                         @click="jumpToMessage(item)">
                                         <div class="w-10 h-10 rounded-full bg-tg-accent-strong flex items-center justify-center flex-shrink-0">
@@ -1705,6 +1808,7 @@
                                         <div class="flex-1 min-w-0">
                                             <div class="text-sm text-tg-ink">{{ item.sender_name || 'Unknown' }}</div>
                                             <div class="text-xs text-tg-n400">{{ formatDuration(item.duration) }}</div>
+                                            <div v-if="galleryTranscriptLine(item)" dir="auto" class="text-xs text-tg-n300 truncate">{{ galleryTranscriptLine(item) }}</div>
                                         </div>
                                         <div class="text-xs text-tg-n500">{{ formatMediaDate(item.message_date) }}</div>
                                     </div>
@@ -2030,6 +2134,23 @@
                                                         <span v-else-if="noDownload" class="whitespace-nowrap">Playback disabled</span>
                                                     </div>
                                                 </div>
+                                                <!-- Transcript button (docs/TRANSCRIPTION.md): right of the
+                                                     waveform on the same row. The text it opens sits under
+                                                     this row at full bubble width. -->
+                                                <button v-if="hasTranscriptButton(msg)" type="button"
+                                                    class="transcript-btn"
+                                                    @click.stop="pressTranscript(msg)"
+                                                    :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
+                                                    :aria-controls="transcriptRegionId(msg)"
+                                                    :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                    :aria-label="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'"
+                                                    :title="isTranscriptExpanded(msg) ? 'Hide transcript' : 'Show transcript'">
+                                                    <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                        viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                        <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                    </svg>
+                                                    <span aria-hidden="true">{{ isTranscriptExpanded(msg) ? 'A→' : '→A' }}</span>
+                                                </button>
                                                 <!-- #261: per-message download. Deliberately here on the
                                                      bubble and NOT inside the playbar's sm-only speed
                                                      group, which is hidden below the sm breakpoint —
@@ -2048,6 +2169,37 @@
                                                     </svg>
                                                 </a>
                                             </div>
+                                            <!-- The transcript under the row: full bubble width, no line
+                                                 cap, dir="auto" so a right-to-left language reads right.
+                                                 Rendered whenever the button is, so aria-controls always
+                                                 names an element. -->
+                                            <div v-if="hasTranscriptButton(msg)" :id="transcriptRegionId(msg)"
+                                                v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
+                                                class="mt-2">
+                                                <template v-if="showTranscriptText(msg)">
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
+                                                        <span class="min-w-0 flex-1">
+                                                            <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
+                                                                target="_blank" rel="noopener noreferrer" @click.stop
+                                                                class="underline hover:text-tg-ink">{{ transcriptCaption(msg).engine }}</a>
+                                                            <span v-else>{{ transcriptCaption(msg).engine }}</span>
+                                                            <span v-for="part in transcriptCaption(msg).rest" :key="part" class="whitespace-nowrap"> · {{ part }}</span>
+                                                        </span>
+                                                        <select v-if="doneTranscripts(msg).length > 1"
+                                                            :value="selectedTranscript(msg).id"
+                                                            @click.stop
+                                                            @change="pickTranscript(msg, $event.target.value)"
+                                                            aria-label="Transcript version"
+                                                            class="shrink-0 bg-transparent text-tg-n400 hover:text-tg-ink rounded focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                            <option v-for="(row, i) in doneTranscripts(msg)" :key="row.id" :value="row.id">
+                                                                {{ i + 1 }} of {{ doneTranscripts(msg).length }}
+                                                            </option>
+                                                        </select>
+                                                    </div>
+                                                </template>
+                                                <p v-else-if="transcriptStatus(msg) === 'error'" class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>
+                                            </div>
                                         </div>
 
                                         <!-- GIFs / Animations - autoplay when visible -->
@@ -2062,7 +2214,9 @@
                                              `gif-video` opts into the existing IntersectionObserver
                                              that autoplays a clip while it is on screen and pauses
                                              it when it leaves. Muted like every official client;
-                                             a click toggles the sound. -->
+                                             a click toggles the sound. The circle hides with v-show,
+                                             not v-if, when its transcript opens: the observer holds
+                                             the element, and hiding it lets the observer pause it. -->
                                         <div v-else-if="msg.media?.type === 'video_note'">
                                             <!-- The player carries no native controls, so the sound
                                                  toggle needs its own affordance: focusable, named, and
@@ -2075,18 +2229,92 @@
                                                 </svg>
                                                 <span>Media not found</span>
                                             </div>
-                                            <video v-else
-                                                :data-src="getMediaUrl(msg)"
-                                                class="round-video gif-video cursor-pointer"
-                                                loop muted playsinline
-                                                tabindex="0" role="button"
-                                                :aria-label="roundVideoHint"
-                                                :title="roundVideoHint"
-                                                @click="toggleRoundVideoSound($event)"
-                                                @keydown.enter.prevent="toggleRoundVideoSound($event)"
-                                                @keydown.space.prevent="toggleRoundVideoSound($event)"
-                                                @error="handleMediaError($event, msg)">
-                                            </video>
+                                            <div v-else v-show="!isTranscriptExpanded(msg)" class="relative w-fit">
+                                                <video class="round-video gif-video cursor-pointer"
+                                                    loop muted playsinline
+                                                    tabindex="0" role="button"
+                                                    :aria-label="roundVideoHint"
+                                                    :title="roundVideoHint"
+                                                    @click="toggleRoundVideoSound($event)"
+                                                    @keydown.enter.prevent="toggleRoundVideoSound($event)"
+                                                    @keydown.space.prevent="toggleRoundVideoSound($event)"
+                                                    :data-src="getMediaUrl(msg)"
+                                                    @error="handleMediaError($event, msg)">
+                                                </video>
+                                                <!-- Over the bottom corner of the circle: right for an
+                                                     incoming message, left for an outgoing one. -->
+                                                <button v-if="hasTranscriptButton(msg)" type="button"
+                                                    class="transcript-btn transcript-btn--overlay"
+                                                    :class="isOwnMessage(msg) ? 'left-1' : 'right-1'"
+                                                    @click.stop="pressTranscript(msg)"
+                                                    :aria-expanded="isTranscriptExpanded(msg) ? 'true' : 'false'"
+                                                    :aria-controls="transcriptRegionId(msg)"
+                                                    :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                    aria-label="Show transcript" title="Show transcript">
+                                                    <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                        viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                        <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                    </svg>
+                                                    <span aria-hidden="true">→A</span>
+                                                </button>
+                                            </div>
+                                            <!-- Expanded, the circle becomes a voice bubble: a placeholder
+                                                 waveform, the duration, the button, then the text. -->
+                                            <div v-if="!msg.mediaLoadFailed && hasTranscriptButton(msg)"
+                                                v-show="isTranscriptExpanded(msg) || transcriptStatus(msg) === 'error'"
+                                                :class="isTranscriptExpanded(msg)
+                                                    ? 'w-full min-w-0 max-w-md bg-gradient-to-r from-tg-n800 to-tg-n700 p-3 rounded-xl shadow-lg'
+                                                    : 'mt-1 max-w-[240px]'">
+                                                <div v-if="isTranscriptExpanded(msg)" class="flex items-center gap-3">
+                                                    <div class="min-w-0 flex-1">
+                                                        <div class="flex items-end gap-0.5 h-5" aria-hidden="true">
+                                                            <span v-for="(h, i) in transcriptPlaceholderBars" :key="i"
+                                                                class="w-1 rounded-sm bg-tg-n400" :style="{ height: h + 'px' }"></span>
+                                                        </div>
+                                                        <div class="mt-1 text-[11px] text-tg-n400">
+                                                            <span v-if="msg.media?.duration" class="whitespace-nowrap">{{ formatAudioTime(msg.media.duration) }}</span>
+                                                            <span v-else class="whitespace-nowrap">Round video</span>
+                                                        </div>
+                                                    </div>
+                                                    <button type="button" class="transcript-btn"
+                                                        @click.stop="pressTranscript(msg)"
+                                                        aria-expanded="true"
+                                                        :aria-controls="transcriptRegionId(msg)"
+                                                        :aria-busy="transcriptStatus(msg) === 'loading' ? 'true' : 'false'"
+                                                        aria-label="Hide transcript" title="Hide transcript">
+                                                        <svg v-if="transcriptStatus(msg) === 'loading'" class="transcript-loop" aria-hidden="true"
+                                                            viewBox="0 0 32 32" preserveAspectRatio="none">
+                                                            <rect x="1" y="1" width="30" height="30" rx="7" ry="7" pathLength="100"/>
+                                                        </svg>
+                                                        <span aria-hidden="true">A→</span>
+                                                    </button>
+                                                </div>
+                                                <div :id="transcriptRegionId(msg)" :class="isTranscriptExpanded(msg) ? 'mt-2' : ''">
+                                                    <template v-if="showTranscriptText(msg)">
+                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                        <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
+                                                            <span class="min-w-0 flex-1">
+                                                                <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
+                                                                    target="_blank" rel="noopener noreferrer" @click.stop
+                                                                    class="underline hover:text-tg-ink">{{ transcriptCaption(msg).engine }}</a>
+                                                                <span v-else>{{ transcriptCaption(msg).engine }}</span>
+                                                                <span v-for="part in transcriptCaption(msg).rest" :key="part" class="whitespace-nowrap"> · {{ part }}</span>
+                                                            </span>
+                                                            <select v-if="doneTranscripts(msg).length > 1"
+                                                                :value="selectedTranscript(msg).id"
+                                                                @click.stop
+                                                                @change="pickTranscript(msg, $event.target.value)"
+                                                                aria-label="Transcript version"
+                                                                class="shrink-0 bg-transparent text-tg-n400 hover:text-tg-ink rounded focus:outline-none focus:ring-2 focus:ring-tg-accent-soft">
+                                                                <option v-for="(row, i) in doneTranscripts(msg)" :key="row.id" :value="row.id">
+                                                                    {{ i + 1 }} of {{ doneTranscripts(msg).length }}
+                                                                </option>
+                                                            </select>
+                                                        </div>
+                                                    </template>
+                                                    <p v-else-if="transcriptStatus(msg) === 'error'" class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>
+                                                </div>
+                                            </div>
                                         </div>
 
                                         <!-- Videos - click to open in lightbox -->
@@ -2605,6 +2833,10 @@
                         </dd>
                     </div>
                     <div class="flex items-center justify-between gap-3">
+                        <dt class="text-tg-muted">Transcription</dt>
+                        <dd class="text-tg-ink text-right">{{ transcriptionSettingText }}</dd>
+                    </div>
+                    <div class="flex items-center justify-between gap-3">
                         <dt class="text-tg-muted">Database</dt>
                         <dd class="text-tg-ink text-right">
                             {{ statusData.database.backend }}
@@ -2681,7 +2913,7 @@
                     </div>
                 </div>
                 <p class="mb-3 text-xs text-tg-muted">
-                    Deletions and edits the archive kept. Deletions appear here when DELETION_MODE=soft.
+                    Deletions, edits and voice transcripts the archive kept. Deletions appear here when DELETION_MODE=soft.
                 </p>
                 <div class="flex-1 overflow-y-auto space-y-2 pr-1">
                     <div v-if="changesLoading && !changesFeed.length" class="text-sm text-tg-muted py-6 text-center">Loading…</div>
@@ -2691,7 +2923,7 @@
                     <article v-for="change in changesFeed" :key="change.kind + change.chat.ref + change.message_id + change.date"
                         class="rounded-xl border border-tg-n700 bg-tg-n900/60 p-3">
                         <header class="flex items-center gap-2 text-xs mb-1.5">
-                            <span :class="change.kind === 'deleted' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'"
+                            <span :class="change.kind === 'deleted' ? 'bg-red-500/20 text-red-300' : change.kind === 'transcript' ? 'bg-sky-500/20 text-sky-300' : 'bg-amber-500/20 text-amber-300'"
                                 class="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide">
                                 {{ change.kind }}
                             </span>
@@ -2701,6 +2933,9 @@
                         </header>
                         <div v-if="change.kind === 'deleted'" class="text-sm text-tg-n200 whitespace-pre-wrap break-words">
                             {{ change.text || '(no text — media or service message)' }}
+                        </div>
+                        <div v-else-if="change.kind === 'transcript'" dir="auto" class="text-sm text-tg-n200 whitespace-pre-wrap break-words">
+                            {{ change.text || '(empty transcript)' }}
                         </div>
                         <div v-else class="text-sm space-y-1">
                             <div class="text-tg-n400 line-through whitespace-pre-wrap break-words">{{ change.old_text || '(empty)' }}</div>
@@ -3220,6 +3455,9 @@
                 {{ audioStatusMessage }}
             </p>
         </div>
+
+        <!-- Polite announcements for the transcript button ("Transcript ready"). -->
+        <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ transcriptAnnouncement }}</div>
 
         <!-- Toast notification for background failures -->
         <div v-if="toastMessage" role="status" aria-live="polite" aria-atomic="true"
@@ -4445,7 +4683,11 @@
                     // search that produced this hit gets to mark it.
                     if (!opened || !query || searchQuery.value.trim() !== query) return
                     if (selectedChat.value?.ref !== row.chat.ref) return
-                    messageHighlight.value = { query, messageId: row.id }
+                    // A hit found only in a voice transcript opens that bubble so its
+                    // marked words are on screen (docs/TRANSCRIPTION.md, "Search hits").
+                    messageHighlight.value = row.matched_in === 'transcript'
+                        ? { query, messageId: row.id, transcript: true }
+                        : { query, messageId: row.id }
                 }
 
                 // Same word rule as the search itself: letters, digits and underscore.
@@ -4565,7 +4807,8 @@
 
                 // Idempotent: unwrap what the last pass marked, then mark what the current
                 // intent asks for. Cheap when there is no intent, which is nearly always.
-                // Every DOM change stays INSIDE .message-text, whose children are v-html
+                // Every DOM change stays INSIDE .message-text (and .transcript-text, the
+                // expanded voice transcript, rendered the same way), whose children are v-html
                 // output Vue does not manage. Never touch the container itself: Vue 3
                 // delimits its fragments with empty text nodes, and one normalize() on
                 // the container removed them and left every later patch of the list
@@ -4573,7 +4816,7 @@
                 const applyMessageHighlight = () => {
                     const container = messagesContainer.value
                     if (!container) return
-                    for (const block of container.querySelectorAll('.message-text')) {
+                    for (const block of container.querySelectorAll('.message-text, .transcript-text')) {
                         const marks = block.querySelectorAll('mark[data-search-mark]')
                         if (!marks.length) continue
                         marks.forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')))
@@ -4586,7 +4829,7 @@
                     // jump already relies on); the in-chat filter marks every row it shows.
                     const scope = intent.messageId == null ? container : findMessageElement(intent.messageId)
                     if (!scope) return
-                    for (const block of scope.querySelectorAll('.message-text')) markMatchesIn(block, pattern)
+                    for (const block of scope.querySelectorAll('.message-text, .transcript-text')) markMatchesIn(block, pattern)
                 }
                 watch(messageHighlight, () => nextTick(applyMessageHighlight))
                 // The mark on a hit belongs to the search that opened it: clearing the
@@ -4794,6 +5037,7 @@
                 const openStatusPanel = async () => {
                     showStatusPanel.value = true
                     statusLoading.value = true
+                    loadTranscriptionState()
                     try {
                         const resp = await fetch('/api/status', { credentials: 'same-origin' })
                         statusData.value = resp.ok ? await resp.json() : null
@@ -5500,6 +5744,7 @@
                                 // account ids, and a label map that arrives later
                                 // paints the badges in a second frame.
                                 await loadAccounts()
+                                await loadTranscriptionState()
                                 await loadChats()
                                 await loadStats()
                                 await loadFolders()
@@ -5671,6 +5916,21 @@
                             if (reactionMsg) {
                                 reactionMsg.reactions = data.reactions || []
                             }
+                            break
+
+                        case 'transcript':
+                            // A transcript row changed (docs/TRANSCRIPTION.md). The frame
+                            // carries ids and status only; refreshTranscripts fetches the
+                            // bubble's rows and stores them on the message's media object,
+                            // which re-renders that bubble's state in place.
+                            if (data.chat_ref != null && selectedChat.value?.ref !== data.chat_ref) {
+                                break
+                            }
+                            const transcriptMsg = messages.value.find(m => m.id === data.message_id)
+                            if (!transcriptMsg?.media?.id) {
+                                break
+                            }
+                            refreshTranscripts(transcriptMsg)
                             break
 
                         case 'delete':
@@ -5949,6 +6209,279 @@
                     }
                 }
 
+                // Voice transcripts (docs/TRANSCRIPTION.md, "What the user sees").
+                // The rows arrive on msg.media.transcripts (newest first) with the
+                // message page; a realtime frame or a press refetches them for one
+                // bubble. Open or closed is remembered per message, expand-all per
+                // chat, both in localStorage. The viewer never talks to the server.
+                const transcriptionState = ref({ enabled: false, configured: false, server_name: null, server_version: null })
+                const TRANSCRIPT_OPEN_KEY = 'transcriptOpen'
+                const TRANSCRIPT_OPEN_MAX = 500
+                const TRANSCRIPT_EXPAND_ALL_KEY = 'transcriptExpandAll'
+                const TRANSCRIPT_NUDGE_KEY = 'transcriptNudgeDismissed'
+                const TRANSCRIPT_MIN_LOADING_MS = 350
+                const AKOU_URL = 'https://github.com/GeiserX/akou'
+                const transcriptPlaceholderBars = [6, 10, 14, 9, 16, 12, 7, 13, 18, 11, 8, 15, 10, 6, 12, 16, 9, 13, 7, 11]
+                const readTranscriptMap = (key) => {
+                    try {
+                        const value = JSON.parse(localStorage.getItem(key) || '{}')
+                        return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+                    } catch (e) {
+                        return {}
+                    }
+                }
+                const writeTranscriptMap = (key, value) => {
+                    try { localStorage.setItem(key, JSON.stringify(value)) } catch (e) { /* per-tab only */ }
+                }
+                const transcriptOpen = ref(readTranscriptMap(TRANSCRIPT_OPEN_KEY))
+                const transcriptExpandAll = ref(readTranscriptMap(TRANSCRIPT_EXPAND_ALL_KEY))
+                const transcriptBusy = ref({})
+                const transcriptPicked = ref({})
+                const transcriptRequested = new Set()
+                const transcriptAnnouncement = ref('')
+                const transcriptNudgeDismissed = ref((() => {
+                    try { return localStorage.getItem(TRANSCRIPT_NUDGE_KEY) === '1' } catch (e) { return false }
+                })())
+                const transcriptNudgeForced = ref(false)
+
+                const loadTranscriptionState = async () => {
+                    try {
+                        const res = await fetch('/api/transcription/status', { credentials: 'include' })
+                        if (res.ok) transcriptionState.value = await res.json()
+                    } catch (e) { /* the button stays hidden */ }
+                }
+                const transcriptKey = (msg) => `${selectedChat.value?.ref || ''}:${msg?.id}`
+                const transcriptRegionId = (msg) => `transcript-${msg?.id}`
+                const transcriptRows = (msg) => Array.isArray(msg?.media?.transcripts) ? msg.media.transcripts : []
+                const doneTranscripts = (msg) => transcriptRows(msg).filter(row => row.status === 'done')
+                const hasTranscriptButton = (msg) => {
+                    if (!transcriptionState.value.enabled || !msg?.media) return false
+                    // A no-download login reads no transcript: the routes answer 403.
+                    if (msg.media.no_download) return false
+                    const type = msg.media.type
+                    return type === 'voice' || type === 'video_note' || transcriptRows(msg).length > 0
+                }
+                // One of: loading, done, error, none (a server is configured),
+                // unconfigured. A press keeps "loading" for at least 350 ms. An
+                // open row with no server configured never moves, so it shows
+                // no stroke: that bubble is in the unconfigured state.
+                const transcriptStatus = (msg) => {
+                    if (transcriptBusy.value[transcriptKey(msg)]) return 'loading'
+                    const configured = transcriptionState.value.configured
+                    const newest = transcriptRows(msg)[0]
+                    if (configured && newest && (newest.status === 'queued' || newest.status === 'running')) return 'loading'
+                    if (doneTranscripts(msg).length) return 'done'
+                    if (newest && (newest.status === 'failed' || newest.status === 'skipped')) return 'error'
+                    return configured ? 'none' : 'unconfigured'
+                }
+                const transcriptsExpandedForChat = () => transcriptExpandAll.value[selectedChat.value?.ref || ''] === true
+                // A search that matched inside a transcript opens that bubble: the
+                // in-chat filter every row the server marks matched_in "transcript",
+                // a global hit the one row it landed on. A press closes it for as
+                // long as that search is on screen; the next search opens it again.
+                const transcriptHitClosed = ref({})
+                const transcriptSearchHit = (msg) => {
+                    const intent = messageHighlight.value
+                    if (!intent || !msg) return false
+                    if (transcriptHitClosed.value[transcriptKey(msg)] === intent) return false
+                    if (intent.messageId == null) return msg.matched_in === 'transcript'
+                    return intent.transcript === true && intent.messageId === msg.id
+                }
+                const isTranscriptExpanded = (msg) => {
+                    if (!doneTranscripts(msg).length) return false
+                    if (transcriptSearchHit(msg)) return true
+                    const stored = transcriptOpen.value[transcriptKey(msg)]
+                    if (stored === true || stored === false) return stored
+                    return transcriptsExpandedForChat()
+                }
+                const showTranscriptText = (msg) => isTranscriptExpanded(msg) && !transcriptBusy.value[transcriptKey(msg)]
+                const setTranscriptOpen = (msg, open) => {
+                    // Newest last, and only the most recent entries are kept, so the
+                    // stored map cannot grow with every bubble ever pressed.
+                    const key = transcriptKey(msg)
+                    const rest = { ...transcriptOpen.value }
+                    delete rest[key]
+                    const entries = Object.entries({ ...rest, [key]: open })
+                    transcriptOpen.value = Object.fromEntries(entries.slice(-TRANSCRIPT_OPEN_MAX))
+                    writeTranscriptMap(TRANSCRIPT_OPEN_KEY, transcriptOpen.value)
+                }
+                const selectedTranscript = (msg) => {
+                    const done = doneTranscripts(msg)
+                    const picked = transcriptPicked.value[transcriptKey(msg)]
+                    return done.find(row => row.id === picked) || done[0] || null
+                }
+                const pickTranscript = (msg, id) => {
+                    transcriptPicked.value = { ...transcriptPicked.value, [transcriptKey(msg)]: Number(id) }
+                }
+                const transcriptModel = (row) => (Array.isArray(row?.models) && row.models.length ? row.models[0] : row?.preset) || ''
+                const transcriptCaption = (msg) => {
+                    const row = selectedTranscript(msg) || {}
+                    const rest = [transcriptModel(row), row.language || '', (row.completed_at || '').slice(0, 10)].filter(Boolean)
+                    return {
+                        engine: row.engine_name || row.source || 'transcript',
+                        link: row.source === 'akou' ? AKOU_URL : null,
+                        rest,
+                    }
+                }
+                const TRANSCRIPT_REASONS = {
+                    file_missing: 'The audio file is missing',
+                    submit_failed: 'Could not be sent to the transcription server',
+                    expired: 'The server dropped the job before it finished',
+                    cancelled: 'Cancelled on the transcription server',
+                    not_found: 'The transcription server no longer knows this job',
+                }
+                const transcriptErrorText = (msg) => {
+                    const newest = transcriptRows(msg)[0]
+                    const reason = String(newest?.error || '')
+                    const limit = /^longer than the (\d+) second limit$/i.exec(reason)
+                    if (limit) {
+                        const seconds = Number(limit[1])
+                        return seconds % 60 === 0 ? `Longer than the ${seconds / 60} minute limit` : `Longer than the ${seconds} second limit`
+                    }
+                    if (TRANSCRIPT_REASONS[reason]) return TRANSCRIPT_REASONS[reason]
+                    if (reason) return reason.charAt(0).toUpperCase() + reason.slice(1).replace(/_/g, ' ')
+                    return newest?.status === 'skipped' ? 'Not transcribed' : 'Transcription failed'
+                }
+                const announceTranscript = (text) => {
+                    transcriptAnnouncement.value = ''
+                    setTimeout(() => { transcriptAnnouncement.value = text }, 50)
+                }
+                const storeTranscriptRows = (msg, rows) => {
+                    const target = messages.value.find(m => m.id === msg.id) || msg
+                    if (!target.media) return
+                    const key = transcriptKey(target)
+                    target.media.transcripts = rows
+                    target.media.transcript = rows.find(row => row.status === 'done') || null
+                    if (!transcriptRequested.has(key)) return
+                    const newest = rows[0]
+                    if (newest?.status === 'done') {
+                        transcriptRequested.delete(key)
+                        setTranscriptOpen(target, true)
+                        announceTranscript('Transcript ready')
+                    } else if (newest && (newest.status === 'failed' || newest.status === 'skipped')) {
+                        transcriptRequested.delete(key)
+                        announceTranscript('Transcript not available')
+                    }
+                }
+                const transcriptsUrl = (msg) => `/api/chats/${encodeURIComponent(selectedChat.value?.ref || '')}/media/${encodeURIComponent(msg.media.id)}/transcripts`
+                // Both awaits below check the chat is still the one they asked in:
+                // another chat's message with the same id is another message.
+                const refreshTranscripts = async (msg) => {
+                    const chatRef = selectedChat.value?.ref
+                    if (!chatRef || !msg?.media?.id) return
+                    try {
+                        const res = await fetch(transcriptsUrl(msg), { credentials: 'include' })
+                        const rows = res.ok ? await res.json() : null
+                        if (Array.isArray(rows) && selectedChat.value?.ref === chatRef) storeTranscriptRows(msg, rows)
+                    } catch (e) { /* the next frame or page load catches up */ }
+                }
+                const pressTranscript = async (msg) => {
+                    const key = transcriptKey(msg)
+                    if (doneTranscripts(msg).length) {
+                        if (transcriptSearchHit(msg)) {
+                            transcriptHitClosed.value = { ...transcriptHitClosed.value, [key]: messageHighlight.value }
+                            setTranscriptOpen(msg, false)
+                            return
+                        }
+                        setTranscriptOpen(msg, !isTranscriptExpanded(msg))
+                        return
+                    }
+                    if (!transcriptionState.value.configured) {
+                        transcriptNudgeForced.value = true
+                        return
+                    }
+                    const chatRef = selectedChat.value?.ref
+                    if (transcriptStatus(msg) === 'loading' || !chatRef || !msg?.media?.id) return
+                    // No transcript yet, or the last one failed: ask now. The row
+                    // is queued at once; the next drain in the backup sends it first.
+                    transcriptBusy.value = { ...transcriptBusy.value, [key]: true }
+                    transcriptRequested.add(key)
+                    const started = Date.now()
+                    let row = null
+                    let refusal = ''
+                    try {
+                        const res = await fetch(transcriptsUrl(msg), { method: 'POST', credentials: 'include' })
+                        if (res.ok) row = await res.json()
+                        // 409: the server names why it will not ask (not downloaded yet, say).
+                        else if (res.status === 409) refusal = String((await res.json().catch(() => null))?.detail || '')
+                    } catch (e) {
+                        row = null
+                    }
+                    const wait = TRANSCRIPT_MIN_LOADING_MS - (Date.now() - started)
+                    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
+                    const next = { ...transcriptBusy.value }
+                    delete next[key]
+                    transcriptBusy.value = next
+                    if (selectedChat.value?.ref !== chatRef) {
+                        transcriptRequested.delete(key)
+                        return
+                    }
+                    if (row && row.id != null) {
+                        storeTranscriptRows(msg, [row, ...transcriptRows(msg).filter(r => r.id !== row.id)])
+                    } else {
+                        transcriptRequested.delete(key)
+                        showToast(refusal || 'Could not ask for a transcript')
+                    }
+                }
+                const toggleExpandAllTranscripts = () => {
+                    const chatRef = selectedChat.value?.ref
+                    if (!chatRef) return
+                    const on = !transcriptsExpandedForChat()
+                    transcriptExpandAll.value = { ...transcriptExpandAll.value, [chatRef]: on }
+                    writeTranscriptMap(TRANSCRIPT_EXPAND_ALL_KEY, transcriptExpandAll.value)
+                    // The toggle wins over every hand-set state in this chat.
+                    const prefix = `${chatRef}:`
+                    transcriptOpen.value = Object.fromEntries(Object.entries(transcriptOpen.value).filter(([k]) => !k.startsWith(prefix)))
+                    writeTranscriptMap(TRANSCRIPT_OPEN_KEY, transcriptOpen.value)
+                }
+                const transcriptNudgeVisible = computed(() => {
+                    const state = transcriptionState.value
+                    if (!state.enabled || state.configured) return false
+                    if (transcriptNudgeForced.value) return true
+                    if (transcriptNudgeDismissed.value) return false
+                    return messages.value.some(m => m.media?.type === 'voice' || m.media?.type === 'video_note')
+                })
+                const dismissTranscriptNudge = () => {
+                    transcriptNudgeDismissed.value = true
+                    transcriptNudgeForced.value = false
+                    try { localStorage.setItem(TRANSCRIPT_NUDGE_KEY, '1') } catch (e) { /* per-tab only */ }
+                }
+                const transcriptionSettingText = computed(() => {
+                    const state = transcriptionState.value
+                    if (!state.enabled) return 'off'
+                    if (!state.configured) return 'on, no server configured'
+                    if (!state.server_name) return 'on, server not detected yet'
+                    return `on, ${state.server_name}${state.server_version ? ' ' + state.server_version : ''}`
+                })
+                // The gallery's Voice tab: the first line of the newest transcript under
+                // each item, and a filter box over the loaded items that matches the file
+                // name and the text of every finished transcript, case-insensitively.
+                const mediaGalleryFilter = ref('')
+                // The filter belongs to the chat it was typed in: the gallery opening
+                // in another chat starts with an empty box.
+                let mediaGalleryFilterChat = null
+                const resetGalleryFilterForChat = (chatRef) => {
+                    if (chatRef !== mediaGalleryFilterChat) mediaGalleryFilter.value = ''
+                    mediaGalleryFilterChat = chatRef
+                }
+                const galleryTranscriptLine = (item) => {
+                    const text = item?.transcript?.text || ''
+                    return text.split('\n').map(line => line.trim()).find(Boolean) || ''
+                }
+                const galleryVoiceItems = computed(() => {
+                    const items = mediaGalleryItems.value
+                    const query = mediaGalleryFilter.value.trim().toLocaleLowerCase()
+                    if (!query) return items
+                    return items.filter(item => {
+                        const haystack = [item.file_name || '']
+                        for (const row of Array.isArray(item.transcripts) ? item.transcripts : []) {
+                            if (row.status === 'done' && row.text) haystack.push(row.text)
+                        }
+                        return haystack.some(text => text.toLocaleLowerCase().includes(query))
+                    })
+                })
+                // End of the voice transcript block.
+
                 const setupGifObserver = () => {
                     if (gifObserver) {
                         gifObserver.disconnect()
@@ -6033,6 +6566,7 @@
                             currentUsername.value = data.username || ''
                             noDownload.value = !!data.no_download
                             await loadAccounts()
+                            await loadTranscriptionState()
                             await loadChats()
                             await loadStats()
                             await loadFolders()
@@ -6347,6 +6881,7 @@
                         mediaGalleryItems.value = []
                         mediaGalleryCounts.value = {}
                         mediaGalleryHasMore.value = true
+                        resetGalleryFilterForChat(selectedChat.value?.ref ?? null)
                         loadMediaGallery()
                         loadMediaCounts()
                     } else {
@@ -9754,6 +10289,9 @@
                     showMediaGallery,
                     mediaGalleryTab,
                     mediaGalleryItems,
+                    mediaGalleryFilter,
+                    galleryVoiceItems,
+                    galleryTranscriptLine,
                     mediaGalleryLoading,
                     mediaGalleryHasMore,
                     mediaGalleryCounts,
@@ -10024,6 +10562,27 @@
                     formatChangeDate,
 
                     showStatusPanel,
+                    // Voice transcripts (docs/TRANSCRIPTION.md)
+                    escapeHtml,
+                    transcriptionState,
+                    transcriptionSettingText,
+                    transcriptPlaceholderBars,
+                    transcriptAnnouncement,
+                    transcriptRegionId,
+                    hasTranscriptButton,
+                    transcriptStatus,
+                    isTranscriptExpanded,
+                    showTranscriptText,
+                    selectedTranscript,
+                    doneTranscripts,
+                    pickTranscript,
+                    transcriptCaption,
+                    transcriptErrorText,
+                    pressTranscript,
+                    transcriptsExpandedForChat,
+                    toggleExpandAllTranscripts,
+                    transcriptNudgeVisible,
+                    dismissTranscriptNudge,
                     statusData,
                     statusLoading,
                     openStatusPanel,

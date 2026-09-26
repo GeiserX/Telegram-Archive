@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -47,6 +47,7 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
+from ..transcription_contract import apply_job_outcome, event_data, verify_webhook, webhook_key
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -464,6 +465,21 @@ async def handle_realtime_notification(payload: dict):
                 "chat_ref": chat_ref,
                 "message_id": data.get("message_id"),
                 "reactions": data.get("reactions", []),
+            },
+        )
+    elif notification_type == "transcript":
+        # Ids and status only (docs/TRANSCRIPTION.md). The storage media id
+        # stays out of the frame: it spells the chat id, which never reaches
+        # the browser. The message id names the bubble inside the chat, and
+        # the browser fetches the rows from the chat-scoped transcripts route.
+        await ws_manager.broadcast_to_chat(
+            chat,
+            {
+                "type": "transcript",
+                "chat_ref": chat_ref,
+                "message_id": data.get("message_id"),
+                "transcript_id": data.get("transcript_id"),
+                "status": data.get("status"),
             },
         )
 
@@ -1387,7 +1403,11 @@ async def require_chat(chat_ref: str, user: UserContext = Depends(require_auth))
 
 
 def _strip_original_media_paths(messages: list[dict]) -> None:
-    """Remove original media file paths and URLs from API responses for no-download sessions."""
+    """Remove original media file paths, URLs and transcripts from API responses for no-download sessions.
+
+    A transcript is the content of the audio in text form, so a login that
+    may not hear the audio does not read it either (docs/TRANSCRIPTION.md).
+    """
     for message in messages:
         media = message.get("media")
         if isinstance(media, dict):
@@ -1395,6 +1415,8 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
             media["url"] = None
             media["downloaded"] = False
             media["no_download"] = True
+            media.pop("transcript", None)
+            media.pop("transcripts", None)
         media_items = message.get("media_items")
         if isinstance(media_items, list):
             for item in media_items:
@@ -1403,6 +1425,8 @@ def _strip_original_media_paths(messages: list[dict]) -> None:
                     item["url"] = None
                     item["downloaded"] = False
                     item["no_download"] = True
+                    item.pop("transcript", None)
+                    item.pop("transcripts", None)
 
 
 def _export_chat_metadata(chat: dict) -> dict:
@@ -2003,7 +2027,13 @@ async def search_messages(
         raise HTTPException(status_code=503, detail="Database not available")
     try:
         payload = await db.search_messages_global(
-            q, scope=_chat_scope(user), limit=limit, offset=offset, fold_shared=True
+            q,
+            scope=_chat_scope(user),
+            limit=limit,
+            offset=offset,
+            fold_shared=True,
+            # A hit through a transcript would tell a no-download login what the audio says.
+            with_transcripts=not user.no_download,
         )
     except Exception as e:
         # Type name only: SQLAlchemy exception text can echo statement
@@ -2030,6 +2060,9 @@ async def search_messages(
                 "sender_account_id": row["sender_account_id"],
                 "is_deleted": row["is_deleted"],
                 "topic_title": row["topic_title"],
+                # "transcript" when only a voice transcript matched: the viewer
+                # opens that bubble and marks the words there.
+                "matched_in": row["matched_in"],
                 "chat": {
                     "ref": row["chat_ref"],
                     "title": row["chat_title"],
@@ -2964,10 +2997,12 @@ async def get_messages(
             after_id=after_id,
             topic_id=topic_id,
             account_id=chat.account_id,
+            with_transcripts=not user.no_download,
         )
         # get_messages_paginated returns a list of message dicts; guard so an
         # unexpected shape can never turn a read into a 500.
         if isinstance(messages, list):
+            await _attach_transcripts(messages, chat)
             _attach_message_payload_urls(messages, chat)
             await _mask_unentitled_sender_accounts(messages, user)
         if user.no_download:
@@ -3061,7 +3096,11 @@ async def get_recent_changes(
     parsed_before = _parse_changes_bound(before, "before") if before else None
     try:
         changes = await db.get_recent_changes(
-            since=parsed_since, before=parsed_before, limit=limit, scope=_chat_scope(user)
+            since=parsed_since,
+            before=parsed_before,
+            limit=limit,
+            scope=_chat_scope(user),
+            with_transcripts=not user.no_download,
         )
         next_cursor = changes[-1]["date"] if len(changes) == limit else None
         return JSONResponse(
@@ -3125,6 +3164,259 @@ async def get_chat_avatar_history(chat: ChatContext = Depends(require_chat)):
     return entries
 
 
+def _transcript_payload(row: dict) -> dict:
+    """One transcript row for the API: datetimes as ISO strings, nothing dropped."""
+    payload = dict(row)
+    for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
+        value = payload.get(key)
+        payload[key] = value.isoformat() if isinstance(value, datetime) else value
+    return payload
+
+
+@app.get("/api/media/{media_id}/transcripts")
+async def get_media_transcripts(media_id: str, user: UserContext = Depends(require_auth)):
+    """Every transcript row for one media, newest first (docs/TRANSCRIPTION.md).
+
+    For a client that holds the storage id; the browser uses the chat route
+    below instead. A media id names one row per account, so each
+    account's copy is resolved to its chat and passes the same visibility
+    rule as every ``{chat_ref}`` route; an id that names nothing the caller
+    may see is a uniform 404.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+    try:
+        rows: list[dict] = []
+        visible = False
+        for pair in await db.get_media_chat_pairs(media_id):
+            chat = await db.get_chat_by_id(pair["chat_id"], account_id=pair["account_id"])
+            if not chat or not chat.get("ref") or not _chat_visible(user, chat):
+                continue
+            visible = True
+            rows.extend(await db.list_media_transcripts(media_id, account_id=pair["account_id"]))
+    except Exception as e:
+        logger.error(f"Error fetching transcripts: {type(e).__name__}")
+        if _is_db_connection_error(e):
+            raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not visible:
+        raise HTTPException(status_code=404, detail="Media not found")
+    rows.sort(key=lambda row: row["id"], reverse=True)
+    return [_transcript_payload(row) for row in rows]
+
+
+def _transcription_on() -> bool:
+    return getattr(config, "transcription_enabled", False) is True
+
+
+# The columns a bubble renders. The hashes, the job id and the storage media
+# id stay out: the last spells the chat id. Words and segments stay out of the
+# page payload too; they can run to thousands of entries per transcript.
+_TRANSCRIPT_VIEW_FIELDS = (
+    "id",
+    "status",
+    "error",
+    "text",
+    "language",
+    "source",
+    "engine_name",
+    "engine_version",
+    "preset",
+    "models",
+    "confidence",
+    "duration_s",
+    "requested_at",
+    "completed_at",
+)
+
+
+def _transcript_view(row: dict) -> dict:
+    """One transcript row as a bubble needs it, datetimes as ISO strings."""
+    view = {}
+    for key in _TRANSCRIPT_VIEW_FIELDS:
+        value = row.get(key)
+        view[key] = value.isoformat() if isinstance(value, datetime) else value
+    return view
+
+
+def _set_media_transcripts(media: dict, rows: list[dict]) -> None:
+    """``media.transcripts``: every row newest first; ``media.transcript``: the newest done one."""
+    views = [_transcript_view(row) for row in rows]
+    media["transcripts"] = views
+    media["transcript"] = next((view for view in views if view["status"] == "done"), None)
+
+
+# Media types whose bubble carries the transcript button even with no row yet.
+_TRANSCRIPT_BUBBLE_TYPES = frozenset({"voice", "video_note", "audio"})
+
+
+async def _attach_transcripts(messages: list, chat: ChatContext) -> None:
+    """Put each page's transcript rows on its media, in one query.
+
+    Runs before ``_attach_message_payload_urls``, which rewrites ``media.id``
+    from the storage id this lookup needs. A failure costs the bubbles their
+    transcripts, never the page.
+    """
+    await _attach_media_transcripts(
+        [
+            message["media"]
+            for message in messages
+            if isinstance(message, dict) and isinstance(message.get("media"), dict)
+        ],
+        chat,
+    )
+
+
+async def _attach_media_transcripts(media_dicts: list, chat: ChatContext) -> None:
+    """``media.transcript`` and ``media.transcripts`` on media dicts that still carry their storage id."""
+    if not _transcription_on() or not db:
+        return
+    pages = [media for media in media_dicts if isinstance(media, dict) and media.get("id")]
+    if not pages:
+        return
+    try:
+        by_media = await db.list_transcripts_for_media_ids(
+            [media["id"] for media in pages], account_id=chat.account_id, with_twins=True
+        )
+    except Exception as e:
+        logger.debug(f"Transcripts not attached: {type(e).__name__}")
+        return
+    if not isinstance(by_media, dict):
+        return
+    for media in pages:
+        rows = by_media.get(media["id"]) or []
+        if rows or media.get("type") in _TRANSCRIPT_BUBBLE_TYPES:
+            _set_media_transcripts(media, rows)
+
+
+@app.get("/api/transcription/status")
+async def get_transcription_status(user: UserContext = Depends(require_auth)):
+    """What the bubble and the settings row need to know, and nothing more.
+
+    ``configured`` says a server URL is set; the URL itself is not returned.
+    The server name and version come from the ``app_settings`` row the backup
+    writes when it detects the server; the viewer never asks the server.
+    """
+    enabled = _transcription_on()
+    configured = enabled and bool(getattr(config, "transcription_url", ""))
+    server = None
+    if configured and db:
+        try:
+            server = await db.get_transcription_server()
+        except Exception as e:
+            logger.debug(f"Transcription server row unreadable: {type(e).__name__}")
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "server_name": (server or {}).get("name") or None,
+        "server_version": (server or {}).get("version") or None,
+    }
+
+
+# What the drain can send when a user asks, whatever TRANSCRIPTION_TYPES says:
+# the drain query lets an ask-now row through the type filter.
+_TRANSCRIBABLE_TYPES = frozenset({"voice", "video_note", "audio", "video"})
+
+
+async def _ask_transcript(media: dict | None, account_id: int) -> dict:
+    """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
+
+    ``force`` because a user click may add a row after a done one, which the
+    drain never does. No preset: the viewer does not read it, and a queued
+    row without one is what the drain query sends first. No outbound request.
+    A media the drain would never send is a 409 and no row: another type, or
+    a file not downloaded yet, whose queued row would never move.
+    """
+    if not media or media.get("type") not in _TRANSCRIBABLE_TYPES:
+        raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
+    if not media.get("downloaded"):
+        raise HTTPException(status_code=409, detail="Not downloaded yet")
+    row = await db.enqueue_media_transcript(media["id"], account_id=account_id, force=True)
+    if row is None:
+        # Only when a racing insert won and its row vanished before the re-read.
+        raise HTTPException(status_code=503, detail="Try again")
+    return row
+
+
+def _raise_for_transcript_error(e: Exception, action: str) -> None:
+    logger.error(f"Error {action} transcripts: {type(e).__name__}")
+    if _is_db_connection_error(e):
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+    raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/media/{media_id}/transcripts")
+async def ask_media_transcript(media_id: str, user: UserContext = Depends(require_auth)):
+    """Ask for a transcript now: insert-only, same scoping as the GET beside it.
+
+    Inserts a ``queued`` row with ``job_id`` NULL unless the newest row is
+    already open, in which case that row comes back and nothing is written.
+    The next drain in the backup sends it first. The viewer makes no request
+    to the transcription server. An id the caller may not see is a 404.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+    if not _transcription_on():
+        raise HTTPException(status_code=409, detail="Transcription is off")
+    try:
+        account_id = None
+        for pair in await db.get_media_chat_pairs(media_id):
+            chat = await db.get_chat_by_id(pair["chat_id"], account_id=pair["account_id"])
+            if chat and chat.get("ref") and _chat_visible(user, chat):
+                account_id = pair["account_id"]
+                break
+        if account_id is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        row = await _ask_transcript(await db.get_media_by_id(media_id, account_id=account_id), account_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_for_transcript_error(e, "asking for")
+    return _transcript_payload(row)
+
+
+@app.get("/api/chats/{chat_ref}/media/{media_key}/transcripts")
+async def get_chat_media_transcripts(
+    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+):
+    """The bubble's rows, addressed by chat ref + ``{message_id}_{type}``, newest first.
+
+    What the browser fetches on a realtime ``transcript`` frame: it never
+    holds a storage media id, which spells the chat id.
+    """
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+    media = await _entitled_media_row(chat, media_key)
+    try:
+        by_media = await db.list_transcripts_for_media_ids([media["id"]], account_id=chat.account_id, with_twins=True)
+    except Exception as e:
+        _raise_for_transcript_error(e, "fetching")
+    return [_transcript_view(row) for row in by_media.get(media["id"], [])]
+
+
+@app.post("/api/chats/{chat_ref}/media/{media_key}/transcripts")
+async def ask_chat_media_transcript(
+    media_key: str, chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)
+):
+    """The bubble's ask-now, the same insert-only rule as ``POST /api/media/{media_id}/transcripts``."""
+    if user.no_download:
+        raise HTTPException(status_code=403, detail="Downloads disabled for this account")
+    if not _transcription_on():
+        raise HTTPException(status_code=409, detail="Transcription is off")
+    media = await _entitled_media_row(chat, media_key)
+    try:
+        row = await _ask_transcript(media, chat.account_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_for_transcript_error(e, "asking for")
+    return _transcript_view(row)
+
+
 @app.get("/api/chats/{chat_ref}/pinned")
 async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: UserContext = Depends(require_auth)):
     """Get all pinned messages for a chat, ordered by date descending (newest first)."""
@@ -3132,6 +3424,7 @@ async def get_pinned_messages(chat: ChatContext = Depends(require_chat), user: U
         pinned_messages = await db.get_pinned_messages(chat.chat_id, account_id=chat.account_id)
         # Same renderer as the message list, so the same ref-addressed URLs.
         if isinstance(pinned_messages, list):
+            await _attach_transcripts(pinned_messages, chat)
             _attach_message_payload_urls(pinned_messages, chat)
             await _mask_unentitled_sender_accounts(pinned_messages, user)
         if user.no_download:
@@ -3194,6 +3487,10 @@ async def get_chat_media(
             after_key=after_key,
             account_id=chat.account_id,
         )
+        # Before the id below becomes the chat-free key: the lookup needs the storage id.
+        # A no-download login does not read what the audio says either.
+        if not user.no_download:
+            await _attach_media_transcripts(result["items"], chat)
         for item in result["items"]:
             media_key = _url_media_key(item.get("message_id"), item.get("type"))
             item["id"] = media_key
@@ -3628,6 +3925,124 @@ async def internal_push(request: Request):
         return {"status": "error", "detail": "Internal push processing failed"}
 
 
+# ============================================================================
+# Signed transcription callback (docs/TRANSCRIPTION.md, slice 5)
+# ============================================================================
+# akou posts each job's outcome here, signed per Standard Webhooks. The route
+# trusts nothing about the source address and declares no require_auth: the
+# signature is the authentication. It exists only when the viewer holds
+# TRANSCRIPTION_WEBHOOK_SECRET, and the viewer never makes an outbound request
+# for it: a delivery that carries ``result_url`` instead of the text writes
+# nothing and the backup's straggler poll fetches the result.
+
+TRANSCRIPTION_CALLBACK_PATH = "/api/transcriptions/callback"
+TRANSCRIPTION_CALLBACK_MAX_BYTES = 256 * 1024
+_TRANSCRIPTION_CALLBACK_HEADERS = ("webhook-id", "webhook-timestamp", "webhook-signature")
+_transcription_webhook_key: bytes | None = None
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes | None:
+    """The raw body, or None once it passes ``limit`` bytes; stops reading there."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def transcription_callback(request: Request):
+    """Verify one delivery from akou and store its outcome; 204 whenever it was genuine.
+
+    Checks run before the body is parsed, cheapest first: the three
+    Standard Webhooks headers (400), the size cap on ``Content-Length``
+    and on the streamed read for a body sent without one (413), then the
+    five-minute timestamp window and the HMAC over the raw body (401).
+    A genuine delivery fills every open row for ``data.metadata.content_hash``
+    under the row rule, so a replay, an unknown event type and a hash no
+    open row carries all answer 204 and write nothing. Each filled row is
+    pushed to the chat's sockets in-process with ids and status only.
+    """
+    key = _transcription_webhook_key
+    if key is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    headers = [request.headers.get(name, "") for name in _TRANSCRIPTION_CALLBACK_HEADERS]
+    if not all(headers):
+        raise HTTPException(status_code=400, detail="Missing webhook headers")
+    webhook_id, timestamp, signature = headers
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_large = int(declared) > TRANSCRIPTION_CALLBACK_MAX_BYTES
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+        if too_large:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    body = await _read_capped_body(request, TRANSCRIPTION_CALLBACK_MAX_BYTES)
+    if body is None:
+        raise HTTPException(status_code=413, detail="Payload too large")
+    reason = verify_webhook(key, webhook_id, timestamp, signature, body)
+    if reason is not None:
+        logger.warning(f"Rejected transcription callback: {reason}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        event = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+    data = event_data(event) if isinstance(event, dict) else None
+    if data is None or db is None:
+        return Response(status_code=204)
+    server = await db.get_transcription_server()
+    engine_version = server["version"] if server and server.get("name") == "akou" else None
+    filled = await apply_job_outcome(db, data, engine_version=engine_version)
+    for row in filled:
+        media = await db.get_media_by_id(row["media_id"], account_id=row["account_id"])
+        if media is None or media.get("chat_id") is None:
+            continue
+        payload = {
+            "type": "transcript",
+            "chat_id": media["chat_id"],
+            "account_id": row["account_id"],
+            "data": {
+                "account_id": row["account_id"],
+                "chat_id": media["chat_id"],
+                "message_id": media.get("message_id"),
+                "media_id": row["media_id"],
+                "transcript_id": row["id"],
+                "status": row["status"],
+            },
+        }
+        try:
+            await handle_realtime_notification(payload)
+        except Exception as e:
+            logger.debug(f"Transcript broadcast failed: {type(e).__name__}")
+    return Response(status_code=204)
+
+
+def install_transcription_callback(target_app: FastAPI, secret: Any) -> bool:
+    """Register the callback route when ``secret`` is a usable ``whsec_`` secret; True when it did."""
+    global _transcription_webhook_key
+    key = webhook_key(secret)
+    if key is None:
+        return False
+    _transcription_webhook_key = key
+    target_app.add_api_route(
+        TRANSCRIPTION_CALLBACK_PATH,
+        transcription_callback,
+        methods=["POST"],
+        status_code=204,
+        include_in_schema=False,
+    )
+    return True
+
+
+if getattr(config, "transcription_enabled", False) is True:
+    install_transcription_callback(app, getattr(config, "transcription_webhook_secret", ""))
+
+
 # Cache chat stats to avoid re-running 3 aggregate queries on every chat open.
 # Keyed by (account_id, chat_id): a chat id alone repeats across accounts.
 _chat_stats_cache: dict[tuple[int, int], tuple[float, dict]] = {}
@@ -3722,6 +4137,7 @@ async def get_message_by_date(
         if not message:
             raise HTTPException(status_code=404, detail="No messages found for this date")
 
+        await _attach_transcripts([message], chat)
         _attach_message_payload_urls([message], chat)
         await _mask_unentitled_sender_accounts([message], user)
         if user.no_download:

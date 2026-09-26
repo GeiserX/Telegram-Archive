@@ -63,6 +63,10 @@ MISSING_IN_OLD_DB = ("push_subscriptions", "viewer_sessions")
 # and untouched, never which revision it names.
 OLD_REVISION = "018"
 
+# The virtual tables and their shadow tables that the after_create listener
+# builds beside the model tables; they have no ORM counterpart by design.
+FTS_PREFIXES = ("messages_fts", "media_transcripts_fts")
+
 
 def snapshot_schema(db_path: Path) -> list[tuple[str, str, str | None]]:
     """Every schema object SQLite knows about, read without SQLAlchemy.
@@ -195,10 +199,12 @@ async def test_a_genuinely_fresh_database_is_still_built(tmp_path: Path) -> None
     await open_with_manager(db_path)
 
     built = table_names(db_path)
-    # create_all also installs the FTS layer (after_create listener) — model
-    # tables must all exist, and the layer must too (never silently absent).
-    assert {t for t in built if not t.startswith("messages_fts")} == set(Base.metadata.tables)
+    # create_all also installs the FTS layers (after_create listener: messages
+    # since 028, transcripts since 032) — model tables must all exist, and the
+    # layers must too (never silently absent).
+    assert {t for t in built if not t.startswith(FTS_PREFIXES)} == set(Base.metadata.tables)
     assert "messages_fts" in built
+    assert "media_transcripts_fts" in built
 
 
 async def test_an_empty_file_that_already_exists_is_still_built(tmp_path: Path) -> None:
@@ -210,10 +216,12 @@ async def test_an_empty_file_that_already_exists_is_still_built(tmp_path: Path) 
     await open_with_manager(db_path)
 
     built = table_names(db_path)
-    # create_all also installs the FTS layer (after_create listener) — model
-    # tables must all exist, and the layer must too (never silently absent).
-    assert {t for t in built if not t.startswith("messages_fts")} == set(Base.metadata.tables)
+    # create_all also installs the FTS layers (after_create listener: messages
+    # since 028, transcripts since 032) — model tables must all exist, and the
+    # layers must too (never silently absent).
+    assert {t for t in built if not t.startswith(FTS_PREFIXES)} == set(Base.metadata.tables)
     assert "messages_fts" in built
+    assert "media_transcripts_fts" in built
 
 
 async def test_removing_the_guard_puts_the_tables_back(tmp_path: Path) -> None:

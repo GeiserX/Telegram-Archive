@@ -523,8 +523,9 @@ def test_search_marks_never_mutate_the_vue_managed_container() -> None:
     body = _extract_const_arrow_function(html, "applyMessageHighlight", asynchronous=False)
     assert "container.normalize()" not in body
     assert "block.normalize()" in body
-    # Unwrapping and marking both start from a .message-text block, never from the container.
-    assert "container.querySelectorAll('.message-text')" in body
+    # Unwrapping and marking both start from a v-html text block (a message's
+    # text or an expanded voice transcript), never from the container.
+    assert "container.querySelectorAll('.message-text, .transcript-text')" in body
     assert "container.querySelectorAll('mark" not in body
     marker = _extract_const_arrow_function(html, "markMatchesIn", asynchronous=False)
     assert "textNode.replaceWith(fragment)" in marker

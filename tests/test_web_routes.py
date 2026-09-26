@@ -2244,6 +2244,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
         "chat_type": "private",
         "chat_is_forum": False,
         "topic_title": None,
+        "matched_in": "transcript",
     }
 
     def setUp(self):
@@ -2299,6 +2300,7 @@ class TestGlobalSearchEndpoint(_WebTestBase):
                     "sender_account_id": 2,
                     "is_deleted": False,
                     "topic_title": None,
+                    "matched_in": "transcript",
                     "chat": {
                         "ref": "ref00000000000000000077",
                         "title": None,
