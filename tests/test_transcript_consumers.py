@@ -202,10 +202,12 @@ class TestTwinReattach:
         shown = await real_adapter.list_transcripts_for_media_ids([voice], account_id=1, with_twins=True)
         assert [r["id"] for r in shown[voice]] == [own["id"]]
 
-    async def test_the_drain_skips_a_media_whose_audio_its_account_already_transcribed(self, real_adapter):
+    async def test_the_drain_picks_a_twin_so_the_copy_rule_decides(self, real_adapter):
+        """A done twin in the same account no longer hides the media: the drain copies it when it matches
+        the current server, preset and diarization, and sends the file when it does not."""
         voice = await _twin_cleanup(real_adapter)
-        assert voice not in await _drain_ids(real_adapter)
-        # Another account holding the same audio still gets its own transcript.
+        assert voice in await _drain_ids(real_adapter)
+        # Another account holding the same audio is picked too.
         other = await _twin_cleanup(real_adapter, account_id=2)
         async with real_adapter.db_manager.async_session_factory() as session:
             await session.execute(delete(MediaTranscript).where(MediaTranscript.account_id == 2))
