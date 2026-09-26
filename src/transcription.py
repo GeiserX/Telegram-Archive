@@ -396,8 +396,9 @@ class TranscriptionClient:
         }
         if callback_url:
             data["callback_url"] = callback_url
-        if self.diarize:
-            data["diarize"] = "true"
+        # Always stated, false included: the archive's setting is global and
+        # must win over any server-side default akou may have.
+        data["diarize"] = "true" if self.diarize else "false"
         files = {"file": (filename, audio, "application/octet-stream")}
         timeout = httpx.Timeout(self.UPLOAD_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
         response = await self._send(

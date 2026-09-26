@@ -1446,7 +1446,7 @@ class TestJobPath:
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["job_id"], row["error"]) == ("queued", None, None)
 
-    async def test_diarize_is_sent_on_the_job_path_only_when_asked(self, real_adapter, tmp_path):
+    async def test_diarize_is_always_stated_on_the_job_path(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
         await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
         server = AkouServer(page_size=1)
@@ -1455,7 +1455,7 @@ class TestJobPath:
             _akou_config(tmp_path, transcription_diarize=True, transcription_backfill_per_run=2), real_adapter, server
         )
         fields = [dict(_PART.findall(r.content.decode("latin-1"))) for r in server.submits]
-        assert [f.get("diarize") for f in fields] == [None, "true"]
+        assert [f.get("diarize") for f in fields] == ["false", "true"]
 
     async def test_the_synchronous_path_never_diarizes(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")

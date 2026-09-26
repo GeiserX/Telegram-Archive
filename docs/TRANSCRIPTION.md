@@ -97,7 +97,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
 | `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`. `0` means no limit; a negative value warns and means the same |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
-| `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. The synchronous OpenAI path has no such field and does not diarize |
+| `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. Off sends `diarize=false`, so this global setting always wins over any server-side default in akou. The synchronous OpenAI path has no such field and does not diarize |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media rows one drain submits, newest first. On the akou job path it is also how many jobs may be open per account: a drain submits only what the open ones leave room for |
@@ -266,7 +266,7 @@ file=<the bytes from resolve_stored_media_path>
 preset=<TRANSCRIPTION_PRESET>
 language=<TRANSCRIPTION_LANGUAGE or auto>
 callback_url=<TRANSCRIPTION_CALLBACK_URL, if set>
-diarize=true, only with TRANSCRIPTION_DIARIZE on
+diarize=<true with TRANSCRIPTION_DIARIZE on, otherwise false>
 metadata={"content_hash": "<sha256>"}
 ```
 
