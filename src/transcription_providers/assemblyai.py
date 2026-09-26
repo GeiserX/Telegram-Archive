@@ -7,13 +7,13 @@ until its status is ``completed`` or ``error``. ``TRANSCRIPTION_URL`` is
 ``https://api.assemblyai.com`` (``https://api.eu.assemblyai.com`` for the EU).
 
 No webhook: the archive already treats polling as the path that never
-loses a result. A transcript not finished within the synchronous path's
-wait counts as a request the server took and never answered: a failed row,
+loses a result. The synchronous path's wait bounds the whole call, upload,
+submission, polls and any request in flight: a transcript not finished by
+then counts as a request the server took and never answered, a failed row,
 and the run ends. Times arrive in milliseconds and are stored in seconds.
 """
 
 import asyncio
-import time
 import urllib.parse
 from typing import Any, BinaryIO
 
@@ -29,6 +29,15 @@ class AssemblyAIProvider:
     async def transcribe(
         self, client: Any, upload: BinaryIO, filename: str, *, model: str, prompt: str | None
     ) -> dict[str, Any]:
+        from ..transcription import TranscriptionError
+
+        try:
+            async with asyncio.timeout(client.SYNC_RESPONSE_TIMEOUT_SECONDS):
+                return await self._transcribe(client, upload, model=model)
+        except TimeoutError:
+            raise TranscriptionError("timeout", transient=True, stalled=True) from None
+
+    async def _transcribe(self, client: Any, upload: BinaryIO, *, model: str) -> dict[str, Any]:
         from ..transcription import TranscriptionError
 
         uploaded = await client.request_json(
@@ -53,10 +62,7 @@ class AssemblyAIProvider:
         if not isinstance(job_id, str) or not job_id:
             raise TranscriptionError("invalid_json")
         path = f"/v2/transcript/{urllib.parse.quote(job_id, safe='')}"
-        deadline = time.monotonic() + client.SYNC_RESPONSE_TIMEOUT_SECONDS
         while job.get("status") not in ("completed", "error"):
-            if time.monotonic() >= deadline:
-                raise TranscriptionError("timeout", transient=True, stalled=True)
             await asyncio.sleep(client.poll_interval)
             job = await client.request_json("GET", path, timeout=client.poll_timeout())
         if job["status"] == "error":

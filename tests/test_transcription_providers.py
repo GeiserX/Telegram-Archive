@@ -653,6 +653,29 @@ class TestAssemblyAI:
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["error"]) == ("failed", "timeout")
 
+    async def test_the_wait_bounds_the_upload_too(self, real_adapter, tmp_path, monkeypatch):
+        """An upload that never finishes is cut off by the same wait, not by the upload's own timeout."""
+        import asyncio
+        import time
+
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        config = _config(str(tmp_path), transcription_provider="assemblyai")
+        server = AssemblyAIServer()
+
+        async def hanging_upload(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/v2/upload"):
+                await asyncio.sleep(30)
+            return server(request)
+
+        client, _ = _provider_client(config, hanging_upload)
+        monkeypatch.setattr(client, "SYNC_RESPONSE_TIMEOUT_SECONDS", 0.2)
+        started = time.monotonic()
+        stats = await _drain(config, real_adapter, client)
+        assert time.monotonic() - started < 5
+        assert stats == _stats(stalled=1)
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert (row["status"], row["error"]) == ("failed", "timeout")
+
     async def test_a_wrong_key_keeps_the_row_queued(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice")
         config = _config(str(tmp_path), transcription_provider="assemblyai")
