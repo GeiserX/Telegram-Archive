@@ -137,6 +137,19 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertNotIn("<button", link)
         self.assertLess(block.index("</a>"), block.index("<button v-if="))
 
+    def test_a_done_transcript_with_no_text_says_no_speech_detected(self):
+        """Silence comes back as an empty text; the bubble says so in the error states' grey, as the official apps do."""
+        html = _html()
+        pairs = re.findall(
+            r'<p dir="auto" class="transcript-text[^\n]*v-if="selectedTranscript\(msg\)\.text"></p>\n'
+            r' *<p v-else class="text-\[11px\] text-tg-n400">No speech detected</p>',
+            html,
+        )
+        self.assertEqual(len(pairs), 4)
+        self.assertEqual(len(pairs), html.count('class="transcript-text text-sm'))
+        # The same small grey style as the failed and skipped reasons.
+        self.assertIn('class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>', html)
+
     def test_a_polite_live_region_announces_the_result(self):
         html = _html()
         self.assertIn(

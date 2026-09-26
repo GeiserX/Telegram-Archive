@@ -57,6 +57,18 @@ WEBHOOK_TOLERANCE_SECONDS = 5 * 60
 WEBHOOK_SECRET_PREFIX = "whsec_"
 
 
+# A language is stored only when it looks like a BCP-47 tag ("es", "pt-BR",
+# "yue"). Anything else, akou's OpenAI route answering "unknown" or OpenAI's
+# own English names ("spanish"), is stored as NULL rather than as a code the
+# viewer would show and nothing could filter on.
+_LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
+
+
+def language_tag(value: Any) -> str | None:
+    """``value`` when it looks like a BCP-47 tag, otherwise None."""
+    return value if isinstance(value, str) and _LANGUAGE_TAG.fullmatch(value) else None
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -165,10 +177,9 @@ def job_outcome(data: dict[str, Any], *, engine_version: str | None = None) -> t
         }
         for seg in _dicts(data.get("segments"))
     ]
-    language = data.get("language")
     return "done", {
         "text": data["text"],
-        "language": language if isinstance(language, str) and language else None,
+        "language": language_tag(data.get("language")),
         "language_confidence": _number(data.get("language_confidence")),
         "duration_s": _number(data.get("duration_s")),
         "confidence": _number(data.get("confidence")),
@@ -187,14 +198,17 @@ def event_data(event: dict[str, Any]) -> dict[str, Any] | None:
     The same body arrives by the callback and by the event feed:
     ``{type, timestamp, data}`` (SERVER.md SV-E3). The status comes from
     the type, so a ``transcription.cancelled`` event stores ``cancelled``
-    whatever its data says.
+    whatever its data says. A scrubbed event (``data.deleted`` true, SV-J6:
+    akou keeps only the job id and the final state after a delete or its
+    retention) is None too: its result is gone, and a completed event
+    without text must never be read as an empty transcript.
     """
     event_type = event.get("type")
     statuses = {EVENT_COMPLETED: "done", EVENT_FAILED: "failed", EVENT_CANCELLED: "cancelled"}
     # A list or an object as the type is unhashable: read it as unknown, never raise.
     status = statuses.get(event_type) if isinstance(event_type, str) else None
     data = event.get("data")
-    if status is None or not isinstance(data, dict):
+    if status is None or not isinstance(data, dict) or data.get("deleted") is True:
         return None
     return {**data, "status": status}
 

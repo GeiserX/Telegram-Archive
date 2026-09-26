@@ -329,6 +329,18 @@ class TestClient:
         assert not TranscriptionClient(_config(str(tmp_path), transcription_url="ftp://x")).configured
         assert not TranscriptionClient(MagicMock()).configured  # a bare mock reads truthy; the type check holds
 
+    def test_a_language_is_stored_only_when_it_looks_like_a_bcp47_tag(self):
+        """akou's OpenAI route answers "unknown"; OpenAI itself answers English names. Both become NULL."""
+        from src.transcription_contract import job_outcome
+
+        kept = ("es", "pt-BR", "yue", "zh-Hant-TW")
+        dropped = ("unknown", "spanish", "", "e", "es_ES", "1a", None, 7)
+        for value in kept + dropped:
+            want = value if value in kept else None
+            assert result_columns({"text": "x", "language": value}, model="auto")["language"] == want, value
+            _status, columns = job_outcome({"status": "done", "text": "x", "language": value})
+            assert columns["language"] == want, value
+
     def test_verbose_json_maps_onto_the_columns(self):
         columns = result_columns(VERBOSE_JSON, model="auto")
         assert columns["text"] == "hola, te llamo luego"
@@ -1408,6 +1420,28 @@ class TestJobPath:
         assert (row["status"], row["text"]) == ("done", "después de tres desconocidos")
         assert await real_adapter.get_transcription_events_cursor() == "4"
         assert [r.url.params.get("after") for r in server.event_reads[-3:]] == ["0", "2", "4"]
+
+    async def test_a_scrubbed_event_is_skipped_without_a_fetch_and_the_cursor_moves_past_it(
+        self, real_adapter, tmp_path
+    ):
+        """SV-J6: after a delete or the retention window akou keeps only the job id and the final state."""
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = AkouServer()
+        config = _akou_config(tmp_path)
+        await _akou_drain(config, real_adapter, server)
+        job_id = server.by_key[SHA]
+        server.jobs[job_id]["status"] = "done"
+        server.add_event("transcription.completed", {"job_id": job_id, "status": "done", "deleted": True})
+        reads = len(server.job_reads)
+
+        stats = await _akou_drain(config, real_adapter, server)
+
+        assert stats["reconciled"] == 0
+        assert server.job_reads[reads:] == [], "no result fetch for a scrubbed event"
+        assert await real_adapter.get_transcription_events_cursor() == "1"
+        [row] = await _rows(real_adapter, "m_1_voice")
+        assert row["status"] in ("queued", "running")
+        assert row["text"] is None
 
     async def test_the_straggler_poll_finishes_a_job_the_feed_never_reported(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)

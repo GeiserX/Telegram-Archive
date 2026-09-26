@@ -2177,7 +2177,8 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
                                                             <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
@@ -2291,7 +2292,8 @@
                                                 </div>
                                                 <div :id="transcriptRegionId(msg)" :class="isTranscriptExpanded(msg) ? 'mt-2' : ''">
                                                     <template v-if="showTranscriptText(msg)">
-                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                        <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                         <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                             <span class="min-w-0 flex-1">
                                                                 <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
@@ -2370,7 +2372,8 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
                                                             <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"
@@ -2464,7 +2467,8 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
                                                             <a v-if="transcriptCaption(msg).link" :href="transcriptCaption(msg).link"

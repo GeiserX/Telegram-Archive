@@ -60,6 +60,7 @@ from .transcription_contract import (
     event_data,
     flat_job,
     job_outcome,
+    language_tag,
     parse_events_page,
 )
 from .web.media_utils import resolve_stored_media_path
@@ -454,10 +455,9 @@ def result_columns(payload: dict[str, Any], *, model: str) -> dict[str, Any]:
         for seg in _dicts(payload.get("segments"))
     ]
     text = payload.get("text")
-    language = payload.get("language")
     return {
         "text": text if isinstance(text, str) else "",
-        "language": language if isinstance(language, str) and language else None,
+        "language": language_tag(payload.get("language")),
         "duration_s": _number(payload.get("duration")),
         "words": words,
         "segments": segments,
