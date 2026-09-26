@@ -23,8 +23,9 @@ from typing import Any
 # ``media_transcripts.source`` of the akou job path.
 SOURCE_AKOU = "akou"
 
-# What can be transcribed: every media that carries sound. The drain query,
-# the listener, the viewer's ask-now routes and its bubble all read these.
+# What can be transcribed: every media that carries sound. The bubble shows
+# its button on all of it and the ask-now routes accept all of it; the drain
+# and the listener pick up on their own only the TRANSCRIPTION_TYPES subset.
 # ``document`` counts only when its stored mime_type is audio or video: a
 # .wav, .flac or .mkv sent as a file. ``animation`` never does: Telegram's
 # GIF-style clips have no sound.

@@ -1,12 +1,12 @@
 # Automatic voice transcription
 
-Every media with sound the archive downloads gets a transcript: voice messages, round videos, music, videos, and audio or video files sent as documents. It is written beside the audio and shown inside the bubble. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
+Every voice message the archive downloads gets a transcript, written beside the audio and shown inside the bubble. Every other file with sound, round videos, music, videos, and audio or video files sent as documents, gets one when its button is pressed, or ahead of time when the operator lists its type. The engine is [akou](https://github.com/GeiserX/akou), our own speech-to-text server, which can run on the same box or anywhere else. Any server that speaks the OpenAI transcription endpoint works too.
 
 Implemented in this branch, slices 1 to 7 of the rollout section at the end. Where the code deliberately differs from the first design, the text below says what it does.
 
 ## The simple version
 
-- On by default. The backup process finds every downloaded media with sound that has no transcript and sends it to the configured server. Until a server is configured the viewer shows a one-line nudge and nothing fails.
+- On by default. The backup process finds every downloaded voice message without a transcript, plus every file whose button was pressed, and sends it to the configured server. `TRANSCRIPTION_TYPES` adds other types to what goes ahead of time. Until a server is configured the viewer shows a one-line nudge and nothing fails.
 - A transcript is a new row in a new table, never a change to the media row. A second transcript with another engine or preset is another row. On its own the feature deletes nothing, and the one value it changes after writing it is a row's `status`, which only moves forward. The operator's flag-gated removal paths take transcripts with their media, as listed under [what this feature deletes](#what-this-feature-deletes-overwrites-and-forgets).
 - The viewer shows the official Telegram pattern: a small button beside the waveform that swaps the text in under it. The text is searchable from the chat search box and the global search.
 - Only the backup process talks to the server. The viewer never makes an outbound request for this feature; it receives the signed callback and serves rows.
@@ -90,7 +90,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_URL` | empty | B/V | Base URL of akou or any OpenAI-compatible transcription server. Empty with the feature on is the "no server configured" state. The viewer reads it for display only and never connects to it |
 | `TRANSCRIPTION_API_KEY` | empty | B | Bearer key for the server. Treated as a secret, never logged |
 | `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; ignored by other servers |
-| `TRANSCRIPTION_TYPES` | `voice,video_note,audio,video,document` | B | Media types to transcribe; every media with sound by default. `document` means only a document whose stored `mime_type` starts with `audio/` or `video/`. `animation` is never eligible: Telegram's GIF-style clips have no sound. Narrowing it, for example to `voice,video_note`, leaves music and videos out |
+| `TRANSCRIPTION_TYPES` | `voice` | B | Media types transcribed ahead of time, like the official apps do for voice messages. Also accepts `video_note`, `audio`, `video` and `document`, where `document` means only a document whose stored `mime_type` starts with `audio/` or `video/`. `animation` is never eligible: Telegram's GIF-style clips have no sound. The list does not limit the button: any file with sound can be asked for one at a time |
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
@@ -224,7 +224,9 @@ The backup process owns the drain. It runs at the end of [`backup_all`](../src/t
 
 ### What counts as transcribable
 
-One rule, `is_transcribable` in [src/transcription_contract.py](../src/transcription_contract.py), decides what can be transcribed: `voice`, `video_note`, `audio` and `video`, and a `document` only when its stored `mime_type` starts with `audio/` or `video/`, which is a `.wav`, `.flac`, `.opus`, `.mkv` or `.avi` sent as a file. `animation` is never eligible. The config validator, the drain query, the listener's immediate enqueue, the ask-now routes and the bubble all read it; the bubble's copy in the template names it as its source.
+Two questions, kept apart. Can this file be transcribed at all? One rule, `is_transcribable` in [src/transcription_contract.py](../src/transcription_contract.py), answers: `voice`, `video_note`, `audio` and `video`, and a `document` only when its stored `mime_type` starts with `audio/` or `video/`, which is a `.wav`, `.flac`, `.opus`, `.mkv` or `.avi` sent as a file. `animation` never is. The bubble shows its button on every such file and the ask-now routes accept every such file; the bubble's copy of the rule in the template names it as its source.
+
+Is it transcribed ahead of time? That is `TRANSCRIPTION_TYPES`, `voice` by default, read through the same rule: the drain query's own pick-up and the listener's immediate enqueue take only those types, and a listed `document` still needs an audio or video mime type. A press on any other file with sound inserts the ask-now row, which the drain query reads with no type filter, so the next drain sends that one file.
 
 Before the upload the drain runs `ffprobe` on the stored file, off the event loop, with a fixed argument list, no shell and a 30-second timeout. A file with no audio stream, a silent video or a document whose mime type claims more than it holds, gets a `skipped` row with reason `no_audio_track` and nothing is sent. When ffprobe is missing or fails on a file, the drain logs one warning per process and sends the file anyway, so a missing ffprobe never blocks transcription. Both images install ffmpeg, which ships ffprobe.
 
@@ -360,6 +362,6 @@ Each slice is one PR, ships on its own, and leaves the archive working if the ne
 ## Open points
 
 - The contract names two compose files. This repository has one, [docker-compose.yml](../docker-compose.yml), with the PostgreSQL variant as a commented block inside it. The optional akou service goes in as another commented block in that file.
-- The default `TRANSCRIPTION_TYPES` sends every music file and every video a chat shares. Narrowing the list is the per-archive answer. A per-chat override would fit the existing chat filtering model but is not in scope.
+- Listing `audio` or `video` in `TRANSCRIPTION_TYPES` sends every music file or video a chat shares. That is why the default is `voice` and the rest goes one press at a time. A per-chat override would fit the existing chat filtering model but is not in scope.
 - The ask-now route and the drain can both insert for the same media from two processes. The partial unique index on open rows makes the second insert fail, and the loser treats that as success. The server's idempotency key makes a double submit return the same job.
 - Telegram's own transcription through `messages.transcribeAudio` is not part of this design. It needs a Premium account or the weekly free quota, returns text only, and would be a fourth `source` value with no other change.

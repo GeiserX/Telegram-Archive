@@ -53,7 +53,6 @@ from .realtime import NotificationType, RealtimeNotifier
 from .transcription_contract import (
     _SAFE_CODE,
     SOURCE_AKOU,
-    TRANSCRIBABLE_TYPES,
     _dicts,
     _number,
     apply_job_outcome,
@@ -1049,7 +1048,7 @@ async def drain_transcriptions(
     # 4. Submit.
     types = getattr(config, "transcription_types", None)
     if not isinstance(types, (set, frozenset, list, tuple)):
-        types = TRANSCRIBABLE_TYPES
+        types = ("voice",)
     per_run = getattr(config, "transcription_backfill_per_run", 50)
     if not isinstance(per_run, int) or isinstance(per_run, bool) or per_run < 1:
         per_run = 50

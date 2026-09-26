@@ -23,9 +23,11 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Automatic transcription (docs/TRANSCRIPTION.md). Every media with sound is
-# eligible by default; TRANSCRIPTION_TYPES narrows it.
-TRANSCRIPTION_DEFAULT_TYPES = TRANSCRIBABLE_TYPES
+# Automatic transcription (docs/TRANSCRIPTION.md). TRANSCRIPTION_TYPES is what
+# the drain transcribes ahead of time: voice messages by default, like the
+# official apps. Any media with sound can be named, and any of it can still be
+# transcribed one file at a time from its bubble.
+TRANSCRIPTION_DEFAULT_TYPES = frozenset({"voice"})
 TRANSCRIPTION_VALID_TYPES = TRANSCRIBABLE_TYPES
 TRANSCRIPTION_PRESETS = frozenset({"lite", "fast", "best", "fusion", "auto"})
 TRANSCRIPTION_SECRET_PREFIX = "whsec_"

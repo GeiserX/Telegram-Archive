@@ -6539,7 +6539,7 @@
                     if (!state.enabled || state.configured) return false
                     if (transcriptNudgeForced.value) return true
                     if (transcriptNudgeDismissed.value) return false
-                    return messages.value.some(m => m.media?.type === 'voice' || m.media?.type === 'video_note')
+                    return messages.value.some(m => m.media?.type === 'voice')
                 })
                 const dismissTranscriptNudge = () => {
                     transcriptNudgeDismissed.value = true

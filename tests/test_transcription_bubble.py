@@ -427,6 +427,8 @@ def test_the_nudge_shows_for_a_voice_message_and_the_button_reopens_it() -> None
             """
             transcriptionState.value = { enabled: true, configured: false }
             assert.equal(transcriptNudgeVisible.value, false, 'no voice message on screen')
+            messages.value = [{ id: 7, media: { id: '7_video_note', type: 'video_note' } }, { id: 8, media: { id: '8_video', type: 'video' } }]
+            assert.equal(transcriptNudgeVisible.value, false, 'only a voice message, the default type, shows it')
             messages.value = [voice(1, [])]
             assert.equal(transcriptNudgeVisible.value, true)
             dismissTranscriptNudge()
@@ -777,6 +779,43 @@ class TestMessagePagePayload:
 
 
 class TestDrainPicksUpTheAsk:
+    async def test_a_video_outside_the_types_waits_for_its_click_then_the_next_drain_sends_it(
+        self, real_adapter, viewer, tmp_path, monkeypatch
+    ):
+        """TRANSCRIPTION_TYPES is what goes ahead of time; any other file with sound goes when its button is pressed."""
+        import test_transcription as sync
+
+        sync._fake_ffprobe(
+            tmp_path,
+            monkeypatch,
+            'echo \'{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {"duration": "4.0"}}\'\n',
+        )
+        path = tmp_path / str(CHAT) / "clip.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(sync.AUDIO)
+        await sync._file_media(real_adapter, path, "m_1_video", media_type="video", mime_type="video/mp4")
+        server = sync.FakeServer()
+        config = sync._config(str(tmp_path), transcription_types={"voice"})
+
+        async def drain() -> dict:
+            return await sync.drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=sync._client(config, server)
+            )
+
+        assert (await drain())["done"] == 0
+        assert server.transcribe_requests == []
+        assert await real_adapter.list_media_transcripts("m_1_video", account_id=1) == []
+
+        async with _client() as client:
+            asked = await client.post(f"/api/chats/{await _chat_ref(real_adapter)}/media/1_video/transcripts")
+        assert asked.status_code == 200, asked.text
+
+        assert (await drain())["done"] == 1
+        assert len(server.transcribe_requests) == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["id"], row["status"], row["text"]) == (asked.json()["id"], "done", "hola, te llamo luego")
+        assert viewer == []
+
     async def test_the_backup_fills_the_preset_so_an_outage_does_not_resend_every_run(self, real_adapter, tmp_path):
         """Picked up, the ask-now row falls under the ten-minute rule like any row.
 
