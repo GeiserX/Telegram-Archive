@@ -642,6 +642,15 @@ class TestSpeakerTurns:
         assert web_main._speaker_turns([seg("hola", "SPEAKER_00"), seg("adiós", "SPEAKER_00")]) is None
         assert web_main._speaker_turns([seg("hola", None)]) is None
         assert web_main._speaker_turns("not a list") is None
+        # akou's "s?" and the OpenAI route's "unknown" name nobody: one real speaker is no turns.
+        one = [seg("Hola.", "s0"), seg("Okay.", "s?"), seg("Adiós.", "s0"), seg("Ya.", "unknown")]
+        assert web_main._speaker_turns(one) is None
+        # An unlabelled piece joins the turn before it, or the first turn when it comes first.
+        two = [seg("Eh,", "s?"), seg("hola.", "s0"), seg("Okay.", "s?"), seg("Buenas.", "s1")]
+        assert web_main._speaker_turns(two) == [
+            {"speaker": 1, "text": "Eh, hola. Okay."},
+            {"speaker": 2, "text": "Buenas."},
+        ]
         view = web_main._transcript_view({"id": 1, "status": "done", "text": "a b", "segments": segments})
         assert view["turns"][1] == {"speaker": 2, "text": "bien y tú"}
         assert "segments" not in view

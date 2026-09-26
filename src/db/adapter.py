@@ -6895,9 +6895,12 @@ class DatabaseAdapter:
         or is ``failed`` while fewer than three failed rows exist for it. A
         ``done`` or ``skipped`` newest row ends the loop for that media.
 
-        A media with no row of its own is left out when its account already
-        holds a ``done`` transcript of the same audio (``idempotency_key``
-        equal to its ``content_hash``): the viewer shows that one on it.
+        A media with no row of its own qualifies even when its account
+        already holds a ``done`` transcript of the same audio: the drain's
+        copy rule (``find_copyable_transcript``) then copies that answer when
+        it matches the current server, preset and diarization, and sends the
+        file when it does not. The viewer still shows a twin's row on it
+        until then.
 
         A ``queued`` row with no ``job_id`` and no ``preset`` is a user's
         ask-now from the viewer, which never knows the preset: the backup
@@ -6950,18 +6953,6 @@ class DatabaseAdapter:
             .correlate(Media)
             .scalar_subquery()
         )
-        twin_done = (
-            select(MediaTranscript.id)
-            .where(
-                and_(
-                    MediaTranscript.account_id == Media.account_id,
-                    MediaTranscript.idempotency_key == Media.content_hash,
-                    MediaTranscript.status == "done",
-                )
-            )
-            .correlate(Media)
-            .exists()
-        )
         # Newest download first in both queries.
         order = (nulls_last(Media.download_date.desc()), Media.id.desc())
         ranks: dict[int, int] = {}
@@ -6998,7 +6989,7 @@ class DatabaseAdapter:
                     Media.type.in_(wanted),
                     has_sound,
                     or_(
-                        and_(newest.id.is_(None), ~twin_done),
+                        newest.id.is_(None),
                         and_(newest.status == "queued", newest.job_id.is_(None), newest.requested_at < stale_before),
                         and_(newest.status == "failed", failed_rows < TRANSCRIPT_MAX_FAILED_ROWS),
                     ),

@@ -47,7 +47,14 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
-from ..transcription_contract import apply_job_outcome, event_data, is_transcribable, verify_webhook, webhook_key
+from ..transcription_contract import (
+    apply_job_outcome,
+    event_data,
+    is_transcribable,
+    real_speaker_label,
+    verify_webhook,
+    webhook_key,
+)
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -3233,26 +3240,36 @@ _TRANSCRIPT_VIEW_FIELDS = (
 
 
 def _speaker_turns(segments: Any) -> list[dict] | None:
-    """The text as speaker turns when the segments name more than one speaker, else None.
+    """The text as speaker turns when the segments name more than one real speaker, else None.
 
     Speakers are numbered 1, 2, ... in the order they first speak, and a
-    run of segments by one speaker is one turn. A segment with no speaker
-    joins the turn before it. The text stays plain; the bubble escapes it.
+    run of segments by one speaker is one turn. A segment whose label names
+    nobody (no label, akou's ``s?``, ``unknown``) joins the turn before it,
+    or the first turn when it comes first; only real labels count toward
+    "more than one speaker". The text stays plain; the bubble escapes it.
     """
     if not isinstance(segments, list):
         return None
     numbers: dict[str, int] = {}
     turns: list[dict] = []
+    leading: list[str] = []
     for segment in segments:
         text = segment.get("text") if isinstance(segment, dict) else None
         if not isinstance(text, str) or not text.strip():
             continue
-        speaker = segment.get("speaker")
-        number = numbers.setdefault(speaker, len(numbers) + 1) if isinstance(speaker, str) and speaker else None
-        if turns and (number is None or turns[-1]["speaker"] == number):
+        speaker = real_speaker_label(segment.get("speaker"))
+        if speaker is None:
+            if turns:
+                turns[-1]["text"] += " " + text.strip()
+            else:
+                leading.append(text.strip())
+            continue
+        number = numbers.setdefault(speaker, len(numbers) + 1)
+        if turns and turns[-1]["speaker"] == number:
             turns[-1]["text"] += " " + text.strip()
         else:
-            turns.append({"speaker": number, "text": text.strip()})
+            turns.append({"speaker": number, "text": " ".join([*leading, text.strip()])})
+            leading = []
     return turns if len(numbers) > 1 else None
 
 
