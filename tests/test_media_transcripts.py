@@ -262,6 +262,17 @@ class TestDrainQuery:
         # Left out of TRANSCRIPTION_TYPES, no document is sent.
         assert await _drain(real_adapter, types=("voice", "video")) == []
 
+    async def test_a_picked_up_ask_of_another_type_comes_back_once_it_is_stale(self, real_adapter):
+        """A pressed video the backup picked up and could not send must not wait behind the type filter for good."""
+        await _media(real_adapter, "m_1_video", media_type="video", mime_type="video/mp4")
+        asked = await real_adapter.enqueue_media_transcript("m_1_video", account_id=1, force=True)
+        assert await _drain(real_adapter, types=("voice",)) == ["m_1_video"]
+        # Picked up: the backup filled the preset, then the submit was refused.
+        await real_adapter.fill_media_transcript(asked["id"], status="queued", preset="auto")
+        assert await _drain(real_adapter, types=("voice",)) == []
+        await _age(real_adapter, asked["id"], minutes=11)
+        assert await _drain(real_adapter, types=("voice",)) == ["m_1_video"]
+
     async def test_newest_done_row_ends_the_loop(self, real_adapter):
         await _media(real_adapter, "m_1_voice")
         row = await real_adapter.enqueue_media_transcript("m_1_voice", account_id=1)

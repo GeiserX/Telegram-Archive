@@ -6846,7 +6846,11 @@ class DatabaseAdapter:
         fills it when it picks the row up. Such a row qualifies at once,
         whatever its type (the viewer does not know ``types`` and refuses
         types no server transcribes), and sorts first, so the next drain
-        sends it first. Then newest download
+        sends it first. Once picked up it carries a preset, and the same
+        query takes it back after ten minutes if it is still ``queued`` with
+        no ``job_id`` (a refusal, an outage or a crash mid-submit), whatever
+        its type: the type filter of the main query would otherwise strand
+        a pressed file of a type outside ``types`` for good. Then newest download
         first, at most ``per_run`` rows. Each result carries the media
         columns and ``transcript``: the newest row's id, status and job_id,
         or None.
@@ -6905,7 +6909,7 @@ class DatabaseAdapter:
                     newest.account_id == account_id,
                     newest.status == "queued",
                     newest.job_id.is_(None),
-                    newest.preset.is_(None),
+                    or_(newest.preset.is_(None), newest.requested_at < stale_before),
                     newest.id == newest_id,
                     Media.downloaded == 1,
                 )

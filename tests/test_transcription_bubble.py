@@ -829,6 +829,39 @@ class TestDrainPicksUpTheAsk:
         assert (row["id"], row["status"], row["text"]) == (asked.json()["id"], "done", "hola, te llamo luego")
         assert viewer == []
 
+    async def test_a_refused_press_outside_the_types_is_sent_once_the_server_recovers(
+        self, real_adapter, viewer, tmp_path, monkeypatch
+    ):
+        """A 429 leaves the picked-up ask queued; after ten minutes a healthy server gets it, once."""
+        import test_transcription as sync
+
+        sync._fake_ffprobe(tmp_path, monkeypatch, 'echo \'{"streams": [{"codec_type": "audio"}], "format": {}}\'\n')
+        path = tmp_path / str(CHAT) / "clip.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(sync.AUDIO)
+        await sync._file_media(real_adapter, path, "m_1_video", media_type="video", mime_type="video/mp4")
+        config = sync._config(str(tmp_path), transcription_types={"voice"})
+
+        async def drain(server) -> dict:
+            return await sync.drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=sync._client(config, server)
+            )
+
+        async with _client() as client:
+            asked = await client.post(f"/api/chats/{await _chat_ref(real_adapter)}/media/1_video/transcripts")
+        assert asked.status_code == 200, asked.text
+        assert (await drain(sync.FakeServer(transcribe_status=429)))["refused"] == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["status"], row["preset"]) == ("queued", "auto")
+
+        await sync._make_stale(real_adapter)
+        healthy = sync.FakeServer()
+        first, second = await drain(healthy), await drain(healthy)
+        assert (first["done"], second["done"]) == (1, 0)
+        assert len(healthy.transcribe_requests) == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["id"], row["status"]) == (asked.json()["id"], "done")
+
     async def test_the_backup_fills_the_preset_so_an_outage_does_not_resend_every_run(self, real_adapter, tmp_path):
         """Picked up, the ask-now row falls under the ten-minute rule like any row.
 
