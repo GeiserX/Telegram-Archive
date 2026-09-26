@@ -49,6 +49,8 @@ EXPECTED_COLUMNS = {
     "completed_at",
     "created_at",
     "job_stored_at",
+    "copied_from_id",
+    "diarize",
 }
 EXPECTED_INDEXES = {
     "uq_media_transcripts_account_media_job": (["account_id", "media_id", "job_id"], True),
@@ -148,6 +150,20 @@ class TestMigration032:
             assert conn.execute(sa.text("SELECT text, job_stored_at FROM media_transcripts")).all() == [("kept", None)]
             _run(conn, migration_032.upgrade)  # and a re-run is still a no-op
             assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
+
+    def test_a_table_from_before_copied_from_id_and_diarize_gets_them_and_keeps_its_rows(self):
+        for column in ("copied_from_id", "diarize"):
+            engine = sa.create_engine("sqlite://")
+            with engine.connect() as conn:
+                _run(conn, migration_032.upgrade)
+                _insert(conn, "m1", "done", "kept")
+                _run(conn, lambda column=column: migration_032.op.drop_column(TABLE, column))
+                assert column not in {c["name"] for c in sa.inspect(conn).get_columns(TABLE)}
+                _run(conn, migration_032.upgrade)
+                assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS, column
+                assert conn.execute(sa.text(f"SELECT text, {column} FROM media_transcripts")).all() == [("kept", None)]
+                _run(conn, migration_032.upgrade)  # and a re-run is still a no-op
+                assert {c["name"] for c in sa.inspect(conn).get_columns(TABLE)} == EXPECTED_COLUMNS
 
     def test_existing_rows_are_indexed_once_and_new_rows_arrive_through_the_triggers(self):
         """The rebuild runs only when this pass created the FTS table (028's rule)."""

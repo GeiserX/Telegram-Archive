@@ -121,6 +121,8 @@ TRANSCRIPT_FILL_COLUMNS = frozenset(
         "job_id",
         "error",
         "completed_at",
+        "copied_from_id",
+        "diarize",
     }
 )
 # app_settings keys the backup writes for the viewer's settings row and for
@@ -6519,6 +6521,8 @@ class DatabaseAdapter:
             "completed_at": row.completed_at,
             "created_at": row.created_at,
             "job_stored_at": row.job_stored_at,
+            "copied_from_id": row.copied_from_id,
+            "diarize": row.diarize,
         }
 
     @staticmethod
@@ -6677,6 +6681,51 @@ class DatabaseAdapter:
             await session.refresh(row)
             return self._transcript_to_dict(row)
 
+    async def find_copyable_transcript(
+        self,
+        content_hash: str,
+        preset: str,
+        *,
+        account_id: int,
+        media_id: str,
+        diarize: bool,
+        source: str | None = None,
+        engine_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """The newest ``done`` row, in any account, of the same stored audio the drain would get again.
+
+        The audio is matched on ``idempotency_key``, the stored file's hash,
+        and the answer on ``preset``, on whether speakers were asked for
+        (``diarize``; a row from before the column counts as not) and, when
+        given, on the server's ``source`` and ``engine_name``. Rows of the
+        media asking are left out.
+        """
+        if not content_hash or not preset:
+            return None
+        async with self.db_manager.async_session_factory() as session:
+            stmt = (
+                select(MediaTranscript)
+                .where(
+                    and_(
+                        MediaTranscript.idempotency_key == content_hash,
+                        MediaTranscript.status == "done",
+                        MediaTranscript.preset == preset,
+                        MediaTranscript.diarize.is_(True)
+                        if diarize
+                        else or_(MediaTranscript.diarize.is_(None), MediaTranscript.diarize.is_(False)),
+                        ~and_(MediaTranscript.account_id == account_id, MediaTranscript.media_id == media_id),
+                    )
+                )
+                .order_by(MediaTranscript.id.desc())
+                .limit(1)
+            )
+            if source is not None:
+                stmt = stmt.where(MediaTranscript.source == source)
+            if engine_name is not None:
+                stmt = stmt.where(MediaTranscript.engine_name == engine_name)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._transcript_to_dict(row) if row is not None else None
+
     async def get_media_chat_pairs(self, media_id: str) -> list[dict[str, Any]]:
         """``{account_id, chat_id, message_id}`` of every account's row for one media id.
 
@@ -6804,6 +6853,9 @@ class DatabaseAdapter:
             rows = []
             for transcript, media_chat_id, message_id in await session.execute(stmt):
                 row = self._transcript_to_dict(transcript)
+                # The source of a copy may sit in an account the export's
+                # reader is not entitled to: its id stays out.
+                row.pop("copied_from_id", None)
                 for key in ("requested_at", "completed_at", "created_at", "job_stored_at"):
                     if isinstance(row[key], datetime):
                         row[key] = row[key].isoformat()
@@ -6822,7 +6874,13 @@ class DatabaseAdapter:
             return self._transcript_to_dict(row) if row is not None else None
 
     async def get_media_awaiting_transcription(
-        self, *, account_id: int, types: Collection[str], per_run: int, stale_before: datetime
+        self,
+        *,
+        account_id: int,
+        types: Collection[str],
+        per_run: int,
+        stale_before: datetime,
+        priority_chat_ids: Sequence[int] = (),
     ) -> list[dict[str, Any]]:
         """The drain query: downloaded media of ``types`` that still needs a transcript.
 
@@ -6859,6 +6917,11 @@ class DatabaseAdapter:
         open transcript rows. OR-ing them into the type filter of the main
         query would keep PostgreSQL off ``idx_media_type`` and read every
         media row of every type on each drain.
+
+        ``priority_chat_ids`` (TRANSCRIPTION_PRIORITY_CHAT_IDS) orders the
+        main query only: media of those chats first, in list order, then
+        the rest. It never widens what qualifies, and the ask-now rows still
+        come before all of it.
         """
         wanted = sorted({t for t in types if isinstance(t, str) and t in TRANSCRIBABLE_TYPES})
         if not wanted or per_run <= 0:
@@ -6901,6 +6964,11 @@ class DatabaseAdapter:
         )
         # Newest download first in both queries.
         order = (nulls_last(Media.download_date.desc()), Media.id.desc())
+        ranks: dict[int, int] = {}
+        for chat_id in priority_chat_ids:
+            if isinstance(chat_id, int) and not isinstance(chat_id, bool):
+                ranks.setdefault(chat_id, len(ranks))
+        main_order = (case(ranks, value=Media.chat_id, else_=len(ranks)), *order) if ranks else order
         asked_stmt = (
             select(Media, newest.id, newest.status, newest.job_id)
             .join(newest, and_(newest.account_id == Media.account_id, newest.media_id == Media.id))
@@ -6936,7 +7004,7 @@ class DatabaseAdapter:
                     ),
                 )
             )
-            .order_by(*order)
+            .order_by(*main_order)
             .limit(per_run)
         )
         async with self.db_manager.async_session_factory() as session:

@@ -343,7 +343,9 @@ def test_the_marks_reach_the_transcript_text() -> None:
     html = _html()
     # Rendered through v-html like message text, so a mark never replaces a node Vue patches.
     # One per bubble that shows a transcript: audio, round video, video, and a video sent as a file.
-    assert html.count('class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(') == 4
+    assert (
+        html.count('class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="transcriptHtml(msg)"') == 4
+    )
     assert "{{ selectedTranscript(msg).text }}" not in html
     assert html.count("querySelectorAll('.message-text, .transcript-text')") == 2
     opener = html[html.index("const openMessageSearchResult") :]

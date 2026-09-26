@@ -2177,7 +2177,7 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="transcriptHtml(msg)" v-if="selectedTranscript(msg).text"></p>
                                                     <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
@@ -2292,7 +2292,7 @@
                                                 </div>
                                                 <div :id="transcriptRegionId(msg)" :class="isTranscriptExpanded(msg) ? 'mt-2' : ''">
                                                     <template v-if="showTranscriptText(msg)">
-                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                        <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="transcriptHtml(msg)" v-if="selectedTranscript(msg).text"></p>
                                                         <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                         <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                             <span class="min-w-0 flex-1">
@@ -2372,7 +2372,7 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="transcriptHtml(msg)" v-if="selectedTranscript(msg).text"></p>
                                                     <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
@@ -2467,7 +2467,7 @@
                                                 v-show="showTranscriptText(msg) || transcriptStatus(msg) === 'error'"
                                                 class="mt-2">
                                                 <template v-if="showTranscriptText(msg)">
-                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="escapeHtml(selectedTranscript(msg).text || '')" v-if="selectedTranscript(msg).text"></p>
+                                                    <p dir="auto" class="transcript-text text-sm text-tg-ink whitespace-pre-wrap" v-html="transcriptHtml(msg)" v-if="selectedTranscript(msg).text"></p>
                                                     <p v-else class="text-[11px] text-tg-n400">No speech detected</p>
                                                     <div class="mt-1 flex items-center gap-2 text-[11px] text-tg-n400">
                                                         <span class="min-w-0 flex-1">
@@ -6415,6 +6415,24 @@
                 }
                 const pickTranscript = (msg, id) => {
                     transcriptPicked.value = { ...transcriptPicked.value, [transcriptKey(msg)]: Number(id) }
+                }
+                // The expanded text. A row whose segments name more than one speaker
+                // arrives with ``turns`` (the viewer's _speaker_turns) and reads as
+                // "Speaker 1: ...", "Speaker 2: ..." in the sender label's style.
+                // Escaped here without the DOM: the result goes through v-html.
+                const escapeTranscript = (text) => String(text)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+                const transcriptHtml = (msg) => {
+                    const row = selectedTranscript(msg) || {}
+                    const turns = Array.isArray(row.turns) ? row.turns : []
+                    if (!turns.length) return escapeTranscript(row.text || '')
+                    return turns.map(turn => {
+                        const label = Number.isInteger(turn.speaker)
+                            ? `<span class="text-xs font-bold">Speaker ${turn.speaker}:</span> `
+                            : ''
+                        return label + escapeTranscript(turn.text || '')
+                    }).join('\n')
                 }
                 const transcriptModel = (row) => (Array.isArray(row?.models) && row.models.length ? row.models[0] : row?.preset) || ''
                 const transcriptCaption = (msg) => {
@@ -10683,6 +10701,7 @@
                     pickTranscript,
                     transcriptCaption,
                     transcriptErrorText,
+                    transcriptHtml,
                     pressTranscript,
                     transcriptsExpandedForChat,
                     toggleExpandAllTranscripts,

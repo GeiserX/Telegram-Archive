@@ -3232,12 +3232,37 @@ _TRANSCRIPT_VIEW_FIELDS = (
 )
 
 
+def _speaker_turns(segments: Any) -> list[dict] | None:
+    """The text as speaker turns when the segments name more than one speaker, else None.
+
+    Speakers are numbered 1, 2, ... in the order they first speak, and a
+    run of segments by one speaker is one turn. A segment with no speaker
+    joins the turn before it. The text stays plain; the bubble escapes it.
+    """
+    if not isinstance(segments, list):
+        return None
+    numbers: dict[str, int] = {}
+    turns: list[dict] = []
+    for segment in segments:
+        text = segment.get("text") if isinstance(segment, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            continue
+        speaker = segment.get("speaker")
+        number = numbers.setdefault(speaker, len(numbers) + 1) if isinstance(speaker, str) and speaker else None
+        if turns and (number is None or turns[-1]["speaker"] == number):
+            turns[-1]["text"] += " " + text.strip()
+        else:
+            turns.append({"speaker": number, "text": text.strip()})
+    return turns if len(numbers) > 1 else None
+
+
 def _transcript_view(row: dict) -> dict:
-    """One transcript row as a bubble needs it, datetimes as ISO strings."""
+    """One transcript row as a bubble needs it, datetimes as ISO strings, plus its speaker turns."""
     view = {}
     for key in _TRANSCRIPT_VIEW_FIELDS:
         value = row.get(key)
         view[key] = value.isoformat() if isinstance(value, datetime) else value
+    view["turns"] = _speaker_turns(row.get("segments"))
     return view
 
 
