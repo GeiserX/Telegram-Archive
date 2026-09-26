@@ -47,7 +47,7 @@ from ..db.adapter import (
 from ..db.models import DEFAULT_ACCOUNT_ID, PRIVATE_CHAT_TYPE, account_metadata_key
 from ..message_utils import describe_exception, media_display_filename, resolve_sender_display_name
 from ..realtime import RealtimeListener, resolve_internal_push_secret
-from ..transcription_contract import apply_job_outcome, event_data, verify_webhook, webhook_key
+from ..transcription_contract import apply_job_outcome, event_data, is_transcribable, verify_webhook, webhook_key
 from .media_utils import THUMBNAIL_EXTENSIONS, legacy_folder_alternates
 
 if TYPE_CHECKING:
@@ -3248,10 +3248,6 @@ def _set_media_transcripts(media: dict, rows: list[dict]) -> None:
     media["transcript"] = next((view for view in views if view["status"] == "done"), None)
 
 
-# Media types whose bubble carries the transcript button even with no row yet.
-_TRANSCRIPT_BUBBLE_TYPES = frozenset({"voice", "video_note", "audio"})
-
-
 async def _attach_transcripts(messages: list, chat: ChatContext) -> None:
     """Put each page's transcript rows on its media, in one query.
 
@@ -3287,7 +3283,8 @@ async def _attach_media_transcripts(media_dicts: list, chat: ChatContext) -> Non
         return
     for media in pages:
         rows = by_media.get(media["id"]) or []
-        if rows or media.get("type") in _TRANSCRIPT_BUBBLE_TYPES:
+        # A media with sound carries the transcript button even with no row yet.
+        if rows or is_transcribable(media.get("type"), media.get("mime_type")):
             _set_media_transcripts(media, rows)
 
 
@@ -3315,21 +3312,18 @@ async def get_transcription_status(user: UserContext = Depends(require_auth)):
     }
 
 
-# What the drain can send when a user asks, whatever TRANSCRIPTION_TYPES says:
-# the drain query lets an ask-now row through the type filter.
-_TRANSCRIBABLE_TYPES = frozenset({"voice", "video_note", "audio", "video"})
-
-
 async def _ask_transcript(media: dict | None, account_id: int) -> dict:
     """The insert-only ask-now: a ``queued`` row with ``job_id`` NULL, or the open one.
 
     ``force`` because a user click may add a row after a done one, which the
     drain never does. No preset: the viewer does not read it, and a queued
     row without one is what the drain query sends first. No outbound request.
-    A media the drain would never send is a 409 and no row: another type, or
-    a file not downloaded yet, whose queued row would never move.
+    A media the drain would never send is a 409 and no row: one with no
+    sound (``is_transcribable``, whatever TRANSCRIPTION_TYPES says, since the
+    drain query lets an ask-now row through the type filter), or a file not
+    downloaded yet, whose queued row would never move.
     """
-    if not media or media.get("type") not in _TRANSCRIBABLE_TYPES:
+    if not media or not is_transcribable(media.get("type"), media.get("mime_type")):
         raise HTTPException(status_code=409, detail="Only voice, audio and video can be transcribed")
     if not media.get("downloaded"):
         raise HTTPException(status_code=409, detail="Not downloaded yet")

@@ -65,6 +65,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --extra dev --no-install-project
 
+      # ffmpeg ships ffprobe. Both images install it, and the tests that build
+      # real media files with it (video thumbnails, the transcription audio
+      # check) skip without it.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       # -rs prints skip reasons, which the next step reads. pipefail keeps a
       # pytest failure from being swallowed by tee.
       - name: Run tests
@@ -85,6 +91,16 @@ jobs:
             exit 1
           fi
           echo "PostgreSQL leg ran."
+
+      # Same guard for the real-file media tests: a missing ffmpeg would skip
+      # them and leave the job green.
+      - name: Fail if the ffmpeg tests were skipped
+        run: |
+          if grep -Eq "ffmpeg (and ffprobe )?not installed" pytest-output.log; then
+            echo "::error::Tests that need ffmpeg were skipped - ffmpeg is not installed on the runner."
+            exit 1
+          fi
+          echo "ffmpeg tests ran."
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

@@ -344,8 +344,9 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TRANSCRIPTION_URL` | — | B/V | Base URL of an [akou](https://github.com/GeiserX/akou) server or any server with the OpenAI transcription endpoint. Empty with the feature on shows a one-line nudge and nothing fails. The viewer reads it for display only and never connects to it |
 | `TRANSCRIPTION_API_KEY` | — | B | Bearer key for the server. Treated as a secret, never logged |
 | `TRANSCRIPTION_PRESET` | `auto` | B | `lite`, `fast`, `best`, `fusion` or `auto`. Passed through to akou; other servers ignore it |
-| `TRANSCRIPTION_TYPES` | `voice,video_note` | B | Media types to transcribe; `audio` and `video` are opt-in |
-| `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason |
+| `TRANSCRIPTION_TYPES` | `voice` | B | Media types transcribed ahead of time, before anyone opens them. Also accepts `video_note`, `audio`, `video` and `document`, where `document` means only a file whose mime type is audio or video (a `.wav`, `.flac` or `.mkv` sent as a file). Every file with sound gets the transcript button whatever this says; a press on a type not listed here transcribes that one file on the next backup run. Animations are never sent, and a file with no audio stream gets a `skipped` row |
+| `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored duration, or ffprobe's when there is none |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload in megabytes. Videos and files sent as documents are uploaded as their audio track alone, so this is measured on that track, not on the video. A bigger upload is skipped with a stored reason |
 | `TRANSCRIPTION_LANGUAGE` | — | B | Optional language hint; empty lets the server detect it |
 | `TRANSCRIPTION_CALLBACK_URL` | — | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the key's callback allowlist in akou. Empty means the backup polls instead, which loses nothing |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | — | V | The `whsec_` secret akou printed for the key. The callback route exists only when it is set. Never logged |
@@ -570,7 +571,7 @@ EVENT_WEBHOOK_BODY_TEMPLATE: '{"topic":"my-archive","title":"{event} in {chat_ti
 
 ### Voice Transcription
 
-Voice messages and round videos get a transcript, written beside the audio and shown inside the bubble: a small button next to the waveform swaps the text in under it. The engine is [akou](https://github.com/GeiserX/akou), a speech-to-text server that can run on any host; any server with the OpenAI transcription endpoint (speaches, LocalAI, whisper.cpp) works too. The feature is on by default and does nothing until `TRANSCRIPTION_URL` points at a server:
+Voice messages get a transcript, written beside the audio and shown inside the bubble: a small button next to the waveform swaps the text in under it. Every other file with sound (round videos, music, videos, and audio or video files sent as documents) carries the same button, and pressing it transcribes that file on the next backup run; list its type in `TRANSCRIPTION_TYPES` to have it transcribed ahead of time instead. The engine is [akou](https://github.com/GeiserX/akou), a speech-to-text server that can run on any host; any server with the OpenAI transcription endpoint (speaches, LocalAI, whisper.cpp) works too. The feature is on by default and does nothing until `TRANSCRIPTION_URL` points at a server:
 
 ```yaml
 TRANSCRIPTION_URL: "http://akou:8476"         # or any host that runs akou
@@ -580,7 +581,7 @@ TRANSCRIPTION_CALLBACK_URL: "https://archive.example.test/api/transcriptions/cal
 TRANSCRIPTION_WEBHOOK_SECRET: "whsec_..."      # viewer only
 ```
 
-**How it works:** only the backup process talks to the server. At the end of every backup run it sends up to `TRANSCRIPTION_BACKFILL_PER_RUN` downloaded voice messages that have no transcript yet, newest first, so everything archived before the server existed is transcribed over the following runs. Results arrive through the signed callback into the viewer, through akou's event feed on the next run, or through a per-job poll; an archive with no reachable callback URL loses nothing. The viewer never makes an outbound request for this feature.
+**How it works:** only the backup process talks to the server. At the end of every backup run it sends the files whose button was pressed, then up to `TRANSCRIPTION_BACKFILL_PER_RUN` downloaded media of the `TRANSCRIPTION_TYPES` types that have no transcript yet, newest first, so everything archived before the server existed is transcribed over the following runs. Results arrive through the signed callback into the viewer, through akou's event feed on the next run, or through a per-job poll; an archive with no reachable callback URL loses nothing. The viewer never makes an outbound request for this feature.
 
 **Archive rules:** a transcript is a new row, never a change to the media row, and a second transcript with another engine or preset is another row. Transcripts are searchable from the chat search box and the global search (a hit found only in a transcript opens that bubble), appear in the Voice tab of Shared Media, in `/api/changes` as a `transcript` change, and in both JSON exports. The only paths that remove them are the flag-gated deletes above (`DELETION_MODE=hard`, `EXCLUDE_DELETE_EXISTING`, `SKIP_MEDIA_DELETE_EXISTING`, `YOUTUBE_VIDEOS_DELETE_EXISTING`), which take the transcripts of the media they remove.
 

@@ -45,6 +45,33 @@ def _round_video(html: str) -> str:
     return _between(html, "<div v-else-if=\"msg.media?.type === 'video_note'\">", "<!-- Videos - click to open")
 
 
+def _video(html: str) -> str:
+    return _between(html, "<!-- Videos - click to open in lightbox -->", "<!-- Stickers")
+
+
+def _file(html: str) -> str:
+    return _between(html, "<!-- Other documents / files -->", "<!-- Text with clickable links")
+
+
+def _assert_accessible_toggle(test: unittest.TestCase, block: str) -> None:
+    """The bubble's button is the audio bubble's: named, tied to its region, busy while loading."""
+    button = block[block.index("<button v-if=") :]
+    button = button[: button.index("</button>")]
+    test.assertIn("hasTranscriptButton(msg)", button)
+    test.assertIn('type="button"', button)
+    test.assertIn('@click.stop="pressTranscript(msg)"', button)
+    test.assertIn(":aria-expanded=\"isTranscriptExpanded(msg) ? 'true' : 'false'\"", button)
+    test.assertIn(':aria-controls="transcriptRegionId(msg)"', button)
+    test.assertIn(":aria-busy=\"transcriptStatus(msg) === 'loading' ? 'true' : 'false'\"", button)
+    test.assertIn("'Hide transcript' : 'Show transcript'", button)
+    test.assertIn('class="transcript-loop"', button)
+    region = block[block.index(':id="transcriptRegionId(msg)"') :]
+    test.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
+    test.assertIn('<p dir="auto" class="transcript-text', region)
+    test.assertIn("transcriptErrorText(msg)", region)
+    test.assertIn('aria-label="Transcript version"', region)
+
+
 # ============================================================================
 # Markup
 # ============================================================================
@@ -90,6 +117,38 @@ class TestBubbleMarkup(unittest.TestCase):
         self.assertIn('v-for="(h, i) in transcriptPlaceholderBars"', block)
         self.assertIn('<p dir="auto" class="transcript-text', block)
         self.assertEqual(block.count(':id="transcriptRegionId(msg)"'), 1)
+
+    def test_a_video_carries_the_button_over_the_corner_and_the_text_under_the_player(self):
+        block = _video(_html())
+        _assert_accessible_toggle(self, block)
+        overlay = _between(block, "<button v-if=", "</button>")
+        self.assertIn('class="transcript-btn transcript-btn--overlay"', overlay)
+        self.assertIn(":class=\"isOwnMessage(msg) ? 'left-1' : 'right-1'\"", overlay)
+        # Inside the player that opens the lightbox, so the press must not open it too.
+        self.assertLess(block.index('@click="msg.mediaLoadFailed || openMedia(msg)"'), block.index("<button v-if="))
+        self.assertLess(block.index("</button>"), block.index(':id="transcriptRegionId(msg)"'))
+
+    def test_a_file_carries_the_button_beside_its_name_and_the_text_under_it(self):
+        block = _file(_html())
+        _assert_accessible_toggle(self, block)
+        self.assertIn('<button v-if="hasTranscriptButton(msg)" type="button"', block)
+        # A button inside the download link would be invalid markup and a nested control.
+        link = _between(block, "<a :href=", "</a>")
+        self.assertNotIn("<button", link)
+        self.assertLess(block.index("</a>"), block.index("<button v-if="))
+
+    def test_a_done_transcript_with_no_text_says_no_speech_detected(self):
+        """Silence comes back as an empty text; the bubble says so in the error states' grey, as the official apps do."""
+        html = _html()
+        pairs = re.findall(
+            r'<p dir="auto" class="transcript-text[^\n]*v-if="selectedTranscript\(msg\)\.text"></p>\n'
+            r' *<p v-else class="text-\[11px\] text-tg-n400">No speech detected</p>',
+            html,
+        )
+        self.assertEqual(len(pairs), 4)
+        self.assertEqual(len(pairs), html.count('class="transcript-text text-sm'))
+        # The same small grey style as the failed and skipped reasons.
+        self.assertIn('class="text-[11px] text-tg-n400">{{ transcriptErrorText(msg) }}</p>', html)
 
     def test_a_polite_live_region_announces_the_result(self):
         html = _html()
@@ -207,12 +266,43 @@ def test_the_states_follow_the_design_table() -> None:
             assert.equal(transcriptStatus(skipped), 'error')
             assert.equal(transcriptErrorText(skipped), 'Longer than the 30 minute limit')
             assert.equal(transcriptErrorText(voice(7, [{ id: 8, status: 'failed', error: 'file_missing' }])), 'The audio file is missing')
-            // Music is opt-in: an audio bubble shows the button only once a row exists.
-            assert.equal(hasTranscriptButton({ id: 8, media: { id: '8_audio', type: 'audio' } }), false)
-            assert.equal(hasTranscriptButton({ id: 9, media: { id: '9_audio', type: 'audio', transcripts: [done(1)] } }), true)
+            // Every media with sound shows the button before any row exists.
+            assert.equal(hasTranscriptButton({ id: 8, media: { id: '8_audio', type: 'audio' } }), true)
+            assert.equal(hasTranscriptButton({ id: 9, media: { id: '9_video', type: 'video' } }), true)
+            assert.equal(hasTranscriptButton({ id: 14, media: { id: '14_document', type: 'document', mime_type: 'audio/flac' } }), true)
+            assert.equal(hasTranscriptButton({ id: 15, media: { id: '15_document', type: 'document', mime_type: 'Video/x-matroska' } }), true)
+            // No sound, no button: a PDF, a document with no mime type, a GIF-style clip.
+            assert.equal(hasTranscriptButton({ id: 16, media: { id: '16_document', type: 'document', mime_type: 'application/pdf' } }), false)
+            assert.equal(hasTranscriptButton({ id: 17, media: { id: '17_document', type: 'document' } }), false)
+            assert.equal(hasTranscriptButton({ id: 18, media: { id: '18_animation', type: 'animation' } }), false)
+            // A row found another way still shows, whatever the type.
+            assert.equal(hasTranscriptButton({ id: 19, media: { id: '19_photo', type: 'photo', transcripts: [done(1)] } }), true)
             assert.equal(hasTranscriptButton({ id: 10, media: { id: '10_video_note', type: 'video_note' } }), true)
             // A no-download login reads no transcript; the routes would answer 403.
             assert.equal(hasTranscriptButton({ id: 13, media: { id: '13_voice', type: 'voice', no_download: true } }), false)
+            """
+        )
+    )
+
+
+def test_the_bubble_rule_is_the_drains_rule() -> None:
+    """The template's isTranscribable mirrors is_transcribable in transcription_contract."""
+    from src.transcription_contract import is_transcribable
+
+    cases = [
+        (media_type, mime)
+        for media_type in ("voice", "video_note", "audio", "video", "document", "animation", "photo", "sticker")
+        for mime in (None, "audio/ogg", "Audio/FLAC", "video/x-matroska", "application/pdf", "image/png", "")
+    ]
+    expected = [is_transcribable(media_type, mime) for media_type, mime in cases]
+    assert any(expected) and not all(expected)
+    media = [{"id": i, "media": {"id": f"{i}_x", "type": t, "mime_type": m}} for i, (t, m) in enumerate(cases)]
+    _run_node(
+        _script(
+            f"""
+            transcriptionState.value = {{ enabled: true, configured: true }}
+            const media = {json.dumps(media)}
+            assert.deepEqual(media.map(hasTranscriptButton), {json.dumps(expected)})
             """
         )
     )
@@ -350,6 +440,8 @@ def test_the_nudge_shows_for_a_voice_message_and_the_button_reopens_it() -> None
             """
             transcriptionState.value = { enabled: true, configured: false }
             assert.equal(transcriptNudgeVisible.value, false, 'no voice message on screen')
+            messages.value = [{ id: 7, media: { id: '7_video_note', type: 'video_note' } }, { id: 8, media: { id: '8_video', type: 'video' } }]
+            assert.equal(transcriptNudgeVisible.value, false, 'only a voice message, the default type, shows it')
             messages.value = [voice(1, [])]
             assert.equal(transcriptNudgeVisible.value, true)
             dismissTranscriptNudge()
@@ -567,6 +659,32 @@ class TestAskNowRoute:
         for media_id in ("m_1_voice", "m_2_photo"):
             assert await real_adapter.list_media_transcripts(media_id, account_id=1) == []
 
+    async def test_a_video_and_an_audio_document_can_be_asked_and_a_pdf_cannot(self, real_adapter, viewer):
+        await _media(real_adapter, "m_1_video", media_type="video", mime_type="video/mp4")
+        await _media(real_adapter, "m_2_document", media_type="document", mime_type="audio/x-wav")
+        await _media(real_adapter, "m_3_document", media_type="document", mime_type="video/x-matroska")
+        await _media(real_adapter, "m_4_document", media_type="document", mime_type="application/pdf")
+        await _media(real_adapter, "m_5_animation", media_type="animation", mime_type="video/mp4")
+        ref = await _chat_ref(real_adapter)
+        async with _client() as client:
+            by_id = [await client.post(f"/api/media/{m}/transcripts") for m in ("m_1_video", "m_2_document")]
+            by_chat = await client.post(f"/api/chats/{ref}/media/3_document/transcripts")
+            refused = [
+                await client.post("/api/media/m_4_document/transcripts"),
+                await client.post(f"/api/chats/{ref}/media/4_document/transcripts"),
+                await client.post("/api/media/m_5_animation/transcripts"),
+            ]
+        assert [resp.status_code for resp in [*by_id, by_chat]] == [200, 200, 200], [r.text for r in by_id]
+        assert [resp.status_code for resp in refused] == [409, 409, 409]
+        for media_id in ("m_1_video", "m_2_document", "m_3_document"):
+            [row] = await real_adapter.list_media_transcripts(media_id, account_id=1)
+            assert row["status"] == "queued"
+        for media_id in ("m_4_document", "m_5_animation"):
+            assert await real_adapter.list_media_transcripts(media_id, account_id=1) == []
+        # The drain sends what was asked, even with documents and videos outside TRANSCRIPTION_TYPES.
+        assert sorted(await _drain(real_adapter, types=("voice",))) == ["m_1_video", "m_2_document", "m_3_document"]
+        assert viewer == []
+
     async def test_an_asked_type_outside_transcription_types_is_still_sent(self, real_adapter, viewer):
         """The viewer does not know TRANSCRIPTION_TYPES, so the drain honours the click."""
         await _media(real_adapter, "m_1_audio", media_type="audio")
@@ -659,8 +777,91 @@ class TestMessagePagePayload:
         assert "m_1_voice" not in rows, "no storage id, which spells the chat id"
         assert not {"media_id", "idempotency_key", "content_hash", "job_id", "words"} & set(media["transcripts"][0])
 
+    async def test_media_with_sound_carries_an_empty_list_and_a_pdf_carries_none(self, real_adapter, viewer):
+        """The empty list is what a bubble with no row yet renders from; a PDF has nothing to transcribe."""
+        await _media(real_adapter, "m_1_video", media_type="video", mime_type="video/mp4")
+        await _media(real_adapter, "m_2_document", media_type="document", mime_type="audio/flac")
+        await _media(real_adapter, "m_3_document", media_type="document", mime_type="application/pdf")
+        async with _client() as client:
+            resp = await client.get(f"/api/chats/{await _chat_ref(real_adapter)}/messages")
+        assert resp.status_code == 200, resp.text
+        by_id = {m["id"]: m["media"] for m in resp.json()}
+        assert by_id[1]["transcripts"] == [] and by_id[1]["transcript"] is None
+        assert by_id[2]["transcripts"] == [] and by_id[2]["transcript"] is None
+        assert "transcripts" not in by_id[3]
+
 
 class TestDrainPicksUpTheAsk:
+    async def test_a_video_outside_the_types_waits_for_its_click_then_the_next_drain_sends_it(
+        self, real_adapter, viewer, tmp_path, monkeypatch
+    ):
+        """TRANSCRIPTION_TYPES is what goes ahead of time; any other file with sound goes when its button is pressed."""
+        import test_transcription as sync
+
+        sync._fake_ffprobe(
+            tmp_path,
+            monkeypatch,
+            'echo \'{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {"duration": "4.0"}}\'\n',
+        )
+        path = tmp_path / str(CHAT) / "clip.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(sync.AUDIO)
+        await sync._file_media(real_adapter, path, "m_1_video", media_type="video", mime_type="video/mp4")
+        server = sync.FakeServer()
+        config = sync._config(str(tmp_path), transcription_types={"voice"})
+
+        async def drain() -> dict:
+            return await sync.drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=sync._client(config, server)
+            )
+
+        assert (await drain())["done"] == 0
+        assert server.transcribe_requests == []
+        assert await real_adapter.list_media_transcripts("m_1_video", account_id=1) == []
+
+        async with _client() as client:
+            asked = await client.post(f"/api/chats/{await _chat_ref(real_adapter)}/media/1_video/transcripts")
+        assert asked.status_code == 200, asked.text
+
+        assert (await drain())["done"] == 1
+        assert len(server.transcribe_requests) == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["id"], row["status"], row["text"]) == (asked.json()["id"], "done", "hola, te llamo luego")
+        assert viewer == []
+
+    async def test_a_refused_press_outside_the_types_is_sent_once_the_server_recovers(
+        self, real_adapter, viewer, tmp_path, monkeypatch
+    ):
+        """A 429 leaves the picked-up ask queued; after ten minutes a healthy server gets it, once."""
+        import test_transcription as sync
+
+        sync._fake_ffprobe(tmp_path, monkeypatch, 'echo \'{"streams": [{"codec_type": "audio"}], "format": {}}\'\n')
+        path = tmp_path / str(CHAT) / "clip.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(sync.AUDIO)
+        await sync._file_media(real_adapter, path, "m_1_video", media_type="video", mime_type="video/mp4")
+        config = sync._config(str(tmp_path), transcription_types={"voice"})
+
+        async def drain(server) -> dict:
+            return await sync.drain_transcriptions(
+                config, real_adapter, account_id=1, notifier=AsyncMock(), client=sync._client(config, server)
+            )
+
+        async with _client() as client:
+            asked = await client.post(f"/api/chats/{await _chat_ref(real_adapter)}/media/1_video/transcripts")
+        assert asked.status_code == 200, asked.text
+        assert (await drain(sync.FakeServer(transcribe_status=429)))["refused"] == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["status"], row["preset"]) == ("queued", "auto")
+
+        await sync._make_stale(real_adapter)
+        healthy = sync.FakeServer()
+        first, second = await drain(healthy), await drain(healthy)
+        assert (first["done"], second["done"]) == (1, 0)
+        assert len(healthy.transcribe_requests) == 1
+        [row] = await real_adapter.list_media_transcripts("m_1_video", account_id=1)
+        assert (row["id"], row["status"]) == (asked.json()["id"], "done")
+
     async def test_the_backup_fills_the_preset_so_an_outage_does_not_resend_every_run(self, real_adapter, tmp_path):
         """Picked up, the ask-now row falls under the ten-minute rule like any row.
 

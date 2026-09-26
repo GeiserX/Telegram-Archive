@@ -65,6 +65,7 @@ from .message_utils import (
 from .realtime import NotificationType, RealtimeNotifier
 from .telegram_backup import absorb_media_floods, call_with_flood_retry
 from .transcription import transcribe_media
+from .transcription_contract import is_transcribable
 from .web.media_utils import resolve_stored_media_path
 
 logger = logging.getLogger(__name__)
@@ -1836,7 +1837,7 @@ class TelegramListener:
             await self._log_stats()
 
     def _enqueue_transcription(self, media_row: dict[str, Any]) -> None:
-        """Transcribe a just-downloaded voice message now, not at the next drain.
+        """Transcribe a just-downloaded media with sound now, not at the next drain.
 
         The same function the drain calls, run as a retained task so the
         handler never waits on the server. Only for the configured types and
@@ -1845,7 +1846,9 @@ class TelegramListener:
         if getattr(self.config, "transcription_enabled", False) is not True:
             return
         types = getattr(self.config, "transcription_types", None)
-        if not isinstance(types, (set, frozenset)) or media_row.get("type") not in types:
+        if not isinstance(types, (set, frozenset)) or not is_transcribable(
+            media_row.get("type"), media_row.get("mime_type"), types
+        ):
             return
         url = getattr(self.config, "transcription_url", None)
         if not isinstance(url, str) or not url:
