@@ -1,6 +1,6 @@
 services:
   telegram-backup:
-    image: drumsergio/telegram-archive:8.15.1
+    image: drumsergio/telegram-archive:8.16.0
     container_name: telegram-backup
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -209,7 +209,7 @@ services:
     #       memory: 512M
 
   telegram-viewer:
-    image: drumsergio/telegram-archive-viewer:8.15.1
+    image: drumsergio/telegram-archive-viewer:8.16.0
     container_name: telegram-viewer
     restart: unless-stopped
     # A stop during a long sweep needs time to finish in-flight writes and
@@ -335,7 +335,7 @@ services:
   # Example: Restricted Channel Viewer (optional)
   # Use this to share specific channels publicly with authentication
   # telegram-channel-viewer:
-  #   image: drumsergio/telegram-archive-viewer:8.15.1
+  #   image: drumsergio/telegram-archive-viewer:8.16.0
   #   container_name: telegram-channel-viewer
   #   restart: unless-stopped
   #   ports:
@@ -359,14 +359,15 @@ services:
   # settings, the API key for TRANSCRIPTION_API_KEY and the whsec_ secret for
   # TRANSCRIPTION_WEBHOOK_SECRET.
   #
-  # akou's server image is not published yet, so this block cannot start
-  # until it is; pin whichever semver tag ships it. In a container akou must
-  # listen beyond loopback, and it refuses to unless its settings say a proxy
-  # fronts it: set api.bind to 0.0.0.0 and server.behind_proxy to true (see
-  # akou's docs/install.md).
+  # The image runs as uid 1000, so give it the two folders first:
+  # mkdir -p akou/data akou/models && chown -R 1000:1000 akou. Pull the models
+  # once before the first start (docker run --rm -v ./akou/models:/models
+  # drumsergio/akou:0.2.1 models pull fast). In a container akou must listen
+  # beyond loopback, and it refuses to unless its settings say a proxy fronts
+  # it: set server.behind_proxy to true (see akou's docs/install.md).
   #
   # akou:
-  #   image: geiserx/akou:0.2.0
+  #   image: drumsergio/akou:0.2.1
   #   container_name: akou
   #   restart: unless-stopped
   #   volumes:
