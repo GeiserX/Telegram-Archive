@@ -348,6 +348,7 @@ The **Scope** column shows whether each variable applies to the backup scheduler
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored duration, or ffprobe's when there is none |
 | `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload in megabytes. Videos and files sent as documents are uploaded as their audio track alone, so this is measured on that track, not on the video. A voice message or music file over it is extracted too, and only a track still over it is skipped with a stored reason. `0` means no limit |
 | `TRANSCRIPTION_LANGUAGE` | — | B | Optional language hint; empty lets the server detect it |
+| `TRANSCRIPTION_DIARIZE` | `false` | B | Ask akou to label speakers. A transcript with more than one speaker then reads as turns ("Speaker 1:", "Speaker 2:") in the bubble. Only akou's job path diarizes; a server with the OpenAI endpoint ignores it |
 | `TRANSCRIPTION_CALLBACK_URL` | — | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the key's callback allowlist in akou. Empty means the backup polls instead, which loses nothing |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | — | V | The `whsec_` secret akou printed for the key. The callback route exists only when it is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media one backup run sends, newest first. With akou it also caps the jobs open at once per account |

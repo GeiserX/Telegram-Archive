@@ -31,6 +31,8 @@ The audio bubble in [src/web/templates/index.html](../src/web/templates/index.ht
 
 The text sits at full bubble width in the normal message font, with `dir="auto"` so right-to-left languages read correctly. There is no line cap and no "show more". A long transcript makes the bubble taller.
 
+When a transcript's segments name more than one speaker, which akou returns with `TRANSCRIPTION_DIARIZE` on, the text reads as turns: each run of one speaker starts with "Speaker 1:", "Speaker 2:" and so on, numbered in the order they first speak, in the small bold style of the sender labels. The viewer builds the turns from the stored segments (`turns` in the row it serves), and the text stays escaped. One speaker reads as plain text, as before.
+
 ### The states of the button
 
 | State | Button | Under the waveform |
@@ -95,6 +97,7 @@ All variables are read in [src/config.py](../src/config.py). B means the backup 
 | `TRANSCRIPTION_MAX_SECONDS` | `1800` | B | Longer media is skipped with a stored reason. The length is the stored `duration`, or ffprobe's when the media row has none |
 | `TRANSCRIPTION_MAX_UPLOAD_MB` | `500` | B | Largest upload, in megabytes, measured on what is actually sent (a video's extracted audio track, not the video). A bigger one gets a `skipped` row with reason `too_large`. `0` means no limit; a negative value warns and means the same |
 | `TRANSCRIPTION_LANGUAGE` | empty | B | Optional language hint. Empty means the server detects it |
+| `TRANSCRIPTION_DIARIZE` | `false` | B | Sends `diarize=true` with each akou job, which then returns segments with speaker labels. The synchronous OpenAI path has no such field and does not diarize |
 | `TRANSCRIPTION_CALLBACK_URL` | empty | B | The viewer's public URL plus `/api/transcriptions/callback`, sent to akou with each job. Its host must be on the API key's callback-host allowlist in akou, or every submit is refused with `422 callback_not_allowed`, which the drain logs once per run. Empty means poll only |
 | `TRANSCRIPTION_WEBHOOK_SECRET` | empty | V | The `whsec_` secret akou printed for the key. The callback route exists only when this is set. Never logged |
 | `TRANSCRIPTION_BACKFILL_PER_RUN` | `50` | B | How many media rows one drain submits, newest first. On the akou job path it is also how many jobs may be open per account: a drain submits only what the open ones leave room for |
@@ -262,6 +265,7 @@ file=<the bytes from resolve_stored_media_path>
 preset=<TRANSCRIPTION_PRESET>
 language=<TRANSCRIPTION_LANGUAGE or auto>
 callback_url=<TRANSCRIPTION_CALLBACK_URL, if set>
+diarize=true, only with TRANSCRIPTION_DIARIZE on
 metadata={"content_hash": "<sha256>"}
 ```
 

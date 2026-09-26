@@ -148,6 +148,10 @@ class TestTranscriptionConfig(unittest.TestCase):
         off = self._config(TRANSCRIPTION_ENABLED="false", TRANSCRIPTION_PRIORITY_CHAT_IDS="not-an-id")
         self.assertEqual(off.transcription_priority_chat_ids, [])
 
+    def test_diarize_is_off_unless_asked(self):
+        self.assertFalse(self._config().transcription_diarize)
+        self.assertTrue(self._config(TRANSCRIPTION_DIARIZE="true").transcription_diarize)
+
     def test_bad_preset_falls_back_to_auto(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_PRESET="turbo")

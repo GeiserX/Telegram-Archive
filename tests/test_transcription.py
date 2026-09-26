@@ -1446,6 +1446,24 @@ class TestJobPath:
         [row] = await _rows(real_adapter, "m_1_voice")
         assert (row["status"], row["job_id"], row["error"]) == ("queued", None, None)
 
+    async def test_diarize_is_sent_on_the_job_path_only_when_asked(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice", content_hash="1" * 64)
+        await _media(real_adapter, tmp_path, "m_2_voice", content_hash="2" * 64)
+        server = AkouServer(page_size=1)
+        await _akou_drain(_akou_config(tmp_path, transcription_backfill_per_run=1), real_adapter, server)
+        await _akou_drain(
+            _akou_config(tmp_path, transcription_diarize=True, transcription_backfill_per_run=2), real_adapter, server
+        )
+        fields = [dict(_PART.findall(r.content.decode("latin-1"))) for r in server.submits]
+        assert [f.get("diarize") for f in fields] == [None, "true"]
+
+    async def test_the_synchronous_path_never_diarizes(self, real_adapter, tmp_path):
+        await _media(real_adapter, tmp_path, "m_1_voice")
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_diarize=True)
+        assert (await _drain_all(config, real_adapter, server))["done"] == 1
+        assert "diarize" not in dict(_PART.findall(server.transcribe_requests[0].content.decode("latin-1")))
+
     async def test_idempotency_conflict_fails_the_row(self, real_adapter, tmp_path):
         await _media(real_adapter, tmp_path, "m_1_voice", content_hash="9" * 64)
         server = AkouServer()

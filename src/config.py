@@ -1005,6 +1005,8 @@ class Config:
         self.transcription_max_seconds = 1800
         self.transcription_max_upload_mb = 500
         self.transcription_language = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip()
+        # Ask akou's job path to label speakers; the OpenAI endpoint has no such field.
+        self.transcription_diarize = _parse_bool_env("TRANSCRIPTION_DIARIZE", False)
         self.transcription_callback_url = os.getenv("TRANSCRIPTION_CALLBACK_URL", "").strip()
         self.transcription_webhook_secret = os.getenv("TRANSCRIPTION_WEBHOOK_SECRET", "").strip()
         self.transcription_backfill_per_run = 50

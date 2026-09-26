@@ -237,6 +237,7 @@ class TranscriptionClient:
         self.preset = preset if isinstance(preset, str) else "auto"
         language = getattr(config, "transcription_language", None)
         self.language = language if isinstance(language, str) else ""
+        self.diarize = getattr(config, "transcription_diarize", None) is True
         self.backoffs = self.BACKOFFS
         self._transport = transport
 
@@ -395,6 +396,8 @@ class TranscriptionClient:
         }
         if callback_url:
             data["callback_url"] = callback_url
+        if self.diarize:
+            data["diarize"] = "true"
         files = {"file": (filename, audio, "application/octet-stream")}
         timeout = httpx.Timeout(self.UPLOAD_TIMEOUT_SECONDS, connect=self.CONNECT_TIMEOUT_SECONDS)
         response = await self._send(
