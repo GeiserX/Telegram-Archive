@@ -1391,6 +1391,9 @@ class Config:
                 )
             accepted = requested & TRANSCRIPTION_VALID_TYPES
             self.transcription_types = accepted or set(TRANSCRIPTION_DEFAULT_TYPES)
+        if self.transcription_max_upload_mb < 0:
+            logger.warning("TRANSCRIPTION_MAX_UPLOAD_MB must be 0 (no limit) or more - no limit applied")
+            self.transcription_max_upload_mb = 0
         if self.transcription_webhook_secret and not self.transcription_webhook_secret.startswith(
             TRANSCRIPTION_SECRET_PREFIX
         ):

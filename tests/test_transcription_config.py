@@ -133,6 +133,14 @@ class TestTranscriptionConfig(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "TRANSCRIPTION_MAX_SECONDS"):
             self._config(TRANSCRIPTION_MAX_SECONDS="30m")
 
+    def test_a_negative_upload_limit_warns_and_means_no_limit(self):
+        with self.assertLogs("src.config", level="WARNING") as logs:
+            config = self._config(TRANSCRIPTION_MAX_UPLOAD_MB="-5")
+        self.assertEqual(config.transcription_max_upload_mb, 0)
+        self.assertTrue(any("TRANSCRIPTION_MAX_UPLOAD_MB" in line for line in logs.output))
+        with self.assertNoLogs("src.config", level="WARNING"):
+            self.assertEqual(self._config(TRANSCRIPTION_MAX_UPLOAD_MB="0").transcription_max_upload_mb, 0)
+
     def test_bad_preset_falls_back_to_auto(self):
         with self.assertLogs("src.config", level="WARNING") as logs:
             config = self._config(TRANSCRIPTION_PRESET="turbo")

@@ -1893,26 +1893,111 @@ class TestUpload:
         assert "not installed" in lines[0].getMessage()
 
     async def test_the_size_limit_reads_the_bytes_actually_sent(self, real_adapter, tmp_path, monkeypatch):
+        """Over the limit as stored, a voice message and a video both go out as a small Opus track."""
         _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
         _fake_tool(tmp_path, monkeypatch, "ffmpeg", FAKE_FFMPEG)
         big = b"\x01" * (2 * 1024 * 1024)
-        # A 2 MB voice message is sent as stored: over a 1 MB limit.
         path = tmp_path / str(CHAT) / "long.ogg"
         path.parent.mkdir(parents=True)
         path.write_bytes(big)
         await _file_media(real_adapter, path, "m_1_voice", media_type="voice", duration=5)
-        # A 2 MB video whose audio track is a few bytes: under it.
         await _video_on_disk(real_adapter, tmp_path, "m_2_video", content=big)
         server = FakeServer()
         config = _config(str(tmp_path), transcription_types={"voice", "video"}, transcription_max_upload_mb=1)
 
         stats = await _drain_all(config, real_adapter, server)
 
-        assert stats == _stats(done=1, skipped=1)
-        [skipped] = await _rows(real_adapter, "m_1_voice")
-        assert (skipped["status"], skipped["error"]) == ("skipped", "too_large")
-        assert (await _rows(real_adapter, "m_2_video"))[0]["status"] == "done"
-        assert len(server.transcribe_requests) == 1
+        assert stats == _stats(done=2)
+        sent = sorted(_sent_file(r) for r in server.transcribe_requests)
+        assert all(body.startswith(b"OggS extracted by run ") for body in sent)
+
+    async def test_an_extracted_track_still_over_the_limit_is_skipped(self, real_adapter, tmp_path, monkeypatch):
+        _fake_tool(tmp_path, monkeypatch, "ffprobe", AUDIO_STREAM)
+        # This ffmpeg writes 2 MB whatever it is given.
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", 'for a; do last="$a"; done\nhead -c 2097152 /dev/zero > "$last"\n')
+        path = tmp_path / str(CHAT) / "song.mp3"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x01" * (2 * 1024 * 1024))
+        await _file_media(real_adapter, path, "m_1_audio", media_type="audio", mime_type="audio/mpeg", duration=5)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_types={"audio"}, transcription_max_upload_mb=1)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(skipped=1)
+        assert server.transcribe_requests == []
+        [row] = await _rows(real_adapter, "m_1_audio")
+        assert (row["status"], row["error"]) == ("skipped", "too_large")
+
+    async def test_a_limit_of_zero_means_no_limit(self, real_adapter, tmp_path, monkeypatch):
+        calls = tmp_path / "ffmpeg-calls"
+        _fake_tool(tmp_path, monkeypatch, "ffmpeg", f'echo called >> "{calls}"\nexit 1\n')
+        path = tmp_path / str(CHAT) / "long.ogg"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x01" * (2 * 1024 * 1024))
+        await _file_media(real_adapter, path, "m_1_voice", media_type="voice", duration=5)
+        server = FakeServer()
+        config = _config(str(tmp_path), transcription_max_upload_mb=0)
+
+        stats = await _drain_all(config, real_adapter, server)
+
+        assert stats == _stats(done=1)
+        assert _sent_file(server.transcribe_requests[0]) == path.read_bytes(), "sent as stored"
+        assert not calls.exists(), "nothing was over a limit, so nothing was extracted"
+
+    async def test_extract_audio_removes_its_temp_file_when_cancelled(self, tmp_path, monkeypatch):
+        import threading
+
+        import src.transcription as transcription
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        started, release = threading.Event(), threading.Event()
+
+        def slow_extract(path, dest):
+            started.set()
+            release.wait(5)
+            return True
+
+        monkeypatch.setattr(transcription, "_run_extract", slow_extract)
+        task = asyncio.create_task(transcription.extract_audio(str(tmp_path / "clip.mp4")))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        assert len(list(scratch.iterdir())) == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        assert list(scratch.iterdir()) == [], "the temp file is gone after a cancel"
+
+    async def test_at_most_two_ffprobe_or_ffmpeg_runs_at_once(self, monkeypatch):
+        import threading
+        import time
+
+        import src.transcription as transcription
+
+        lock = threading.Lock()
+        running = peak = 0
+
+        def tool(*args):
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+            time.sleep(0.05)
+            with lock:
+                running -= 1
+            return None
+
+        monkeypatch.setattr(transcription, "_run_ffprobe", tool)
+        monkeypatch.setattr(transcription, "_run_extract", lambda path, dest: tool() or False)
+        monkeypatch.setattr(transcription, "_warned", set())
+        await asyncio.gather(
+            *(transcription.probe_audio(f"/x/{i}.mp4") for i in range(4)),
+            *(transcription.extract_audio(f"/x/{i}.mp4") for i in range(4)),
+        )
+        assert peak == transcription.MEDIA_TOOL_SLOTS == 2
 
     async def test_a_reextraction_with_other_bytes_never_conflicts_and_the_outcome_still_matches(
         self, real_adapter, tmp_path, monkeypatch

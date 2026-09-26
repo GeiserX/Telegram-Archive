@@ -43,6 +43,7 @@ import os
 import subprocess
 import tempfile
 import urllib.parse
+import weakref
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, BinaryIO
@@ -112,6 +113,20 @@ EXTRACT_TIMEOUT_SECONDS = 900
 # One warning per process and tool when ffprobe or ffmpeg is missing or
 # fails; debug after that.
 _warned: set[str] = set()
+
+# ffprobe and ffmpeg run in the default executor. At most this many run at
+# once, shared by the drain and the listener's immediate path, so a burst of
+# videos cannot take every executor thread. One semaphore per event loop.
+MEDIA_TOOL_SLOTS = 2
+_tool_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def _media_tool_slot() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slot = _tool_slots.get(loop)
+    if slot is None:
+        slot = _tool_slots[loop] = asyncio.Semaphore(MEDIA_TOOL_SLOTS)
+    return slot
 
 
 def _warn_once(tool: str, message: str) -> None:
@@ -559,7 +574,8 @@ async def probe_audio(path: str) -> AudioProbe | None:
     the path (the exception strings of subprocess carry the full argv).
     """
     try:
-        probe = await asyncio.to_thread(_run_ffprobe, path)
+        async with _media_tool_slot():
+            probe = await asyncio.to_thread(_run_ffprobe, path)
         reason = "failed"
     except FileNotFoundError:
         probe, reason = None, "not installed"
@@ -620,17 +636,25 @@ async def extract_audio(path: str) -> str | None:
     """
     fd, dest = tempfile.mkstemp(prefix="transcription-", suffix=".ogg")
     os.close(fd)
+    kept = False
     try:
-        if await asyncio.to_thread(_run_extract, path, dest):
-            return dest
-        reason = "failed"
-    except FileNotFoundError:
-        reason = "not installed"
-    except (OSError, subprocess.SubprocessError) as e:
-        reason = type(e).__name__
-    _remove(dest)
-    _warn_once("ffmpeg", f"Transcription: ffmpeg {reason}; sending the stored file instead of its audio track")
-    return None
+        try:
+            async with _media_tool_slot():
+                extracted = await asyncio.to_thread(_run_extract, path, dest)
+            if extracted:
+                kept = True
+                return dest
+            reason = "failed"
+        except FileNotFoundError:
+            reason = "not installed"
+        except (OSError, subprocess.SubprocessError) as e:
+            reason = type(e).__name__
+        _warn_once("ffmpeg", f"Transcription: ffmpeg {reason}; sending the stored file instead of its audio track")
+        return None
+    finally:
+        # Also on cancellation, which none of the handlers above catch.
+        if not kept:
+            _remove(dest)
 
 
 def _remove(path: str) -> None:
@@ -1010,13 +1034,18 @@ async def transcribe_media(
         # An ask-now row, or a row for an imported media with no hash.
         await db.fill_media_transcript(row["id"], status="queued", idempotency_key=idempotency_key)
 
-    extracted = None if media.get("type") in SENT_AS_STORED else await extract_audio(path)
+    max_mb = getattr(config, "transcription_max_upload_mb", 500)
+    if not isinstance(max_mb, int) or isinstance(max_mb, bool):
+        max_mb = 500
+    limit = max_mb * 1024 * 1024 if max_mb > 0 else None  # 0 or less: no limit
+    # A voice message or music file over the limit is not skipped yet: its
+    # audio extracted to Opus is usually a fraction of it.
+    over_limit = limit is not None and os.path.getsize(path) > limit
+    extract = media.get("type") not in SENT_AS_STORED or over_limit
+    extracted = await extract_audio(path) if extract else None
     try:
         upload_path = extracted or path
-        max_mb = getattr(config, "transcription_max_upload_mb", 500)
-        if not isinstance(max_mb, int) or isinstance(max_mb, bool):
-            max_mb = 500
-        if os.path.getsize(upload_path) > max_mb * 1024 * 1024:
+        if limit is not None and os.path.getsize(upload_path) > limit:
             return await skip(TOO_LARGE)
         upload_key = await asyncio.to_thread(_file_sha256, extracted) if extracted else None
         stem = os.path.splitext(os.path.basename(path))[0]
